@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Cross Bridge 浏览器调用演示</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        button { margin: 5px; padding: 8px 16px; }
+        #result { margin-top: 20px; background: #f0f0f0; padding: 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h2>Cross Bridge 浏览器调用</h2>
+    <button onclick="callAdd()">调用 add(10,20)</button>
+    <button onclick="callInvSeri()">调用 inv_seri</button>
+    <div id="result">等待结果...</div>
+
+    <script>
+        const BASE_URL = 'http://127.0.0.1:8081';
+
+        async function callBridge(app, api, body, timeout = 2000) {
+            const url = `${BASE_URL}/${app}/${api}`;
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!resp.ok) {
+                const text = await resp.text();
+                throw new Error(`HTTP ${resp.status}: ${text}`);
+            }
+            const data = await resp.json();
+            if (data.code !== undefined && data.code !== 0) {
+                throw new Error(data.error || '未知错误');
+            }
+            return data;
+        }
+
+        async function callAdd() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.textContent = '⏳ 调用 add...';
+            try {
+                const data = await callBridge('cross_bridge', 'add', [10, 20]);
+                resultDiv.textContent = `✅ 10 + 20 = ${data.result}`;
+            } catch (e) {
+                resultDiv.textContent = `❌ 错误: ${e.message}`;
+            }
+        }
+
+        async function callInvSeri() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.textContent = '⏳ 调用 inv_seri...';
+            try {
+                const data = await callBridge('cross_bridge', 'inv_seri', {});
+                resultDiv.textContent = `✅ inv_seri 结果: ${data.result}`;
+            } catch (e) {
+                resultDiv.textContent = `❌ 错误: ${e.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+[submodule "pascal/zNetV2"]
+	path = pascal/zNetV2
+	url = https://github.com/PassByYou888/zNetV2.git

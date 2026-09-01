@@ -1,0 +1,35 @@
+object cross_node_ui_form: Tcross_node_ui_form
+  Left = 281
+  Height = 336
+  Top = 250
+  Width = 893
+  Caption = 'cross_node_ui_form'
+  ClientHeight = 336
+  ClientWidth = 893
+  LCLVersion = '4.8.0.0'
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  object Memo: TMemo
+    Left = 17
+    Height = 260
+    Top = 48
+    Width = 847
+    Anchors = [akTop, akLeft, akRight, akBottom]
+    ScrollBars = ssAutoBoth
+    TabOrder = 0
+    WordWrap = False
+  end
+  object info_Label: TLabel
+    Left = 17
+    Height = 17
+    Top = 17
+    Width = 48
+    Caption = '滚动日志'
+  end
+  object sysTimer: TTimer
+    Interval = 1
+    OnTimer = sysTimerTimer
+    Left = 132
+    Top = 70
+  end
+end

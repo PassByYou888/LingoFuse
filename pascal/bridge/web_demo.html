@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧮 LingoFuse 表达式计算器</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #f0f4f8;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: #ffffff;
+            max-width: 700px;
+            width: 100%;
+            border-radius: 24px;
+            padding: 32px 40px 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+            transition: box-shadow 0.2s;
+        }
+        .container:hover { box-shadow: 0 15px 40px rgba(0,0,0,0.12); }
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            color: #1e293b;
+            margin: 0 0 4px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .subtitle {
+            color: #64748b;
+            font-size: 14px;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #e9edf2;
+            padding-bottom: 16px;
+        }
+        .subtitle span {
+            background: #eef2f6;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .input-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        #expr-input {
+            flex: 1;
+            padding: 14px 18px;
+            font-size: 18px;
+            border: 2px solid #dce2ea;
+            border-radius: 16px;
+            outline: none;
+            background: #fafcff;
+            transition: border 0.2s, box-shadow 0.2s;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.5px;
+        }
+        #expr-input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 4px rgba(59,130,246,0.15);
+            background: #ffffff;
+        }
+        #expr-input::placeholder {
+            color: #94a3b8;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        #calc-btn {
+            padding: 14px 28px;
+            font-size: 18px;
+            font-weight: 600;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 16px;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.1s;
+            white-space: nowrap;
+            box-shadow: 0 4px 8px rgba(59,130,246,0.2);
+        }
+        #calc-btn:hover { background: #2563eb; }
+        #calc-btn:active { transform: scale(0.96); }
+        #calc-btn:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+            box-shadow: none;
+            opacity: 0.7;
+        }
+        .examples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        .example-btn {
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            border-radius: 30px;
+            padding: 6px 14px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            cursor: pointer;
+            color: #1e293b;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .example-btn:hover {
+            background: #e2e8f0;
+            border-color: #94a3b8;
+        }
+        #result-area {
+            background: #f8fafc;
+            border-radius: 16px;
+            padding: 18px 22px;
+            min-height: 80px;
+            margin-top: 8px;
+            border: 1px solid #e9edf2;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            font-size: 18px;
+            transition: background 0.2s;
+        }
+        #result-area .placeholder { color: #94a3b8; font-size: 16px; }
+        #result-area .success { color: #0b7e3d; font-weight: 500; }
+        #result-area .error { color: #b91c1c; font-weight: 500; }
+        #result-area .loading { color: #b45309; font-weight: 500; }
+        #status {
+            margin-top: 12px;
+            font-size: 14px;
+            color: #64748b;
+            min-height: 24px;
+        }
+        .footer {
+            margin-top: 28px;
+            font-size: 13px;
+            color: #94a3b8;
+            text-align: center;
+            border-top: 1px solid #e9edf2;
+            padding-top: 20px;
+        }
+        .footer code {
+            background: #eef2f6;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+        @media (max-width: 600px) {
+            .container { padding: 24px 20px; }
+            .input-group { flex-direction: column; }
+            #calc-btn { width: 100%; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🧮 表达式计算器</h1>
+    <div class="subtitle">
+        通过 LingoFuse · 后端 Pascal 引擎 &nbsp;<span>POST /pas/exp</span>
+    </div>
+
+    <div class="input-group">
+        <input type="text" id="expr-input" placeholder="输入数学表达式，例如 10+20*2" value="1+2*3">
+        <button id="calc-btn">计算</button>
+    </div>
+
+    <div class="examples">
+        <button class="example-btn" data-expr="1+2*3">1+2*3</button>
+        <button class="example-btn" data-expr="(10+20)/2">(10+20)/2</button>
+        <button class="example-btn" data-expr="2^8">2^8</button>
+        <button class="example-btn" data-expr="sin(3.14/2)">sin(π/2)</button>
+        <button class="example-btn" data-expr="sqrt(144)">sqrt(144)</button>
+        <button class="example-btn" data-expr="5!">5!</button>
+        <button class="example-btn" data-expr="1/0">1/0 (错误)</button>
+    </div>
+
+    <div id="result-area">
+        <span class="placeholder">等待计算…</span>
+    </div>
+    <div id="status"></div>
+
+    <div class="footer">
+        🌐 <code>bridge.py</code> 端点 <code>/pas/exp</code> · 需启动 <code>bridge_service</code> 和 <code>bridge_compute</code>
+    </div>
+</div>
+
+<script>
+    (function() {
+        const exprInput = document.getElementById('expr-input');
+        const calcBtn = document.getElementById('calc-btn');
+        const resultArea = document.getElementById('result-area');
+        const statusDiv = document.getElementById('status');
+
+        // 使用显式路径 /pas/exp，不依赖默认 app
+        const API_URL = 'http://127.0.0.1:8081/pas/exp';
+
+        function setResult(html, className = '') {
+            resultArea.innerHTML = `<span class="${className}">${html}</span>`;
+        }
+
+        function setStatus(text, color = '#64748b') {
+            statusDiv.textContent = text;
+            statusDiv.style.color = color;
+        }
+
+        async function compute(expr) {
+            const trimmed = expr.trim();
+            if (!trimmed) {
+                setResult('⚠️ 请输入表达式', 'error');
+                setStatus('表达式不能为空', '#b91c1c');
+                return;
+            }
+
+            calcBtn.disabled = true;
+            setResult('⏳ 正在计算…', 'loading');
+            setStatus('发送请求中…', '#b45309');
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ args: [trimmed] })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.code === 0) {
+                    let resultText = data.result;
+                    if (typeof resultText === 'string' && resultText.startsWith('错误:')) {
+                        setResult(`❌ ${resultText}`, 'error');
+                        setStatus('服务端返回错误', '#b91c1c');
+                    } else {
+                        setResult(`✅ ${resultText}`, 'success');
+                        setStatus(`✅ 计算成功 (code=0)`, '#0b7e3d');
+                    }
+                } else if (data.code === -3) {
+                    setResult(`❌ API 不可用: ${data.error || '未知'}`, 'error');
+                    setStatus('请检查后端服务是否启动', '#b91c1c');
+                } else if (data.code === -2) {
+                    setResult(`❌ 请求格式错误: ${data.error || '无效 JSON'}`, 'error');
+                    setStatus('请检查请求参数', '#b91c1c');
+                } else if (data.code === -1) {
+                    setResult(`❌ 调用失败: ${data.error || '超时或内部错误'}`, 'error');
+                    setStatus('后端服务可能未响应', '#b91c1c');
+                } else {
+                    setResult(`❌ 未知错误 (code=${data.code})`, 'error');
+                    setStatus(`错误信息: ${data.error || '无'}`, '#b91c1c');
+                }
+            } catch (error) {
+                setResult(`❌ 网络错误: ${error.message}`, 'error');
+                setStatus('无法连接到 bridge.py，请确认服务已启动', '#b91c1c');
+                console.error('Fetch error:', error);
+            } finally {
+                calcBtn.disabled = false;
+            }
+        }
+
+        // 事件绑定
+        calcBtn.addEventListener('click', () => compute(exprInput.value));
+        exprInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                calcBtn.click();
+            }
+        });
+
+        document.querySelectorAll('.example-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const expr = btn.getAttribute('data-expr');
+                if (expr) {
+                    exprInput.value = expr;
+                    compute(expr);
+                }
+            });
+        });
+
+        // 页面加载自动计算
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                const defaultExpr = exprInput.value.trim();
+                if (defaultExpr) compute(defaultExpr);
+            }, 300);
+        });
+
+        // 双击结果区重新计算
+        resultArea.addEventListener('dblclick', () => {
+            calcBtn.click();
+        });
+    })();
+</script>
+
+</body>
+</html>

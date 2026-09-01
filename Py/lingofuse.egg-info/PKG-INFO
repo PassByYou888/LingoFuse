@@ -1,0 +1,214 @@
+Metadata-Version: 2.4
+Name: lingofuse
+Version: 1.0.0
+Summary: Python bindings for the LingoFuse RPC framework
+Home-page: https://github.com/PassByYou888/LingoFuse
+Author: passbyyou888 / Team
+Author-email: 600585@qq.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Provides-Extra: bridge
+Requires-Dist: Flask>=2.0; extra == "bridge"
+Requires-Dist: requests>=2.25; extra == "bridge"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: flake8; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: provides-extra
+Dynamic: requires-python
+Dynamic: summary
+
+# LingoFuse Python Bindings
+
+Python bindings for the **LingoFuse** RPC framework – a language‑neutral, distributed service mesh built on the C4 protocol.  
+This package allows you to expose Python functions as remote APIs (Call/Notify) and consume services from any language that supports the LingoFuse C ABI.
+
+---
+
+## Features
+
+- **Pure Python** bindings using `ctypes` – no extra compilation.
+- **RAII‑style** handles (`DataHandle`, `App`) for automatic resource management.
+- **Synchronous calls** and **one‑way notifications** with optional **sequenced (FIFO)** delivery.
+- **Dynamic API discovery** – call remote services by name.
+- **Built‑in HTTP bridge** (`bridge.py`) to expose LingoFuse services via REST.
+- **Thread‑safe** – all exported functions can be used concurrently.
+- **Cross‑platform** – Windows, Linux, macOS.
+
+---
+
+## Installation
+
+### From source (editable development)
+
+```bash
+git clone https://github.com/PassByYou888/LingoFuse.git
+cd LingoFuse/Py
+pip install -e .
+```
+
+This installs the core package. For HTTP bridge support, install the optional extra:
+
+```bash
+pip install -e .[bridge]
+```
+
+### Runtime Dependencies
+
+The core package has **no external Python dependencies** – it uses only the standard library.  
+The HTTP bridge (`bridge.py`) requires:
+- `Flask >= 2.0`
+- `requests >= 2.25` (for the test client)
+
+---
+
+## Quick Start
+
+### 1. Start a service (register an API)
+
+```python
+from lingofuse import App
+
+app = App("my_service", "Example service")
+
+@app.register_call("add")
+def add(a: int, b: int) -> int:
+    return a + b
+
+# Start the service on IPC and TCP
+from lingofuse import Server
+server = Server("my_service")
+server.start_multi(["ipc:my_svc", "0.0.0.0:9898"])
+
+input("Press Enter to stop...\n")
+server.stop()
+```
+
+### 2. Call a remote API (client)
+
+```python
+from lingofuse import C4
+
+client = C4("my_service", "ipc:my_svc")
+result = client.add(5, 7)   # returns 12
+print(result)
+```
+
+### 3. Send a notification (no response)
+
+```python
+client.notify("log", {"level": "info", "message": "Hello"})
+```
+
+### 4. Sequenced notification (FIFO order per app+api)
+
+```python
+client.sequenced_notify("event", {"id": 42})
+```
+
+---
+
+## HTTP Bridge
+
+The included `bridge.py` forwards HTTP POST requests to LingoFuse backends.
+
+```bash
+python bridge.py --endpoint ipc:my_svc --app my_service --port 8081
+```
+
+Then call via `curl`:
+
+```bash
+curl -X POST http://127.0.0.1:8081/add -d '{"args":[3,4]}'
+```
+
+---
+
+## Core Concepts
+
+- **App** – logical container of APIs, identified by a unique name.
+- **DataHandle** – binary buffer for parameters and results. Supports read/write of primitive types and strings (null‑terminated UTF‑8).
+- **Call** – request‑response pattern (synchronous).
+- **Notify** – one‑way message (asynchronous).
+- **Sequenced Notify** – guarantee of ordered delivery for the same (app, api) pair.
+- **C4 Service Mesh** – the underlying network layer using TCP and IPC (inter‑process communication).
+
+---
+
+## API Overview
+
+The package exposes the following high‑level classes:
+
+| Class | Purpose |
+|-------|---------|
+| `DataHandle` | RAII wrapper for binary data buffers. |
+| `App` | Manages API registration and local execution. |
+| `Server` | Starts a C4 service and exposes registered APIs. |
+| `C4` | Client that dynamically calls remote APIs via `__getattr__`. |
+
+Low‑level functions (e.g., `LF_Call`, `LF_Notify`) are available in `_lf_native` for advanced use.
+
+---
+
+## Directory Structure
+
+```
+Py/
+├── lingofuse/            # Main package
+│   ├── __init__.py
+│   ├── _lf_native.py     # ctypes bindings
+│   ├── core.py           # DataHandle, App
+│   ├── server.py         # Server class
+│   ├── client.py         # C4 client
+│   ├── bridge.py         # HTTP bridge executable
+│   ├── serializers.py    # JSON/pickle serializers
+│   ├── errors.py         # Exceptions
+│   ├── test_*.py         # Unit tests
+│   └── ...
+├── cross/                # Example cross‑language demos
+├── init_env.ps1          # Environment setup script (Windows)
+└── setup.py              # Installation script
+```
+
+---
+
+## Testing
+
+Run the unit tests:
+
+```bash
+python -m unittest lingofuse.test_lingofuse
+```
+
+---
+
+## License
+
+This project is licensed under the MIT License – see the [LICENSE](../LICENSE) file for details.
+
+---
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome.  
+Please ensure existing tests pass and new functionality is covered.
+
+---
+
+## Links
+
+- [Project Repository](https://github.com/PassByYou888/LingoFuse)
+- [Issue Tracker](https://github.com/PassByYou888/LingoFuse/issues)
+
+---
+
+*Built on the shoulders of the Z‑framework and C4 service mesh.*

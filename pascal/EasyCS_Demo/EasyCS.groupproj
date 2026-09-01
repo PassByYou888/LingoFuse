@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{82FB5DB5-4E9A-4727-AF49-99D7DEF75620}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="EasyServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="EasyClient.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="EasyServer">
+        <MSBuild Projects="EasyServer.dproj"/>
+    </Target>
+    <Target Name="EasyServer:Clean">
+        <MSBuild Projects="EasyServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EasyServer:Make">
+        <MSBuild Projects="EasyServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EasyClient">
+        <MSBuild Projects="EasyClient.dproj"/>
+    </Target>
+    <Target Name="EasyClient:Clean">
+        <MSBuild Projects="EasyClient.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EasyClient:Make">
+        <MSBuild Projects="EasyClient.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="EasyServer;EasyClient"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="EasyServer:Clean;EasyClient:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="EasyServer:Make;EasyClient:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

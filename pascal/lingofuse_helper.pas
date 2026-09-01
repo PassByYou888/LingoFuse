@@ -1,0 +1,2039 @@
+﻿(*
+ * =============================================================================
+ * lingofuse_helper – High‑Level Object‑Oriented Wrapper for LingoFuse
+ * =============================================================================
+ *
+ * This unit provides a convenient, object‑oriented layer on top of the
+ * low‑level `lingofuse_import` unit. It defines two main classes:
+ *
+ *   – `TDataHandle` : manages a LingoFuse data handle (TDataHnd) with
+ *                     automatic memory management and thread‑safe access.
+ *   – `TAppHandle`  : manages a LingoFuse application handle (TAppHnd) and
+ *                     provides method‑based API registration.
+ *
+ * Additionally, the `LF` class offers static (class) methods that mirror
+ * the low‑level functions but operate on these high‑level handles and
+ * often include extra convenience (e.g., automatic client preparation).
+ *
+ * This unit is designed to be used by Pascal developers who prefer an
+ * object‑oriented style over flat procedure calls. It hides the complexity
+ * of handle lifetime and thread synchronisation, but you must still
+ * understand the underlying LingoFuse threading model and callback
+ * restrictions.
+ *
+ * =============================================================================
+ * KEY CONCEPTS (INHERITED FROM LINGOFUSE)
+ * =============================================================================
+ *
+ *   – Data Handle (TDataHandle) : A wrapper around a TDataHnd that
+ *     automatically frees the handle when the object is destroyed (if
+ *     `FOwned = True`). It also uses an internal critical section to
+ *     protect its own state, but note that concurrent writes to the same
+ *     underlying buffer must still be serialised by the caller.
+ *
+ *   – Application Handle (TAppHandle) : Wraps a TAppHnd and provides
+ *     methods to register Call/Notify APIs using either plain procedures
+ *     or object methods. It also offers local call/notification methods.
+ *
+ *   – Static LF class : Provides global operations such as preparing the
+ *     network, making remote calls, and shutting down the library. Many
+ *     methods accept or return high‑level handles, freeing you from
+ *     manual handle management.
+ *
+ * =============================================================================
+ * THREAD SAFETY (INHERITED)
+ * =============================================================================
+ *
+ *   - All methods of `TDataHandle`, `TAppHandle`, and the static `LF`
+ *     class are thread‑safe. The internal critical sections protect
+ *     the object's own state (e.g., FHandle, FDisposed).
+ *
+ *   - However, for a given underlying data handle, concurrent writes
+ *     are NOT safe. You must use external synchronisation if multiple
+ *     threads write to the same `TDataHandle` instance.
+ *
+ *   - Callbacks registered via `TAppHandle.RegisterCall` (non‑sync) are
+ *     executed on background threads. They must be thread‑safe and MUST
+ *     NOT call blocking LingoFuse functions. Use the `Sync` variants if
+ *     you need to access UI components or non‑thread‑safe objects.
+ *
+ * =============================================================================
+ * TYPICAL USAGE (OBJECT‑ORIENTED STYLE)
+ * =============================================================================
+ *
+ *   // 1. Create an application
+ *   var App: TAppHandle;
+ *   begin
+ *     App := TAppHandle.Create('MyApp', 'Example app');
+ *
+ *   // 2. Register a Call API using an object method
+ *   type
+ *     TMyService = class
+ *       procedure Echo(Input, Output: TDataHandle);
+ *     end;
+ *   procedure TMyService.Echo(Input, Output: TDataHandle);
+ *   var S: string;
+ *   begin
+ *     S := Input.ReadString;
+ *     Output.WriteStringNullTerminated(S);
+ *   end;
+ *   var Service: TMyService;
+ *   ...
+ *   App.RegisterCall('echo', 'Echo service', Service.Echo);
+ *
+ *   // 3. Prepare network (remote access)
+ *   LF.ResetPrepare;
+ *   LF.PrepareService('0.0.0.0', '127.0.0.1:9898');   // listen
+ *   LF.PrepareClient('127.0.0.1:9898', App);          // connect & expose App
+ *   if LF.PrepareDone then
+ *     WriteLn('Network ready');
+ *
+ *   // 4. Make a local call
+ *   var Data, Res: TDataHandle;
+ *   begin
+ *     Data := TDataHandle.Create('echo');
+ *     Data.WriteStringNullTerminated('Hello');
+ *     Res := App.LocalCall(Data);
+ *     WriteLn(Res.ReadString);   // writes 'Hello'
+ *     Data.Free;
+ *     Res.Free;
+ *   end;
+ *
+ *   // 5. Remote call (same syntax)
+ *   Data := TDataHandle.Create('add');
+ *   Data.WriteInt32(5).WriteInt32(7);
+ *   Res := LF.CallApp('Calculator', Data, 5000);
+ *   if Res.Size > 0 then
+ *     WriteLn('Result: ', Res.ReadInt32);
+ *   Data.Free;
+ *   Res.Free;
+ *
+ *   // 6. Clean up
+ *   App.Free;
+ *   LF.Shutdown;
+ *
+ * =============================================================================
+ * IMPORTANT PITFALLS
+ * =============================================================================
+ *
+ *   {!!!!!  DATA HANDLE OWNERSHIP  !!!!!}
+ *   - By default, a TDataHandle owns its underlying handle (FOwned=True)
+ *     and will free it upon destruction. If you create a TDataHandle from
+ *     an existing handle with `Owned=False`, you are responsible for
+ *     freeing the handle yourself, or you must ensure the handle is not
+ *     freed twice.
+ *
+ *   {!!!!!  CALLBACK OBJECT LIFETIME  !!!!!}
+ *   - If you register an object method as a callback, the object must
+ *     outlive the callback. If the object is destroyed while a callback
+ *     is still pending or executing, the application will crash. Use
+ *     weak references or ensure proper synchronisation.
+ *
+ *   {!!!!!  SYNC VS NON‑SYNC  !!!!!}
+ *   - Use `RegisterCallSync` / `RegisterNotifySync` only when you need
+ *     to update UI or access thread‑sensitive resources. They are slower
+ *     because they queue the callback to the main thread. For high‑
+ *     throughput APIs, prefer the non‑sync variants.
+ *
+ *   {!!!!!  REMOTE CALL TIMEOUT  !!!!!}
+ *   - `LF.CallApp` accepts a timeout in milliseconds. A timeout of 0
+ *     means infinite wait. On timeout, the returned handle has size 0.
+ *     Always check `Data.Size` to detect failures.
+ *
+ *   {!!!!!  STATUS FUNCTIONS DEPEND ON MAIN THREAD  !!!!!}
+ *   - `LF.GetStatus` and `LF.PostStatus` rely on the simulated main
+ *     thread to process the status queue. If the main thread has not
+ *     been started (i.e., `LF.PrepareDone` has not been called), these
+ *     functions will have limited or no effect. Use them only after
+ *     the framework is fully initialised.
+ *
+ * =============================================================================
+ * DEPENDENCIES
+ * =============================================================================
+ *
+ *   - This unit depends on `lingofuse_import`, which in turn loads the
+ *     LingoFuse dynamic library (LingoFuse64.dll / liblingofuse.so).
+ *   - Uses `SyncObjs` for TCriticalSection.
+ *
+ * =============================================================================
+ * COMPATIBILITY
+ * =============================================================================
+ *
+ *   Works with Delphi 2009+ and Free Pascal 3.0+ on Windows, Linux, macOS.
+ * =============================================================================
+ *)
+unit lingofuse_helper;
+
+{$ifdef FPC}
+  {$mode delphi}{$H+}
+  {$modeswitch advancedrecords}
+  {$CODEPAGE UTF8}
+  {$packrecords c}
+  {$PACKENUM 4}
+{$endif}
+{$R-}
+{$H+}
+
+interface
+
+uses
+  Classes, SysUtils, SyncObjs,
+  lingofuse_import;
+type
+  { * Alias for TCriticalSection, used internally for thread safety. }
+  TCritical = TCriticalSection;
+
+  { * LF: The main class providing high‑level LingoFuse functionality.
+    * Contains nested classes TDataHandle and TAppHandle, and static methods
+    * for global operations. }
+  LF = class
+  public
+    type
+    { * TDataHandle: Manages a LingoFuse data handle (TDataHnd).
+      * It provides type‑safe read/write methods and automatic handle
+      * freeing on destruction (if Owned). It also uses an internal lock
+      * to protect its own state (FHandle, FDisposed) from concurrent
+      * access, but does NOT serialise writes to the underlying buffer.
+      *
+      * @Example:
+      *   var d := TDataHandle.Create('echo');
+      *   d.WriteStringNullTerminated('Hello');
+      *   // ... use d in a call ...
+      *   d.Free;   // frees the underlying handle
+      * }
+      TDataHandle = class
+      private
+        FHandle: TDataHnd___;      // underlying opaque handle
+        FOwned: boolean;           // if True, LF_FreeData is called on destruction
+        FDisposed: boolean;        // prevents double freeing
+        FLock: TCritical;          // protects FHandle and FDisposed
+        function IsValid: boolean; inline; // checks if handle is valid and not disposed
+      public
+      { * Creates a new data handle with the given API name.
+        * The handle is owned by this object (FOwned=True).
+        * @param MethodName  Name of the API to call. The string will be
+        *        automatically UTF‑8 encoded when passed to the library.
+        * @example:
+        *   var d := TDataHandle.Create('my_api');
+        *   // write data...
+        *   d.Free; // frees the handle
+        * }
+        constructor Create(const MethodName: string); overload;
+
+      { * Wraps an existing data handle. Optionally takes ownership.
+        * @param AHandle  The existing TDataHnd to wrap.
+        * @param Owned    If True, the handle is freed when this object is destroyed.
+        * @example:
+        *   var raw := LF_CreateData('api'); // raw handle
+        *   var d := TDataHandle.Create(raw, True); // now owned by d
+        * }
+        constructor Create(AHandle: TDataHnd___; const Owned: boolean = False); overload;
+
+      { * Destructor: frees the underlying handle if Owned.
+        * The handle is also set to nil and FDisposed is set to True.
+        * @note It is safe to call Free multiple times; subsequent calls do nothing.
+        * }
+        destructor Destroy; override;
+
+       (*  Writes arbitrary binary data to the handle's buffer at the current position.
+        * The buffer is automatically enlarged if needed.
+        * @param Buffer  Source data (any type).
+        * @param Size    Number of bytes to write.
+        * @return Number of bytes written (normally equals Size).
+        * {!!!!!  WARNING  !!!!!}
+        * @note This method is thread‑safe with respect to the object's own state,
+        *       but concurrent writes to the same underlying buffer must be
+        *       serialised externally. Different handles can be written concurrently
+        *       without issue.
+        *)
+        function WriteBuffer(const Buffer; Size: int64): int64;
+
+      { * Reads arbitrary binary data from the handle's buffer at the current position.
+        * @param Buffer  Destination buffer.
+        * @param Size    Maximum number of bytes to read.
+        * @return Number of bytes actually read (may be less if EOF).
+        * }
+        function ReadBuffer(var Buffer; Size: int64): int64;
+
+        { ---- Convenience Write Methods (return Self for chaining) ---- }
+
+        function WriteInt8(Value: int8): TDataHandle;
+        function WriteUInt8(Value: uint8): TDataHandle;
+        function WriteInt16(Value: int16): TDataHandle;
+        function WriteUInt16(Value: uint16): TDataHandle;
+        function WriteInt32(Value: int32): TDataHandle;
+        function WriteUInt32(Value: uint32): TDataHandle;
+        function WriteInt64(Value: int64): TDataHandle;
+        function WriteUInt64(Value: uint64): TDataHandle;
+        function WriteSingle(Value: single): TDataHandle;
+        function WriteDouble(Value: double): TDataHandle;
+
+      { * Writes a null‑terminated UTF‑8 string to the buffer.
+        * The string is written as raw bytes followed by a zero byte.
+        * @param Value  Pascal string (will be UTF‑8 encoded).
+        * @return Self for chaining.
+        * @example:
+        *   d.WriteStringNullTerminated('Hello'); // writes "Hello\0"
+        * }
+        function WriteStringNullTerminated(const Value: string): TDataHandle;
+
+      { * Deprecated alias for WriteStringNullTerminated.
+        * @deprecated Use WriteStringNullTerminated instead.
+        * }
+        procedure WriteString(const Value: string); deprecated 'Use WriteStringNullTerminated instead';
+
+        { ---- Convenience Read Methods (with out parameters) ---- }
+
+        function ReadInt8(var Value: int8): boolean; overload;
+        function ReadUInt8(var Value: uint8): boolean; overload;
+        function ReadInt16(var Value: int16): boolean; overload;
+        function ReadUInt16(var Value: uint16): boolean; overload;
+        function ReadInt32(var Value: int32): boolean; overload;
+        function ReadUInt32(var Value: uint32): boolean; overload;
+        function ReadInt64(var Value: int64): boolean; overload;
+        function ReadUInt64(var Value: uint64): boolean; overload;
+        function ReadSingle(var Value: single): boolean; overload;
+        function ReadDouble(var Value: double): boolean; overload;
+
+        { ---- Convenience Read Methods (return value directly) ---- }
+
+        function ReadInt8: int8; overload;
+        function ReadUInt8: uint8; overload;
+        function ReadInt16: int16; overload;
+        function ReadUInt16: uint16; overload;
+        function ReadInt32: int32; overload;
+        function ReadUInt32: uint32; overload;
+        function ReadInt64: int64; overload;
+        function ReadUInt64: uint64; overload;
+        function ReadSingle: single; overload;
+        function ReadDouble: double; overload;
+
+        { ---- String Reading ---- }
+
+      { * Reads a null‑terminated UTF‑8 string from the current position.
+        * The string is decoded to a Pascal string.
+        * @return The decoded string, or empty if no valid string is found.
+        * @note If the buffer contains no null terminator within its size,
+        *       the function returns an empty string and leaves the position
+        *       unchanged.
+        * }
+        function ReadStringNullTerminated: string;
+
+      { * Reads a null‑terminated UTF‑8 string and returns success.
+        * @param Value  Output string.
+        * @return True if a string was successfully read, False otherwise.
+        * }
+        function ReadString(out Value: string): boolean; overload;
+
+      { * Shortcut for ReadStringNullTerminated.
+        * @return The decoded string.
+        * }
+        function ReadString(): string; overload;
+
+        { ---- Position/Size ---- }
+
+        function GetPos: int64;
+        procedure SetPos(Pos_: int64);
+        property Pos: int64 read GetPos write SetPos;
+
+        function GetSize: int64;
+        procedure SetSize(Size_: int64);
+        property Size: int64 read GetSize write SetSize;
+
+      { * Returns a pointer to the raw buffer and its size.
+        * The pointer is valid until the handle is freed or resized.
+        * @param Size  Output: current buffer size.
+        * @return Pointer to internal memory, or nil if invalid.
+        * }
+        function GetBufferEx(out Size: int64): Pointer;
+
+      { * Returns a pointer to the raw buffer (read‑only).
+        * @return Pointer to internal memory, or nil.
+        * }
+        function GetBuffer(): Pointer;
+
+      { * Direct access to the underlying TDataHnd.
+        * @warning Use with caution; avoid mixing low‑level and high‑level
+        *          operations on the same handle unless you understand the
+        *          consequences.
+        * }
+        property Handle: TDataHnd___ read FHandle;
+      end;
+
+    { * TAppHandle: Manages a LingoFuse application handle (TAppHnd).
+      * It provides methods to register Call/Notify APIs using either
+      * plain procedures or object methods, and to invoke them locally.
+      * The underlying handle is freed automatically on destruction.
+      *
+      * @Example:
+      *   var App := TAppHandle.Create('MyApp', 'Example');
+      *   App.RegisterCall('echo', 'Echo', MyEchoMethod);
+      *   // ...
+      *   App.Free;
+      * }
+      TAppHandle = class
+      private
+        FHandle: TAppHnd___;   // underlying application handle
+        FName: string;         // cached application name for convenience
+      public
+      { * Creates a new application handle.
+        * @param AppName  Unique application name (UTF‑8, case‑insensitive).
+        * @param Desc     Optional description.
+        * }
+        constructor Create(const AppName, Desc: string);
+
+      { * Destructor: frees the underlying application handle.
+        * This also unregisters all APIs and notifies the network.
+        * }
+        destructor Destroy; override;
+
+      { * Registers a Call API with a plain cdecl callback.
+        * @param MethodName  Unique API name (UTF‑8).
+        * @param Desc        Description.
+        * @param Trigger     User pointer passed to callback.
+        * @param OnCall      cdecl procedure.
+        * @return True on success, False if the API name already exists.
+        * }
+        function RegisterCall(const MethodName, Desc: string; Trigger: Pointer; OnCall: TLF_Call_Event): boolean; overload;
+
+      { * Registers a Call API with an object method (non‑sync).
+        * The method will be invoked on a background thread.
+        * @param MethodName  API name.
+        * @param Desc        Description.
+        * @param OnCall      Object method.
+        * @return True on success.
+        * @see RegisterCallSync for main‑thread variant.
+        * }
+        function RegisterCall(const MethodName, Desc: string; OnCall: TLF_Call_M): boolean; overload;
+
+      { * Registers a Call API with an object method, synchronised to the main thread.
+        * @see RegisterCall for non‑sync version.
+        * }
+        function RegisterCallSync(const MethodName, Desc: string; OnCall: TLF_Call_M): boolean;
+
+      { * Registers a Notify API with a plain cdecl callback.
+        * @param MethodName  API name.
+        * @param Desc        Description.
+        * @param Trigger     User pointer.
+        * @param OnNotify    cdecl procedure.
+        * @return True on success.
+        * }
+        function RegisterNotify(const MethodName, Desc: string; Trigger: Pointer; OnNotify: TLF_Notify_Event): boolean; overload;
+
+      { * Registers a Notify API with an object method (non‑sync).
+        * @param MethodName  API name.
+        * @param Desc        Description.
+        * @param OnNotify    Object method.
+        * @return True on success.
+        * }
+        function RegisterNotify(const MethodName, Desc: string; OnNotify: TLF_Notify_M): boolean; overload;
+
+      { * Registers a Notify API with an object method, synchronised to main thread.
+        * }
+        function RegisterNotifySync(const MethodName, Desc: string; OnNotify: TLF_Notify_M): boolean;
+
+      (* Unregisters a previously registered API by name.
+        * {!!!!!  WARNING  !!!!!}
+        * The API is immediately removed from the local registry, but remote
+        * peers may still see it for up to ~3 seconds until the network
+        * broadcast propagates. During this brief window, remote calls may
+        * still be attempted and will fail gracefully.
+        * @param MethodName  API name.
+        * @return True if the API existed and was removed.
+        *)
+        function Unregister(const MethodName: string): boolean;
+
+      { * Executes a Call API locally within the same application.
+        * This bypasses the network and runs the callback synchronously.
+        * @param Param  Input data handle (contains API name and parameters).
+        * @return New TDataHandle containing the result. The caller must free it.
+        * @note The input handle is NOT freed by this method; you must free it separately.
+        * }
+        function LocalCall(Param: TDataHandle): TDataHandle;
+
+      { * Sends a notification locally within the same application.
+        * @param Param  Input data handle.
+        * }
+        procedure LocalNotify(Param: TDataHandle);
+
+      { * Returns the underlying TAppHnd.
+        * }
+        property Handle: TAppHnd___ read FHandle;
+
+      { * Returns the application name.
+        * }
+        property Name: string read FName;
+      end;
+
+  public
+    { ---- Static (class) methods for global operations ---- }
+
+    { * Clears all previously prepared services/clients.
+      * Call this before preparing a new set.
+      * @note This function does not affect already running services/clients;
+      *       it only clears the preparation queue.
+      * }
+    class procedure ResetPrepare;
+
+    { * Prepares a C4 service (listener) with the given addresses.
+      * @param ListeningAddr  Address to bind (e.g., '0.0.0.0' or 'ipc:my_service').
+      * @param PhysicsAddr    Public address to advertise.
+      * @return A tag (integer ID) for this service, or -1 on error.
+      * @see LF_PrepareServiceEx for details.
+      * }
+    class function PrepareService(const ListeningAddr, PhysicsAddr: string): integer; overload;
+
+    { * Prepares a service and automatically creates a client for the given App.
+      * This is a convenience that calls PrepareClient with the same PhysicsAddr
+      * after a successful service preparation.
+      * @return The service tag, or -1 if the service preparation failed.
+      * }
+    class function PrepareService(const ListeningAddr, PhysicsAddr: string; App: TAppHandle): integer; overload;
+
+    { * Prepares a C4 client that connects to the given service.
+      * @param PhysicsAddr  Address of the service to connect to.
+      * @param App          Optional application handle to expose.
+      * @return A tag for this client, or -1 on error.
+      * }
+    class function PrepareClient(const PhysicsAddr: string; App: TAppHandle): integer;
+
+    { * Starts the C4 framework with all prepared services/clients.
+      * This call blocks until the network is ready or fails.
+      * @return True if successful, False otherwise.
+      * }
+    class function PrepareDone: boolean;
+
+    { * Signals the simulated main thread to exit gracefully.
+      * }
+    class procedure ExitMainThread;
+
+    { * Performs a remote (or local) call to the specified application.
+      * @param AppName    Target application name (UTF‑8).
+      * @param Param      Input data handle (will be read synchronously).
+      * @param TimeoutMs  Timeout in milliseconds (0 = infinite).
+      * @return New TDataHandle containing the result. The caller must free it.
+      * @note The input handle is NOT freed by this method; you must free it separately.
+      * }
+    class function CallApp(const AppName: string; Param: TDataHandle; TimeoutMs: uint64): TDataHandle;
+
+    { * Sends a one‑way notification to the specified application.
+      * @param AppName  Target application name.
+      * @param Param    Input data handle.
+      * }
+    class procedure NotifyApp(const AppName: string; Param: TDataHandle);
+
+    { * Sends a sequenced notification (guaranteed FIFO order per (app, api)).
+      * @param AppName  Target application name.
+      * @param Param    Input data handle.
+      * }
+    class procedure SequencedNotifyApp(const AppName: string; Param: TDataHandle);
+
+    { * LF_SetOption: Dynamically adjusts global runtime options of the LingoFuse
+      * framework. All changes take effect immediately for subsequent operations.
+      *
+      * @param Option  Configuration key (UTF‑8, case‑insensitive). The following
+      *                keys (and their aliases) are recognised:
+      *
+      *                === Authentication ===
+      *                - "password" / "passwd"
+      *                    Sets the C4 P2PVM authentication token (string).
+      *
+      *                === Logging & Debugging ===
+      *                - "Quiet"
+      *                    Enable/disable quiet mode (boolean). When enabled, most
+      *                    internal log messages are suppressed.
+      *                - "ShowThreadID" / "ShowThread" / "Show_Thread"
+      *                    Show thread IDs in log output (boolean).
+      *                - "ConsoleOutput" / "Console_Output"
+      *                    Enable or disable console logging (boolean).
+      *
+      *                === Connection Readiness ===
+      *                - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
+      *                  "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" /
+      *                  "WaitReady"
+      *                    If True, LF_PrepareDone blocks until all prepared clients
+      *                    are connected and their applications are online (boolean).
+      *                - "Wait_Connection_Timeout" / "Wait_TimeOut" /
+      *                  "API_Prepare_Done_TimeOut" / "WaitTimeOut"
+      *                    Timeout in milliseconds for the above wait (integer).
+      *
+      *                === IPC (Inter‑Process Communication) ===
+      *                - "IPC_Serv_ThreadCount" / "IPC_ThreadCount" /
+      *                  "IPC_Server_ThreadCount"
+      *                    Number of threads in the IPC server thread pool (integer).
+      *                - "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength" /
+      *                  "IPC_Server_MaxQueueLength"
+      *                    Maximum length of the IPC message queue (integer).
+      *                - "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize" /
+      *                  "IPC_Server_MaxMsgSize"
+      *                    Maximum size (in bytes) of a single IPC message (integer).
+      *
+      *                === Sequenced Notifications ===
+      *                - "Fixed_Sequenced_Time" / "Fixed_Sequenced_Life"
+      *                    Idle timeout (in milliseconds) for sequenced notification
+      *                    fallback. When selecting a client for a sequenced
+      *                    notification, if the candidate with the oldest timestamp
+      *                    is older than this value, the system falls back to the
+      *                    newest client to avoid starvation (integer).
+      *
+      * @param Value   New value for the given option (UTF‑8). Boolean values
+      *                accept "True"/"False", "1"/"0", "Yes"/"No" (case‑insensitive).
+      *                Integer values are parsed as decimal numbers. String values
+      *                are used as‑is.
+      *
+      * @Note Unknown options are silently ignored. Changes are not persisted
+      *       across restarts; applications must store their own configuration.
+      * }
+    class procedure SetOption(const Option, Value: string);
+
+    { * Processes any pending synchronised callbacks.
+      * @return Number of callbacks processed.
+      * }
+    class function Sync: integer;
+
+    { * Gracefully shuts down the entire LingoFuse framework.
+      * }
+    class procedure Shutdown;
+
+    (* Retrieves the next status message from the internal queue.
+      * {!!!!!  WARNING  !!!!!}
+      * This function relies on the simulated main thread to process the
+      * status queue. If the main thread is not running (i.e., before
+      * LF.PrepareDone), the queue may be empty or stale. Use only after
+      * the framework is fully initialised.
+      * @return The message string, or empty if none available.
+      *)
+    class function GetStatus: string;
+
+    { * Returns the number of pending status messages. * }
+    class function Get_Status_Num: integer;
+
+     (* Injects a user‑supplied message into the status queue.
+      * {!!!!!  WARNING  !!!!!}
+      * This function relies on the simulated main thread to process the
+      * status queue. If the main thread is not running, the message may
+      * not appear in the queue. Use only after LF.PrepareDone.
+      * @param Status  The message to add.
+      *)
+    class procedure PostStatus(const Status: string);
+
+    { * Checks if the simulated main thread is currently active.
+      * @return True if running, False otherwise.
+      * }
+    class function CheckMainThread: boolean;
+
+    { * Checks if an application with the given name is available (local or remote).
+      * @param AppName  Application name.
+      * @return True if at least one instance exists.
+      * }
+    class function CheckApp(const AppName: string): boolean;
+
+    { * LF_CheckApi: Checks whether a specific API is available on the network
+      * for the given application. It searches both local and remote instances
+      * of the application to determine if the API is exported.
+      * @Note This function performs a quick lookup based on cached information
+      *       and may not reflect recent changes. It is useful for probing
+      *       availability before making a call, but does not guarantee that the
+      *       API will still be available at the moment of the actual call. }
+    class function CheckApi(AppName, apiName: string): boolean;
+  end;
+
+  { * Alias for LF, for convenience. }
+  LingoFuse = LF;
+
+   (* LF___: A compatibility class that mirrors the low‑level functions
+    * as static methods. It is provided for migration from older code
+    * that used the low‑level import directly.
+    *
+    * {!!!!!  RECOMMENDATION  !!!!!}
+    * For new development, use the higher‑level `LF` class and its nested
+    * handles (`TDataHandle`, `TAppHandle`) instead of this compatibility
+    * class. The `LF___` class is provided only to ease migration of
+    * existing code that directly called the low‑level `LF_*` functions.
+    *
+    * All methods in this class simply forward to the corresponding
+    * functions in `lingofuse_import`. They are fully thread‑safe, but
+    * you must manage handle lifetimes manually.
+    *)
+  LF___ = class
+  public
+    { ---- Data Handle Operations ---- }
+    class function LF_CreateData(MethodName: pansichar): TDataHnd___; static;
+    class function LF_CreateDataEx(MethodName: string): TDataHnd___; static;
+    class procedure LF_FreeData(Hnd: TDataHnd___); static;
+    class function LF_GetBuffer(Hnd: TDataHnd___): Pointer; static;
+    class function LF_GetBufferOffset(Hnd: TDataHnd___; Offset: nativeint): Pointer; static;
+    class function LF_WriteBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; static;
+    class function LF_ReadBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; static;
+
+    { * Convenience write helpers. They return True if the full number of
+      * bytes was written. }
+    class function LF_WriteInt8(Hnd: TDataHnd___; Value: int8): boolean; static;
+    class function LF_WriteUInt8(Hnd: TDataHnd___; Value: uint8): boolean; static;
+    class function LF_WriteInt16(Hnd: TDataHnd___; Value: int16): boolean; static;
+    class function LF_WriteUInt16(Hnd: TDataHnd___; Value: uint16): boolean; static;
+    class function LF_WriteInt32(Hnd: TDataHnd___; Value: int32): boolean; static;
+    class function LF_WriteUInt32(Hnd: TDataHnd___; Value: uint32): boolean; static;
+    class function LF_WriteInt64(Hnd: TDataHnd___; Value: int64): boolean; static;
+    class function LF_WriteUInt64(Hnd: TDataHnd___; Value: uint64): boolean; static;
+    class function LF_WriteSingle(Hnd: TDataHnd___; Value: single): boolean; static;
+    class function LF_WriteDouble(Hnd: TDataHnd___; Value: double): boolean; static;
+    class function LF_WriteString(Hnd: TDataHnd___; const Value: string): boolean; static;
+
+    { ---- Read helpers (with out parameters) ---- }
+    class function LF_ReadInt8(Hnd: TDataHnd___; out Value: int8): boolean; overload; static;
+    class function LF_ReadUInt8(Hnd: TDataHnd___; out Value: uint8): boolean; overload; static;
+    class function LF_ReadInt16(Hnd: TDataHnd___; out Value: int16): boolean; overload; static;
+    class function LF_ReadUInt16(Hnd: TDataHnd___; out Value: uint16): boolean; overload; static;
+    class function LF_ReadInt32(Hnd: TDataHnd___; out Value: int32): boolean; overload; static;
+    class function LF_ReadUInt32(Hnd: TDataHnd___; out Value: uint32): boolean; overload; static;
+    class function LF_ReadInt64(Hnd: TDataHnd___; out Value: int64): boolean; overload; static;
+    class function LF_ReadUInt64(Hnd: TDataHnd___; out Value: uint64): boolean; overload; static;
+    class function LF_ReadSingle(Hnd: TDataHnd___; out Value: single): boolean; overload; static;
+    class function LF_ReadDouble(Hnd: TDataHnd___; out Value: double): boolean; overload; static;
+
+    { ---- Read helpers (return value directly) ---- }
+    class function LF_ReadInt8(Hnd: TDataHnd___): int8; overload; static;
+    class function LF_ReadUInt8(Hnd: TDataHnd___): uint8; overload; static;
+    class function LF_ReadInt16(Hnd: TDataHnd___): int16; overload; static;
+    class function LF_ReadUInt16(Hnd: TDataHnd___): uint16; overload; static;
+    class function LF_ReadInt32(Hnd: TDataHnd___): int32; overload; static;
+    class function LF_ReadUInt32(Hnd: TDataHnd___): uint32; overload; static;
+    class function LF_ReadInt64(Hnd: TDataHnd___): int64; overload; static;
+    class function LF_ReadUInt64(Hnd: TDataHnd___): uint64; overload; static;
+    class function LF_ReadSingle(Hnd: TDataHnd___): single; overload; static;
+    class function LF_ReadDouble(Hnd: TDataHnd___): double; overload; static;
+    class function LF_ReadString(Hnd: TDataHnd___; out Value: string): boolean; overload; static;
+    class function LF_ReadString(Hnd: TDataHnd___): string; overload; static;
+
+    { ---- Position/Size ---- }
+    class function LF_GetPos(Hnd: TDataHnd___): int64; static;
+    class procedure LF_SetPos(Hnd: TDataHnd___; Pos_: int64); static;
+    class function LF_GetSize(Hnd: TDataHnd___): int64; static;
+    class procedure LF_SetSize(Hnd: TDataHnd___; Size_: int64); static;
+
+    { ---- Application Management ---- }
+    class function LF_CreateApp(AppName, Desc: pansichar): TAppHnd___; static;
+    class function LF_CreateAppEx(AppName, Desc: string): TAppHnd___; static;
+    class procedure LF_FreeApp(appHnd: TAppHnd___); static;
+
+    { ---- API Registration ---- }
+    class function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): integer; static;
+    class function LF_RegisterCallEx(appHnd: TAppHnd___; MethodName, Desc: string; Trigger: Pointer; OnCall: TLF_Call_Event): integer; static;
+    class function LF_RegisterCall_M(appHnd: TAppHnd___; MethodName, Desc: string; OnCall: TLF_Call_M): integer; static;
+    class function LF_RegisterSyncCall_M(appHnd: TAppHnd___; MethodName, Desc: string; OnCall: TLF_Call_M): integer; static;
+    class function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer; static;
+    class function LF_RegisterNotifyEx(appHnd: TAppHnd___; MethodName, Desc: string; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer; static;
+    class function LF_RegisterNotify_M(appHnd: TAppHnd___; MethodName, Desc: string; OnNotify: TLF_Notify_M): integer; static;
+    class function LF_RegisterSyncNotify_M(appHnd: TAppHnd___; MethodName, Desc: string; OnNotify: TLF_Notify_M): integer; static;
+
+    (* Unregisters an API by name.
+      * {!!!!!  WARNING  !!!!!}
+      * The API is removed locally immediately, but remote peers may still
+      * see it for ~3 seconds until the broadcast propagates. *)
+    class function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): integer; static;
+    class function LF_UnregisterEx(appHnd: TAppHnd___; MethodName: string): integer; static;
+
+    { ---- Local Calls ---- }
+    class function LF_LocalCall(appHnd: TAppHnd___; Param: TDataHnd___): TDataHnd___; static;
+    class procedure LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___); static;
+
+    { ---- Network Preparation ---- }
+    class procedure LF_ResetPrepare; static;
+    class function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): integer; static;
+    class function LF_PrepareServiceEx(ListeningAddr_, PhysicsAddr_: string): integer; static;
+    class function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): integer; static;
+    class function LF_PrepareClientEx(PhysicsAddr_: string; appHnd: TAppHnd___): integer; overload; static;
+    class function LF_PrepareClientEx(PhysicsAddr_: string): integer; overload; static;
+    class function LF_PrepareDone: integer; static;
+    class procedure LF_ExitMainThread; static;
+
+    { ---- Remote Calls ---- }
+    class function LF_Call(AppName: pansichar; Param: TDataHnd___; Timeout_: uint64): TDataHnd___; static;
+    class function LF_CallEx(AppName: string; Param: TDataHnd___; Timeout_: uint64): TDataHnd___; static;
+    class procedure LF_Notify(AppName: pansichar; Param: TDataHnd___); static;
+    class procedure LF_NotifyEx(AppName: string; Param: TDataHnd___); static;
+
+    (** Sends a sequenced notification (FIFO order per app+api).
+      * {!!!!!  WARNING  !!!!!}
+      * The notification is queued in a dedicated thread per (app, api) pair.
+      * The call returns immediately after queuing. *)
+    class procedure LF_Sequenced_Notify(AppName: pansichar; Param: TDataHnd___); static;
+    class procedure LF_Sequenced_NotifyEx(AppName: string; Param: TDataHnd___); static;
+
+    { ---- Options ---- }
+    { * LF_SetOption: Dynamically adjusts global runtime options of the LingoFuse
+      * framework. All changes take effect immediately for subsequent operations.
+      *
+      * @param Option  Configuration key (UTF‑8, case‑insensitive). The following
+      *                keys (and their aliases) are recognised:
+      *
+      *                === Authentication ===
+      *                - "password" / "passwd"
+      *                    Sets the C4 P2PVM authentication token (string).
+      *
+      *                === Logging & Debugging ===
+      *                - "Quiet"
+      *                    Enable/disable quiet mode (boolean). When enabled, most
+      *                    internal log messages are suppressed.
+      *                - "ShowThreadID" / "ShowThread" / "Show_Thread"
+      *                    Show thread IDs in log output (boolean).
+      *                - "ConsoleOutput" / "Console_Output"
+      *                    Enable or disable console logging (boolean).
+      *
+      *                === Connection Readiness ===
+      *                - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
+      *                  "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" /
+      *                  "WaitReady"
+      *                    If True, LF_PrepareDone blocks until all prepared clients
+      *                    are connected and their applications are online (boolean).
+      *                - "Wait_Connection_Timeout" / "Wait_TimeOut" /
+      *                  "API_Prepare_Done_TimeOut" / "WaitTimeOut"
+      *                    Timeout in milliseconds for the above wait (integer).
+      *
+      *                === IPC (Inter‑Process Communication) ===
+      *                - "IPC_Serv_ThreadCount" / "IPC_ThreadCount" /
+      *                  "IPC_Server_ThreadCount"
+      *                    Number of threads in the IPC server thread pool (integer).
+      *                - "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength" /
+      *                  "IPC_Server_MaxQueueLength"
+      *                    Maximum length of the IPC message queue (integer).
+      *                - "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize" /
+      *                  "IPC_Server_MaxMsgSize"
+      *                    Maximum size (in bytes) of a single IPC message (integer).
+      *
+      *                === Sequenced Notifications ===
+      *                - "Fixed_Sequenced_Time" / "Fixed_Sequenced_Life"
+      *                    Idle timeout (in milliseconds) for sequenced notification
+      *                    fallback. When selecting a client for a sequenced
+      *                    notification, if the candidate with the oldest timestamp
+      *                    is older than this value, the system falls back to the
+      *                    newest client to avoid starvation (integer).
+      *
+      * @param Value   New value for the given option (UTF‑8). Boolean values
+      *                accept "True"/"False", "1"/"0", "Yes"/"No" (case‑insensitive).
+      *                Integer values are parsed as decimal numbers. String values
+      *                are used as‑is.
+      *
+      * @Note Unknown options are silently ignored. Changes are not persisted
+      *       across restarts; applications must store their own configuration.
+      * }
+    class procedure LF_SetOption(Option, Value: pansichar); static;
+    class procedure LF_SetOptionEx(Option, Value: string); static;
+
+    { ---- Synchronisation ---- }
+    class function LF_Sync: integer; static;
+
+    { ---- Shutdown ---- }
+    class procedure LF_Shutdown; static;
+
+    { ---- Status (read the WARNING above for LF.GetStatus/PostStatus) ---- }
+    class function LF_GetStatusEx: string; static;
+    class procedure LF_PostStatusEx(const Status: string); static;
+
+    { ---- Queries ---- }
+    class function LF_CheckMainThreadEx: boolean; static;
+    class function LF_CheckAppEx(const AppName: string): boolean; static;
+    class function LF_CheckApiEx(const AppName, apiName: string): boolean; static;
+  end;
+
+  { * Alias for LF___, for compatibility. }
+  LingoFuse___ = LF___;
+
+implementation
+
+{ ----------------------------------------------------------------------------
+  TDataHandle implementation
+  ---------------------------------------------------------------------------- }
+
+function LF.TDataHandle.IsValid: boolean;
+begin
+  Result := (FHandle <> nil) and not FDisposed;
+end;
+
+constructor LF.TDataHandle.Create(const MethodName: string);
+begin
+  inherited Create;
+  FHandle := LF_CreateDataEx(MethodName);
+  FOwned := True;
+  FDisposed := False;
+  FLock := TCritical.Create;
+end;
+
+constructor LF.TDataHandle.Create(AHandle: TDataHnd___; const Owned: boolean = False);
+begin
+  inherited Create;
+  FHandle := AHandle;
+  FOwned := Owned;
+  FDisposed := False;
+  FLock := TCritical.Create;
+end;
+
+destructor LF.TDataHandle.Destroy;
+begin
+  FLock.Enter;
+  try
+    if not FDisposed then
+    begin
+      if FOwned and (FHandle <> nil) then
+        LF_FreeData(FHandle);
+      FHandle := nil;
+      FDisposed := True;
+    end;
+  finally
+    FLock.Leave;
+  end;
+  FLock.Free;
+  inherited;
+end;
+
+function LF.TDataHandle.WriteBuffer(const Buffer; Size: int64): int64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_WriteBuffer(FHandle, @Buffer, Size);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadBuffer(var Buffer; Size: int64): int64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadBuffer(FHandle, @Buffer, Size);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteInt8(Value: int8): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteInt8(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteUInt8(Value: uint8): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteUInt8(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteInt16(Value: int16): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteInt16(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteUInt16(Value: uint16): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteUInt16(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteInt32(Value: int32): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteInt32(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteUInt32(Value: uint32): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteUInt32(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteInt64(Value: int64): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteInt64(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteUInt64(Value: uint64): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteUInt64(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteSingle(Value: single): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteSingle(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteDouble(Value: double): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteDouble(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.WriteStringNullTerminated(const Value: string): TDataHandle;
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_WriteString(FHandle, Value);
+    Result := Self;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure LF.TDataHandle.WriteString(const Value: string);
+begin
+  WriteStringNullTerminated(Value);
+end;
+
+function LF.TDataHandle.ReadInt8(var Value: int8): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadInt8(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt8(var Value: uint8): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadUInt8(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt16(var Value: int16): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadInt16(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt16(var Value: uint16): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadUInt16(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt32(var Value: int32): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadInt32(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt32(var Value: uint32): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadUInt32(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt64(var Value: int64): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadInt64(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt64(var Value: uint64): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadUInt64(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadSingle(var Value: single): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadSingle(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadDouble(var Value: double): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := False
+    else
+      Result := LF_ReadDouble(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt8: int8;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadInt8(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt8: uint8;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadUInt8(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt16: int16;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadInt16(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt16: uint16;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadUInt16(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt32: int32;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadInt32(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt32: uint32;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadUInt32(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadInt64: int64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadInt64(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadUInt64: uint64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_ReadUInt64(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadSingle: single;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0.0
+    else
+      Result := LF_ReadSingle(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadDouble: double;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0.0
+    else
+      Result := LF_ReadDouble(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadStringNullTerminated: string;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := ''
+    else
+      Result := LF_ReadString(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadString(out Value: string): boolean;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+    begin
+      Value := '';
+      Result := False;
+    end
+    else
+      Result := LF_ReadString(FHandle, Value);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.ReadString(): string;
+begin
+  Result := ReadStringNullTerminated();
+end;
+
+function LF.TDataHandle.GetPos: int64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_GetPos(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure LF.TDataHandle.SetPos(Pos_: int64);
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_SetPos(FHandle, Pos_);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.GetSize: int64;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+      Result := 0
+    else
+      Result := LF_GetSize(FHandle);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure LF.TDataHandle.SetSize(Size_: int64);
+begin
+  FLock.Enter;
+  try
+    if IsValid then
+      LF_SetSize(FHandle, Size_);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.GetBufferEx(out Size: int64): Pointer;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+    begin
+      Size := 0;
+      Result := nil;
+    end
+    else
+    begin
+      Result := LF_GetBuffer(FHandle);
+      Size := LF_GetSize(FHandle);
+    end;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function LF.TDataHandle.GetBuffer(): Pointer;
+begin
+  FLock.Enter;
+  try
+    if not IsValid then
+    begin
+      Result := nil;
+    end
+    else
+    begin
+      Result := LF_GetBuffer(FHandle);
+    end;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+{ ----------------------------------------------------------------------------
+  TAppHandle implementation
+  ---------------------------------------------------------------------------- }
+
+constructor LF.TAppHandle.Create(const AppName, Desc: string);
+begin
+  inherited Create;
+  FHandle := LF_CreateAppEx(AppName, Desc);
+  FName := AppName;
+end;
+
+destructor LF.TAppHandle.Destroy;
+begin
+  if FHandle <> nil then
+    LF_FreeApp(FHandle);
+  inherited;
+end;
+
+function LF.TAppHandle.RegisterCall(const MethodName, Desc: string; Trigger: Pointer; OnCall: TLF_Call_Event): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterCallEx(FHandle, MethodName, Desc, Trigger, OnCall) = 1;
+end;
+
+function LF.TAppHandle.RegisterCall(const MethodName, Desc: string; OnCall: TLF_Call_M): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterCall_M(FHandle, MethodName, Desc, OnCall) = 1;
+end;
+
+function LF.TAppHandle.RegisterCallSync(const MethodName, Desc: string; OnCall: TLF_Call_M): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterSyncCall_M(FHandle, MethodName, Desc, OnCall) = 1;
+end;
+
+function LF.TAppHandle.RegisterNotify(const MethodName, Desc: string; Trigger: Pointer; OnNotify: TLF_Notify_Event): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterNotifyEx(FHandle, MethodName, Desc, Trigger, OnNotify) = 1;
+end;
+
+function LF.TAppHandle.RegisterNotify(const MethodName, Desc: string; OnNotify: TLF_Notify_M): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterNotify_M(FHandle, MethodName, Desc, OnNotify) = 1;
+end;
+
+function LF.TAppHandle.RegisterNotifySync(const MethodName, Desc: string; OnNotify: TLF_Notify_M): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_RegisterSyncNotify_M(FHandle, MethodName, Desc, OnNotify) = 1;
+end;
+
+function LF.TAppHandle.Unregister(const MethodName: string): boolean;
+begin
+  if FHandle = nil then
+    Result := False
+  else
+    Result := LF_UnregisterEx(FHandle, MethodName) = 1;
+end;
+
+function LF.TAppHandle.LocalCall(Param: TDataHandle): TDataHandle;
+var
+  Res: TDataHnd___;
+begin
+  if FHandle = nil then
+    Result := TDataHandle.Create(nil, True)
+  else
+  begin
+    Res := LF_LocalCall(FHandle, Param.Handle);
+    Result := TDataHandle.Create(Res, True);
+  end;
+end;
+
+procedure LF.TAppHandle.LocalNotify(Param: TDataHandle);
+begin
+  if FHandle <> nil then
+    LF_LocalNotify(FHandle, Param.Handle);
+end;
+
+{ ----------------------------------------------------------------------------
+  Static LF class methods (forwarding with convenience)
+  ---------------------------------------------------------------------------- }
+
+class procedure LF.ResetPrepare;
+begin
+  LF_ResetPrepare;
+end;
+
+class function LF.PrepareService(const ListeningAddr, PhysicsAddr: string): integer;
+begin
+  Result := LF_PrepareServiceEx(ListeningAddr, PhysicsAddr);
+end;
+
+class function LF.PrepareService(const ListeningAddr, PhysicsAddr: string; App: TAppHandle): integer;
+begin
+  Result := LF_PrepareServiceEx(ListeningAddr, PhysicsAddr);
+  if Result <> 0 then
+    PrepareClient(PhysicsAddr, App);
+end;
+
+class function LF.PrepareClient(const PhysicsAddr: string; App: TAppHandle): integer;
+begin
+  if Assigned(App) then
+    Result := LF_PrepareClientEx(PhysicsAddr, App.Handle)
+  else
+    Result := LF_PrepareClientEx(PhysicsAddr);
+end;
+
+class function LF.PrepareDone: boolean;
+begin
+  Result := LF_PrepareDone = 1;
+end;
+
+class procedure LF.ExitMainThread;
+begin
+  LF_ExitMainThread;
+end;
+
+class function LF.CallApp(const AppName: string; Param: TDataHandle; TimeoutMs: uint64): TDataHandle;
+var
+  Res: TDataHnd___;
+begin
+  Res := LF_CallEx(AppName, Param.Handle, TimeoutMs);
+  Result := TDataHandle.Create(Res, True);
+end;
+
+class procedure LF.NotifyApp(const AppName: string; Param: TDataHandle);
+begin
+  LF_NotifyEx(AppName, Param.Handle);
+end;
+
+class procedure LF.SequencedNotifyApp(const AppName: string; Param: TDataHandle);
+begin
+  LF_Sequenced_NotifyEx(AppName, Param.Handle);
+end;
+
+class procedure LF.SetOption(const Option, Value: string);
+begin
+  LF_SetOptionEx(Option, Value);
+end;
+
+class function LF.Sync: integer;
+begin
+  Result := LF_Sync;
+end;
+
+class procedure LF.Shutdown;
+begin
+  LF_Shutdown;
+end;
+
+class function LF.GetStatus: string;
+begin
+  Result := LF_GetStatusEx;
+end;
+
+class function LF.Get_Status_Num: integer;
+begin
+  Result := LF_GetStatusCount;
+end;
+
+class procedure LF.PostStatus(const Status: string);
+begin
+  LF_PostStatusEx(Status);
+end;
+
+class function LF.CheckMainThread: boolean;
+begin
+  Result := LF_CheckMainThreadEx;
+end;
+
+class function LF.CheckApp(const AppName: string): boolean;
+begin
+  Result := LF_CheckAppEx(AppName);
+end;
+
+class function LF.CheckApi(AppName, apiName: string): boolean;
+begin
+  Result := LF_CheckApiEx(AppName, apiName);
+end;
+
+{ ----------------------------------------------------------------------------
+  LF___ compatibility class – simply forwards to lingofuse_import
+  ---------------------------------------------------------------------------- }
+class function LF___.LF_CreateData(MethodName: pansichar): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_CreateData(MethodName);
+end;
+
+class function LF___.LF_CreateDataEx(MethodName: string): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_CreateDataEx(MethodName);
+end;
+
+class procedure LF___.LF_FreeData(Hnd: TDataHnd___);
+begin
+  lingofuse_import.LF_FreeData(Hnd);
+end;
+
+class function LF___.LF_GetBuffer(Hnd: TDataHnd___): Pointer;
+begin
+  Result := lingofuse_import.LF_GetBuffer(Hnd);
+end;
+
+class function LF___.LF_GetBufferOffset(Hnd: TDataHnd___; Offset: nativeint): Pointer;
+begin
+  Result := lingofuse_import.LF_GetBufferOffset(Hnd, Offset);
+end;
+
+class function LF___.LF_WriteBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64;
+begin
+  Result := lingofuse_import.LF_WriteBuffer(Hnd, Buff, Size);
+end;
+
+class function LF___.LF_ReadBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64;
+begin
+  Result := lingofuse_import.LF_ReadBuffer(Hnd, Buff, Size);
+end;
+
+class function LF___.LF_WriteInt8(Hnd: TDataHnd___; Value: int8): boolean;
+begin
+  Result := lingofuse_import.LF_WriteInt8(Hnd, Value);
+end;
+
+class function LF___.LF_WriteUInt8(Hnd: TDataHnd___; Value: uint8): boolean;
+begin
+  Result := lingofuse_import.LF_WriteUInt8(Hnd, Value);
+end;
+
+class function LF___.LF_WriteInt16(Hnd: TDataHnd___; Value: int16): boolean;
+begin
+  Result := lingofuse_import.LF_WriteInt16(Hnd, Value);
+end;
+
+class function LF___.LF_WriteUInt16(Hnd: TDataHnd___; Value: uint16): boolean;
+begin
+  Result := lingofuse_import.LF_WriteUInt16(Hnd, Value);
+end;
+
+class function LF___.LF_WriteInt32(Hnd: TDataHnd___; Value: int32): boolean;
+begin
+  Result := lingofuse_import.LF_WriteInt32(Hnd, Value);
+end;
+
+class function LF___.LF_WriteUInt32(Hnd: TDataHnd___; Value: uint32): boolean;
+begin
+  Result := lingofuse_import.LF_WriteUInt32(Hnd, Value);
+end;
+
+class function LF___.LF_WriteInt64(Hnd: TDataHnd___; Value: int64): boolean;
+begin
+  Result := lingofuse_import.LF_WriteInt64(Hnd, Value);
+end;
+
+class function LF___.LF_WriteUInt64(Hnd: TDataHnd___; Value: uint64): boolean;
+begin
+  Result := lingofuse_import.LF_WriteUInt64(Hnd, Value);
+end;
+
+class function LF___.LF_WriteSingle(Hnd: TDataHnd___; Value: single): boolean;
+begin
+  Result := lingofuse_import.LF_WriteSingle(Hnd, Value);
+end;
+
+class function LF___.LF_WriteDouble(Hnd: TDataHnd___; Value: double): boolean;
+begin
+  Result := lingofuse_import.LF_WriteDouble(Hnd, Value);
+end;
+
+class function LF___.LF_WriteString(Hnd: TDataHnd___; const Value: string): boolean;
+begin
+  Result := lingofuse_import.LF_WriteString(Hnd, Value);
+end;
+
+class function LF___.LF_ReadInt8(Hnd: TDataHnd___; out Value: int8): boolean;
+begin
+  Result := lingofuse_import.LF_ReadInt8(Hnd, Value);
+end;
+
+class function LF___.LF_ReadUInt8(Hnd: TDataHnd___; out Value: uint8): boolean;
+begin
+  Result := lingofuse_import.LF_ReadUInt8(Hnd, Value);
+end;
+
+class function LF___.LF_ReadInt16(Hnd: TDataHnd___; out Value: int16): boolean;
+begin
+  Result := lingofuse_import.LF_ReadInt16(Hnd, Value);
+end;
+
+class function LF___.LF_ReadUInt16(Hnd: TDataHnd___; out Value: uint16): boolean;
+begin
+  Result := lingofuse_import.LF_ReadUInt16(Hnd, Value);
+end;
+
+class function LF___.LF_ReadInt32(Hnd: TDataHnd___; out Value: int32): boolean;
+begin
+  Result := lingofuse_import.LF_ReadInt32(Hnd, Value);
+end;
+
+class function LF___.LF_ReadUInt32(Hnd: TDataHnd___; out Value: uint32): boolean;
+begin
+  Result := lingofuse_import.LF_ReadUInt32(Hnd, Value);
+end;
+
+class function LF___.LF_ReadInt64(Hnd: TDataHnd___; out Value: int64): boolean;
+begin
+  Result := lingofuse_import.LF_ReadInt64(Hnd, Value);
+end;
+
+class function LF___.LF_ReadUInt64(Hnd: TDataHnd___; out Value: uint64): boolean;
+begin
+  Result := lingofuse_import.LF_ReadUInt64(Hnd, Value);
+end;
+
+class function LF___.LF_ReadSingle(Hnd: TDataHnd___; out Value: single): boolean;
+begin
+  Result := lingofuse_import.LF_ReadSingle(Hnd, Value);
+end;
+
+class function LF___.LF_ReadDouble(Hnd: TDataHnd___; out Value: double): boolean;
+begin
+  Result := lingofuse_import.LF_ReadDouble(Hnd, Value);
+end;
+
+class function LF___.LF_ReadInt8(Hnd: TDataHnd___): int8;
+begin
+  Result := lingofuse_import.LF_ReadInt8(Hnd);
+end;
+
+class function LF___.LF_ReadUInt8(Hnd: TDataHnd___): uint8;
+begin
+  Result := lingofuse_import.LF_ReadUInt8(Hnd);
+end;
+
+class function LF___.LF_ReadInt16(Hnd: TDataHnd___): int16;
+begin
+  Result := lingofuse_import.LF_ReadInt16(Hnd);
+end;
+
+class function LF___.LF_ReadUInt16(Hnd: TDataHnd___): uint16;
+begin
+  Result := lingofuse_import.LF_ReadUInt16(Hnd);
+end;
+
+class function LF___.LF_ReadInt32(Hnd: TDataHnd___): int32;
+begin
+  Result := lingofuse_import.LF_ReadInt32(Hnd);
+end;
+
+class function LF___.LF_ReadUInt32(Hnd: TDataHnd___): uint32;
+begin
+  Result := lingofuse_import.LF_ReadUInt32(Hnd);
+end;
+
+class function LF___.LF_ReadInt64(Hnd: TDataHnd___): int64;
+begin
+  Result := lingofuse_import.LF_ReadInt64(Hnd);
+end;
+
+class function LF___.LF_ReadUInt64(Hnd: TDataHnd___): uint64;
+begin
+  Result := lingofuse_import.LF_ReadUInt64(Hnd);
+end;
+
+class function LF___.LF_ReadSingle(Hnd: TDataHnd___): single;
+begin
+  Result := lingofuse_import.LF_ReadSingle(Hnd);
+end;
+
+class function LF___.LF_ReadDouble(Hnd: TDataHnd___): double;
+begin
+  Result := lingofuse_import.LF_ReadDouble(Hnd);
+end;
+
+class function LF___.LF_ReadString(Hnd: TDataHnd___; out Value: string): boolean;
+begin
+  Result := lingofuse_import.LF_ReadString(Hnd, Value);
+end;
+
+class function LF___.LF_ReadString(Hnd: TDataHnd___): string;
+begin
+  Result := lingofuse_import.LF_ReadString(Hnd);
+end;
+
+class function LF___.LF_GetPos(Hnd: TDataHnd___): int64;
+begin
+  Result := lingofuse_import.LF_GetPos(Hnd);
+end;
+
+class procedure LF___.LF_SetPos(Hnd: TDataHnd___; Pos_: int64);
+begin
+  lingofuse_import.LF_SetPos(Hnd, Pos_);
+end;
+
+class function LF___.LF_GetSize(Hnd: TDataHnd___): int64;
+begin
+  Result := lingofuse_import.LF_GetSize(Hnd);
+end;
+
+class procedure LF___.LF_SetSize(Hnd: TDataHnd___; Size_: int64);
+begin
+  lingofuse_import.LF_SetSize(Hnd, Size_);
+end;
+
+class function LF___.LF_CreateApp(AppName, Desc: pansichar): TAppHnd___;
+begin
+  Result := lingofuse_import.LF_CreateApp(AppName, Desc);
+end;
+
+class function LF___.LF_CreateAppEx(AppName, Desc: string): TAppHnd___;
+begin
+  Result := lingofuse_import.LF_CreateAppEx(AppName, Desc);
+end;
+
+class procedure LF___.LF_FreeApp(appHnd: TAppHnd___);
+begin
+  lingofuse_import.LF_FreeApp(appHnd);
+end;
+
+class function LF___.LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): integer;
+begin
+  Result := lingofuse_import.LF_RegisterCall(appHnd, MethodName, Desc, Trigger, OnCall);
+end;
+
+class function LF___.LF_RegisterCallEx(appHnd: TAppHnd___; MethodName, Desc: string; Trigger: Pointer; OnCall: TLF_Call_Event): integer;
+begin
+  Result := lingofuse_import.LF_RegisterCallEx(appHnd, MethodName, Desc, Trigger, OnCall);
+end;
+
+class function LF___.LF_RegisterCall_M(appHnd: TAppHnd___; MethodName, Desc: string; OnCall: TLF_Call_M): integer;
+begin
+  Result := lingofuse_import.LF_RegisterCall_M(appHnd, MethodName, Desc, OnCall);
+end;
+
+class function LF___.LF_RegisterSyncCall_M(appHnd: TAppHnd___; MethodName, Desc: string; OnCall: TLF_Call_M): integer;
+begin
+  Result := lingofuse_import.LF_RegisterSyncCall_M(appHnd, MethodName, Desc, OnCall);
+end;
+
+class function LF___.LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer;
+begin
+  Result := lingofuse_import.LF_RegisterNotify(appHnd, MethodName, Desc, Trigger, OnNotify);
+end;
+
+class function LF___.LF_RegisterNotifyEx(appHnd: TAppHnd___; MethodName, Desc: string; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer;
+begin
+  Result := lingofuse_import.LF_RegisterNotifyEx(appHnd, MethodName, Desc, Trigger, OnNotify);
+end;
+
+class function LF___.LF_RegisterNotify_M(appHnd: TAppHnd___; MethodName, Desc: string; OnNotify: TLF_Notify_M): integer;
+begin
+  Result := lingofuse_import.LF_RegisterNotify_M(appHnd, MethodName, Desc, OnNotify);
+end;
+
+class function LF___.LF_RegisterSyncNotify_M(appHnd: TAppHnd___; MethodName, Desc: string; OnNotify: TLF_Notify_M): integer;
+begin
+  Result := lingofuse_import.LF_RegisterSyncNotify_M(appHnd, MethodName, Desc, OnNotify);
+end;
+
+class function LF___.LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): integer;
+begin
+  Result := lingofuse_import.LF_Unregister(appHnd, MethodName);
+end;
+
+class function LF___.LF_UnregisterEx(appHnd: TAppHnd___; MethodName: string): integer;
+begin
+  Result := lingofuse_import.LF_UnregisterEx(appHnd, MethodName);
+end;
+
+class function LF___.LF_LocalCall(appHnd: TAppHnd___; Param: TDataHnd___): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_LocalCall(appHnd, Param);
+end;
+
+class procedure LF___.LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___);
+begin
+  lingofuse_import.LF_LocalNotify(appHnd, Param);
+end;
+
+class procedure LF___.LF_ResetPrepare;
+begin
+  lingofuse_import.LF_ResetPrepare;
+end;
+
+class function LF___.LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): integer;
+begin
+  Result := lingofuse_import.LF_PrepareService(ListeningAddr_, PhysicsAddr_);
+end;
+
+class function LF___.LF_PrepareServiceEx(ListeningAddr_, PhysicsAddr_: string): integer;
+begin
+  Result := lingofuse_import.LF_PrepareServiceEx(ListeningAddr_, PhysicsAddr_);
+end;
+
+class function LF___.LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): integer;
+begin
+  Result := lingofuse_import.LF_PrepareClient(PhysicsAddr_, appHnd);
+end;
+
+class function LF___.LF_PrepareClientEx(PhysicsAddr_: string; appHnd: TAppHnd___): integer;
+begin
+  Result := lingofuse_import.LF_PrepareClientEx(PhysicsAddr_, appHnd);
+end;
+
+class function LF___.LF_PrepareClientEx(PhysicsAddr_: string): integer;
+begin
+  Result := lingofuse_import.LF_PrepareClientEx(PhysicsAddr_);
+end;
+
+class function LF___.LF_PrepareDone: integer;
+begin
+  Result := lingofuse_import.LF_PrepareDone;
+end;
+
+class procedure LF___.LF_ExitMainThread;
+begin
+  lingofuse_import.LF_ExitMainThread;
+end;
+
+class function LF___.LF_Call(AppName: pansichar; Param: TDataHnd___; Timeout_: uint64): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_Call(AppName, Param, Timeout_);
+end;
+
+class function LF___.LF_CallEx(AppName: string; Param: TDataHnd___; Timeout_: uint64): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_CallEx(AppName, Param, Timeout_);
+end;
+
+class procedure LF___.LF_Notify(AppName: pansichar; Param: TDataHnd___);
+begin
+  lingofuse_import.LF_Notify(AppName, Param);
+end;
+
+class procedure LF___.LF_NotifyEx(AppName: string; Param: TDataHnd___);
+begin
+  lingofuse_import.LF_NotifyEx(AppName, Param);
+end;
+
+class procedure LF___.LF_Sequenced_Notify(AppName: pansichar; Param: TDataHnd___);
+begin
+  lingofuse_import.LF_Sequenced_Notify(AppName, Param);
+end;
+
+class procedure LF___.LF_Sequenced_NotifyEx(AppName: string; Param: TDataHnd___);
+begin
+  lingofuse_import.LF_Sequenced_NotifyEx(AppName, Param);
+end;
+
+class procedure LF___.LF_SetOption(Option, Value: pansichar);
+begin
+  lingofuse_import.LF_SetOption(Option, Value);
+end;
+
+class procedure LF___.LF_SetOptionEx(Option, Value: string);
+begin
+  lingofuse_import.LF_SetOptionEx(Option, Value);
+end;
+
+class function LF___.LF_Sync: integer;
+begin
+  Result := lingofuse_import.LF_Sync;
+end;
+
+class procedure LF___.LF_Shutdown;
+begin
+  lingofuse_import.LF_Shutdown;
+end;
+
+class function LF___.LF_GetStatusEx: string;
+begin
+  Result := lingofuse_import.LF_GetStatusEx;
+end;
+
+class procedure LF___.LF_PostStatusEx(const Status: string);
+begin
+  lingofuse_import.LF_PostStatusEx(Status);
+end;
+
+class function LF___.LF_CheckMainThreadEx: boolean;
+begin
+  Result := lingofuse_import.LF_CheckMainThreadEx;
+end;
+
+class function LF___.LF_CheckAppEx(const AppName: string): boolean;
+begin
+  Result := lingofuse_import.LF_CheckAppEx(AppName);
+end;
+
+class function LF___.LF_CheckApiEx(const AppName, apiName: string): boolean; static;
+begin
+  Result := lingofuse_import.LF_CheckApiEx(AppName, apiName);
+end;
+
+end.

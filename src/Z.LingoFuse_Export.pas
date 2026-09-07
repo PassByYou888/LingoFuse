@@ -79,7 +79,7 @@
   *  WARNING: This file has been heavily commented for clarity. All comments
   *  are for documentation purposes and do not affect runtime behaviour.
   * ===========================================================================
-  * *)
+*)
 unit Z.LingoFuse_Export;
 
 {$DEFINE FPC_DELPHI_MODE}
@@ -200,11 +200,82 @@ procedure LF_SetSize(Hnd: TDataHnd___; Size_: int64); cdecl;
   * @Note The application name is used for remote routing. }
 function LF_CreateApp(appName, Desc: pansichar): TAppHnd___; cdecl;
 
-{ * LF_FreeApp: Destroys an application context and frees all
-  * registered APIs and associated resources. The handle becomes invalid.
-  * Also notifies all connected LingoFuse clients to stop referencing this app.
-  * @param appHnd  The application handle. }
+{ * LF_FreeApp: Detaches an application from all clients and stops its
+  * sequenced notification threads, but does NOT immediately destroy the
+  * underlying TLF_App object. The object remains alive in the global
+  * LF_App_Pool until LF_Shutdown is called, which then frees it forcibly.
+  *
+  * This two‑phase destruction prevents dangling pointers while allowing
+  * other components (e.g., network broadcasts) to continue referencing the
+  * application data safely. After calling LF_FreeApp, the handle should be
+  * considered invalid and not used for further registrations or calls.
+  *
+  * @param appHnd  The application handle to detach (can be nil).
+  * @see LF_Shutdown  for final cleanup.
+  * }
 procedure LF_FreeApp(appHnd: TAppHnd___); cdecl;
+
+{ * LF_Generate_appName: Generates a globally unique application name string.
+  * The name is built by concatenating:
+  *   - All active C4 physics tunnel addresses and remote IDs,
+  *   - The current process name (with PID),
+  *   - A high‑resolution timestamp.
+  * This ensures that each call produces a distinct identifier, suitable for
+  * point‑to‑point communication where each node must have a unique identity.
+  *
+  * WARNING: The returned pointer is valid for only 5 seconds; the library
+  * automatically frees the underlying memory after that time. The caller
+  * MUST copy the content immediately (e.g., via strdup/strcpy in C, or
+  * by decoding to a Python string) before the pointer becomes invalid.
+  * Failure to do so will result in accessing freed memory.
+  *
+  * @return PAnsiChar pointing to a null‑terminated UTF‑8 string.
+  * @Example:
+  *   char* uniqueName = LF_Generate_AppName();
+  *   char* copy = strdup(uniqueName);  // MUST copy immediately
+  *   // use copy...
+  *   free(copy);
+  * }
+function LF_Generate_AppName(): pansichar; cdecl;
+
+{ * LF_Get_appName: Retrieves the application name associated with the given
+  * application handle.
+  *
+  * WARNING: The returned pointer is valid for only 5 seconds; the library
+  * automatically frees the underlying memory after that time. The caller
+  * MUST copy the content immediately (e.g., via strdup/strcpy in C, or
+  * by decoding to a Python string) before the pointer becomes invalid.
+  *
+  * @param appHnd The application handle (TLF_App) whose name is queried.
+  * @return PAnsiChar pointing to the UTF‑8 encoded name stored in the app.
+  * @Note This function simply returns the Name field of the TLF_App object.
+  * }
+function LF_Get_AppName(appHnd: TAppHnd___): pansichar; cdecl;
+
+{ * LF_BindApp: Binds an application to all currently unbound LingoFuse
+  * clients. This function must be called after LF_PrepareDone has been
+  * invoked and the simulated main thread is active; otherwise, it logs an
+  * error and returns 0 without any binding.
+  *
+  * Upon successful binding, each client will register the application and
+  * its APIs with the service, making them available for remote discovery
+  * and invocation. The binding process logs the application name, description,
+  * connection details, and a list of all registered APIs with their modes
+  * (call/notify).
+  *
+  * @param appHnd The application handle to bind.
+  * @return The number of clients to which the application was successfully
+  *         bound. A return value of 0 indicates that either the main thread
+  *         is not active, or all existing clients are already occupied
+  *         (each client can only host one application). In the latter case,
+  *         a log message is emitted: "All clients are already occupied".
+  *         If at least one client is bound, the application becomes available
+  *         on the network.
+  * @Note The function only binds to clients that currently have a nil app
+  *       reference (i.e., Cli.app = nil). Clients already hosting an app
+  *       are skipped. If no such clients exist, the result is 0.
+  * }
+function LF_BindApp(appHnd: TAppHnd___): Integer; cdecl;
 
 (*
   * LF_RegisterCall: Registers a Call‑mode API within the application.
@@ -221,7 +292,7 @@ procedure LF_FreeApp(appHnd: TAppHnd___); cdecl;
   *     // read input, write output
   *   }
   *   LF_RegisterCall(app, "echo", "Echo", NULL, MyCall); *)
-function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): integer; cdecl;
+function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): Integer; cdecl;
 
 { * LF_RegisterNotify: Registers a Notify‑mode API.
   * Similar to LF_RegisterCall but for one‑way notifications. The callback
@@ -232,7 +303,7 @@ function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigge
   * @param Trigger   User data passed to callback.
   * @param OnNotify  cdecl function pointer.
   * @return 1 on success, 0 if the name already exists. }
-function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer; cdecl;
+function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): Integer; cdecl;
 
 { * LF_Unregister: Removes a previously registered API from the application.
   * This function also triggers a network update broadcast. After calling
@@ -241,7 +312,7 @@ function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trig
   * @param appHnd   The application handle.
   * @param MethodName The name of the API to unregister (UTF‑8).
   * @return 1 on success, 0 if the API name does not exist. }
-function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): integer; cdecl;
+function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): Integer; cdecl;
 
 { * LF_LocalCall: Executes a Call‑mode API locally within the
   * application, bypassing the network. This is a synchronous call that
@@ -296,24 +367,29 @@ procedure LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___); cdecl;
   *   LF_PrepareService("ipc:test", "ipc:test");        // IPC
   *   LF_PrepareClient("127.0.0.1:9898", app);
   *   LF_PrepareDone(); }
-function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): integer; cdecl;
+function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): Integer; cdecl;
 
 { * LF_PrepareClient: Prepares or immediately creates a C4 client.
-  * Similar to LF_PrepareService, this function can be called before or after
-  * LF_PrepareDone. If the main thread is already running, the client
-  * connection is attempted immediately (dynamic connection); otherwise it is
-  * queued until LF_PrepareDone.
+  * ...
   * @param PhysicsAddr_  Address of the remote service to connect to (same
   *                      format as for LF_PrepareService).
   * @param appHnd        Optional TAppHnd___. If non‑nil, the client exposes
   *                      this application; if nil, it acts as a consumer.
   * @return A tag for this client, or -1 if a duplicate address already exists.
-  * @Note The client automatically reconnects if the connection is lost.
+  * @Note The behaviour regarding duplicate addresses is controlled by the
+  *       global Overlap_Connection option (see LF_SetOption).
+  *       - If Overlap_Connection = False (default), only one client per
+  *         address can exist; subsequent calls with different appHnd will
+  *         be ignored (the appHnd is silently discarded).
+  *       - If Overlap_Connection = True, each call creates a new independent
+  *         client and binds the provided appHnd, allowing multiple
+  *         applications on the same remote service.
+  *       The client automatically reconnects if the connection is lost.
   *       Upon reconnection, the application (if provided) is re‑registered.
   * @Example:
   *   LF_PrepareClient("127.0.0.1:9898", nil);   // consume only
   *   LF_PrepareClient("ipc:test", app);        // provide APIs via app }
-function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): integer; cdecl;
+function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): Integer; cdecl;
 
 { * LF_ResetPrepare: Clears all previously prepared services and clients.
   * Call this before preparing a new set to avoid conflicts.
@@ -331,7 +407,7 @@ procedure LF_ResetPrepare(); cdecl;
   *       (i.e., you can restart the framework). Do not call it again without
   *       resetting or shutting down first. Check logs via LF_GetStatus on
   *       failure. }
-function LF_PrepareDone: integer; cdecl;
+function LF_PrepareDone: Integer; cdecl;
 
 { * LF_ExitMainThread: Signals the simulated main thread to exit gracefully.
   * After this call, the network loop stops, but resources are not
@@ -389,7 +465,7 @@ procedure LF_Sequenced_Notify(appName: pansichar; Param: TDataHnd___); cdecl;
   * @Note This function can be used to determine whether remote communication
   *       is available (LF_PrepareDone has been called and the loop is running).
   *       After LF_ExitMainThread is called, this returns 0. }
-function LF_CheckMainThread(): integer; cdecl;
+function LF_CheckMainThread(): Integer; cdecl;
 
 { * LF_CheckApp: Checks whether an application with the given name is
   * currently registered on the network (either locally or on any remote client
@@ -400,7 +476,7 @@ function LF_CheckMainThread(): integer; cdecl;
   * @Note This function performs a quick lookup but does not guarantee that
   *       the application is still online at the moment of a subsequent call.
   *       It is useful for probing availability before making a call. }
-function LF_CheckApp(appName: pansichar): integer; cdecl;
+function LF_CheckApp(appName: pansichar): Integer; cdecl;
 
 { * LF_CheckApi: Checks whether a specific API is available on the network
   * for the given application. It searches both local and remote instances
@@ -413,7 +489,7 @@ function LF_CheckApp(appName: pansichar): integer; cdecl;
   *       and may not reflect recent changes. It is useful for probing
   *       availability before making a call, but does not guarantee that the
   *       API will still be available at the moment of the actual call. }
-function LF_CheckApi(appName, apiName: pansichar): integer; cdecl;
+function LF_CheckApi(appName, apiName: pansichar): Integer; cdecl;
 
 { * LF_SetOption: Dynamically adjusts global runtime options of the LingoFuse
   * framework. All changes take effect immediately for subsequent operations.
@@ -435,6 +511,48 @@ function LF_CheckApi(appName, apiName: pansichar): integer; cdecl;
   *                    Enable or disable console logging (boolean).
   *
   *                === Connection Readiness ===
+  *                === Connection Readiness ===
+  *                - "Overlap_Connection" / "Overlap_Client" / "OverlapConnection" / "OverlapClient" / "OverlapConnect"
+  *                    Controls whether multiple independent C4 physics tunnels can be created
+  *                    to the same remote address (IP:Port).  *
+  *                When set to False (default):
+  *                  - LF_PrepareClient will use the 'KeepAlive' command.
+  *                  - If a tunnel to the given address already exists, it will be reused.
+  *                  - The 'appHnd' parameter is effective ONLY the first time a client
+  *                    for that address is prepared. Subsequent calls with a different
+  *                    appHnd will be ignored (the tag is stored but no new client is
+  *                    created, so the application never gets bound).
+  *                  - This mode is suitable for scenarios where a single logical client
+  *                    connection is shared across multiple components, but it is NOT
+  *                    appropriate for hosting multiple independent applications on the
+  *                    same remote service.
+  *
+  *                When set to True:
+  *                  - LF_PrepareClient will use the 'NewKeepAlive' command.
+  *                  - A new physical tunnel is created for each call, even if a tunnel
+  *                    to the same address already exists.
+  *                  - Each call receives a unique tag and the provided appHnd is bound
+  *                    to the newly created client.
+  *                  - This enables hosting multiple applications on the same remote
+  *                    service, each with its own dedicated connection.
+  *                  - Use this mode for multi‑tenant services, load testing, or when
+  *                    each application requires its own isolated network channel.
+  *
+  *                Important notes:
+  *                  - When Overlap_Connection is False and you attempt to prepare
+  *                    multiple clients with different appHnds, no error is raised;
+  *                    the second and subsequent appHnds are silently ignored. To avoid
+  *                    confusion, always set Overlap_Connection to True if you intend
+  *                    to bind multiple applications.
+  *                  - Overlap_Connection is a global setting; changing it after some
+  *                    clients have been prepared will affect only subsequent calls to
+  *                    LF_PrepareClient.
+  *                  - IPC connections (ipc:*) are not affected by this setting; they
+  *                    are always treated as non‑overlapping (only one client per address).
+  *                @Note: If you need to dynamically change the application on an
+  *                       existing client, use the LF_BindApp function or obtain the
+  *                       client handle and set its APP property directly.
+  *
   *                - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
   *                  "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" /
   *                  "WaitReady"
@@ -478,7 +596,7 @@ procedure LF_SetOption(Option, Value: pansichar); cdecl;
   * @return The number of messages currently queued.
   * @Note This function is thread‑safe and can be called concurrently with
   *       LF_GetStatus. }
-function LF_GetStatusCount(): integer; cdecl;
+function LF_GetStatusCount(): Integer; cdecl;
 
 { * LF_GetStatus: Retrieves the next log message from the internal status
   * buffer (FIFO order). The returned pointer points to a static 64‑KB buffer
@@ -486,6 +604,12 @@ function LF_GetStatusCount(): integer; cdecl;
   * that may modify the buffer). The caller must copy the string immediately
   * if it needs to be retained.
   * Messages longer than 65,534 bytes are truncated.
+  *
+  * WARNING: This function relies on the simulated main thread to process the
+  * status queue. If the main thread has not been started (i.e., before
+  * LF_PrepareDone has been called), the buffer may be empty or contain stale
+  * data. Do not rely on it until the framework is fully initialised.
+  *
   * @return PAnsiChar pointing to a null‑terminated UTF‑8 string, or an empty
   *         string if no message is available.
   * @Note The returned pointer must not be freed by the caller.
@@ -499,6 +623,12 @@ function LF_GetStatus(): pansichar; cdecl;
   * status buffer, as if it were generated by the library itself. This is
   * useful for merging external logging with the LingoFuse status stream.
   * @param status  Null‑terminated UTF‑8 string containing the message to add.
+  *
+  * WARNING: This function also relies on the main thread to process the queue.
+  * If the main thread has not been started (i.e., before LF_PrepareDone has
+  * been called), messages may be discarded or may not appear in the buffer
+  * at all. Use only after the framework is fully initialised.
+  *
   * @Note The message is appended to the buffer and will be retrievable via
   *       LF_GetStatus in FIFO order.
   * @Important Similar to LF_GetStatus, this function relies on the main thread
@@ -506,12 +636,22 @@ function LF_GetStatus(): pansichar; cdecl;
   *            discarded or not appear in the buffer. }
 procedure LF_PostStatus(status: pansichar); cdecl;
 
-{ * LF_Shutdown: Gracefully shuts down the entire LingoFuse framework,
-  * including all services, clients, and the simulated main thread.
-  * After this call, the library state is reset and you can re‑initialise
-  * by calling the preparation functions again (e.g., LF_ResetPrepare,
-  * LF_PrepareService, LF_PrepareDone). This function can be called multiple
-  * times without side effects. }
+{ * LF_Shutdown: Gracefully terminates the entire LingoFuse framework.
+  *
+  * This procedure:
+  *   1. Stops all sequenced notification threads.
+  *   2. Frees all remaining data handles.
+  *   3. Exits the simulated main thread.
+  *   4. Clears the global LF_App_Pool, which destroys every TLF_App object
+  *      that has not been physically freed by LF_FreeApp.
+  *   5. Unloads the IPC library and closes the core dispatch thread.
+  *
+  * After LF_Shutdown, the library is fully reset and can be re‑initialised
+  * by calling preparation functions again. It is safe to call multiple times.
+  *
+  * @Note  Even if you forget to call LF_FreeApp for some applications,
+  *        LF_Shutdown ensures they are properly destroyed, preventing leaks.
+  * }
 procedure LF_Shutdown; cdecl;
 
 implementation
@@ -736,11 +876,13 @@ procedure LF_FreeApp(appHnd: TAppHnd___);
 var
   app: TLF_App;
   arry: TC40_Custom_Client_Array;
-  i: integer;
+  i: Integer;
   Cli: TC40_LF_Client;
 begin
+  if not Core_Dispatch_Order_Activted then exit; // is shutdown
+
   app := appHnd; // Cast to TLF_App.
-  arry := C40_ClientPool.SearchClass(TC40_LF_Client); // Find all LingoFuse clients.
+  arry := C40_ClientPool.FastSearchClass(TC40_LF_Client); // Find all LingoFuse clients.
   for i := 0 to length(arry) - 1 do
     begin
       Cli := arry[i] as TC40_LF_Client;
@@ -748,10 +890,98 @@ begin
           Cli.app := nil; // detach it.
     end;
   LF_Notify_Sequence_Thread_Pool.Kill_App(app); // Stop any sequenced notify threads for this app.
-  DisposeObject(app); // Free the app object itself.
+  app.FakeFree;
 end;
 
-function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): integer;
+var
+  Generate_AppName_Call_Num: int64 = 0;
+  Generate_AppName_Critical: TCritical = nil;
+
+function LF_Generate_AppName(): pansichar;
+var
+  i: Integer;
+  tmp: TLF_String;
+begin
+  tmp := '';
+  Generate_AppName_Critical.Lock;
+  try
+    // Concatenate all C4 physics tunnel addresses, remote IDs, process name, and current timestamp
+    for i := 0 to C40_PhysicsTunnelPool.Count - 1 do
+      begin
+        if tmp <> '' then
+            tmp.Append('&');
+        tmp.Append(Build_Host_URL(C40_PhysicsTunnelPool[i].PhysicsAddr, C40_PhysicsTunnelPool[i].PhysicsPort) + '&' +
+            umlIntToStr(C40_PhysicsTunnelPool[i].PhysicsTunnel.RemoteID).Text);
+      end;
+    tmp.Append('&' + Make_LingoFuse_Process_Name.Text + '&' + umlIntToStr(GetTimeTick()).Text +
+        '&' + umlIntToStr(AtomInc(Generate_AppName_Call_Num)).Text); // Add process name and timestamp for uniqueness
+    tmp := C_Generate_Prefix + tmp;
+  finally
+      Generate_AppName_Critical.UnLock;
+  end;
+  Result := tmp.BuildUTF8AnsiChar(); // Convert to UTF‑8 PAnsiChar
+  Z.Notify.DelayFreeMem(5.0, Result); // Auto‑free after 5 seconds (caller must copy immediately)
+  tmp := '';
+end;
+
+function LF_Get_AppName(appHnd: TAppHnd___): pansichar;
+var
+  app: TLF_App;
+begin
+  app := appHnd;
+  Result := app.Name.BuildUTF8AnsiChar(); // Return app's stored name as UTF‑8
+  Z.Notify.DelayFreeMem(5.0, Result); // Auto‑free after 5 seconds
+end;
+
+function LF_BindApp(appHnd: TAppHnd___): Integer;
+var
+  app: TLF_App;
+  arry: TC40_Custom_Client_Array;
+  i: Integer;
+  Cli: TC40_LF_Client;
+  tmp: TLF_String;
+begin
+  Result := 0;
+  app := appHnd;
+  if not Simulator_Main_Thread_Activted then // Main thread not active – cannot proceed
+    begin
+      DoStatus('LF_BindApp: Main thread is not active – cannot bind app.');
+      exit;
+    end;
+  arry := C40_ClientPool.FastSearchClass(TC40_LF_Client); // Get all LingoFuse clients
+  for i := 0 to length(arry) - 1 do
+    begin
+      Cli := arry[i] as TC40_LF_Client;
+      if Cli.app = nil then // Only bind if client does not already have an app
+        begin
+          Cli.app := app; // Attach the application to this client
+          inc(Result); // Count successful bindings
+
+          // Log the app and its registered APIs.
+          if Cli.C40PhysicsTunnel.IPC_Mode then
+              DoStatus('APP %s "%s" Bind OK for Connection "%s"', [Cli.app.Name.Text, Cli.app.Desc.Text, Cli.C40PhysicsTunnel.PhysicsAddr.Text])
+          else
+              DoStatus('APP %s "%s" Bind OK for Connection "%s"', [Cli.app.Name.Text, Cli.app.Desc.Text, Build_Host_URL(Cli.C40PhysicsTunnel.PhysicsAddr, Cli.C40PhysicsTunnel.PhysicsPort)]);
+
+          // Log each registered API with its mode (call/notify/error)
+          if Cli.app.Engine.LF_MethodPool.Num > 0 then
+            with Cli.app.Engine.LF_MethodPool.Repeat_ do
+              repeat
+                if Assigned(Queue^.Data.Data.Second.On_Call) then
+                    tmp := 'call'
+                else if Assigned(Queue^.Data.Data.Second.On_Notify) then
+                    tmp := 'notify'
+                else
+                    tmp := 'error';
+                DoStatus('  (%s) (%s) "%s"', [tmp.Text, Queue^.Data.Data.Primary, Queue^.Data.Data.Second.Desc.Text]);
+              until not Next;
+        end;
+    end;
+  if Result = 0 then
+      DoStatus('LF_BindApp: All clients are already occupied – cannot bind app "%s".', [app.Name.Text]);
+end;
+
+function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): Integer;
 { *
   * Registers a Call API by decoding UTF‑8 names and calling app.Engine.Reg_Call.
   * @Param appHnd: The application handle.
@@ -761,7 +991,7 @@ function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigge
   * @Param OnCall: The cdecl callback function.
   * @Returns: 1 if registration succeeded, 0 if the API name already exists.
   * @Example (Pascal):
-  *   procedure MyCall(Trigger: Pointer; Input, Output: TDataHnd); cdecl;
+  *   procedure MyCall(Trigger: Pointer; Input, Output: TDataHnd___); cdecl;
   *   begin ... end;
   *   if LF_RegisterCall(app, 'add', 'Adds two numbers', nil, @MyCall) = 1 then
   *     Writeln('Registered');
@@ -777,7 +1007,7 @@ begin
   // Reg_Call returns Boolean; convert to 1/0.
 end;
 
-function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): integer;
+function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): Integer;
 { *
   * Registers a Notify API similarly.
   * @Param appHnd: The application handle.
@@ -797,7 +1027,7 @@ begin
   Result := if_(app.Engine.Reg_Notify(MethodName__, Desc__, Trigger, OnNotify), 1, 0);
 end;
 
-function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): integer;
+function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): Integer;
 { *
   * Unregisters an API by name. Immediately removes the API from
   * the local registry and triggers a network broadcast to all peers.
@@ -871,7 +1101,7 @@ type
     * prepared clients with their applications when they connect. }
   TAppHnd_Bind_Tag = record
     appHnd: TAppHnd___; // The application handle to bind.
-    Tag: integer; // Unique tag assigned during preparation.
+    Tag: Integer; // Unique tag assigned during preparation.
     IsService, IsClient: boolean; // Role flags.
     Listen, Addr, Port: TLF_String; // Address details.
     procedure Init;
@@ -915,7 +1145,7 @@ end;
 { Global variables used for preparation and startup. }
 var
   Prepare_Commands: TPascalStringList = nil; // List of C4 command strings to be executed at startup.
-  Tag_Seed: integer = 0; // Incrementing seed for generating unique tags.
+  Tag_Seed: Integer = 0; // Incrementing seed for generating unique tags.
   AppHnd_Bind_Tag_List: TAppHnd_Bind_Tag_List = nil; // Maps tags to application handles and addresses.
 
 procedure LF_ResetPrepare();
@@ -1063,6 +1293,7 @@ var
   Init_Running, Init_Successed, Simulated_Main_Thread_Running: boolean; // State flags for the simulated main thread.
   Temp_C40_PhysicsTunnel_Bridge__: TTemp_C40_PhysicsTunnel_Bridge__; // Bridge instance for tunnel events.
   Temp_C40_PhysicsService_Bridge__: TTemp_C40_PhysicsService_Bridge__; // Bridge instance for service events.
+  Overlap_Connection: boolean;
   Wait_Connection_ReadyOk: boolean; // Whether LF_PrepareDone should wait for clients.
   Wait_Connection_Timeout: TTimeTick; // Timeout in milliseconds for the above wait.
 
@@ -1073,7 +1304,7 @@ begin
   C40_Extract_CmdLine(); // Parse and execute all prepared C4 commands.
 end;
 
-function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): integer;
+function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): Integer;
 { *
   * Prepares a C4 service. Builds a C4 'Service' command string and stores
   * the tag and addresses. It decodes UTF‑8 addresses, handles IPC detection,
@@ -1109,7 +1340,7 @@ begin
         begin
           DoStatus('error: repeat listen addr:%s port:%s', [Listen.Text, Port.Text]);
           Result := -1;
-          Exit;
+          exit;
         end;
     end;
 
@@ -1121,7 +1352,7 @@ begin
             begin
               DoStatus('prepare error: repeat listen addr:%s port:%s', [Listen.Text, Port.Text]);
               Result := -1;
-              Exit;
+              exit;
             end;
         until not Next;
     end;
@@ -1167,7 +1398,7 @@ begin
     end;
 end;
 
-function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): integer;
+function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): Integer;
 { *
   * Prepares a C4 client. Similar to LF_PrepareService but for clients.
   * Builds a 'KeepAlive' command and optionally binds an app handle.
@@ -1184,6 +1415,8 @@ var
   Cmd_: TLF_String;
   full_url: TLF_String;
   running: boolean;
+  Cli: TC40_LF_Client;
+  tk: TTimeTick;
 begin
   Host := DS(PhysicsAddr_).Text;
   if Is_IPC_Addr(Host.Text) then
@@ -1194,17 +1427,19 @@ begin
       ExtractHostAddress(Host, Port);
     end;
 
-  if Init_Successed and Simulated_Main_Thread_Running then
+  // When Overlap_Connection is False, prevent multiple clients to the same address.
+  if (not Overlap_Connection) and Init_Successed and Simulated_Main_Thread_Running then
     begin
       if Z.Net.C4.C40_PhysicsTunnelPool.ExistsPhysicsAddr(Host, EStrToInt(Port)) then
         begin
           DoStatus('error: repeat connection addr:%s port:%s', [Host.Text, Port.Text]);
           Result := -1;
-          Exit;
+          exit;
         end;
     end;
 
-  if AppHnd_Bind_Tag_List.Num > 0 then
+  // Also check the prepared list to avoid duplicates before startup.
+  if (not Overlap_Connection) and (AppHnd_Bind_Tag_List.Num > 0) then
     begin
       full_url := Build_Host_URL(Host, Port);
       with AppHnd_Bind_Tag_List.Repeat_ do
@@ -1213,12 +1448,15 @@ begin
             begin
               DoStatus('prepare error: repeat connection addr:%s port:%s', [Host.Text, Port.Text]);
               Result := -1;
-              Exit;
+              exit;
             end;
         until not Next;
     end;
 
-  Cmd_ := PFormat('KeepAlive("%s",%s,"LingoFuse@Tag=%d")', [Host.Text, Port.Text, Tag_Seed]);
+  // Choose command based on Overlap_Connection flag.
+  // When Overlap_Connection=True, use 'NewKeepAlive' to force a new tunnel.
+  // When False, use 'KeepAlive' which may reuse an existing tunnel.
+  Cmd_ := PFormat(if_(Overlap_Connection, 'NewKeepAlive', 'KeepAlive') + '("%s",%s,"LingoFuse@Tag=%d")', [Host.Text, Port.Text, Tag_Seed]);
   Result := Tag_Seed;
   Prepare_Commands.Add(Cmd_);
   with AppHnd_Bind_Tag_List.Add_Null^ do
@@ -1233,6 +1471,7 @@ begin
     end;
   AtomInc(Tag_Seed);
 
+  // If the main thread is already running, execute the command immediately.
   if Init_Successed and Simulated_Main_Thread_Running then
     begin
       SetLength(C40AppParam, 1);
@@ -1248,6 +1487,24 @@ begin
           Z.Core.MainThreadProgress.PostC1(Do_Post_RUn_C40_Extract_CmdLine, @running, nil);
           while running do
               TCompute.Sleep(10);
+          // If Wait_Connection_ReadyOk is True, we wait for the client to be fully ready.
+          Cli := C40_ClientPool.FindTag(Result) as TC40_LF_Client;
+          if Cli <> nil then
+            if Wait_Connection_ReadyOk then
+              begin
+                tk := GetTimeTick + Wait_Connection_Timeout;
+                while GetTimeTick() < tk do
+                  begin
+                    // Check conditions:
+                    // - Connected
+                    // - If app is not nil, app must be online (LF_AppIsOnline)
+                    // - Service info must be received (LF_Service_Info_Is_Onlne)
+                    if (Cli.Connected) and ((Cli.app = nil) or Cli.LF_AppIsOnline) and (Cli.LF_Service_Info_Is_Onlne) then
+                        break
+                    else
+                        TCompute.Sleep(10);
+                  end;
+              end;
         end;
       SetLength(C40AppParam, 0);
     end
@@ -1269,10 +1526,10 @@ procedure Simulated_Main_Thread();
   * This is the heart of the network event loop.
   * }
 var
-  i: integer;
+  i: Integer;
   tk: TTimeTick;
   Cli: TC40_LF_Client;
-  Prepare_Cli_Num, Online_Num: integer;
+  Prepare_Cli_Num, Online_Num: Integer;
 begin
   DoStatus('LingoFuse Main Thread Begin');
 
@@ -1295,7 +1552,7 @@ begin
             with AppHnd_Bind_Tag_List.Repeat_ do
               repeat
                 if Queue^.Data.IsClient then
-                    Inc(Prepare_Cli_Num);
+                    inc(Prepare_Cli_Num);
               until not Next;
 
           if Prepare_Cli_Num > 0 then
@@ -1312,8 +1569,8 @@ begin
                           begin
                             Cli := C40_ClientPool.FindTag(Queue^.Data.Tag) as TC40_LF_Client;
                             // Check if client is connected and (if it has an app) the app is online.
-                            if (Cli <> nil) and (Cli.Connected) and ((Cli.app = nil) or Cli.LF_AppIsOnline) then
-                                Inc(Online_Num);
+                            if (Cli <> nil) and (Cli.Connected) and ((Cli.app = nil) or Cli.LF_AppIsOnline) and (Cli.LF_Service_Info_Is_Onlne) then
+                                inc(Online_Num);
                           end;
                       until not Next;
                   end;
@@ -1354,7 +1611,7 @@ begin
   DoStatus('LingoFuse Main Thread Exit');
 end;
 
-function LF_PrepareDone: integer;
+function LF_PrepareDone: Integer;
 { *
   * Starts the simulated main thread and waits for initialisation to complete.
   * Returns 1 on success, 0 on failure.
@@ -1365,9 +1622,12 @@ function LF_PrepareDone: integer;
   *   else
   *     WriteLn('Failed to start');
   * }
+var
+  tk: TTimeTick;
 begin
+  Result := 0;
   if Simulated_Main_Thread_Running then
-      Exit; // Already running.
+      exit; // Already running.
 
   Open_Core_Dispatch_Thread(); // Ensure core dispatch thread is running.
   Init_Running := True;
@@ -1375,8 +1635,12 @@ begin
   Simulated_Main_Thread_Running := True;
 
   Begin_Simulator_Main_Thread(Simulated_Main_Thread); // Spawn the main thread.
+  tk := GetTimeTick() + C_Tick_Second * 30;
   while Init_Running do
+    begin
       Boot_Thread_Sync_Tool.Check_Synchronize(10); // Wait until initialisation completes.
+      if GetTimeTick() > tk then break;
+    end;
   Result := if_(Init_Successed, 1, 0);
 end;
 
@@ -1417,9 +1681,9 @@ begin
   try
     Find_Class_Critical.Lock; // Protect search.
     try
-        Cli := Z.Net.C4.C40_ClientPool.FindClass(TC40_LF_Client) as TC40_LF_Client;
+        Cli := Z.Net.C4.C40_ClientPool.FastFindClass(TC40_LF_Client) as TC40_LF_Client;
     finally
-        Find_Class_Critical.unLock;
+        Find_Class_Critical.UnLock;
     end;
   except
       Cli := nil;
@@ -1463,16 +1727,16 @@ begin
   try
     Find_Class_Critical.Lock;
     try
-        Cli := Z.Net.C4.C40_ClientPool.FindClass(TC40_LF_Client) as TC40_LF_Client;
+        Cli := Z.Net.C4.C40_ClientPool.FastFindClass(TC40_LF_Client) as TC40_LF_Client;
     finally
-        Find_Class_Critical.unLock;
+        Find_Class_Critical.UnLock;
     end;
   except
-      Exit;
+      exit;
   end;
 
   if Cli = nil then
-      Exit;
+      exit;
   tmp := TMem64.Create;
   PLF_Data(Param).Data_Param.EncryptToMem(tmp);
   try
@@ -1499,16 +1763,16 @@ begin
   try
     Find_Class_Critical.Lock;
     try
-        Cli := Z.Net.C4.C40_ClientPool.FindClass(TC40_LF_Client) as TC40_LF_Client;
+        Cli := Z.Net.C4.C40_ClientPool.FastFindClass(TC40_LF_Client) as TC40_LF_Client;
     finally
-        Find_Class_Critical.unLock;
+        Find_Class_Critical.UnLock;
     end;
   except
-      Exit;
+      exit;
   end;
 
   if Cli = nil then
-      Exit;
+      exit;
   tmp := TMem64.Create;
   PLF_Data(Param).Data_Param.EncryptToMem(tmp);
   try
@@ -1519,7 +1783,7 @@ begin
   DisposeObject(tmp);
 end;
 
-function LF_CheckMainThread(): integer;
+function LF_CheckMainThread(): Integer;
 { *
   * Returns 1 if the simulated main thread is active.
   * @Returns: 1 if active, 0 otherwise.
@@ -1531,7 +1795,7 @@ begin
   Result := if_(Simulator_Main_Thread_Activted, 1, 0);
 end;
 
-function LF_CheckApp(appName: pansichar): integer;
+function LF_CheckApp(appName: pansichar): Integer;
 { *
   * Checks if the given application name is available locally or remotely.
   * @Param appName: Null‑terminated UTF‑8 application name.
@@ -1544,7 +1808,7 @@ begin
   Result := if_((Find_Local_APP(DS(appName), False) <> nil) or (Find_Remote_APP(DS(appName), False) <> nil), 1, 0);
 end;
 
-function LF_CheckApi(appName, apiName: pansichar): integer;
+function LF_CheckApi(appName, apiName: pansichar): Integer;
 begin
   Result := if_((Find_Local_Api(DS(appName), DS(apiName), False) <> nil) or
       (Find_Remote_Api(DS(appName), DS(apiName), False) <> nil), 1, 0);
@@ -1562,8 +1826,8 @@ procedure LF_SetOption(Option, Value: pansichar);
   * }
 var
   opt, V, tmp: TLF_String;
-  L: integer;
-  i: integer;
+  L: Integer;
+  i: Integer;
 begin
   opt := DS(Option);
   V := DS(Value);
@@ -1572,7 +1836,8 @@ begin
     begin
       Z.Net.C4.C40_Password := V; // Set C4 password.
       // Mask password for logging.
-      for i := 0 to tmp.L - 1 do
+      tmp := ''; // Initialize temp string for building the mask.
+      for i := 0 to V.L - 1 do
           tmp.Append(if_(TMT19937.Rand32 mod 2 = 0, '*', '**'));
       DoStatus('Update Password = %s', [tmp.Text]);
     end
@@ -1581,6 +1846,13 @@ begin
       C40SetQuietMode(EStrToBool(V.Text)); // Enable/disable quiet mode.
       DoStatus('Quiet = %s', [umlBoolToStr(EStrToBool(V.Text)).Text]);
     end
+
+  else if opt.Same('Overlap_Connection', 'Overlap_Client', 'OverlapConnection', 'OverlapClient', 'OverlapConnect') then
+    begin
+      Overlap_Connection := EStrToBool(V.Text);
+      DoStatus('Overlap Connection = %s', [umlBoolToStr(Overlap_Connection).Text]);
+    end
+
   else if opt.Same('Wait_Connection_ReadyOk', 'Wait_API_Prepare_Done', 'API_Prepare_Done_Wait', 'WaitConnect', 'Wait_Ready', 'WaitReady') then
     begin
       Wait_Connection_ReadyOk := EStrToBool(V.Text); // Set whether to wait for clients.
@@ -1646,7 +1918,7 @@ begin
   inherited DoFree(Data);
 end;
 
-procedure backcall_DoStatus(Text_: SystemString; const ID: integer);
+procedure backcall_DoStatus(Text_: SystemString; const ID: Integer);
 { *
   * Hook called by the global DoStatus system.
   * It locks the status pool, discards old messages if the queue exceeds 1000,
@@ -1661,11 +1933,11 @@ begin
         Status_Pool.Next; // Discard oldest to maintain limit.
     Status_Pool.Push(TPascalString(Text_).UTF8); // Store as UTF‑8 bytes.
   finally
-      Status_Critical__.unLock;
+      Status_Critical__.UnLock;
   end;
 end;
 
-function LF_GetStatusCount(): integer;
+function LF_GetStatusCount(): Integer;
 { *
   * Returns the number of queued messages.
   * Thread‑safe via Status_Critical__ lock.
@@ -1676,7 +1948,7 @@ begin
   try
       Result := Status_Pool.Num;
   finally
-      Status_Critical__.unLock;
+      Status_Critical__.UnLock;
   end;
 end;
 
@@ -1694,7 +1966,7 @@ function LF_GetStatus(): pansichar;
   *     WriteLn(UTF8Decode(msg)); // copy before next call.
   * }
 var
-  L: integer;
+  L: Integer;
 begin
   Result := @Status_Buff;
   Status_Critical__.Lock;
@@ -1712,7 +1984,7 @@ begin
         Status_Pool.Next; // Remove from queue.
       end;
   finally
-      Status_Critical__.unLock;
+      Status_Critical__.UnLock;
   end;
 end;
 
@@ -1728,13 +2000,13 @@ begin
     begin
       // If main thread not running, directly queue via DoStatus.
       DoStatus('LF_PostStatus: Main thread not running; message queued directly. message: %s', [DS(status).Text]);
-      Exit;
+      exit;
     end;
   Status_Critical__.Lock;
   try
       Post_To_DoStatus_Queue(TCompute.CurrentThread, DS(status), 0); // Queue to status system.
   finally
-      Status_Critical__.unLock;
+      Status_Critical__.UnLock;
   end;
 end;
 
@@ -1753,6 +2025,7 @@ begin
   except
   end;
   LF_ExitMainThread(); // Stop the main loop.
+  LF_App_Pool.Clear; // free all app
   UnloadIPCLibrary(); // Unload IPC support.
   Close_Core_Dispatch_Thread(); // Close dispatch thread.
 end;
@@ -1760,6 +2033,8 @@ end;
 initialization
 
 { * Initialize global data structures. }
+Generate_AppName_Call_Num := 0;
+Generate_AppName_Critical := TCritical.Create;
 Prepare_Commands := TPascalStringList.Create;
 Tag_Seed := 1;
 AppHnd_Bind_Tag_List := TAppHnd_Bind_Tag_List.Create;
@@ -1770,6 +2045,7 @@ Temp_C40_PhysicsTunnel_Bridge__ := TTemp_C40_PhysicsTunnel_Bridge__.Create;
 On_C40_PhysicsTunnel_Event_Console := Temp_C40_PhysicsTunnel_Bridge__;
 Temp_C40_PhysicsService_Bridge__ := TTemp_C40_PhysicsService_Bridge__.Create;
 On_C40_PhysicsService_Event_Console := Temp_C40_PhysicsService_Bridge__;
+Overlap_Connection := False;
 Wait_Connection_ReadyOk := True;
 Wait_Connection_Timeout := 30 * 1000; // 30 seconds default.
 if IsLibrary then
@@ -1789,7 +2065,6 @@ AddDoStatusHookC(Status_Pool, backcall_DoStatus); // Install status hook.
 
 finalization
 
-LF_ExitMainThread();
 On_C40_PhysicsTunnel_Event_Console := nil;
 On_C40_PhysicsService_Event_Console := nil;
 DisposeObjectAndNil(Prepare_Commands);
@@ -1800,5 +2075,6 @@ DisposeObjectAndNil(Find_Class_Critical);
 RemoveDoStatusHook(Status_Pool);
 DisposeObjectAndNil(Status_Pool);
 DisposeObjectAndNil(Status_Critical__);
+DisposeObjectAndNil(Generate_AppName_Critical);
 
 end.

@@ -1,0 +1,10 @@
+# LingoFuse Python 绑定依赖
+# ===========================
+# 执行安装
+# pip install -r requirements.txt
+
+# HTTP 桥接（bridge.py）
+flask>=2.3.0
+
+# 测试辅助
+requests>=2.31.0

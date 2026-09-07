@@ -34,7 +34,6 @@ import base64
 import struct
 import ctypes
 
-# Ensure lingofuse can be imported
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lingofuse import App, _lf_native
 from lingofuse.core import DataHandle
@@ -52,52 +51,12 @@ timeout_ms = DEFAULT_TIMEOUT
 node_app_name = 'demo'
 node_endpoint = DEFAULT_NODE_ENDPOINT
 
-# ---------- JSON helpers (same as in server.py) ----------
-def _convert_to_serializable(obj):
-    if isinstance(obj, bytes):
-        return {"__bytes__": base64.b64encode(obj).decode("ascii")}
-    elif isinstance(obj, list):
-        return [_convert_to_serializable(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {k: _convert_to_serializable(v) for k, v in obj.items()}
-    else:
-        return obj
+# ---------- JSON helpers (using DataHandle) ----------
+def _read_json(hnd: DataHandle):
+    return hnd.read_json()
 
-def _convert_from_serializable(obj):
-    if isinstance(obj, dict):
-        if len(obj) == 1 and "__bytes__" in obj:
-            try:
-                return base64.b64decode(obj["__bytes__"])
-            except Exception:
-                return obj
-        else:
-            return {k: _convert_from_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_convert_from_serializable(item) for item in obj]
-    else:
-        return obj
-
-def _read_json(hnd):
-    size = _lf_native.LF_GetSize(hnd.raw)
-    if size == 0:
-        return None
-    buf = (ctypes.c_byte * size)()
-    _lf_native.LF_SetPos(hnd.raw, 0)
-    _lf_native.LF_ReadBuffer(hnd.raw, buf, size)
-    raw = bytes(buf)
-    null = raw.find(b'\x00')
-    if null != -1:
-        raw = raw[:null]
-    try:
-        data = json.loads(raw.decode("utf-8"))
-        return _convert_from_serializable(data)
-    except Exception:
-        return None
-
-def _write_json(hnd, obj):
-    serializable = _convert_to_serializable(obj)
-    data = json.dumps(serializable, ensure_ascii=False).encode("utf-8") + b'\x00'
-    _lf_native.LF_WriteBuffer(hnd.raw, data, len(data))
+def _write_json(hnd: DataHandle, obj):
+    hnd.write_json(obj)
 
 # ---------- Cleanup ----------
 def cleanup():
@@ -186,7 +145,7 @@ def inv_seri_callback(trigger, inp: DataHandle, out: DataHandle):
         tmp.write_uint16(w)
         tmp.write_uint32(c)
         tmp.write_uint64(u64)
-        tmp.write_string_null_terminated(s)
+        tmp.write_string(s)          # now using write_string (auto \0)
         tmp.write_single(f)
         res_ptr = _lf_native.LF_Call(node_app_name.encode('utf-8'), tmp.raw, timeout_ms)
         tmp.free()
@@ -198,15 +157,15 @@ def inv_seri_callback(trigger, inp: DataHandle, out: DataHandle):
             raise RuntimeError("Node call returned empty result")
         result = DataHandle._from_raw(res_ptr, owned=True)
         f_ret = result.read_single()
-        s_ret = result.read_string_null_terminated()
+        s_ret = result.read_string()          # auto handles \0
         u64_ret = result.read_uint64()
         c_ret = result.read_uint32()
         w_ret = result.read_uint16()
         b_ret = result.read_uint8()
         result.free()
         # Build a formatted string (like the original Pascal demo)
-        result_str = (f"接收数据序 [{b_ret}, {w_ret}, {c_ret}, {u64_ret}, \"{s_ret}\", {f_ret:.2f}] = "
-                      f"发送数据序 [{f_ret:.2f}, \"{s_ret}\", {u64_ret}, {c_ret}, {w_ret}, {b_ret}]")
+        result_str = (f"Received data sequence [{b_ret}, {w_ret}, {c_ret}, {u64_ret}, \"{s_ret}\", {f_ret:.2f}] = "
+                      f"Sent data sequence [{f_ret:.2f}, \"{s_ret}\", {u64_ret}, {c_ret}, {w_ret}, {b_ret}]")
         # Write JSON output (standard format)
         _write_json(out, {"code": 0, "result": result_str})
         print(f"[CrossBridge] inv_seri: sent [{b},{w},{c},{u64},{s},{f}] -> received [{b_ret},{w_ret},{c_ret},{u64_ret},{s_ret},{f_ret}]")
@@ -220,7 +179,6 @@ def setup_service(endpoint, node_ep, app_name, timeout):
     timeout_ms = timeout
     node_endpoint = node_ep
 
-    # 1. Create the service application and register APIs
     service_app = App(app_name, "Cross Bridge Service")
     try:
         service_app.register_call("add", add_callback, "add(a,b) -> sum")
@@ -230,20 +188,14 @@ def setup_service(endpoint, node_ep, app_name, timeout):
         print(f"[ERROR] Failed to register APIs: {e}")
         return False
 
-    # 2. Prepare network: start service and client connections in one batch
     _lf_native.LF_ResetPrepare()
-    # Expose our service on the specified endpoint
     _lf_native.LF_PrepareService(endpoint.encode('utf-8'), endpoint.encode('utf-8'))
-    # Connect to the demo node (as a client) – no app exposed
     _lf_native.LF_PrepareClient(node_ep.encode('utf-8'), None)
-    # Connect to our own service to allow external clients to discover us
     _lf_native.LF_PrepareClient(endpoint.encode('utf-8'), service_app.raw)
 
-    # 3. Start the framework
     ret = _lf_native.LF_PrepareDone()
     if ret != 1:
         if _lf_native.LF_CheckMainThread() == 0:
-            # Fetch last few status messages for diagnosis
             num = _lf_native.LF_GetStatusCount()
             if num > 0:
                 for _ in range(min(num, 5)):
@@ -259,7 +211,6 @@ def setup_service(endpoint, node_ep, app_name, timeout):
     print(f"[CrossBridge] Service started on {endpoint}")
     return True
 
-# ---------- Main ----------
 def main():
     parser = argparse.ArgumentParser(description="Cross Bridge LingoFuse Service")
     parser.add_argument('--endpoint', default=os.environ.get('CROSS_BRIDGE_ENDPOINT', DEFAULT_ENDPOINT),

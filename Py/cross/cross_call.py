@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-CrossCall – 并发客户端（Consumer）
-功能：连接到 ipc:cross，在独立线程中交替调用 'add' 和 'inv_seri'，
-持续 10 秒后自动退出。可同时启动多个实例以模拟负载。
-与 Pascal cross_call 完全等价。
+CrossCall – Concurrent Client (Consumer)
+
+Connects to ipc:cross, alternates between 'add' and 'inv_seri' calls in
+a separate thread for 10 seconds then exits. Multiple instances can be
+run to simulate load. Equivalent to Pascal cross_call.
 """
 import sys
 import os
@@ -12,30 +13,29 @@ import time
 import random
 import threading
 
-# 将上级目录（Py）加入模块搜索路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from lingofuse import _lf_native
 from lingofuse.core import DataHandle
 
 
-# ========== 远程调用封装（原始二进制） ==========
+# ========== Remote call wrappers (raw binary) ==========
 
 def add__(a, b):
-    """封装 'add' 远程调用。"""
+    """Wrapper for remote 'add' call."""
     with DataHandle("add") as send:
         send.write_int32(a)
         send.write_int32(b)
 
         res_ptr = _lf_native.LF_Call(b"demo", send.raw, 2000)
         if not res_ptr:
-            print(f"[Call] add({a}, {b}) 返回空句柄")
+            print(f"[Call] add({a}, {b}) returned null handle")
             return 0
 
         size = _lf_native.LF_GetSize(res_ptr)
         if size == 0:
             _lf_native.LF_FreeData(res_ptr)
-            print(f"[Call] add({a}, {b}) 超时或失败")
+            print(f"[Call] add({a}, {b}) timed out or failed")
             return 0
 
         with DataHandle._from_raw(res_ptr, owned=True) as result:
@@ -43,7 +43,7 @@ def add__(a, b):
 
 
 def inv_seri__():
-    """封装 'inv_seri' 远程调用。"""
+    """Wrapper for remote 'inv_seri' call."""
     b = 200
     w = 0x10
     c = 0x2F
@@ -56,37 +56,37 @@ def inv_seri__():
         send.write_uint16(w)
         send.write_uint32(c)
         send.write_uint64(u64)
-        send.write_string_null_terminated(s)
+        send.write_string(s)          # auto \0
         send.write_single(f)
 
         res_ptr = _lf_native.LF_Call(b"demo", send.raw, 2000)
         if not res_ptr:
-            return "inv_seri 返回空句柄"
+            return "inv_seri returned null handle"
 
         size = _lf_native.LF_GetSize(res_ptr)
         if size == 0:
             _lf_native.LF_FreeData(res_ptr)
-            return "inv_seri 超时或失败"
+            return "inv_seri timed out or failed"
 
         with DataHandle._from_raw(res_ptr, owned=True) as result:
             f_ret = result.read_single()
-            s_ret = result.read_string_null_terminated()
+            s_ret = result.read_string()          # auto strips \0
             u64_ret = result.read_uint64()
             c_ret = result.read_uint32()
             w_ret = result.read_uint16()
             b_ret = result.read_uint8()
 
-            return (f"接收数据序 [{b_ret}, {w_ret}, {c_ret}, {u64_ret}, \"{s_ret}\", {f_ret:.2f}] = "
-                    f"发送数据序 [{f_ret:.2f}, \"{s_ret}\", {u64_ret}, {c_ret}, {w_ret}, {b_ret}]")
+            return (f"Received data sequence [{b_ret}, {w_ret}, {c_ret}, {u64_ret}, \"{s_ret}\", {f_ret:.2f}] = "
+                    f"Sent data sequence [{f_ret:.2f}, \"{s_ret}\", {u64_ret}, {c_ret}, {w_ret}, {b_ret}]")
 
 
-# ========== 工作线程 ==========
+# ========== Worker thread ==========
 
-RUN_DURATION = 10  # 秒
+RUN_DURATION = 10  # seconds
 
 def do_compute(stop_event):
     start_time = time.time()
-    print(f"[Call] 仿真计算启动（可多开），持续 {RUN_DURATION} 秒...")
+    print(f"[Call] Simulation started (can be multi‑instanced), running for {RUN_DURATION} seconds...")
     while not stop_event.is_set() and (time.time() - start_time) < RUN_DURATION:
         if random.choice([True, False]):
             a = random.randint(1, 2**31 - 1)
@@ -94,11 +94,11 @@ def do_compute(stop_event):
             result = add__(a, b)
             if result != 0:
                 remaining = RUN_DURATION - (time.time() - start_time)
-                print(f"[Call] 计算 \"a({a})+b({b})\" = 计算结果 {result} ({remaining:.2f}秒以后退出)")
+                print(f"[Call] Computation \"a({a})+b({b})\" = result {result} ({remaining:.2f}s remaining)")
         else:
             status = inv_seri__()
             remaining = RUN_DURATION - (time.time() - start_time)
-            print(f"[Call] {status} ({remaining:.2f}秒退出)")
+            print(f"[Call] {status} ({remaining:.2f}s remaining)")
 
         time.sleep(0.001)
 
@@ -131,7 +131,7 @@ def main():
         stop_event.set()
         thread.join(timeout=2)
 
-        print("[OK] 计算完成，清理线程中.")
+        print("[OK] Computation finished, cleaning up threads.")
 
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user.")

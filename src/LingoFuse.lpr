@@ -160,6 +160,9 @@ exports
   LF_SetSize,
   LF_CreateApp,
   LF_FreeApp,
+  LF_Generate_AppName,
+  LF_Get_AppName,
+  LF_BindApp,
   LF_RegisterCall,
   LF_RegisterNotify,
   LF_Unregister,
@@ -184,4 +187,3 @@ exports
 
 begin
 end.
-

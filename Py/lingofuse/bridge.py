@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LingoFuse HTTP Bridge – Generic Binary Passthrough Gateway
+LingoFuse HTTP Bridge - Generic Binary Passthrough Gateway
 
 This bridge acts as a stateless middleware that forwards HTTP POST requests
 directly to a LingoFuse backend. It does NOT interpret or modify the request
@@ -43,6 +43,8 @@ curl -X POST http://127.0.0.1:8081/exp -d '{"args":["1+2*3"]}'
 --threaded    Enable multi-threaded request handling (default)
 --no-threaded Disable multi-threaded request handling
 --debug       Enable debug logging of request/response details
+--log-file    Path to log file (default: stderr)
+--no-precheck Disable API pre-check (check_api) to avoid cache false negatives
 
 ==================== Debug Switch ====================
 Use --debug to print detailed logs:
@@ -61,6 +63,7 @@ import logging
 import argparse
 import atexit
 import ctypes
+import time
 from flask import Flask, request, Response
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -80,12 +83,38 @@ DEFAULT_TIMEOUT = 5000
 DEFAULT_THREADED = True
 DEFAULT_DEBUG = False
 
+# Global configuration
 target_app = None
 timeout_ms = DEFAULT_TIMEOUT
 endpoint = DEFAULT_ENDPOINT
 threaded = DEFAULT_THREADED
 debug_mode = DEFAULT_DEBUG
+no_precheck = False
+log_file = None
 
+# Setup logging
+logger = logging.getLogger('LingoFuseBridge')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stderr)
+formatter = logging.Formatter('[%(levelname)s] %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+def configure_logging(debug: bool, file_path: str = None):
+    """Configure logging level and optional file output."""
+    global logger
+    if debug:
+        logger.setLevel(logging.DEBUG)
+        # Also set Flask/Werkzeug to ERROR to reduce noise
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    else:
+        logger.setLevel(logging.INFO)
+    if file_path:
+        file_handler = logging.FileHandler(file_path, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+# Flask app
 app = Flask(__name__)
 app.logger.disabled = True
 werkzeug_log = logging.getLogger('werkzeug')
@@ -101,7 +130,7 @@ def after_request(response):
 def cleanup():
     LF_ExitMainThread()
     LF_Shutdown()
-    print("[Bridge] LingoFuse resources released")
+    logger.info("LingoFuse resources released")
 
 atexit.register(cleanup)
 
@@ -127,27 +156,36 @@ def handle_call(path):
     if not api_name:
         return jsonify_error(-2, "Missing API name in path"), 400
 
-    # Pre-check API availability
-    if not check_api(app_name, api_name):
-        if debug_mode:
-            print(f"[DEBUG] check_api({app_name}, {api_name}) returned False")
-        if get_status_num() > 0:
-            for _ in range(min(3, get_status_num())):
-                msg = get_status()
-                if msg:
-                    print(f"[STATUS] {msg}")
-        return jsonify_error(-3, f"API '{api_name}' not available for app '{app_name}'"), 200
+    # Pre-check API availability (with retry)
+    if not no_precheck:
+        available = False
+        for attempt in range(3):  # retry up to 3 times
+            if check_api(app_name, api_name):
+                available = True
+                break
+            if debug_mode:
+                logger.debug(f"check_api({app_name}, {api_name}) attempt {attempt+1} returned False")
+            time.sleep(0.2)  # wait 200ms for cache update
+        if not available:
+            if debug_mode:
+                logger.debug(f"check_api({app_name}, {api_name}) failed after 3 attempts")
+            if get_status_num() > 0:
+                for _ in range(min(3, get_status_num())):
+                    msg = get_status()
+                    if msg:
+                        logger.info(f"LingoFuse status: {msg}")
+            return jsonify_error(-3, f"API '{api_name}' not available for app '{app_name}'"), 200
 
     body = request.get_data()
     if debug_mode:
-        print(f"[DEBUG] app={app_name}, api={api_name}, body_size={len(body)}")
+        logger.debug(f"app={app_name}, api={api_name}, body_size={len(body)}")
         if len(body) < 1024:
             try:
-                print(f"[DEBUG] body content: {body.decode('utf-8', errors='replace')}")
+                logger.debug(f"body content: {body.decode('utf-8', errors='replace')}")
             except:
-                print(f"[DEBUG] body (hex): {body.hex()[:200]}...")
+                logger.debug(f"body (hex): {body.hex()[:200]}...")
         else:
-            print(f"[DEBUG] body (hex) first 64 bytes: {body.hex()[:64]}...")
+            logger.debug(f"body (hex) first 64 bytes: {body.hex()[:64]}...")
 
     try:
         hnd_in = LF_CreateData(api_name.encode('utf-8'))
@@ -172,7 +210,7 @@ def handle_call(path):
 
         size = LF_GetSize(res_ptr)
         if debug_mode:
-            print(f"[DEBUG] Response size: {size}")
+            logger.debug(f"Response size: {size}")
 
         if size == 0:
             LF_FreeData(res_ptr)
@@ -180,7 +218,7 @@ def handle_call(path):
                 for _ in range(min(3, get_status_num())):
                     msg = get_status()
                     if msg:
-                        print(f"[STATUS] {msg}")
+                        logger.info(f"LingoFuse status: {msg}")
             return Response(b'', status=200, content_type='application/octet-stream')
 
         # Read response using LF_ReadBuffer (reliable for binary data)
@@ -199,14 +237,14 @@ def handle_call(path):
             result_bytes = result_bytes[:-1]
 
         if debug_mode:
-            print(f"[DEBUG] Response size={len(result_bytes)}")
+            logger.debug(f"Response size={len(result_bytes)}")
             if len(result_bytes) < 1024:
                 try:
-                    print(f"[DEBUG] response content: {result_bytes.decode('utf-8', errors='replace')}")
+                    logger.debug(f"response content: {result_bytes.decode('utf-8', errors='replace')}")
                 except:
-                    print(f"[DEBUG] response (hex): {result_bytes.hex()[:200]}...")
+                    logger.debug(f"response (hex): {result_bytes.hex()[:200]}...")
             else:
-                print(f"[DEBUG] response (hex) first 64 bytes: {result_bytes.hex()[:64]}...")
+                logger.debug(f"response (hex) first 64 bytes: {result_bytes.hex()[:64]}...")
 
         return Response(result_bytes, status=200, content_type='application/octet-stream')
 
@@ -232,16 +270,16 @@ def setup_network(ep):
         ret = LF_PrepareDone()
         if ret != 1:
             raise ConnectionError(f"LF_PrepareDone returned {ret}")
-        print(f"[Bridge] Connected to LingoFuse service: {ep}")
+        logger.info(f"Connected to LingoFuse service: {ep}")
         return True
     except Exception as e:
-        print(f"[ERROR] Connection failed: {e}")
+        logger.error(f"Connection failed: {e}")
         return False
 
 def run_bridge(host=DEFAULT_HOST, port=DEFAULT_PORT,
                endpoint_addr=DEFAULT_ENDPOINT, timeout=DEFAULT_TIMEOUT,
                default_app=None, threaded_enabled=DEFAULT_THREADED,
-               debug=DEFAULT_DEBUG):
+               debug=DEFAULT_DEBUG, no_precheck_param=False, log_file_path=None):
     """
     Start the LingoFuse HTTP Bridge.
 
@@ -253,46 +291,53 @@ def run_bridge(host=DEFAULT_HOST, port=DEFAULT_PORT,
         default_app: Default target application name (used when path has only API)
         threaded_enabled: Enable multi-threaded request handling
         debug: Enable debug logging
+        no_precheck_param: Disable API pre-check (check_api)
+        log_file_path: Path to log file (None for stderr)
     """
-    global target_app, timeout_ms, endpoint, threaded, debug_mode
-
+    global target_app, timeout_ms, endpoint, threaded, debug_mode, no_precheck, log_file
     target_app = default_app
     timeout_ms = timeout
     endpoint = endpoint_addr
     threaded = threaded_enabled
     debug_mode = debug
+    no_precheck = no_precheck_param
+    log_file = log_file_path
 
-    print("=== LingoFuse HTTP Bridge (Raw Passthrough) ===")
-    print(f"Endpoint: {endpoint}")
-    print(f"Default app: {target_app or '(must be specified in path)'}")
-    print(f"Timeout: {timeout_ms}ms")
-    print(f"Threaded: {threaded}")
-    print(f"Debug: {debug_mode}")
-    print("Path format: /<app>/<api>  or  /<api> (uses default app)")
+    # Configure logging
+    configure_logging(debug_mode, log_file)
+
+    logger.info("=== LingoFuse HTTP Bridge (Raw Passthrough) ===")
+    logger.info(f"Endpoint: {endpoint}")
+    logger.info(f"Default app: {target_app or '(must be specified in path)'}")
+    logger.info(f"Timeout: {timeout_ms}ms")
+    logger.info(f"Threaded: {threaded}")
+    logger.info(f"Debug: {debug_mode}")
+    logger.info(f"API pre-check: {'Disabled' if no_precheck else 'Enabled (with retry)'}")
+    logger.info("Path format: /<app>/<api>  or  /<api> (uses default app)")
 
     if not setup_network(endpoint):
         sys.exit(1)
 
-    print(f"Starting HTTP service: http://{host}:{port}")
-    print("Press Ctrl+C to exit...")
+    logger.info(f"Starting HTTP service: http://{host}:{port}")
+    logger.info("Press Ctrl+C to exit...")
 
     try:
         app.run(host=host, port=port, threaded=threaded, use_reloader=False)
     except KeyboardInterrupt:
-        print("\n[Bridge] Interrupted, shutting down...")
+        logger.info("Interrupted, shutting down...")
     finally:
         cleanup()
 
 def main():
     parser = argparse.ArgumentParser(description="LingoFuse HTTP Bridge (Raw Passthrough)")
     parser.add_argument('--host', default=os.environ.get('LINGOFUSE_HOST', DEFAULT_HOST),
-                        help="Listening address (default {})".format(DEFAULT_HOST))
+                        help=f"Listening address (default {DEFAULT_HOST})")
     parser.add_argument('--port', type=int, default=int(os.environ.get('LINGOFUSE_PORT', DEFAULT_PORT)),
-                        help="Listening port (default {})".format(DEFAULT_PORT))
+                        help=f"Listening port (default {DEFAULT_PORT})")
     parser.add_argument('--endpoint', default=os.environ.get('LINGOFUSE_ENDPOINT', DEFAULT_ENDPOINT),
-                        help="LingoFuse service endpoint (default {})".format(DEFAULT_ENDPOINT))
+                        help=f"LingoFuse service endpoint (default {DEFAULT_ENDPOINT})")
     parser.add_argument('--timeout', type=int, default=int(os.environ.get('LINGOFUSE_TIMEOUT', DEFAULT_TIMEOUT)),
-                        help="Global timeout in milliseconds (default {})".format(DEFAULT_TIMEOUT))
+                        help=f"Global timeout in milliseconds (default {DEFAULT_TIMEOUT})")
     parser.add_argument('--app', default=os.environ.get('LINGOFUSE_APP', None),
                         help="Default target application name (used when path has only API name)")
     parser.add_argument('--threaded', dest='threaded', action='store_true',
@@ -301,6 +346,10 @@ def main():
                         help="Disable multi-threaded request handling")
     parser.add_argument('--debug', action='store_true',
                         help="Enable debug logging of request/response details")
+    parser.add_argument('--log-file', default=None,
+                        help="Path to log file (default: stderr)")
+    parser.add_argument('--no-precheck', action='store_true',
+                        help="Disable API pre-check (check_api) to avoid cache false negatives")
     parser.set_defaults(threaded=DEFAULT_THREADED)
 
     args = parser.parse_args()
@@ -308,7 +357,8 @@ def main():
     run_bridge(host=args.host, port=args.port,
                endpoint_addr=args.endpoint, timeout=args.timeout,
                default_app=args.app, threaded_enabled=args.threaded,
-               debug=args.debug)
+               debug=args.debug, no_precheck_param=args.no_precheck,
+               log_file_path=args.log_file)
 
 if __name__ == '__main__':
     main()

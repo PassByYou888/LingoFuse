@@ -147,13 +147,13 @@ type
     * of the application hosted by the connected client, as well as runtime data
     * for load balancing and sequenced notification tracking.
     *
-    * @Field Last_Selected_Time : Timestamp of the last time this tunnel was
+    * @Field Cycle_Time_Anchor : Timestamp of the last time this tunnel was
     *        selected for routing a call/notification (used for load balancing).
     * @Field Fixed_Sequenced_Notify_Pool : Hash pool mapping "(app, api)" keys
     *        to the last time a sequenced notification was sent through this
     *        tunnel. Used to select the least recently used client for
     *        sequenced notifications.
-    * @Field Temp_Fixed_Sequenced_Value : Temporary storage used during sorting
+    * @Field Fixed_Sequenced_Temp_Time : Temporary storage used during sorting
     *        to hold the last sequenced time for the current (app, api).
     * @Field LF_Service : Back‑reference to the owning service.
     * @Field APP_Name : Name of the application registered by this client.
@@ -167,9 +167,9 @@ type
     * @Field Is_Local : True if the client is connected via IPC or local network. }
   TC40_LF_RecvTunnel = class(TService_RecvTunnel_UserDefine_NoAuth)
   private
-    Last_Selected_Time: TTimeTick;
+    Cycle_Time_Anchor: TTimeTick;
     Fixed_Sequenced_Notify_Pool: TFixed_Sequenced_Notify_Pool;
-    Temp_Fixed_Sequenced_Value: TTimeTick;
+    Fixed_Sequenced_Temp_Time: TTimeTick;
   public
     LF_Service: TC40_LF_Service;
     APP_Name: TLF_String;
@@ -309,11 +309,11 @@ type
     * FWait_Reponse_Thread_Num) are sent to the service every second, allowing
     * the service to perform load‑aware routing.
     *
-    * @Field Last_Selected_Time : Timestamp of the last time this client was
+    * @Field Cycle_Time_Anchor : Timestamp of the last time this client was
     *        selected (for load balancing).
     * @Field Fixed_Sequenced_Notify_Pool : Hash pool for tracking sequenced
     *        notification timestamps (used for local load balancing).
-    * @Field Temp_Fixed_Sequenced_Value : Temporary value used during sorting.
+    * @Field Fixed_Sequenced_Temp_Time : Temporary value used during sorting.
     * @Field FService_Info : Cached service info received from the service.
     * @Field FHost_Running_Thread_Num : Atomic counter of threads handling
     *        incoming calls/notifications.
@@ -339,9 +339,9 @@ type
     * @Property LF_AppIsOnline : Indicates successful registration. }
   TC40_LF_Client = class(TC40_Base_NoAuth_Client)
   private
-    Last_Selected_Time: TTimeTick;
+    Cycle_Time_Anchor: TTimeTick;
     Fixed_Sequenced_Notify_Pool: TFixed_Sequenced_Notify_Pool;
-    Temp_Fixed_Sequenced_Value: TTimeTick;
+    Fixed_Sequenced_Temp_Time: TTimeTick;
   protected
     FService_Info: TLF_ServiceInfoPool;
     FHost_Running_Thread_Num: TAtomInt32;
@@ -349,6 +349,7 @@ type
     FLast_Update_Thread_State_TimeTick: TTimeTick;
     FAPP: TLF_App;
     FAPI_APP_Is_Online: Boolean;
+    FService_Info_Is_Onlne: Boolean;
     procedure Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender: TDT_P2PVM_NoAuth_Custom_Client); override;
     procedure cmd_update_service_api_info(Sender: TPeerIO; InData: PByte; DataSize: NativeInt);
     procedure Do_Notify(thSender: THPC_CompleteBuffer; ThInData: PByte; ThDataSize: NativeInt);
@@ -368,6 +369,7 @@ type
     procedure Init_App_Info;
     procedure Do_Init_App_Info_Result(Sender: TPeerIO; Result_: TDFE);
     property LF_AppIsOnline: Boolean read FAPI_APP_Is_Online;
+    property LF_Service_Info_Is_Onlne: Boolean read FService_Info_Is_Onlne;
     procedure Set_API_APP(const Value: TLF_App);
     property APP: TLF_App read FAPP write Set_API_APP;
 
@@ -398,15 +400,17 @@ type
     destructor Destroy; override;
   end;
 
-  { * Global utility functions for finding LingoFuse applications and APIs
-    * locally (same process) or remotely (across the network). They support
-    * wildcard matching on application names.
-    *
-    * @param app_Name__ : Application name (may contain wildcards like '*').
-    * @param api_Name__ : API name (exact match).
-    * @param Update_Selected_Time : If True, updates the Last_Selected_Time of
-    *        the found client to the current tick, used for load balancing.
-    * @return The matching client, or nil if none found. }
+function Make_LingoFuse_Process_Name: TLF_String;
+
+{ * Global utility functions for finding LingoFuse applications and APIs
+  * locally (same process) or remotely (across the network). They support
+  * wildcard matching on application names.
+  *
+  * @param app_Name__ : Application name (may contain wildcards like '*').
+  * @param api_Name__ : API name (exact match).
+  * @param Update_Selected_Time : If True, updates the Cycle_Time_Anchor of
+  *        the found client to the current tick, used for load balancing.
+  * @return The matching client, or nil if none found. }
 function Find_Local_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 function Find_Remote_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 
@@ -421,6 +425,10 @@ var
   // If the oldest candidate is older than this, fall back to the newest client
   // to prevent starvation and ensure fair distribution.
   Fixed_Sequenced_Time: TTimeTick;
+  LingoFuse_Process_Name: TLF_String;
+
+const
+  C_Generate_Prefix = '@__generate__@';
 
 implementation
 
@@ -430,17 +438,17 @@ implementation
 var
   Find_Safe_Critical, Sort_Safe_Critical: TCritical;
 
-function Do_Cmp_Last_Selected_Time(var L, R: TC40_LF_Client): Integer;
-{ * Comparison function for sorting TC40_LF_Client by Last_Selected_Time.
+function Do_Cmp_Cycle_Time_Anchor(var L, R: TC40_LF_Client): Integer;
+{ * Comparison function for sorting TC40_LF_Client by Cycle_Time_Anchor.
   * Used for load balancing: select the least recently used client. }
 begin
-  Result := CompareUInt64(L.Last_Selected_Time, R.Last_Selected_Time);
+  Result := CompareUInt64(L.Cycle_Time_Anchor, R.Cycle_Time_Anchor);
 end;
 
 function Find_Local_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 { * Searches the local process for a client that hosts an application matching
   * the given name (wildcard supported). Returns the client with the oldest
-  * Last_Selected_Time (least recently used) among matches.
+  * Cycle_Time_Anchor (least recently used) among matches.
   * @param app_Name__ : Application name pattern.
   * @param Update_Selected_Time : If True, updates the selected client's time.
   * @return The matching client, or nil. }
@@ -454,7 +462,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -470,12 +478,12 @@ begin
 
   Sort_Safe_Critical.Lock;
   try
-    L.Sort_C(Do_Cmp_Last_Selected_Time);
+    L.Sort_C(Do_Cmp_Cycle_Time_Anchor);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         if Update_Selected_Time then
-            Result.Last_Selected_Time := GetTimeTick();
+            Result.Cycle_Time_Anchor := GetTimeTick();
       end;
   finally
       Sort_Safe_Critical.UnLock;
@@ -487,7 +495,7 @@ end;
 function Find_Remote_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 { * Searches remote clients (via the service info cache) for an application
   * matching the given name. Returns the client with the oldest
-  * Last_Selected_Time among matches. }
+  * Cycle_Time_Anchor among matches. }
 var
   arry: TC40_Custom_Client_Array;
   i: Integer;
@@ -498,7 +506,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client, True);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client, True);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -511,12 +519,12 @@ begin
 
   Sort_Safe_Critical.Lock;
   try
-    L.Sort_C(Do_Cmp_Last_Selected_Time);
+    L.Sort_C(Do_Cmp_Cycle_Time_Anchor);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         if Update_Selected_Time then
-            Result.Last_Selected_Time := GetTimeTick();
+            Result.Cycle_Time_Anchor := GetTimeTick();
       end;
   finally
       Sort_Safe_Critical.UnLock;
@@ -528,7 +536,7 @@ end;
 function Find_Local_API(app_Name__, api_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 { * Searches the local process for a client that hosts an application matching
   * the given name AND exports the specified API. Returns the client with the
-  * oldest Last_Selected_Time. }
+  * oldest Cycle_Time_Anchor. }
 var
   arry: TC40_Custom_Client_Array;
   i: Integer;
@@ -539,7 +547,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -555,12 +563,12 @@ begin
 
   Sort_Safe_Critical.Lock;
   try
-    L.Sort_C(Do_Cmp_Last_Selected_Time);
+    L.Sort_C(Do_Cmp_Cycle_Time_Anchor);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         if Update_Selected_Time then
-            Result.Last_Selected_Time := GetTimeTick();
+            Result.Cycle_Time_Anchor := GetTimeTick();
       end;
   finally
       Sort_Safe_Critical.UnLock;
@@ -572,7 +580,7 @@ end;
 function Find_Remote_API(app_Name__, api_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 { * Searches remote clients for an application matching the given name AND
   * exporting the specified API. Returns the client with the oldest
-  * Last_Selected_Time. }
+  * Cycle_Time_Anchor. }
 var
   arry: TC40_Custom_Client_Array;
   i: Integer;
@@ -583,7 +591,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client, True);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client, True);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -596,12 +604,12 @@ begin
 
   Sort_Safe_Critical.Lock;
   try
-    L.Sort_C(Do_Cmp_Last_Selected_Time);
+    L.Sort_C(Do_Cmp_Cycle_Time_Anchor);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         if Update_Selected_Time then
-            Result.Last_Selected_Time := GetTimeTick();
+            Result.Cycle_Time_Anchor := GetTimeTick();
       end;
   finally
       Sort_Safe_Critical.UnLock;
@@ -610,12 +618,12 @@ begin
   DisposeObject(L);
 end;
 
-function Do_Inv_Cmp_Temp_Sequence_Value(var L, R: TC40_LF_Client): Integer;
+function Do_Cmp_Fixed_Sequenced_Temp_Time(var L, R: TC40_LF_Client): Integer;
 { * Comparison function for sorting TC40_LF_Client by
-  * Temp_Fixed_Sequenced_Value in descending order (so that the client with
+  * Fixed_Sequenced_Temp_Time in descending order (so that the client with
   * the smallest value (oldest) comes first). }
 begin
-  Result := CompareUInt64(R.Temp_Fixed_Sequenced_Value, L.Temp_Fixed_Sequenced_Value);
+  Result := CompareUInt64(R.Fixed_Sequenced_Temp_Time, L.Fixed_Sequenced_Temp_Time);
 end;
 
 function Find_Fixed_Sequenced_Local_API(app_Name__, api_Name__: TLF_String): TC40_LF_Client;
@@ -638,7 +646,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -657,16 +665,16 @@ begin
   for i := 0 to L.Count - 1 do
     begin
       Cli := L[i] as TC40_LF_Client;
-      Cli.Temp_Fixed_Sequenced_Value := Cli.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
+      Cli.Fixed_Sequenced_Temp_Time := Cli.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
     end;
 
   try
-    L.Sort_C(Do_Inv_Cmp_Temp_Sequence_Value);
+    L.Sort_C(Do_Cmp_Fixed_Sequenced_Temp_Time);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         // If the oldest timestamp is more than "Fixed_Sequenced_Time" ms old, fall back to the newest (last) to avoid always using the same client.
-        if GetTimeTick() - Result.Temp_Fixed_Sequenced_Value > Fixed_Sequenced_Time then
+        if GetTimeTick() - Result.Fixed_Sequenced_Temp_Time > Fixed_Sequenced_Time then
             Result := L.Last^.Data;
         Result.Fixed_Sequenced_Notify_Pool.Set_Key_Value(n, GetTimeTick());
       end;
@@ -691,7 +699,7 @@ begin
   L := TC40_LF_ClientList.Create;
   Find_Safe_Critical.Lock;
   try
-    arry := C40_ClientPool.SearchClass(TC40_LF_Client, True);
+    arry := C40_ClientPool.FastSearchClass(TC40_LF_Client, True);
     for i := 0 to length(arry) - 1 do
       begin
         Cli := arry[i] as TC40_LF_Client;
@@ -707,16 +715,16 @@ begin
   for i := 0 to L.Count - 1 do
     begin
       Cli := L[i] as TC40_LF_Client;
-      Cli.Temp_Fixed_Sequenced_Value := Cli.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
+      Cli.Fixed_Sequenced_Temp_Time := Cli.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
     end;
 
   try
-    L.Sort_C(Do_Inv_Cmp_Temp_Sequence_Value);
+    L.Sort_C(Do_Cmp_Fixed_Sequenced_Temp_Time);
     if L.Num > 0 then
       begin
         Result := L.First^.Data;
         // If the oldest timestamp is more than "Fixed_Sequenced_Time" ms old, fall back to the newest (last) to avoid always using the same client.
-        if GetTimeTick() - Result.Temp_Fixed_Sequenced_Value > Fixed_Sequenced_Time then
+        if GetTimeTick() - Result.Fixed_Sequenced_Temp_Time > Fixed_Sequenced_Time then
             Result := L.Last^.Data;
         Result.Fixed_Sequenced_Notify_Pool.Set_Key_Value(n, GetTimeTick());
       end;
@@ -732,9 +740,9 @@ constructor TC40_LF_RecvTunnel.Create(Owner_: TPeerIO);
   * pool and the API info hash list. }
 begin
   inherited Create(Owner_);
-  Last_Selected_Time := 0;
+  Cycle_Time_Anchor := 0;
   Fixed_Sequenced_Notify_Pool := TFixed_Sequenced_Notify_Pool.Create($FF, 0);
-  Temp_Fixed_Sequenced_Value := 0;
+  Fixed_Sequenced_Temp_Time := 0;
 
   LF_Service := nil;
   APP_Name := '';
@@ -944,8 +952,7 @@ begin
   FNeed_Broadcast_API_Info := True;
 end;
 
-procedure TC40_LF_Service.DoLinkSuccess_Event(Sender: TDTService_NoAuth;
-  UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
+procedure TC40_LF_Service.DoLinkSuccess_Event(Sender: TDTService_NoAuth; UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
 { * Sets back‑references in the receive and send tunnel user objects. }
 var
   user_io: TC40_LF_RecvTunnel;
@@ -956,8 +963,7 @@ begin
   (user_io.SendTunnel as TC40_LF_SendTunnel).LF_Service := Self;
 end;
 
-procedure TC40_LF_Service.DoUserOut_Event(Sender: TDTService_NoAuth;
-  UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
+procedure TC40_LF_Service.DoUserOut_Event(Sender: TDTService_NoAuth; UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
 { * Overridden; no extra logic needed because the user object will be freed
   * automatically when the connection drops. }
 begin
@@ -991,7 +997,13 @@ begin
       user_io.api_info_data.Add(L[i], nil, False);
   DisposeObject(L);
   user_io.Is_Local := InData.R.ReadBool;
-  Do_Delay_Broadcast_API_Info();
+
+  if user_io.APP_Name.StrExists(C_Generate_Prefix) then
+    begin
+      Broadcast_API_Info;
+      FNeed_Broadcast_API_Info := False;
+    end
+  else Do_Delay_Broadcast_API_Info();
 end;
 
 procedure TC40_LF_Service.cmd_No_App_Info(Sender: TPeerIO; InData: SystemString);
@@ -1385,17 +1397,17 @@ begin
 end;
 
 function TC40_LF_Service.Do_Cmp_Last_Selected_Time__(var L, R: TC40_LF_RecvTunnel): Integer;
-{ * Comparison function for sorting connected clients by Last_Selected_Time.
+{ * Comparison function for sorting connected clients by Cycle_Time_Anchor.
   * Used to implement load balancing by selecting the least recently used client. }
 begin
-  Result := CompareUInt64(L.Last_Selected_Time, R.Last_Selected_Time);
+  Result := CompareUInt64(L.Cycle_Time_Anchor, R.Cycle_Time_Anchor);
 end;
 
 function TC40_LF_Service.Find_API(app_Name__, api_Name__: TLF_String): TC40_LF_RecvTunnel;
 { * Scans all connected clients and returns the receive‑tunnel user object of
   * the first one that matches the given application name (wildcard) and
   * exposes the specified API. If multiple clients match, the one with the
-  * lowest Last_Selected_Time is returned (load balancing). }
+  * lowest Cycle_Time_Anchor is returned (load balancing). }
 var
   arry: TIO_Array;
   ID_: Cardinal;
@@ -1421,15 +1433,15 @@ begin
   if L.Num > 0 then
     begin
       Result := L.First^.Data;
-      Result.Last_Selected_Time := GetTimeTick();
+      Result.Cycle_Time_Anchor := GetTimeTick();
     end;
   DisposeObject(L);
 end;
 
 function TC40_LF_Service.Do_Inv_Cmp_Temp_Sequence_Value__(var L, R: TC40_LF_RecvTunnel): Integer;
-{ * Comparison function for sorting by Temp_Fixed_Sequenced_Value (descending). }
+{ * Comparison function for sorting by Fixed_Sequenced_Temp_Time (descending). }
 begin
-  Result := CompareUInt64(R.Temp_Fixed_Sequenced_Value, L.Temp_Fixed_Sequenced_Value);
+  Result := CompareUInt64(R.Fixed_Sequenced_Temp_Time, L.Fixed_Sequenced_Temp_Time);
 end;
 
 function TC40_LF_Service.Find_Fixed_Sequenced_API(app_Name__, api_Name__: TLF_String): TC40_LF_RecvTunnel;
@@ -1467,7 +1479,7 @@ begin
     begin
       with L.repeat_ do
         repeat
-            queue^.Data.Temp_Fixed_Sequenced_Value := queue^.Data.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
+            queue^.Data.Fixed_Sequenced_Temp_Time := queue^.Data.Fixed_Sequenced_Notify_Pool.Get_Default_Value(n, 0);
         until not Next;
       L.Sort_M(Do_Inv_Cmp_Temp_Sequence_Value__);
     end;
@@ -1475,7 +1487,7 @@ begin
   if L.Num > 0 then
     begin
       Result := L.First^.Data;
-      if GetTimeTick() - Result.Temp_Fixed_Sequenced_Value > Fixed_Sequenced_Time then
+      if GetTimeTick() - Result.Fixed_Sequenced_Temp_Time > Fixed_Sequenced_Time then
           Result := L.Last^.Data;
       Result.Fixed_Sequenced_Notify_Pool.Set_Key_Value(n, GetTimeTick());
     end;
@@ -1488,8 +1500,7 @@ procedure TC40_LF_Client.Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender: TDT
   * automatically registers it with the service. }
 begin
   inherited Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender);
-  if APP <> nil then
-      Init_App_Info;
+  Init_App_Info;
 end;
 
 procedure TC40_LF_Client.cmd_update_service_api_info(Sender: TPeerIO; InData: PByte; DataSize: NativeInt);
@@ -1506,6 +1517,7 @@ begin
   DisposeObject(m64);
   FService_Info.LoadFromStream(d);
   DisposeObject(d);
+  FService_Info_Is_Onlne := True;
 end;
 
 procedure TC40_LF_Client.Do_Notify(thSender: THPC_CompleteBuffer; ThInData: PByte; ThDataSize: NativeInt);
@@ -1595,9 +1607,10 @@ begin
   FLast_Update_Thread_State_TimeTick := 0;
   FAPP := nil;
   FAPI_APP_Is_Online := False;
-  Last_Selected_Time := 0;
+  FService_Info_Is_Onlne := False;
+  Cycle_Time_Anchor := 0;
   Fixed_Sequenced_Notify_Pool := TFixed_Sequenced_Notify_Pool.Create($FF, 0);
-  Temp_Fixed_Sequenced_Value := 0;
+  Fixed_Sequenced_Temp_Time := 0;
 
   DTNoAuth.RecvTunnel.MaxCompleteBufferSize := EStrToInt64(ParamList.GetDefaultValue('MaxBuffer', '500*1024*1024'), 500 * 1024 * 1024);
   DTNoAuth.SendTunnel.MaxCompleteBufferSize := EStrToInt64(ParamList.GetDefaultValue('MaxBuffer', '500*1024*1024'), 500 * 1024 * 1024);
@@ -1668,14 +1681,15 @@ end;
 
 procedure TC40_LF_Client.DoNetworkOnline;
 begin
-  inherited;
+  inherited DoNetworkOnline;
 end;
 
 procedure TC40_LF_Client.DoNetworkOffline;
 { * Called when the client disconnects; resets the online flag. }
 begin
-  inherited;
+  inherited DoNetworkOffline;
   FAPI_APP_Is_Online := False;
+  FService_Info_Is_Onlne := False;
 end;
 
 procedure TC40_LF_Client.Update_LocalThread_State_To_Service;
@@ -1706,7 +1720,7 @@ var
 begin
   if (APP = nil) or (APP.Name.TrimChar(#32#9) = '') then
     begin
-      DTNoAuth.SendTunnel.SendConsoleNotifyCmd('No_App_Info', MakeProcessName());
+      DTNoAuth.SendTunnel.SendConsoleNotifyCmd('No_App_Info', Make_LingoFuse_Process_Name());
       exit;
     end;
   api_info_data := TPascalStringList.Create;
@@ -1721,7 +1735,7 @@ begin
     TDFE.Create
       .WriteString(APP.Name.Text)
       .WriteString(APP.Desc.Text)
-      .WriteString(MakeProcessName())
+      .WriteString(Make_LingoFuse_Process_Name())
       .WritePascalStrings(api_info_data)
       .WriteBool(IsLocal())
       .DelayFree,
@@ -1918,6 +1932,7 @@ initialization
 
 RegisterC40('LingoFuse', TC40_LF_Service, TC40_LF_Client);
 Fixed_Sequenced_Time := Z.Core.C_Tick_Second * 20;
+LingoFuse_Process_Name := '';
 Find_Safe_Critical := TCritical.Create('Find_Hub_Safe_Critical');
 Sort_Safe_Critical := TCritical.Create('Sort_Safe_Critical');
 

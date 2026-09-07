@@ -1,0 +1,19 @@
+# LingoFuse Python 绑定依赖
+# ===========================
+# 激活长路径
+# New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+# 执行安装
+# pip install -r requirements.txt
+
+# 核心 LLM 后端（推荐使用 llama-cpp-python，支持 CPU/GPU）
+llama-cpp-python>=0.3.0
+
+# 若使用 transformers 后端（可选），需额外安装以下两个包：
+# transformers>=4.40.0
+# torch>=2.0.0
+
+# HTTP 桥接（bridge.py）
+flask>=2.3.0
+
+# 测试辅助
+requests>=2.31.0

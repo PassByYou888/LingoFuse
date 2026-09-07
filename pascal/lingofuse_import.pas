@@ -195,6 +195,99 @@
  *     However, you must ensure all resources are properly freed before
  *     restarting.
  *
+ *   {!!!!!  OVERLAP_CONNECTION BEHAVIOR  !!!!!}
+ *   - The `Overlap_Connection` option (set via LF_SetOption) controls whether
+ *     multiple client tunnels to the same remote address are allowed.
+ *   - When `Overlap_Connection = False` (default), only one client tunnel is
+ *     created per address. Subsequent calls to LF_PrepareClient with a
+ *     **different** `appHnd` will **silently ignore** the new application
+ *     handle – the existing tunnel is reused, and the new `appHnd` is never
+ *     bound. This can lead to confusing behaviour if you expect multiple
+ *     applications to be hosted on the same remote service.
+ *   - When `Overlap_Connection = True`, each call to LF_PrepareClient creates
+ *     a **new independent tunnel**, and the provided `appHnd` is bound to the
+ *     newly created client. This allows multiple applications to be exposed
+ *     on the same remote service.
+ *   - **Recommendation**: If you intend to host multiple applications on the
+ *     same remote service, set `Overlap_Connection = True` **before** calling
+ *     LF_PrepareClient. If you need to change the application on an existing
+ *     client, use LF_BindApp.
+ *
+ *   {!!!!!  GENERATE_APP_NAME AND BINDAPP PATTERNS  !!!!!}
+ *   - LF_Generate_AppName() returns a name that includes the current process
+ *     name, PID, timestamp, and **active C4 tunnel addresses and remote IDs**.
+ *     Therefore, it **must be called after LF_PrepareDone()** has successfully
+ *     completed and the simulated main thread is running. If called before,
+ *     the returned name will lack tunnel information and may not be globally
+ *     unique.
+ *   - The returned PAnsiChar pointer is valid for only **5 seconds**; you must
+ *     copy its content immediately (e.g., using StrCopy/StrNew or by assigning
+ *     to a Pascal string) – otherwise the library will free the memory and
+ *     your pointer will become invalid.
+ *   - LF_BindApp attaches an application to any client that currently has no
+ *     application attached (i.e., where `Cli.app = nil`). The number of such
+ *     clients depends on how many distinct addresses were used in
+ *     LF_PrepareClient calls. If all clients are already occupied, BindApp
+ *     returns 0.
+ *   - To dynamically create a new client that will host a newly generated
+ *     application name (for point‑to‑point communication), you can either:
+ *       a) Set `Overlap_Connection = True` and call LF_PrepareClient with the
+ *          same physical address and the new App handle – this creates a
+ *          separate tunnel and binds the app immediately.
+ *       b) If `Overlap_Connection = False` and the address already has a
+ *          client, you must prepare a **different** physical address (e.g.,
+ *          a different IPC name or TCP port) to create a new client.
+ *     The typical pattern for a dynamic client (as used in LLM streaming) is:
+ *       1. LF_ResetPrepare
+ *       2. LF_PrepareClient(endpoint, nil)   // consumer only, no app
+ *       3. LF_PrepareDone                    // wait for connection
+ *       4. appName := LF_Generate_AppName    // generate unique name AFTER connection
+ *       5. App := LF_CreateApp(appName)      // create App with that name
+ *       6. Register Notify callbacks on App
+ *       7. LF_BindApp(App)                   // bind to the existing client
+ *     This ensures the App is attached to the already‑established tunnel.
+ *
+ *   {!!!!!  CHECK FUNCTIONS CACHE BEHAVIOR  !!!!!}
+ *   - LF_CheckApp and LF_CheckApi perform lookups based on a **local cache**
+ *     that is updated via network broadcasts. These broadcasts propagate with
+ *     a typical delay of about **3 seconds**. Consequently, these functions
+ *     may return false negatives immediately after an application/API is
+ *     registered, or false positives shortly after it is unregistered.
+ *   - They are intended for **probing** availability and should not be used
+ *     as authoritative existence tests for critical decisions. In deployment
+ *     scenarios where immediate availability is required, consider retrying
+ *     the call with a short delay, or implementing client‑side caching.
+ *   - For applications that require strict synchronisation, use the actual
+ *     `LF_Call` and handle timeout/empty result gracefully.
+ *
+ *   {!!!!!  DEPLOYMENT MODE (Wait_Connection_ReadyOk)  !!!!!}
+ *   - Setting `Wait_Connection_ReadyOk = False` (via LF_SetOption) tells the
+ *     library that LF_PrepareDone should **not** block waiting for all clients
+ *     to be fully connected and registered. This enables "deployment mode",
+ *     where services and clients can start in any order, and the framework
+ *     becomes ready as soon as the internal event loop is running.
+ *   - This is useful for elastic clusters where startup order is unpredictable.
+ *     However, if you make a remote call before the target application is
+ *     registered, you will receive an empty result (size 0) or a timeout.
+ *     It is recommended to combine this with retry logic or use LF_CheckApp
+ *     with a backoff strategy.
+ *   - The default is `True` (wait for readiness), which guarantees that after
+ *     LF_PrepareDone returns 1, all prepared clients are online. This is safer
+ *     but slower for dynamic deployments.
+ *
+ *   {!!!!!  RESOURCE CLEANUP ORDER  !!!!!}
+ *   - The correct shutdown sequence to avoid resource leaks and crashes is:
+ *       1. LF_ExitMainThread   // stop the network event loop
+ *       2. LF_FreeApp(app)     // detach and stop sequenced threads (app stays in pool)
+ *       3. LF_Shutdown         // destroy all remaining objects, free the pool
+ *     Alternatively, calling LF_Shutdown alone will perform steps 1 and 3
+ *     internally, but apps are not individually freed (they are all destroyed
+ *     in the final cleanup). For explicit control, free apps before shutdown.
+ *   - In a dynamic library (DLL), you **must** call LF_Shutdown explicitly
+ *     before unloading the library, otherwise resources will leak and the
+ *     process may crash. In a standalone executable, the finalization section
+ *     of this unit automatically calls LF_Shutdown.
+ *
  *   {!!!!!  INITIALIZATION / FINALIZATION  !!!!!}
  *   - The unit automatically initialises its internal structures when the unit
  *     is loaded. In an executable (not a library), the finalization section
@@ -371,6 +464,28 @@
  *   - Use `LF_GetStatus` to retrieve internal LingoFuse log messages that may
  *     indicate network or registration issues.
  *
+ *   6.7 Overlap_Connection and PrepareClient Behavior
+ *   ------------------------------------------------
+ *   The `Overlap_Connection` option (set via `LF_SetOption('Overlap_Connection', 'True/False')`)
+ *   controls how `LF_PrepareClient` handles multiple calls to the same remote address.
+ *
+ *   - When `Overlap_Connection = False` (the default), only one client tunnel is
+ *     created per address. Subsequent calls to `LF_PrepareClient` with a
+ *     **different** `appHnd` will **silently ignore** the new application handle.
+ *     The existing tunnel is reused, and the new `appHnd` is never bound.
+ *     This can lead to confusing behaviour if you expect multiple applications
+ *     to be hosted on the same remote service.
+ *
+ *   - When `Overlap_Connection = True`, each call to `LF_PrepareClient` creates
+ *     a **new independent tunnel**, and the provided `appHnd` is bound to the
+ *     newly created client. This allows multiple applications to be exposed
+ *     on the same remote service, each with its own dedicated connection.
+ *
+ *   **Recommendation**: If you intend to host multiple applications on the same
+ *   remote service, set `Overlap_Connection = True` **before** calling
+ *   `LF_PrepareClient`. If you need to change the application on an existing
+ *   client, use `LF_BindApp`.
+ *
  * By following these guidelines, you can avoid the most common pitfalls when
  * integrating Pascal LingoFuse services with JSON‑based HTTP clients and bridges.
  *
@@ -477,6 +592,113 @@
  *     C4 progress loop. It is started by LF_PrepareDone and runs until
  *     LF_ExitMainThread or LF_Shutdown. It is responsible for network I/O,
  *     timer processing, and automatic handle reclamation.
+ *
+ * =============================================================================
+ * 11. ADDITIONAL CRITICAL NOTES FOR PRODUCTION USAGE
+ * =============================================================================
+ *
+ *   {!!!!!  GENERATE_APP_NAME – TIMING IS CRITICAL  !!!!!}
+ *   - LF_Generate_AppName builds its unique string from active C4 tunnel
+ *     addresses, remote IDs, process name (with PID), and a timestamp.
+ *     Therefore, the network must be fully operational before calling it.
+ *     Always call LF_Generate_AppName **after** LF_PrepareDone has returned 1.
+ *     If called before, the generated name will lack tunnel info and may not
+ *     be unique, causing routing failures.
+ *   - The returned pointer is automatically freed by the library after 5 seconds.
+ *     You must copy the content immediately (e.g., assign to a Pascal string,
+ *     or use StrCopy/StrNew) – otherwise later accesses will read freed memory.
+ *   - In dynamic client scenarios (e.g., LLM streaming clients), the correct
+ *     order is:
+ *       1. Prepare network with LF_PrepareClient(endpoint, nil)
+ *       2. Call LF_PrepareDone and wait for success
+ *       3. Call LF_Generate_AppName to obtain a unique name
+ *       4. Create the App with that name, register callbacks
+ *       5. Bind the App with LF_BindApp (or prepare a new client with that App)
+ *     This guarantees the name includes all network identities.
+ *
+ *   {!!!!!  BINDAPP AND CLIENT CAPACITY  !!!!!}
+ *   - LF_BindApp attaches an App to all currently **unbound** clients.
+ *     Unbound means the client has no App attached (Cli.app = nil).
+ *     Each client can host only one App at a time.
+ *   - The number of unbound clients depends on how many LF_PrepareClient calls
+ *     were made with distinct addresses (or with Overlap_Connection=True).
+ *     If you prepared only one client, BindApp will bind to that client (if free),
+ *     or return 0 if it is already occupied.
+ *   - To support multiple Apps on the same physical address, you must set
+ *     Overlap_Connection=True before calling LF_PrepareClient. Each call to
+ *     LF_PrepareClient with a different App will create a new tunnel and bind
+ *     that App immediately (without needing LF_BindApp). Alternatively, you can
+ *     prepare clients with different addresses (e.g., different IPC names) and
+ *     then use BindApp to attach Apps later.
+ *   - If BindApp returns 0 because all clients are occupied, you have two
+ *     options:
+ *       a) Set Overlap_Connection=True and call LF_PrepareClient again with the
+ *          new App – this creates a new client tunnel.
+ *       b) Prepare additional clients with different addresses before calling
+ *          BindApp.
+ *
+ *   {!!!!!  WAIT_CONNECTION_READYOK AND STARTUP ORDER  !!!!!}
+ *   - When Wait_Connection_ReadyOk = True (default), LF_PrepareDone blocks
+ *     until all prepared clients are connected and their Apps are online.
+ *     This guarantees that after PrepareDone, all clients are ready.
+ *   - When Wait_Connection_ReadyOk = False (deployment mode), PrepareDone
+ *     returns as soon as the event loop starts, even if some clients are not
+ *     yet connected. This allows services and nodes to start in any order.
+ *     However, you must implement retry logic when calling remote APIs, as the
+ *     target may not be registered yet. Use LF_CheckApp or LF_CheckApi with a
+ *     backoff strategy to avoid immediate failures.
+ *   - The timeout for waiting is controlled by Wait_Connection_Timeout (default
+ *     30 seconds). If the timeout expires, PrepareDone still returns success (1)
+ *     but some clients may remain offline. Check LF_GetStatus for warnings.
+ *
+ *   {!!!!!  CHECKAPP / CHECKAPI CACHE DELAY  !!!!!}
+ *   - These functions query a local cache that is updated via network broadcasts.
+ *     Broadcast propagation typically takes up to 3 seconds. As a result, they
+ *     may not reflect the latest state immediately after registration or
+ *     unregistration.
+ *   - Do not use them as the sole condition for critical operations. Instead,
+ *     call the API directly and handle timeouts or empty results gracefully.
+ *     For better reliability, combine CheckApp/CheckApi with retry loops and
+ *     short delays.
+ *
+ *   {!!!!!  CALLBACK DEADLOCK PREVENTION  !!!!!}
+ *   - The rule “never call LF_Call or LF_Notify from within a callback” is
+ *     absolute. Doing so will deadlock because the callback thread may already
+ *     hold internal locks that are needed by the new call.
+ *   - If your callback must perform a remote call, offload the work to a
+ *     separate thread (e.g., using TThread.CreateAnonymousThread) and return
+ *     immediately. The callback should only read the input, enqueue the request,
+ *     and possibly write a temporary response (like a job ID) to the output.
+ *   - For notify callbacks (which have no output), you can simply enqueue the
+ *     data and return; the actual processing happens later.
+ *
+ *   {!!!!!  AUTOMATIC DATA HANDLE RECLAMATION  !!!!!}
+ *   - The library maintains a global pool of data handles and automatically
+ *     frees any handle that has been idle for more than 5 minutes. This is a
+ *     safety net to prevent leaks when developers forget to call LF_FreeData.
+ *   - However, the reclaimer runs on the simulated main thread; if the main
+ *     thread is not running (e.g., before LF_PrepareDone or after LF_ExitMainThread),
+ *     the reclaimer does not operate. In high‑throughput applications, relying
+ *     on automatic reclamation can cause memory bloat because handles may
+ *     accumulate faster than they are reclaimed.
+ *   - **Best practice**: always call LF_FreeData explicitly as soon as a handle
+ *     is no longer needed. Do not depend on the automatic reclaimer for
+ *     production performance.
+ *
+ *   {!!!!!  LF_FREEAPP AND LF_SHUTDOWN LIFETIME  !!!!!}
+ *   - LF_FreeApp detaches the application from all clients and stops its
+ *     sequenced notification threads, but the underlying TLF_App object is
+ *     **not destroyed immediately**. It remains in the global LF_App_Pool
+ *     until LF_Shutdown is called. This ensures that any pending network
+ *     broadcasts that reference the app data can complete safely.
+ *   - If you need to reclaim the app’s memory before shutdown, you must call
+ *     LF_Shutdown (which clears the entire pool). In practice, for long‑running
+ *     servers that dynamically create and destroy many Apps, you may need to
+ *     carefully design your application to call LF_Shutdown periodically, or
+ *     reuse app names, because the pool will keep objects alive until shutdown.
+ *   - In a normal workflow, you can simply call LF_Shutdown at the end of your
+ *     program, and it will free all remaining Apps, regardless of whether
+ *     LF_FreeApp was called for each.
  *
  * =============================================================================
  * END OF DOCUMENTATION HEADER
@@ -623,6 +845,7 @@ function LF_WriteDouble(Hnd: TDataHnd___; Value: double): boolean;
     * @param Value  Pascal string (will be UTF‑8 encoded).
     * @return True if all bytes were written. }
 function LF_WriteString(Hnd: TDataHnd___; const Value: string): boolean;
+function LF_WriteStringBytes(Hnd: TDataHnd___; const Value: TBytes): boolean;
 
 { ---- Convenience Read Helpers (with out parameters) ---- }
 
@@ -652,6 +875,8 @@ function LF_ReadDouble(Hnd: TDataHnd___): double; overload;
 
 { ---- String Reading ---- }
 
+function LF_ReadStringBytes(Hnd: TDataHnd___; out Buff: TBytes): boolean; overload;
+function LF_ReadStringBytes(Hnd: TDataHnd___): TBytes; overload;
 function LF_ReadString(Hnd: TDataHnd___; out Value: string): boolean; overload;
 function LF_ReadString(Hnd: TDataHnd___): string; overload;
 
@@ -666,7 +891,86 @@ procedure LF_SetSize(Hnd: TDataHnd___; Size_: int64); cdecl; external liblingofu
 
 function LF_CreateApp(appName, Desc: pansichar): TAppHnd___; cdecl; external liblingofuse name 'LF_CreateApp';
 function LF_CreateAppEx(appName, Desc: string): TAppHnd___;
+
+{ * LF_FreeApp: Detaches an application from all clients and stops its
+  * sequenced notification threads, but does NOT immediately destroy the
+  * underlying TLF_App object. The object remains alive in the global
+  * LF_App_Pool until LF_Shutdown is called, which then frees it forcibly.
+  *
+  * This two‑phase destruction prevents dangling pointers while allowing
+  * other components (e.g., network broadcasts) to continue referencing the
+  * application data safely. After calling LF_FreeApp, the handle should be
+  * considered invalid and not used for further registrations or calls.
+  *
+  * @param appHnd  The application handle to detach (can be nil).
+  * @see LF_Shutdown  for final cleanup.
+  * }
 procedure LF_FreeApp(appHnd: TAppHnd___); cdecl; external liblingofuse name 'LF_FreeApp';
+
+{ * LF_Generate_appName: Generates a globally unique application name string.
+  * The name is built by concatenating:
+  *   - All active C4 physics tunnel addresses and remote IDs,
+  *   - The current process name (with PID),
+  *   - A high‑resolution timestamp.
+  * This ensures that each call produces a distinct identifier, suitable for
+  * point‑to‑point communication where each node must have a unique identity.
+  *
+  * WARNING: The returned pointer is valid for only 5 seconds; the library
+  * automatically frees the underlying memory after that time. The caller
+  * MUST copy the content immediately (e.g., via StrCopy/StrNew) before the
+  * pointer becomes invalid. Failure to do so will result in accessing freed
+  * memory.
+  *
+  * @return PAnsiChar pointing to a null‑terminated UTF‑8 string.
+  * @Example:
+  *   var uniqueName: string;
+  *   var p: PAnsiChar;
+  *   p := LF_Generate_AppName;
+  *   uniqueName := string(p);  // immediately copy to Pascal string
+  *   // use uniqueName safely...
+  * }
+function LF_Generate_AppName(): pansichar; cdecl; external liblingofuse name 'LF_Generate_AppName';
+function LF_Generate_AppNameEx(): string;
+
+{ * LF_Get_appName: Retrieves the application name associated with the given
+  * application handle.
+  *
+  * WARNING: The returned pointer is valid for only 5 seconds; the library
+  * automatically frees the underlying memory after that time. The caller
+  * MUST copy the content immediately (e.g., via StrCopy/StrNew) before the
+  * pointer becomes invalid.
+  *
+  * @param appHnd The application handle (TLF_App) whose name is queried.
+  * @return PAnsiChar pointing to the UTF‑8 encoded name stored in the app.
+  * @Note This function simply returns the Name field of the TLF_App object.
+  * }
+function LF_Get_AppName(appHnd: TAppHnd___): pansichar; cdecl; external liblingofuse name 'LF_Get_AppName';
+function LF_Get_AppNameEx(appHnd: TAppHnd___): string;
+
+{ * LF_BindApp: Binds an application to all currently unbound LingoFuse
+  * clients. This function must be called after LF_PrepareDone has been
+  * invoked and the simulated main thread is active; otherwise, it logs an
+  * error and returns 0 without any binding.
+  *
+  * Upon successful binding, each client will register the application and
+  * its APIs with the service, making them available for remote discovery
+  * and invocation. The binding process logs the application name, description,
+  * connection details, and a list of all registered APIs with their modes
+  * (call/notify).
+  *
+  * @param appHnd The application handle to bind.
+  * @return The number of clients to which the application was successfully
+  *         bound. A return value of 0 indicates that either the main thread
+  *         is not active, or all existing clients are already occupied
+  *         (each client can only host one application). In the latter case,
+  *         a log message is emitted: "All clients are already occupied".
+  *         If at least one client is bound, the application becomes available
+  *         on the network.
+  * @Note The function only binds to clients that currently have a nil app
+  *       reference (i.e., Cli.app = nil). Clients already hosting an app
+  *       are skipped. If no such clients exist, the result is 0.
+  * }
+function LF_BindApp(appHnd: TAppHnd___): Integer; cdecl; external liblingofuse name 'LF_BindApp';
 
 { ---- API Registration ---- }
 
@@ -745,10 +1049,28 @@ function LF_PrepareServiceEx(ListeningAddr_, PhysicsAddr_: string): integer;
   { * LF_PrepareClient: Prepares or immediately creates a C4 client.
     * If the main thread is already running, the client connection is
     * attempted immediately; otherwise, it is queued until LF_PrepareDone.
+    *
+    * IMPORTANT: The behaviour of this function regarding duplicate addresses
+    * is controlled by the `Overlap_Connection` option (see LF_SetOption).
+    *
+    * - When Overlap_Connection = False (default): only one client tunnel is
+    *   created per address. If a tunnel already exists, it is reused and the
+    *   provided `appHnd` is **ignored** (silently discarded). This means you
+    *   cannot bind multiple different applications to the same remote service
+    *   using this function alone – use LF_BindApp to change the application
+    *   on an existing client.
+    *
+    * - When Overlap_Connection = True: each call creates a new independent
+    *   tunnel, and the provided `appHnd` is bound to the newly created client.
+    *   This allows multiple applications to be exposed on the same remote
+    *   service, each with its own dedicated connection.
+    *
     * @param PhysicsAddr_  Address of the remote service to connect to.
     * @param appHnd        Optional application handle to expose; nil for consumer.
-    * @return A tag ID for the client, or -1 if a duplicate address exists.
-    * @Note The client automatically reconnects if the connection is lost. }
+    * @return A tag ID for the client, or -1 if a duplicate address exists
+    *         (only when Overlap_Connection is False and a tunnel already exists).
+    * @Note The client automatically reconnects if the connection is lost.
+    *       Upon reconnection, the application (if provided) is re‑registered. }
 function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): integer; cdecl; external liblingofuse name 'LF_PrepareClient';
 function LF_PrepareClientEx(PhysicsAddr_: string; appHnd: TAppHnd___): integer; overload;
 function LF_PrepareClientEx(PhysicsAddr_: string): integer; overload;
@@ -807,14 +1129,28 @@ procedure LF_Sequenced_NotifyEx(appName: string; Param: TDataHnd___);
   *                    Enable or disable console logging (boolean).
   *
   *                === Connection Readiness ===
+  *                - "Overlap_Connection" / "Overlap_Client" / "OverlapConnection" / "OverlapClient" / "OverlapConnect"
+  *                    Controls whether multiple client tunnels to the same
+  *                    remote address are allowed.
+  *                    - False (default): only one tunnel per address.
+  *                      Subsequent LF_PrepareClient calls with a different
+  *                      appHnd will ignore the new appHnd.
+  *                    - True: each LF_PrepareClient call creates a new
+  *                      independent tunnel, binding the provided appHnd.
   *                - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
   *                  "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" /
   *                  "WaitReady"
   *                    If True, LF_PrepareDone blocks until all prepared clients
   *                    are connected and their applications are online (boolean).
+  *                    Default is True. When enabled, LF_PrepareDone will not
+  *                    return until every client is fully ready, or the timeout
+  *                    (see below) expires.
   *                - "Wait_Connection_Timeout" / "Wait_TimeOut" /
   *                  "API_Prepare_Done_TimeOut" / "WaitTimeOut"
   *                    Timeout in milliseconds for the above wait (integer).
+  *                    Default is 30,000 ms (30 seconds). If the timeout is
+  *                    reached before all clients are ready, LF_PrepareDone
+  *                    still returns success (1) but some clients may be offline.
   *
   *                === IPC (Inter‑Process Communication) ===
   *                - "IPC_Serv_ThreadCount" / "IPC_ThreadCount" /
@@ -853,6 +1189,12 @@ function LF_GetStatusCount(): integer; cdecl; external liblingofuse name 'LF_Get
   { * LF_GetStatus: Retrieves the next log message from the internal status
     * buffer. The returned pointer is valid only until the next call to
     * this function. You must copy the string if you need to keep it.
+    *
+    * WARNING: This function relies on the simulated main thread to process
+    * the status queue. If the main thread has not been started (i.e., before
+    * LF_PrepareDone has been called), the buffer may be empty or contain
+    * stale data. Do not rely on it until the framework is fully initialised.
+    *
     * @return PAnsiChar pointing to a null‑terminated UTF‑8 string, or empty
     *         if no message is available.
     * @Important This function relies on the simulated main thread to process
@@ -863,6 +1205,12 @@ function LF_GetStatus(): pansichar; cdecl; external liblingofuse name 'LF_GetSta
 function LF_GetStatusEx(): string;
 
   { * LF_PostStatus: Injects a user‑supplied log message into the status buffer.
+    *
+    * WARNING: This function also relies on the main thread to process the queue.
+    * If the main thread has not been started (i.e., before LF_PrepareDone has
+    * been called), messages may be discarded or may not appear in the buffer
+    * at all. Use only after the framework is fully initialised.
+    *
     * @Important Similar to LF_GetStatus, this function relies on the main
     *            thread to process the queue. Before LF_PrepareDone, messages
     *            may be discarded or not appear in the buffer. }
@@ -892,10 +1240,22 @@ function LF_CheckApiEx(appName, apiName: string): boolean;
 
 { ---- Shutdown ---- }
 
-  { * LF_Shutdown: Gracefully shuts down the entire LingoFuse framework,
-    * including all services, clients, and the simulated main thread.
-    * @Note This function can be called multiple times. After a shutdown,
-    *       you can call LF_PrepareDone again to restart the framework. }
+{ * LF_Shutdown: Gracefully terminates the entire LingoFuse framework.
+  *
+  * This procedure:
+  *   1. Stops all sequenced notification threads.
+  *   2. Frees all remaining data handles.
+  *   3. Exits the simulated main thread.
+  *   4. Clears the global LF_App_Pool, which destroys every TLF_App object
+  *      that has not been physically freed by LF_FreeApp.
+  *   5. Unloads the IPC library and closes the core dispatch thread.
+  *
+  * After LF_Shutdown, the library is fully reset and can be re‑initialised
+  * by calling preparation functions again. It is safe to call multiple times.
+  *
+  * @Note  Even if you forget to call LF_FreeApp for some applications,
+  *        LF_Shutdown ensures they are properly destroyed, preventing leaks.
+  * }
 procedure LF_Shutdown; cdecl; external liblingofuse name 'LF_Shutdown';
 
 implementation
@@ -988,6 +1348,21 @@ begin
   utf8 := TEncoding.utf8.GetBytes(Value);
   len := Length(utf8);
   if LF_WriteBuffer(Hnd, @utf8[0], len) <> len then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := LF_WriteUInt8(Hnd, 0);
+end;
+
+function LF_WriteStringBytes(Hnd: TDataHnd___; const Value: TBytes): boolean;
+begin
+  if Length(Value) <= 0 then
+  begin
+    Result := LF_WriteUInt8(Hnd, 0);
+    Exit;
+  end;
+  if LF_WriteBuffer(Hnd, @Value[0], Length(Value)) <> Length(Value) then
   begin
     Result := False;
     Exit;
@@ -1115,6 +1490,46 @@ begin
   else Result := 0.0;
 end;
 
+function LF_ReadStringBytes(Hnd: TDataHnd___; out Buff: TBytes): boolean;
+{ * Reads a null‑terminated UTF‑8 string from the current position.
+  * The string is decoded to a Pascal string. }
+type
+  TByteArray = array [0 .. 0] of byte;
+  PByteArray = ^TByteArray;
+var
+  p: PByteArray;
+  b, e, sz: int64;
+begin
+  p := LF_GetBuffer(Hnd);
+  sz := LF_GetSize(Hnd);
+  if (p = nil) or (sz = 0) then
+  begin
+    SetLength(Buff, 0);
+    Result := False;
+    Exit;
+  end;
+  b := LF_GetPos(Hnd);
+  if b >= sz then
+  begin
+    SetLength(Buff, 0);
+    Result := False;
+    Exit;
+  end;
+  e := b;
+  while (e < sz) and (p^[e] <> 0) do
+    Inc(e);
+  SetLength(Buff, e - b);
+  if e > b then
+    Move(p^[b], Buff[0], e - b);
+  LF_SetPos(Hnd, e + 1);
+  Result := True;
+end;
+
+function LF_ReadStringBytes(Hnd: TDataHnd___): TBytes;
+begin
+  LF_ReadStringBytes(Hnd, Result);
+end;
+
 function LF_ReadString(Hnd: TDataHnd___; out Value: string): boolean;
 { * Reads a null‑terminated UTF‑8 string from the current position.
   * The string is decoded to a Pascal string. }
@@ -1144,12 +1559,6 @@ begin
   e := b;
   while (e < sz) and (p^[e] <> 0) do
     Inc(e);
-  if e = sz then
-  begin
-    Value := '';
-    Result := False;
-    Exit;
-  end;
   SetLength(Buff, e - b);
   if e > b then
     Move(p^[b], Buff[0], e - b);
@@ -1166,6 +1575,28 @@ end;
 function LF_CreateAppEx(appName, Desc: string): TAppHnd___;
 begin
   Result := LF_CreateApp(pansichar(UTF8Encode(appName)), pansichar(UTF8Encode(Desc)));
+end;
+
+function LF_Generate_AppNameEx(): string;
+var
+  p: pansichar;
+begin
+  p := LF_Generate_AppName();
+  if p = nil then
+    Result := ''
+  else
+    Result := UTF8Decode(p);
+end;
+
+function LF_Get_AppNameEx(appHnd: TAppHnd___): string;
+var
+  p: pansichar;
+begin
+  p := LF_Get_AppName(appHnd);
+  if p = nil then
+    Result := ''
+  else
+    Result := UTF8Decode(p);
 end;
 
 function LF_RegisterCallEx(appHnd: TAppHnd___; MethodName, Desc: string; Trigger: Pointer; OnCall: TLF_Call_Event): integer;
@@ -1282,8 +1713,8 @@ end;
 
   {!!!!!  THREAD SAFETY OF THIS ADAPTER  !!!!!}
   - LF_EventPool uses TOrderStruct which is not thread‑safe, but it is
-    only accessed during registration (which is typically done before
-    starting the network). The pool is not accessed concurrently.
+    only accessed during registration (which is typically single‑threaded).
+    The pool is not accessed concurrently after registration.
   - The sync queue (TSoft_Synchronize_Tool.SyncQueue__) is protected by
     a critical section, making it thread‑safe for posting callbacks.
   - The trampolines themselves are executed on the library's threads,

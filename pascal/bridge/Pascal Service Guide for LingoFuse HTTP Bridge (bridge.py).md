@@ -72,6 +72,7 @@ Py/
 ```
 
 您只需要关注：
+
 - `lingofuse/bridge.py` —— 您要启动的 HTTP 网关。
 - 您的 Pascal 源代码（`bridge_service.lpr` 和 `bridge_compute.lpr`）—— 自己编写或使用提供的示例。
 
@@ -155,19 +156,25 @@ end;
 使用 Free Pascal 编译（假设已配置好单元搜索路径）：
 
 ```bash
-fpc bridge_service.lpr
-fpc bridge_compute.lpr
+lazbuild -B bridge_service.lpr
+lazbuild -B bridge_compute.lpr
 ```
 
 确保 LingoFuse 动态库可被加载（在 `PATH` 或程序目录中）。
 
 ### 4.2 启动顺序（三个终端）
 
-| 终端 | 启动命令 | 说明 |
-|------|----------|------|
-| 终端1 | `./bridge_service` | 信标，输出 `[OK] Beacon started on endpoint: ipc:compute_grid` |
-| 终端2 | `./bridge_compute` | 计算节点，输出 `[OK] Compute node connected to beacon...` |
-| 终端3 | `python lingofuse/bridge.py --endpoint ipc:compute_grid --debug --port 8081` | HTTP 网关，无需指定 `--app`（由路径决定） |
+| 终端  | 启动命令                                                                     | 说明                                                           |
+| ----- | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 终端1 | `./bridge_service`                                                           | 信标，输出 `[OK] Beacon started on endpoint: ipc:compute_grid` |
+| 终端2 | `./bridge_compute`                                                           | 计算节点，输出 `[OK] Compute node connected to beacon...`      |
+| 终端3 | `python lingofuse/bridge.py --endpoint ipc:compute_grid --debug --port 8081` | HTTP 网关，无需指定 `--app`（由路径决定）                      |
+
+---
+
+- 注意:**bridge.py不能拿直接启动,需要通过下列命令行指定参数**
+- `./python lingofuse/bridge.py --endpoint ipc:compute_grid --debug --port 8081`
+
 
 所有程序保持运行，不要关闭。
 
@@ -184,6 +191,7 @@ curl -X POST http://127.0.0.1:8081/pas/exp \
 ```
 
 响应示例：
+
 ```json
 {"code":0,"result":"7"}
 ```

@@ -1,7 +1,3 @@
-以下是重写后的 `Bridge_User_Guide.md`，以匹配新的纯二进制转发 bridge.py：
-
----
-
 # LingoFuse HTTP Bridge – Raw Passthrough Gateway
 
 **File:** `Bridge_User_Guide.md`  

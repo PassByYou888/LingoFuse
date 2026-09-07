@@ -330,9 +330,15 @@ type
     Engine: TLF_Engine;
     constructor Create;
     destructor Destroy; override;
+    procedure FakeFree;
     procedure DoChange();
     procedure Subscribe_Update(Bind: TCore_Object; OnUpdate: TOn_LFUpdate);
     procedure Remove_Update(Bind: TCore_Object);
+  end;
+
+  TLF_App_Pool = class(TBigList<TLF_App>)
+  public
+    procedure DoFree(var Data: TLF_App); override;
   end;
 
   { * Forward declaration of the sequenced notification thread. }
@@ -395,6 +401,7 @@ type
   end;
 
 var
+  LF_App_Pool: TLF_App_Pool;
   { * LF_DataPool: Global pool for automatic recycling of TLF_Data handles. }
   LF_DataPool: TLF_DataPool;
   { * LF_RunningCount: Atomic counter of active API calls. }
@@ -1038,6 +1045,13 @@ begin
   FUpdateEventPool := TLF_UpdateEventPool.Create($FF, nil);
   FUpdated := False;
   Subscribe_Timer_M(Self, 1000, DoTimer);
+
+  LF_App_Pool.Lock;
+  try
+      LF_App_Pool.Add(Self);
+  finally
+      LF_App_Pool.UnLock;
+  end;
 end;
 
 destructor TLF_App.Destroy;
@@ -1047,6 +1061,11 @@ begin
   DisposeObject(Engine);
   DisposeObject(FUpdateEventPool);
   inherited Destroy;
+end;
+
+procedure TLF_App.FakeFree;
+begin
+  Remove_Timer(Self);
 end;
 
 procedure TLF_App.DoChange();
@@ -1066,6 +1085,12 @@ procedure TLF_App.Remove_Update(Bind: TCore_Object);
 { * Unsubscribes a listener. }
 begin
   FUpdateEventPool.Delete(Bind);
+end;
+
+procedure TLF_App_Pool.DoFree(var Data: TLF_App);
+begin
+  DisposeObjectAndNil(Data);
+  inherited DoFree(Data);
 end;
 
 { ----------------------------------------------------------------------------
@@ -1306,6 +1331,7 @@ end;
 
 initialization
 
+LF_App_Pool := TLF_App_Pool.Create;
 LF_DataPool := TLF_DataPool.Create;
 LF_RunningCount := TAtomInt.Create(0);
 LF_Notify_Sequence_Thread_Pool := TLF_Notify_Sequence_Thread_Pool.Create;
@@ -1315,5 +1341,6 @@ finalization
 DisposeObjectAndNil(LF_RunningCount);
 DisposeObjectAndNil(LF_DataPool);
 DisposeObjectAndNil(LF_Notify_Sequence_Thread_Pool);
+DisposeObjectAndNil(LF_App_Pool);
 
 end.

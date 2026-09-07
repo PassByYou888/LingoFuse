@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-CrossNode – 无状态工作节点（Worker）
-功能：注册应用 'demo'，暴露 'add' 和 'inv_seri' 两个 Call API。
-使用 LF_SetOption("Wait_Connection_ReadyOk", "False") 启用部署模式，
-允许节点先于服务启动（自动重连）。
-与 Pascal cross_node 完全等价。
+CrossNode – Stateless Worker Node
+
+Registers application 'demo', exposes 'add' and 'inv_seri' Call APIs.
+Uses LF_SetOption("Wait_Connection_ReadyOk", "False") to enable deployment
+mode, allowing nodes to start before the service (auto‑reconnect).
+Equivalent to Pascal cross_node.
 """
 import sys
 import os
 
-# 将上级目录（Py）加入模块搜索路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from lingofuse import _lf_native
@@ -18,10 +18,10 @@ from lingofuse.core import App, DataHandle
 from lingofuse.errors import RegistrationError
 
 
-# ========== 回调函数（原始二进制，无 JSON） ==========
+# ========== Callbacks (raw binary, no JSON) ==========
 
 def add_callback(trigger, inp, out):
-    """'add' 回调：读取两个 Int32，返回它们的和（模拟 32 位有符号溢出）。"""
+    """'add' callback: reads two Int32, returns their sum (simulated 32-bit overflow)."""
     try:
         a = inp.read_int32()
         b = inp.read_int32()
@@ -35,24 +35,24 @@ def add_callback(trigger, inp, out):
 
 
 def inv_seri_callback(trigger, inp, out):
-    """'inv_seri' 回调：接收 6 种不同类型的参数，反向回复。"""
+    """'inv_seri' callback: receives 6 different typed parameters, replies in reverse order."""
     try:
         b = inp.read_uint8()
         w = inp.read_uint16()
         c = inp.read_uint32()
         u64 = inp.read_uint64()
-        s = inp.read_string_null_terminated()
+        s = inp.read_string()          # auto handles \0
         f = inp.read_single()
 
         out.write_single(f)
-        out.write_string_null_terminated(s)
+        out.write_string(s)            # auto adds \0
         out.write_uint64(u64)
         out.write_uint32(c)
         out.write_uint16(w)
         out.write_uint8(b)
 
-        print(f"[Node] inv_seri 接收: [{b}, {w}, {c}, {u64}, \"{s}\", {f:.2f}] "
-              f"回复: [{f:.2f}, \"{s}\", {u64}, {c}, {w}, {b}]")
+        print(f"[Node] inv_seri received: [{b}, {w}, {c}, {u64}, \"{s}\", {f:.2f}] "
+              f"reply: [{f:.2f}, \"{s}\", {u64}, {c}, {w}, {b}]")
     except Exception as e:
         print(f"[ERROR] inv_seri_callback: {e}")
 

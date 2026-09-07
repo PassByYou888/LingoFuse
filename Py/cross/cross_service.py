@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-CrossService – 服务注册中心（信标）
-功能：创建 IPC 端点 ipc:cross，作为 C4 服务网格的控制平面。
-不注册任何业务 API。节点和客户端通过此端点发现彼此。
-与 Pascal cross_service 完全等价。
+CrossService – Service Registry (Beacon)
+
+Creates IPC endpoint ipc:cross as the control plane for the C4 service mesh.
+No business APIs are registered. Nodes and clients discover each other via
+this endpoint. Equivalent to Pascal cross_service.
 """
 import sys
 import os
 
-# 将上级目录（Py）加入模块搜索路径，以便导入 lingofuse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from lingofuse import _lf_native

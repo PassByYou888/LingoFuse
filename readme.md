@@ -1,22 +1,8 @@
+> **目前项目内容处于补齐阶段**
+
 # LingoFuse
 
 > **让所有编程语言平等对话的智能体通讯地基**
-
----
-
-## ⚠️ 克隆前必读：包含子模块
-
-本仓库包含多个子模块（如 `zIPC`、`mimalloc4p` 等），**克隆时必须使用 `--recursive` 开关**，否则会导致编译失败：
-
-```bash
-git clone --recursive https://github.com/PassByYou888/LingoFuse.git
-```
-
-如果已经克隆但忘记加 `--recursive`，可以执行以下命令补全：
-
-```bash
-git submodule update --init --recursive
-```
 
 ---
 
@@ -300,6 +286,22 @@ python lingofuse/bridge.py --endpoint ipc:calc --app Calc --port 8081
 ```bash
 curl -X POST http://127.0.0.1:8081/Calc/add -d '[10,20]'
 # 返回: 30
+```
+
+---
+
+## ⚠️ 克隆前必读：包含子模块
+
+本仓库包含多个子模块（如 `zIPC`、`mimalloc4p` 等），**克隆时必须使用 `--recursive` 开关**，否则会导致编译失败：
+
+```bash
+git clone --recursive https://github.com/PassByYou888/LingoFuse.git
+```
+
+如果已经克隆但忘记加 `--recursive`，可以执行以下命令补全：
+
+```bash
+git submodule update --init --recursive
 ```
 
 ---

@@ -9,52 +9,46 @@ program bridge_compute;
 uses
   {$IFDEF UNIX}cthreads,{$ENDIF}
   {$IFDEF MSWINDOWS}Windows,{$ENDIF}
-  SysUtils, Variants,
-  Z.Core, Z.PascalStrings, Z.UPascalStrings, Z.UnicodeMixedLib,
-  Z.Parsing, Z.Expression, Z.MemoryStream,
-  Z.Status, Z.Int128, Z.Geometry2D, Z.Notify,
-  Z.Json,
-  lingofuse_helper, lingofuse_import;
-
-function ToUTF8(const S: string): UTF8String;
+  SysUtils, Variants, Z.Core, Z.PascalStrings, Z.UPascalStrings, Z.UnicodeMixedLib, Z.Parsing, Z.Expression, Z.MemoryStream, Z.Status, Z.Int128, Z.Geometry2D, Z.Notify, Z.Json, lingofuse_helper, lingofuse_import;
+function ToUTF8(const S: string): utf8string;
 begin
-{$IFDEF FPC}
+  {$IFDEF FPC}
   if StringCodePage(S) = CP_UTF8 then
       Result := UTF8String(S)
   else
       Result := UTF8Encode(S);
-{$ELSE}
+  {$ELSE}
   Result := UTF8Encode(S);
-{$ENDIF}
+  {$ENDIF}
 end;
 
 procedure ConsoleWrite(const S: string);
 var
-  UTF8Str: UTF8String;
-{$IFDEF MSWINDOWS}
-  WStr: UnicodeString;
+  UTF8Str: utf8string;
+  {$IFDEF MSWINDOWS}
+  WStr: unicodestring;
   Written: DWORD;
-{$ENDIF}
+  {$ENDIF}
 begin
   if not IsConsole then Exit;
   UTF8Str := ToUTF8(S);
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
   WStr := UTF8Decode(UTF8Str);
   WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE),
-                PWideChar(WStr), Length(WStr), Written, nil);
-{$ELSE}
+    pwidechar(WStr), Length(WStr), Written, nil);
+  {$ELSE}
   Write(UTF8Str);
-{$ENDIF}
+  {$ENDIF}
 end;
 
 procedure ConsoleWriteLn(const S: string = '');
 begin
   if S <> '' then ConsoleWrite(S);
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
   ConsoleWrite(sLineBreak);
-{$ELSE}
+  {$ELSE}
   WriteLn;
-{$ENDIF}
+  {$ENDIF}
 end;
 
 // --------------------------------------------------------------------
@@ -62,7 +56,7 @@ end;
 // --------------------------------------------------------------------
 procedure do_exp_Call(Trigger: Pointer; Input: Pointer; Output: TDataHnd); cdecl;
 var
-  jsonStr: string;
+  jsonBytes: TBytes;
   jo: TZ_JsonObject;
   argsArr: TZ_JsonArray;
   expr: string;
@@ -70,8 +64,9 @@ var
   resObj: TZ_JsonObject;
 begin
   // 1. Read UTF-8 string (JSON, null-terminated)
-  jsonStr := LF_ReadString(Input);
-  if jsonStr = '' then
+  jsonBytes := LF_ReadStringBytes(Input);
+
+  if Length(jsonBytes) <= 0 then
   begin
     // Return JSON error
     LF_WriteString(Output, '{"code":-1,"error":"Request body is empty"}');
@@ -82,7 +77,7 @@ begin
   jo := nil;
   try
     jo := TZ_JsonObject.Create;
-    jo.ParseText(jsonStr);
+    jo.Parae(jsonBytes);
 
     // 3. Extract 'args' array
     if not jo.Exists('args') then
@@ -115,7 +110,7 @@ begin
       try
         resObj.I['code'] := 0;
         resObj.S['result'] := tmp;
-        LF_WriteString(Output, resObj.ToJSONString(False));
+        LF_WriteStringBytes(Output, resObj.ToBytes);
       finally
         resObj.Free;
       end;

@@ -432,6 +432,8 @@ const
 
 implementation
 
+uses Z.LingoFuse_Export;
+
 {$I Z.LingoFuse_System_ProcessID.inc}
 
 
@@ -966,7 +968,12 @@ end;
 procedure TC40_LF_Service.DoUserOut_Event(Sender: TDTService_NoAuth; UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
 { * Overridden; no extra logic needed because the user object will be freed
   * automatically when the connection drops. }
+var
+  user_io: TC40_LF_RecvTunnel;
 begin
+  user_io := UserDefineIO as TC40_LF_RecvTunnel;
+  if (user_io.APP_Name <> '') or (user_io.api_info_data.Count > 0) then // check api
+      Do_Delay_Broadcast_API_Info(); // update api
   inherited DoUserOut_Event(Sender, UserDefineIO);
 end;
 
@@ -1515,7 +1522,12 @@ begin
   d := TDFE.Create;
   d.DecodeFrom(m64, True);
   DisposeObject(m64);
-  FService_Info.LoadFromStream(d);
+  Find_Safe_Critical.Lock;
+  try
+      FService_Info.LoadFromStream(d);
+  finally
+      Find_Safe_Critical.UnLock;
+  end;
   DisposeObject(d);
   FService_Info_Is_Onlne := True;
 end;
@@ -1850,19 +1862,13 @@ begin
   tmp := TLF_CallBridge.Create;
   tmp.Cli := Self;
   tmp.IsRunning := True;
-  DTNoAuth.SendTunnel.SendCompleteBuffer_NoWait_StreamM('Call',
-    TDFE.Create
-      .WriteString(app_Name__)
-      .WriteMem64(Param)
-      .DelayFree,
-    tmp.Do_Result);
-  if Param.Size > 100 * 1024 then
-      DTNoAuth.SendTunnel.SendNULL;
+  DTNoAuth.SendTunnel.SendCompleteBuffer_NoWait_StreamM('Call', TDFE.Create.WriteString(app_Name__).WriteMem64(Param).DelayFree, tmp.Do_Result);
+  if Param.Size > 100 * 1024 then DTNoAuth.SendTunnel.SendNULL;
   tk := GetTimeTick + TimeOut__;
   while tmp.IsRunning do
     begin
       TCompute.Sleep(10);
-      if (TimeOut__ > 0) and (GetTimeTick > tk) then
+      if (LF_CheckMainThread <= 0) or ((TimeOut__ > 0) and (GetTimeTick > tk)) then
         begin
           FWait_Reponse_Thread_Num.UnLock(FWait_Reponse_Thread_Num.LockP^ - 1);
           DoStatus('%s -> %s call timeout', [app_Name__.Text, api_Name__.Text]);

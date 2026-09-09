@@ -4,7 +4,7 @@ import json
 
 url = "http://127.0.0.1:8081/exp"
 payload = {"args": ["1+2*3"]}
-print("Sending request:", json.dumps(payload))
+print("Sending request:", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 try:
     resp = requests.post(url, json=payload, timeout=5)
     print("Status code:", resp.status_code)

@@ -128,6 +128,7 @@ def after_request(response):
     return response
 
 def cleanup():
+    """Stop the LingoFuse main thread and shut down the library."""
     LF_ExitMainThread()
     LF_Shutdown()
     logger.info("LingoFuse resources released")
@@ -156,10 +157,10 @@ def handle_call(path):
     if not api_name:
         return jsonify_error(-2, "Missing API name in path"), 400
 
-    # Pre-check API availability (with retry)
+    # Pre-check API availability (with retry) – cache may lag behind registration
     if not no_precheck:
         available = False
-        for attempt in range(3):  # retry up to 3 times
+        for attempt in range(3):  # retry up to 3 times to allow cache propagation
             if check_api(app_name, api_name):
                 available = True
                 break
@@ -169,6 +170,7 @@ def handle_call(path):
         if not available:
             if debug_mode:
                 logger.debug(f"check_api({app_name}, {api_name}) failed after 3 attempts")
+            # Drain a few status messages to help diagnose
             if get_status_num() > 0:
                 for _ in range(min(3, get_status_num())):
                     msg = get_status()
@@ -214,6 +216,7 @@ def handle_call(path):
 
         if size == 0:
             LF_FreeData(res_ptr)
+            # Drain status messages to help diagnose empty responses
             if get_status_num() > 0:
                 for _ in range(min(3, get_status_num())):
                     msg = get_status()
@@ -257,12 +260,13 @@ def handle_call(path):
 
 def jsonify_error(code, msg):
     return app.response_class(
-        response=json.dumps({"code": code, "error": msg}),
+        response=json.dumps({"code": code, "error": msg}, ensure_ascii=False).encode("utf-8"),
         status=200,
         mimetype='application/json'
     )
 
 def setup_network(ep):
+    """Establish connection to the LingoFuse backend endpoint."""
     try:
         set_option("Wait_Connection_ReadyOk", "False")
         LF_ResetPrepare()

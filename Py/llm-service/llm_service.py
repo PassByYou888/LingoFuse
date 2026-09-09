@@ -132,7 +132,7 @@ import threading
 import time
 import atexit
 import platform
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -295,6 +295,8 @@ def load_llm(model_path, context_size, threads, gpu_layers):
     """
     Load the LLM model using the detected backend (llama.cpp or transformers).
     Prints progress and metadata to stdout.
+    Returns a tuple (model, tokenizer_or_none) where tokenizer_or_none is
+    the tokenizer for transformers backend, or None for llama.cpp.
     """
     print("[LLM] Loading model... (this may take a few seconds)")
     print(f"[LLM] Model path: {model_path}")
@@ -319,7 +321,8 @@ def load_llm(model_path, context_size, threads, gpu_layers):
                     print(f"    {k}: {v}")
         except AttributeError:
             pass
-        return model
+        # llama_cpp model does not provide a separate tokenizer; we'll use model.tokenize()
+        return model, None
     elif LLM_BACKEND == "transformers":
         print("[LLM] Using backend: transformers")
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -347,6 +350,8 @@ class LLMService:
         system_message (str): current system message for all generations.
         backend (str): 'llama_cpp' or 'transformers'.
         llm: the loaded model object.
+        tokenizer: tokenizer for transformers backend (or None).
+        context_size (int): maximum context size in tokens.
         active_sessions (Dict[str, dict]): tracking of active generation sessions.
         server (Server): LingoFuse server instance.
         log_level (int): current log verbosity level (0,1,2).
@@ -371,13 +376,16 @@ class LLMService:
 
         print("[LLM] Loading LLM...")
         load_start = time.time()
-        self.llm = load_llm(
+        self.llm, self.tokenizer = load_llm(
             config.model_path,
             config.context_size,
             config.threads,
             config.gpu_layers
         )
+        # Store context size for safety checks
+        self.context_size = config.context_size
         print(f"[LLM] Model loaded in {time.time() - load_start:.2f}s")
+        print(f"[LLM] Maximum context size: {self.context_size} tokens")
 
         # Active session tracking (for logging / future cleanup)
         self.active_sessions: Dict[str, dict] = {}
@@ -412,6 +420,15 @@ class LLMService:
             if not client_name:
                 return {"code": -1, "error": "Missing client_name (must be generated via generate_app_name())"}
 
+            # Safety check: estimate token count before starting generation
+            full_input = content + "\n\n" + prompt
+            estimated_tokens = self._estimate_tokens(full_input) + self._estimate_tokens(self.system_message)
+            if estimated_tokens > self.context_size * 0.9:  # 90% safety margin
+                return {
+                    "code": -1,
+                    "error": f"Input too long: estimated {estimated_tokens} tokens, max allowed {int(self.context_size * 0.9)}"
+                }
+
             session_id = str(uuid.uuid4())
             # Store session info
             with self._session_lock:
@@ -443,6 +460,28 @@ class LLMService:
 
         print("[Service] Registered APIs: 'generate', 'set_system_message'")
 
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        Estimate the token count of a text string.
+        For llama.cpp, we use the model's tokenize method (if available).
+        For transformers, we use the tokenizer.
+        Fallback to character count / 4 as a rough approximation.
+        """
+        if self.backend == "llama_cpp" and hasattr(self.llm, "tokenize"):
+            try:
+                # llama-cpp-python tokenize returns a list of token IDs
+                tokens = self.llm.tokenize(text.encode("utf-8"))
+                return len(tokens)
+            except Exception:
+                pass
+        elif self.backend == "transformers" and self.tokenizer is not None:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception:
+                pass
+        # Fallback: rough estimate (1 token ≈ 4 characters for English/Chinese mix)
+        return len(text) // 4 + 1
+
     def _stream_generate(self, session_id: str, client_name: str, content: str, prompt: str):
         """
         Stream tokens to the given client_name via sequenced notifications.
@@ -451,12 +490,16 @@ class LLMService:
         full_input = content + "\n\n" + prompt
         print(f"[Session {session_id}] Started generation for client {client_name}")
         try:
+            # Prepare messages with system message
+            messages = [
+                {"role": "system", "content": self.system_message},
+                {"role": "user", "content": full_input}
+            ]
+
             if self.backend == "llama_cpp":
+                # Use create_chat_completion with streaming
                 stream = self.llm.create_chat_completion(
-                    messages=[
-                        {"role": "system", "content": self.system_message},
-                        {"role": "user", "content": full_input}
-                    ],
+                    messages=messages,
                     stream=True,
                     max_tokens=self.config.max_tokens
                 )
@@ -467,14 +510,21 @@ class LLMService:
                         if text:
                             self._send_chunk(session_id, client_name, text)
             elif self.backend == "transformers":
-                # Placeholder: transformers streaming is complex; we send an error
+                # Placeholder: transformers streaming is not implemented here
                 self._send_chunk(session_id, client_name, "__ERROR__: transformers streaming not fully implemented")
             # End of stream
             self._send_chunk(session_id, client_name, "__FINISH__")
             print(f"[Session {session_id}] Generation finished successfully")
         except Exception as e:
-            print(f"[Session {session_id}] Generation error: {e}")
-            self._send_chunk(session_id, client_name, f"__ERROR__: {str(e)}")
+            error_msg = str(e)
+            # Check for common CUDA / OOM errors
+            if "CUDA out of memory" in error_msg or "out of memory" in error_msg.lower():
+                error_msg = "CUDA out of memory – input too long or model too large for GPU"
+            elif "context" in error_msg.lower() and "length" in error_msg.lower():
+                error_msg = f"Context length exceeded – maximum context size: {self.context_size} tokens"
+            print(f"[Session {session_id}] Generation error: {error_msg}")
+            # Send error to client
+            self._send_chunk(session_id, client_name, f"__ERROR__: {error_msg}")
         finally:
             # Remove session from active tracking
             with self._session_lock:

@@ -1493,7 +1493,7 @@ begin
             if Wait_Connection_ReadyOk then
               begin
                 tk := GetTimeTick + Wait_Connection_Timeout;
-                while GetTimeTick() < tk do
+                while (GetTimeTick() < tk) and Simulated_Main_Thread_Running do
                   begin
                     // Check conditions:
                     // - Connected
@@ -1575,7 +1575,7 @@ begin
                       until not Next;
                   end;
                 Init_Successed := Online_Num >= Prepare_Cli_Num;
-              until Init_Successed or ((Wait_Connection_Timeout > 0) and (GetTimeTick() > tk));
+              until Init_Successed or (not Simulated_Main_Thread_Running) or ((Wait_Connection_Timeout > 0) and (GetTimeTick() > tk));
             end;
         end;
     end

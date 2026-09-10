@@ -1,0 +1,121 @@
+# LingoFuse
+
+> LingoFuse is a neural communication foundation for the AI agent era. It enables 20+ programming languages to call each other natively via a unified cross-language RPC mesh, without IDL, code generation, or HTTP service setup. Python functions can be called directly from Pascal, Go services from Rust, and browser buttons can trigger C++ backends. Same-machine IPC latency is < 1 ms, with built-in service discovery, load balancing, and FIFO ordering.
+>
+> LingoFuse 是智能体时代的神经网络通讯地基，让 20+ 种语言无缝互调。无需 IDL、无需生成桩代码、无需搭建 HTTP 服务，Python 写的函数 Pascal 直接调，Go 写的服务 Rust 随手用。同机 IPC 延迟 < 1ms，内置服务发现、负载均衡和 FIFO 顺序保证。
+
+## Key facts
+- Repository: https://github.com/PassByYou888/LingoFuse
+- License: MIT
+- Status: Active development (project started 2026)
+- Core engine: C4 service mesh (Pascal core, pure C ABI)
+- IPC latency: < 1 ms
+- Throughput: 12k+ calls/s (per README)
+- Compared to gRPC: 5-8x faster latency
+- Compared to REST: 10-20x faster latency
+- Production validation: C4 mesh handled single-day PB-level traffic on a single machine (2022)
+- Built-in features: Service discovery, load balancing, FIFO ordering
+- No IDL required: `@expose` decorator handles everything
+- Related project: zIPC — https://github.com/PassByYou888/zIPC
+- Companion project: pasAgent — https://github.com/PassByYou888/LingoFuse-pasAgent
+
+## Core capabilities
+- Cross-language function calls without IDL or code generation
+- Sub-1ms same-machine IPC latency
+- 5-8x faster than gRPC, 10-20x faster than REST
+- Built-in service discovery, load balancing, and FIFO ordering
+- AI-native code generation: LLM parses to structured JSON, deterministic generator produces target code
+- Reproducible results: same input always produces same output
+- Streaming RPC support
+- HTTP bridge for browser / Node.js / PHP integration
+- Production-ready bindings: Pascal, Python
+- Edge device support planned: aarch64, loongarch64, RISC-V
+
+## Performance comparison
+
+| Solution | IPC latency | Throughput | Service discovery | Load balancing | Ordering |
+|---|---|---|---|---|---|
+| **LingoFuse** | **< 1 ms** | **12k+/s** | ✅ Built-in | ✅ Built-in | ✅ FIFO |
+| gRPC | ~5-8 ms | ~3k/s | ❌ Needs etcd | ❌ Needs LB | ❌ |
+| REST | ~10-20 ms | ~1k/s | ❌ Needs Nginx | ❌ Needs Nginx | ❌ |
+
+## Language support matrix
+
+| Language | Status | Server | Client |
+|---|---|---|---|
+| **Pascal** | Production-ready | ✅ | ✅ |
+| **Python** | Production-ready | ✅ | ✅ |
+| **C++** | Planned | ✅ | ✅ |
+| **Go** | Planned | ✅ | ✅ |
+| **Rust** | Planned | ✅ | ✅ |
+| **Java / C# / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Planned | ✅ | ✅ |
+| **Node.js / PHP / Browser** | HTTP bridge available | ❌ | ✅ |
+| **aarch64 / loongarch64** | Edge device planned | ✅ | ✅ |
+
+## Quick start
+
+### Install
+```bash
+pip install -e .
+```
+
+### Server (Python, 7 lines)
+```python
+from lingofuse import Server
+app = Server("Calc")
+
+@app.expose("add")
+def add(a, b):
+    return a + b
+
+app.start_multi(["ipc:calc", "0.0.0.0:9898"])
+input("Press Enter to exit...\n")
+```
+
+### Client (Pascal, 3 lines)
+```pascal
+LF.PrepareClient('ipc:calc', nil);
+if LF.PrepareDone then
+  WriteLn('10 + 20 = ', LF.CallApp('Calc', Data, 3000).ReadInt32);
+```
+
+### Clone with submodules (required)
+```bash
+git clone --recursive https://github.com/PassByYou888/LingoFuse.git
+# If already cloned without --recursive:
+git submodule update --init --recursive
+```
+
+## AI-native code generation
+LingoFuse does not let AI write code directly. Instead, it uses a deterministic pipeline:
+1. LLM parses raw Pascal source → structured declaration JSON
+2. JSON normalized to LV1 model JSON
+3. Deterministic generator produces tool provider units
+
+This ensures:
+- Reproducible results (same input → same output)
+- Zero debugging cost (generated code compiles and runs)
+- Skip reports (which functions were skipped and why)
+- LLM-assistable at any intermediate state
+
+## Documentation map
+- [Pascal Complete Guide](https://github.com/PassByYou888/LingoFuse/blob/main/pascal/LingoFuse_Pascal_Complete_Guide.md): Pascal developers
+- [Python Binding Documentation](https://github.com/PassByYou888/LingoFuse/blob/main/Py/readme.md): Python developers
+- [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
+- [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
+- [LLM Service CLI Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/LingoFuse_LLM_Service_guide.md): Local LLM deployment
+- [Streaming LLM Service Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/LingoFuse_Python_Streaming_LLM_Guide.md): LLM service development
+- [llama-cpp-python Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/llama_cpp_python_guide.md): Dependency installation
+- [Migration & Work Summary](https://github.com/PassByYou888/LingoFuse/blob/main/Py/LingoFuse_Python_Binding_Migration_Record.md): Internal implementation details
+
+## Relation to zIPC
+zIPC is the same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh. Use LingoFuse for cross-language RPC, service discovery, load balancing, and agent communication.
+
+## Links
+- GitHub: https://github.com/PassByYou888/LingoFuse
+- zIPC (IPC engine): https://github.com/PassByYou888/zIPC
+- pasAgent (Pascal AI toolchain): https://github.com/PassByYou888/LingoFuse-pasAgent
+- README: https://github.com/PassByYou888/LingoFuse#readme
+
+## Keywords
+LingoFuse, cross-language RPC, multi-language RPC, AI agent communication, neural communication mesh, zero-IDL, no code generation, sub-1ms latency, service discovery, load balancing, FIFO ordering, C4 service mesh, Pascal, Python, C ABI, FFI, streaming RPC, AI-native, deterministic code generation, zIPC, 跨语言 RPC, 多语言互调, 智能体通讯, 神经网络通讯, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡

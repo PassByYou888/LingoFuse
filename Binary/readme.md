@@ -76,6 +76,9 @@ mimalloc 是微软开源的高性能内存分配器，**低碎片、高并发**�
 
 > **⚠️ 重要**：所有 Windows 动态库都依赖 VC++ 运行库。  
 > 如果系统未安装，请双击对应的 `vc_redist.x*.exe` 安装，**否则会报“找不到模块”**。
+> 请从微软官方下载并安装对应架构的版本：
+
+- [VC++ Redistributable for Visual Studio 2022 (x86/x64)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
 
 ---
 

@@ -21,6 +21,14 @@ end;
 function Make_LingoFuse_Process_Name: TLF_String;
 begin
   if LingoFuse_Process_Name = '' then
-      LingoFuse_Process_Name := PFormat('%s(%d)', [umlGetFileName(ParamStr(0)).Text, System_ProcessID]);
+      LingoFuse_Process_Name := PFormat('%s:%d',
+      [
+  {$IFDEF MSWINDOWS}
+      umlChangeFileExt(umlGetFileName(ParamStr(0)), '').Text,
+  {$ELSE MSWINDOWS}
+      umlGetFileName(ParamStr(0)).Text,
+  {$ENDIF MSWINDOWS}
+      System_ProcessID
+      ]);
   Result := LingoFuse_Process_Name;
 end;

@@ -87,6 +87,9 @@ unit Z.LingoFuse_Export;
 
 interface
 
+const
+  C_LingoFuse_Edition = '3.02';
+
 type
   { * TDataHnd___: Opaque handle to a LingoFuse data buffer.
     * Internally it is a pointer to a TLF_Data record, but external code
@@ -659,9 +662,12 @@ implementation
 uses
   SysUtils,
   Z.Core, Z.PascalStrings, Z.UPascalStrings, Z.status, Z.UnicodeMixedLib,
-  Z.Parsing, Z.MemoryStream, Z.ListEngine, Z.TextDataEngine,
-  Z.Net, Z.Net.C4, Z.Net.C4_Console_APP, Z.LingoFuse_Core, Z.Net.C4.LingoFuse,
-  Z.IPC.API, Z.Net.Server.IPC, Z.Int128, Z.Notify, Z.Expression;
+  Z.Parsing, Z.MemoryStream, Z.ListEngine, Z.TextDataEngine, Z.Int128, Z.Notify,
+  Z.Expression,
+  Z.Net, Z.Net.C4, Z.Net.C4_Console_APP,
+  Z.LingoFuse_Core, Z.Net.C4.LingoFuse,
+  Z.FP.Net.CrossSocket,
+  Z.IPC.API, Z.Net.Server.IPC;
 
 { ------------------------------------------------------------------------------
   Internal helper: DS – Decode UTF‑8 string
@@ -880,7 +886,6 @@ var
   Cli: TC40_LF_Client;
 begin
   if not Core_Dispatch_Order_Activted then exit; // is shutdown
-
   app := appHnd; // Cast to TLF_App.
   arry := C40_ClientPool.FastSearchClass(TC40_LF_Client); // Find all LingoFuse clients.
   for i := 0 to length(arry) - 1 do
@@ -913,8 +918,8 @@ begin
         tmp.Append(Build_Host_URL(C40_PhysicsTunnelPool[i].PhysicsAddr, C40_PhysicsTunnelPool[i].PhysicsPort) + '&' +
             umlIntToStr(C40_PhysicsTunnelPool[i].PhysicsTunnel.RemoteID).Text);
       end;
-    tmp.Append('&' + Make_LingoFuse_Process_Name.Text + '&' + umlIntToStr(GetTimeTick()).Text +
-        '&' + umlIntToStr(AtomInc(Generate_AppName_Call_Num)).Text); // Add process name and timestamp for uniqueness
+    tmp.Append('&' + Make_LingoFuse_Process_Name.Text + '&' +
+        umlIntToStr(AtomInc(Generate_AppName_Call_Num)).Text); // Add process name and timestamp for uniqueness
     tmp := C_Generate_Prefix + tmp;
   finally
       Generate_AppName_Critical.UnLock;
@@ -1531,7 +1536,8 @@ var
   Cli: TC40_LF_Client;
   Prepare_Cli_Num, Online_Num: Integer;
 begin
-  DoStatus('LingoFuse Main Thread Begin');
+  DoStatus('LingoFuse-v%s Main Thread Begin, C4-v%s,Net-v%s,%s,IPC-v%s',
+    [C_LingoFuse_Edition, C_C4_Edition, C_ZNet_Edition, C_Cross_Edition, C_Z_IPC_Edition]);
 
   SetLength(C40AppParam, Prepare_Commands.Count);
   for i := 0 to Prepare_Commands.Count - 1 do
@@ -1846,13 +1852,11 @@ begin
       C40SetQuietMode(EStrToBool(V.Text)); // Enable/disable quiet mode.
       DoStatus('Quiet = %s', [umlBoolToStr(EStrToBool(V.Text)).Text]);
     end
-
   else if opt.Same('Overlap_Connection', 'Overlap_Client', 'OverlapConnection', 'OverlapClient', 'OverlapConnect') then
     begin
       Overlap_Connection := EStrToBool(V.Text);
       DoStatus('Overlap Connection = %s', [umlBoolToStr(Overlap_Connection).Text]);
     end
-
   else if opt.Same('Wait_Connection_ReadyOk', 'Wait_API_Prepare_Done', 'API_Prepare_Done_Wait', 'WaitConnect', 'Wait_Ready', 'WaitReady') then
     begin
       Wait_Connection_ReadyOk := EStrToBool(V.Text); // Set whether to wait for clients.

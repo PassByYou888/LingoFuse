@@ -40,6 +40,13 @@ in the respective modules and the Pascal import unit
 - Install callbacks BEFORE `LF_PrepareDone` and clear them BEFORE
   `LF_Shutdown` to avoid races and to release the Python-side strong
   references held by the module.
+
+{!!!!!  STRING PARAMETERS  !!!!!}
+Every string argument passed to an LF_* function from this module is
+routed through `lingofuse.lf_io.cstr`, which supplies NUL-terminated
+UTF-8 bytes for the c_char_p parameter. This removes the previous
+reliance on the hidden NUL byte inside CPython bytes objects and
+makes the wire contract explicit.
 """
 
 from .core import DataHandle, App, generate_app_name, get_app_name
@@ -61,6 +68,14 @@ from .network_events import (
     get_network_event_queue,
 )
 from ._lf_native import LF_SetOption as _LF_SetOption
+
+# Unified LingoFuse payload I/O.
+#
+# cstr() is the single source of truth for NUL-terminated UTF-8 bytes
+# for every LF_* c_char_p parameter in this package. Importing it here
+# lets the convenience functions below stop hand-rolling
+# `value.encode("utf-8") + b"\x00"`.
+from .lf_io import cstr
 
 
 # ======================================================================
@@ -131,11 +146,12 @@ def set_option(option: str, value: str) -> None:
     All changes take effect immediately. Unknown options are silently
     ignored. For a full list of keys, see the module docstring above
     or the Pascal import unit.
+
+    Both string arguments are passed through lingofuse.lf_io.cstr,
+    which supplies the NUL-terminated UTF-8 bytes expected by the
+    underlying c_char_p parameters.
     """
-    _LF_SetOption(
-        option.encode("utf-8") + b'\x00',
-        value.encode("utf-8") + b'\x00',
-    )
+    _LF_SetOption(cstr(option), cstr(value))
 
 
 # ======================================================================
@@ -183,9 +199,13 @@ def post_status(status: str) -> None:
     {!!!!!  IMPORTANT  !!!!!}
     This function also relies on the main thread to process the queue.
     Before `LF.PrepareDone`, messages may not appear in the buffer.
+
+    The status string is passed through lingofuse.lf_io.cstr, which
+    supplies the NUL-terminated UTF-8 bytes expected by the underlying
+    c_char_p parameter.
     """
     from ._lf_native import LF_PostStatus
-    LF_PostStatus(status.encode("utf-8") + b'\x00')
+    LF_PostStatus(cstr(status))
 
 
 def check_main_thread() -> bool:
@@ -199,9 +219,13 @@ def check_app(app_name: str) -> bool:
     Check whether an application with the given name is available
     (locally or remotely). This is a quick lookup, but may not reflect
     recent changes. Useful for probing availability before a call.
+
+    The app name is passed through lingofuse.lf_io.cstr, which
+    supplies the NUL-terminated UTF-8 bytes expected by the underlying
+    c_char_p parameter.
     """
     from ._lf_native import LF_CheckApp
-    return LF_CheckApp(app_name.encode("utf-8") + b'\x00') != 0
+    return LF_CheckApp(cstr(app_name)) != 0
 
 
 def check_api(app_name: str, api_name: str) -> bool:
@@ -216,6 +240,10 @@ def check_api(app_name: str, api_name: str) -> bool:
     does not guarantee that the API will still be available at the
     moment of the actual call.
 
+    Both string arguments are passed through lingofuse.lf_io.cstr,
+    which supplies the NUL-terminated UTF-8 bytes expected by the
+    underlying c_char_p parameters.
+
     Args:
         app_name: Application name (UTF-8, case-insensitive).
         api_name: API name (UTF-8, case-insensitive).
@@ -225,10 +253,7 @@ def check_api(app_name: str, api_name: str) -> bool:
         application, False otherwise.
     """
     from ._lf_native import LF_CheckApi
-    return LF_CheckApi(
-        app_name.encode("utf-8") + b'\x00',
-        api_name.encode("utf-8") + b'\x00',
-    ) != 0
+    return LF_CheckApi(cstr(app_name), cstr(api_name)) != 0
 
 
 # ======================================================================

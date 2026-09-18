@@ -7,18 +7,29 @@ Python functions as LingoFuse remote APIs. The Server automatically
 manages the underlying App lifecycle and network connections.
 
 {!!!!!  RESOURCE CLEANUP  !!!!!}
-- `stop()` stops the network loop and frees the App, but **does not** call
-  LF_Shutdown by default (use `stop(full_cleanup=True)` or `full_cleanup()`
-  for complete resource release).
-- `full_cleanup()` stops the loop, frees the App, and calls LF_Shutdown.
+- `stop()` stops the network loop and frees the App, but does NOT call
+  LF_Shutdown by default (use `stop(full_cleanup=True)` or
+  `full_cleanup()` for complete resource release).
+- `stop(full_cleanup=True)` also clears any installed network event
+  callbacks before calling LF_Shutdown.
 - The `__del__` destructor calls `stop()` as a safety net, but explicit
   cleanup is strongly recommended.
+
+{!!!!!  BUG FIX  !!!!!}
+The `start_multi()` method previously used the *public* address as the
+target of LF_PrepareClient. When the public address differs from the
+local listening address (e.g., listen on 0.0.0.0:9898, advertise
+192.168.1.5:9898), this caused the client connection to be established
+against the wrong endpoint, leading to timeouts or empty responses.
+The correct behaviour is to connect to the LOCAL listening address,
+matching what `start()` already does.
 """
-import json
+
+import base64
 import ctypes
 import inspect
-import base64
-from typing import Any, Callable, Optional, Union, List
+import json
+from typing import Any, Callable, List, Optional, Union
 
 from .core import App, DataHandle
 from ._lf_native import (
@@ -26,12 +37,19 @@ from ._lf_native import (
     LF_PrepareDone, LF_Call, LF_Notify, LF_Sequenced_Notify,
     LF_ExitMainThread, LF_Shutdown,
     LF_FreeData, LF_CreateData,
+    LF_CheckMainThread,
 )
 from .errors import LingoFuseError, ConnectionError
 
+
+# ======================================================================
+# Internal serialization helpers
 # ----------------------------------------------------------------------
-# Internal serialization helpers – now using DataHandle methods
-# ----------------------------------------------------------------------
+# These helpers recursively convert between Python objects and JSON
+# shapes that can carry raw bytes. They are used by the `expose`
+# decorator and by the json_* methods.
+# ======================================================================
+
 def _convert_to_serializable(obj):
     """Recursively convert bytes to a JSON-serializable dict."""
     if isinstance(obj, bytes):
@@ -42,6 +60,7 @@ def _convert_to_serializable(obj):
         return {k: _convert_to_serializable(v) for k, v in obj.items()}
     else:
         return obj
+
 
 def _convert_from_serializable(obj):
     """Recursively convert a dict containing __bytes__ back to bytes."""
@@ -58,15 +77,21 @@ def _convert_from_serializable(obj):
     else:
         return obj
 
+
 def _read_json(hnd: DataHandle):
     """Read JSON from a DataHandle using its built-in read_json."""
     return hnd.read_json()
 
+
 def _write_json(hnd: DataHandle, obj):
-    """Write a Python object as JSON to a DataHandle using its built-in write_json."""
+    """Write a Python object as JSON to a DataHandle."""
     serializable = _convert_to_serializable(obj)
     hnd.write_json(serializable)
 
+
+# ======================================================================
+# Server
+# ======================================================================
 
 class Server:
     """
@@ -77,30 +102,37 @@ class Server:
 
     {!!!!!  BEHAVIOUR NOTE  !!!!!}
     - `start()` and `start_multi()` call `LF_ResetPrepare()` internally,
-      which **clears all previously prepared services and clients**.
-      If you need to listen on multiple addresses, use `start_multi()`
-      with a list of addresses in one call.
+      which clears all previously prepared services and clients. If you
+      need to listen on multiple addresses, use `start_multi()` with a
+      list of addresses in one call.
+    - Both `start()` and `start_multi()` raise RuntimeError if the server
+      is already running. They are consistent so that the caller can
+      rely on a single error-handling path.
     - `stop()` only calls `LF_ExitMainThread()` and frees the App, but
-      **does not shut down the library** (no `LF_Shutdown`). The library
+      does not shut down the library (no LF_Shutdown). The library
       remains initialised and you can call `start()` again later.
-    - Use `full_cleanup()` to completely unload the library.
+    - `stop(full_cleanup=True)` additionally clears network event
+      callbacks and calls LF_Shutdown to unload the library.
+    - Use `full_cleanup()` as a convenience wrapper for
+      `stop(full_cleanup=True)`.
 
     {!!!!!  APP LIFETIME  !!!!!}
-    - `App.free()` (called by `stop()`) detaches the application from all
-      clients and stops its sequenced threads, but the underlying object
-      remains in the global pool until `LF_Shutdown()` is called.
-      If you need immediate memory release, use `full_cleanup()` or call
-      `LF_Shutdown()` directly.
+    - `App.free()` (called by `stop()`) detaches the application from
+      all clients and stops its sequenced threads, but the underlying
+      object remains in the global pool until `LF_Shutdown()` is called.
+      If you need immediate memory release, use `full_cleanup()` or
+      call `LF_Shutdown()` directly.
 
     {!!!!!  CLIENT ADDRESS UNIQUENESS  !!!!!}
-    - The server internally calls `LF_PrepareClient` with the service
-      address. If you call `start()` multiple times with the same address,
-      the second call will fail because a client already exists on that
-      address. To run multiple clients, use different addresses (e.g.,
-      different IPC names or ports).
+    - The server internally calls `LF_PrepareClient` with the local
+      listening address. If you call `start()` multiple times with the
+      same address, the second call will fail because a client already
+      exists on that address. To run multiple clients, use different
+      addresses (e.g., different IPC names or different ports).
     """
 
-    def __init__(self, app_name: str, description: str = "", debug: bool = False):
+    def __init__(self, app_name: str, description: str = "",
+                 debug: bool = False):
         """
         Create a new Server instance.
 
@@ -113,12 +145,38 @@ class Server:
         self._running = False
         self._debug = debug
 
+    # ------------------------------------------------------------------
+    # Logging helper
+    # ------------------------------------------------------------------
+
     def _log(self, msg: str) -> None:
         """Print debug log if enabled."""
         if self._debug:
             print(f"[Server DEBUG] {msg}")
 
-    def expose(self, api_name: str, notify: bool = False, description: str = ""):
+    # ------------------------------------------------------------------
+    # API registration
+    # ------------------------------------------------------------------
+
+    def expose(self, api_name: str, notify: bool = False,
+               description: str = ""):
+        """
+        Decorator: register a Python function as a remote API.
+
+        Args:
+            api_name: Unique API name (case-insensitive on the wire).
+            notify: If True, register a one-way Notify API; otherwise a
+                request-response Call API.
+            description: Optional human-readable description.
+
+        The decorated function is called with arguments reconstructed
+        from the incoming JSON payload. Supported input shapes:
+            - ``None`` / empty payload   -> call with no arguments
+            - JSON list                  -> positional args
+            - JSON object                -> keyword args
+            - single-element list with 1-param function -> unwrap
+            - anything else              -> passed as the first argument
+        """
         def decorator(func: Callable):
             if notify:
                 def _notify_adapter(trigger, inp: DataHandle):
@@ -144,11 +202,19 @@ class Server:
                             else:
                                 func(data)
                     except Exception as e:
+                        # Adapter-level errors are logged but not
+                        # propagated (the callback wrapper in core.py
+                        # would catch them anyway).
                         if self._debug:
-                            print(f"[Server] Notify callback error: {e}")
-                self._app.register_notify(api_name, _notify_adapter, description)
+                            print(
+                                f"[Server] Notify adapter error for "
+                                f"'{api_name}': {e}"
+                            )
+                self._app.register_notify(api_name, _notify_adapter,
+                                          description)
             else:
-                def _call_adapter(trigger, inp: DataHandle, out: DataHandle):
+                def _call_adapter(trigger, inp: DataHandle,
+                                  out: DataHandle):
                     try:
                         data = _read_json(inp)
                         sig = inspect.signature(func)
@@ -172,91 +238,138 @@ class Server:
                                 result = func(data)
                         _write_json(out, result)
                     except Exception as e:
-                        error_obj = {"__error__": str(e), "__type__": type(e).__name__}
+                        error_obj = {
+                            "__error__": str(e),
+                            "__type__": type(e).__name__,
+                        }
                         _write_json(out, error_obj)
                         if self._debug:
-                            print(f"[Server] Call adapter error: {e}")
-                self._app.register_call(api_name, _call_adapter, description)
+                            print(
+                                f"[Server] Call adapter error for "
+                                f"'{api_name}': {e}"
+                            )
+                self._app.register_call(api_name, _call_adapter,
+                                        description)
             return func
         return decorator
+
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
 
     def start(self, addr: str, public_addr: Optional[str] = None):
         """
         Start the C4 service on a single address.
 
-        This method **resets all prepared services/clients** before adding
+        This method resets all prepared services/clients before adding
         the new service and its client. If you need multiple addresses,
         use `start_multi()` instead.
 
-        Important: This method internally calls LF_PrepareClient(addr, ...).
-        The same address cannot be reused in another call to start()
-        (or any other client preparation) because the underlying library
-        prohibits duplicate client addresses. To run multiple servers,
-        use distinct addresses.
+        Important: This method internally calls
+        `LF_PrepareClient(addr, ...)`. The same address cannot be reused
+        in another call to start() (or any other client preparation)
+        because the underlying library prohibits duplicate client
+        addresses. To run multiple servers, use distinct addresses.
 
         Args:
-            addr: Local binding address (e.g., "0.0.0.0:9898" or "ipc:my_service").
-            public_addr: Public address advertised to clients. Defaults to `addr`.
+            addr: Local binding address (e.g., "0.0.0.0:9898" or
+                "ipc:my_service").
+            public_addr: Public address advertised to clients.
+                Defaults to `addr`.
 
         Raises:
+            RuntimeError: If the server is already running.
             ConnectionError: If the service fails to start.
         """
         if self._running:
-            print("[Server] Already running, ignoring start() call")
-            return
+            raise RuntimeError(
+                "Server already running. Call stop() first."
+            )
+
         public_addr = public_addr or addr
         self._log(f"Preparing service on {addr} (public: {public_addr})")
+
         LF_ResetPrepare()
-        serv_ret = LF_PrepareService(addr.encode("utf-8"), public_addr.encode("utf-8"))
+
+        serv_ret = LF_PrepareService(
+            addr.encode("utf-8"),
+            public_addr.encode("utf-8"),
+        )
         if serv_ret == -1:
             raise ConnectionError(
                 f"LF_PrepareService returned -1 for address '{addr}'. "
-                "Address may be a duplicate or invalid."
+                f"Address may be a duplicate or invalid."
             )
+
+        # Connect the internal client to the LOCAL listening address.
         client_ret = LF_PrepareClient(addr.encode("utf-8"), self._app.raw)
         if client_ret == -1:
             raise ConnectionError(
                 f"LF_PrepareClient returned -1 for address '{addr}'. "
-                "Address may already be in use by another client."
+                f"Address may already be in use by another client."
             )
+
         ret = LF_PrepareDone()
         if ret != 1:
-            # Check if main thread is active despite error
-            from ._lf_native import LF_CheckMainThread
+            # LF_PrepareDone may return non-1 in a few edge cases even
+            # when the main thread is actually running (e.g., partial
+            # readiness). We continue in that case, but raise otherwise.
             if LF_CheckMainThread() != 0:
-                self._log("Warning: LF_PrepareDone returned non-1, but main thread is active. Continuing anyway.")
-                # 记录警告但继续，因为有些情况下服务仍部分可用
+                self._log(
+                    "Warning: LF_PrepareDone returned non-1, but the "
+                    "main thread is active. Continuing anyway."
+                )
             else:
                 raise ConnectionError(
-                    f"Server start failed. Check console output for details. "
-                    f"(Return code: {ret})"
+                    f"Server start failed. Check console output for "
+                    f"details. (Return code: {ret})"
                 )
+
         self._running = True
         print(f"[OK] Server '{self._app.name}' started on {addr}")
 
-    def start_multi(self, addresses: Union[str, List[str]], public_addrs: Optional[Union[str, List[str]]] = None):
+    def start_multi(
+        self,
+        addresses: Union[str, List[str]],
+        public_addrs: Optional[Union[str, List[str]]] = None,
+    ):
         """
         Start the C4 service on multiple addresses simultaneously.
 
-        This method **resets all prepared services/clients** and then
+        This method resets all prepared services/clients and then
         prepares all given services and clients in one batch.
 
+        {!!!!!  ADDRESS SEMANTICS  !!!!!}
+        - ``addresses`` are the LOCAL listening addresses.
+        - ``public_addrs`` are the addresses advertised to remote
+          clients. When they are omitted, each listening address is
+          also used as its own public address.
+        - The internal client connection is always established against
+          the LOCAL listening address (not the public one). This matches
+          `start()` and is required for the local client to reach the
+          local service.
+
         Note that each address must be unique; duplicates will cause
-        LF_PrepareClient to return -1 and log an error.
+        LF_PrepareClient to return -1 and print a warning. In that case,
+        the method continues with the remaining addresses.
 
         Args:
-            addresses: A single address string or a list of address strings.
-            public_addrs: Optional. If None, each listening address is used
-                as its own public address. If a single string, all services
-                advertise that address. If a list, must match `addresses` length.
+            addresses: A single address string or a list of address
+                strings.
+            public_addrs: Optional. If None, each listening address is
+                used as its own public address. If a single string, all
+                services advertise that address. If a list, must match
+                `addresses` length.
 
         Raises:
+            RuntimeError: If the server is already running.
             ValueError: If public_addrs length mismatches.
-            RuntimeError: If server is already running.
-            ConnectionError: If the network preparation fails.
+            ConnectionError: If the network preparation fails entirely.
         """
         if self._running:
-            raise RuntimeError("Server already running. Call stop() first.")
+            raise RuntimeError(
+                "Server already running. Call stop() first."
+            )
 
         if isinstance(addresses, str):
             addr_list = [addresses]
@@ -276,35 +389,56 @@ class Server:
                 )
 
         self._log(f"Preparing multi-service: {addr_list}")
+
         LF_ResetPrepare()
+
         failed = False
         for listen, pub in zip(addr_list, pub_list):
-            serv_ret = LF_PrepareService(listen.encode('utf-8'), pub.encode('utf-8'))
+            serv_ret = LF_PrepareService(
+                listen.encode("utf-8"),
+                pub.encode("utf-8"),
+            )
             if serv_ret == -1:
                 print(f"[WARN] LF_PrepareService failed for {listen}")
                 failed = True
-            client_ret = LF_PrepareClient(pub.encode('utf-8'), self._app.raw)
+
+            # IMPORTANT: connect to the LOCAL listening address,
+            # not the public one. This mirrors start() and is required
+            # for the local client to be able to reach the local service.
+            client_ret = LF_PrepareClient(
+                listen.encode("utf-8"),
+                self._app.raw,
+            )
             if client_ret == -1:
-                print(f"[WARN] LF_PrepareClient failed for {pub}")
+                print(f"[WARN] LF_PrepareClient failed for {listen}")
                 failed = True
 
         if failed:
-            print("[WARN] Some services/clients failed to prepare, attempting to start anyway...")
+            print(
+                "[WARN] Some services/clients failed to prepare, "
+                "attempting to start anyway..."
+            )
 
         ret = LF_PrepareDone()
         if ret != 1:
-            from ._lf_native import LF_CheckMainThread
             if LF_CheckMainThread() != 0:
-                self._log("Warning: LF_PrepareDone returned non-1, but main thread is active. Continuing anyway.")
+                self._log(
+                    "Warning: LF_PrepareDone returned non-1, but the "
+                    "main thread is active. Continuing anyway."
+                )
             else:
                 raise ConnectionError(
-                    f"Server start_multi failed. Check console output for details. "
-                    f"(Return code: {ret})"
+                    f"Server start_multi failed. Check console output "
+                    f"for details. (Return code: {ret})"
                 )
+
         self._running = True
         print(f"[OK] Server '{self._app.name}' started on {addr_list}")
 
-    # ---- JSON-aware methods (explicit) ----
+    # ------------------------------------------------------------------
+    # JSON-aware methods (explicit)
+    # ------------------------------------------------------------------
+
     def json_notify(self, api_name: str, *args):
         """Send a one-way notification with JSON-serialized arguments."""
         if not self._running:
@@ -312,9 +446,11 @@ class Server:
         if self._app.raw is None:
             raise RuntimeError("App has been freed")
         req = DataHandle(api_name)
-        _write_json(req, list(args) if args else None)
-        LF_Notify(self._app.name.encode("utf-8"), req.raw)
-        req.free()
+        try:
+            _write_json(req, list(args) if args else None)
+            LF_Notify(self._app.name.encode("utf-8"), req.raw)
+        finally:
+            req.free()
 
     def json_sequenced_notify(self, api_name: str, *args):
         """Send a sequenced notification with JSON-serialized arguments."""
@@ -323,25 +459,39 @@ class Server:
         if self._app.raw is None:
             raise RuntimeError("App has been freed")
         req = DataHandle(api_name)
-        _write_json(req, list(args) if args else None)
-        LF_Sequenced_Notify(self._app.name.encode("utf-8"), req.raw)
-        req.free()
+        try:
+            _write_json(req, list(args) if args else None)
+            LF_Sequenced_Notify(self._app.name.encode("utf-8"), req.raw)
+        finally:
+            req.free()
 
     def json_call(self, api_name: str, *args, timeout: int = 5000) -> Any:
         """
         Synchronous call expecting a JSON response.
-        Returns the deserialized JSON object.
+
+        Returns the deserialized JSON object. If the remote handler
+        reported an error via the ``__error__`` convention, raises
+        RuntimeError with the original message.
         """
         if not self._running:
             raise RuntimeError("Server not started")
         if self._app.raw is None:
             raise RuntimeError("App has been freed")
+
         req = DataHandle(api_name)
-        _write_json(req, list(args) if args else None)
-        resp_raw = LF_Call(self._app.name.encode("utf-8"), req.raw, timeout)
-        req.free()
+        try:
+            _write_json(req, list(args) if args else None)
+            resp_raw = LF_Call(
+                self._app.name.encode("utf-8"),
+                req.raw,
+                timeout,
+            )
+        finally:
+            req.free()
+
         if not resp_raw:
-            raise LingoFuseError("Call returned null handle")
+            raise LingoFuseError("Call returned a null handle")
+
         resp = DataHandle._from_raw(resp_raw, owned=True)
         try:
             result = resp.read_json()
@@ -351,7 +501,10 @@ class Server:
         finally:
             resp.free()
 
-    # ---- Legacy aliases (keep for backward compatibility) ----
+    # ------------------------------------------------------------------
+    # Legacy aliases (kept for backward compatibility)
+    # ------------------------------------------------------------------
+
     def notify(self, api_name: str, *args):
         return self.json_notify(api_name, *args)
 
@@ -361,34 +514,54 @@ class Server:
     def call(self, api_name: str, *args, timeout: int = 5000) -> Any:
         return self.json_call(api_name, *args, timeout=timeout)
 
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
     def stop(self, full_cleanup: bool = False):
         """
         Stop the server and exit the main thread.
 
         {!!!!!  IMPORTANT  !!!!!}
-        - If `full_cleanup=False` (default): calls `LF_ExitMainThread()`,
-          stops the network event loop, and calls `App.free()`. The library
-          remains initialised for a future restart.
-          *Note:* `App.free()` detaches the application from all clients and
-          stops its sequenced threads, but the underlying `TLF_App` object
-          remains in the global pool until `LF_Shutdown()` is called.
-        - If `full_cleanup=True`: additionally calls `LF_Shutdown()` to
-          completely unload the library and destroy all remaining objects.
+        - If ``full_cleanup=False`` (default): calls
+          ``LF_ExitMainThread()``, stops the network event loop, and
+          calls ``App.free()``. The library remains initialised for a
+          future restart. Network event callbacks, if any, are left
+          untouched so that a subsequent `start()` can reuse them.
+        - If ``full_cleanup=True``: additionally clears network event
+          callbacks and calls ``LF_Shutdown()`` to completely unload
+          the library and destroy all remaining objects.
 
-        After calling `stop(full_cleanup=True)`, you must re-prepare the
-        network and restart the server with `start()`.
+        After calling ``stop(full_cleanup=True)``, you must re-prepare
+        the network and restart the server with ``start()``.
 
         Args:
-            full_cleanup: If True, also call LF_Shutdown to release all resources.
+            full_cleanup: If True, also call LF_Shutdown to release all
+                resources.
         """
         if not self._running:
             print("[Server] Already stopped")
             return
+
         self._log("Stopping server...")
         self._running = False
+
+        # Clear network event callbacks first, before tearing down the
+        # library. This must happen before LF_Shutdown, and it is only
+        # done when a full cleanup has been requested. For a plain stop
+        # we leave callbacks in place so a subsequent start() can reuse
+        # them.
+        if full_cleanup:
+            try:
+                from .network_events import clear_network_event
+                clear_network_event()
+            except Exception:
+                pass
+
         LF_ExitMainThread()
         self._app.free()
         print("[OK] Server stopped (network loop stopped, App freed)")
+
         if full_cleanup:
             LF_Shutdown()
             print("[OK] LingoFuse library fully unloaded")
@@ -397,9 +570,13 @@ class Server:
         """
         Completely shut down the server and unload the LingoFuse library.
 
-        This is a convenience wrapper around `stop(full_cleanup=True)`.
+        This is a convenience wrapper around ``stop(full_cleanup=True)``.
         """
         self.stop(full_cleanup=True)
+
+    # ------------------------------------------------------------------
+    # Destructor safety net
+    # ------------------------------------------------------------------
 
     def __del__(self):
         """
@@ -411,9 +588,10 @@ class Server:
         the App, but does NOT call LF_Shutdown (to avoid interfering with
         other potential users of the library in the same process).
         """
-        if self._running:
-            try:
+        try:
+            if self._running:
                 self._log("__del__: stopping server")
                 self.stop(full_cleanup=False)
-            except Exception:
-                pass  # Ignore errors during garbage collection
+        except Exception:
+            # Never let destructor exceptions reach the interpreter.
+            pass

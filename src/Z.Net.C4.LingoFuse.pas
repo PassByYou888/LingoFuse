@@ -370,6 +370,7 @@ type
     procedure Do_Init_App_Info_Result(Sender: TPeerIO; Result_: TDFE);
     property LF_AppIsOnline: Boolean read FAPI_APP_Is_Online;
     property LF_Service_Info_Is_Onlne: Boolean read FService_Info_Is_Onlne;
+
     procedure Set_API_APP(const Value: TLF_App);
     property APP: TLF_App read FAPP write Set_API_APP;
 
@@ -419,6 +420,38 @@ function Find_Remote_API(app_Name__, api_Name__: TLF_String; Update_Selected_Tim
 
 function Find_Fixed_Sequenced_Local_API(app_Name__, api_Name__: TLF_String): TC40_LF_Client;
 function Find_Fixed_Sequenced_Remote_API(app_Name__, api_Name__: TLF_String): TC40_LF_Client;
+
+(*
+  * ---------------------------------------------------------------------------
+  * Network event trigger entry points
+  * ---------------------------------------------------------------------------
+  *
+  * These two procedures are the Pascal-side trigger sites for the global
+  * network event callbacks exposed via LF_Set_Network_Event in
+  * Z.LingoFuse_Export.pas.
+  *
+  * They are called internally by TC40_LF_Client (never by user code):
+  *
+  *   Do_LF_Network_Connect    ← cmd_update_service_api_info
+  *                              (first service-API-info broadcast received)
+  *   Do_LF_Network_Disconnect ← DoNetworkOffline
+  *                              (physical link loss)
+  *
+  * [PITFALL] The user callback is dispatched to a BACKGROUND TCompute
+  *   worker thread, not the caller thread and not the main thread. Do not
+  *   touch UI controls directly inside the callback.
+  *
+  * [PITFALL] The addr_ string is converted to a UTF-8 PAnsiChar and freed
+  *   immediately after the callback returns. Copy it inside the callback
+  *   if you need to retain it.
+  *
+  * @see Do_LF_Network_Connect   (implementation) for the full contract
+  * @see Do_LF_Network_Disconnect (implementation) for the full contract
+  * @see LF_Set_Network_Event    in Z.LingoFuse_Export.pas for the C ABI
+  *                              installation API
+*)
+procedure Do_LF_Network_Connect(addr_: TLF_String);
+procedure Do_LF_Network_Disconnect(addr_: TLF_String);
 
 var
   // Maximum age (in ticks) of a client's last sequenced-notify timestamp.
@@ -735,6 +768,144 @@ begin
   end;
 
   DisposeObject(L);
+end;
+
+(*
+  * ===========================================================================
+  * Network event trigger chain (Pascal-side dispatch)
+  * ===========================================================================
+  *
+  * These four procedures implement the Pascal side of the network event
+  * bridge to the C ABI export layer (Z.LingoFuse_Export.pas). They are the
+  * concrete trigger sites behind the TLF_Network_Event callbacks exposed to
+  * external languages via LF_Set_Network_Event.
+  *
+  * Trigger origin:
+  *   Connect    : TC40_LF_Client.cmd_update_service_api_info
+  *                (fires once, when FService_Info_Is_Onlne goes False → True)
+  *   Disconnect : TC40_LF_Client.DoNetworkOffline
+  *                (fires once per physical link loss)
+  *
+  * Dispatch flow:
+  *   Do_LF_Network_Connect(addr_)           // runs on caller's thread
+  *     → check On_Network_Connect_Event     // may be nil
+  *     → TCompute.RunC(...)                 // hop to background worker
+  *     → Do_LF_Network_Connect_Th___(th)    // worker thread
+  *     → On_Network_Connect_Event(addr)     // user callback
+  *     → FreeUTF8AnsiChar(addr)             // release UTF-8 buffer
+  *
+  * Same shape for Disconnect.
+*)
+
+procedure Do_LF_Network_Connect_Th___(thSender: TCompute);
+(*
+  * Background-worker half of the connect notification.
+  *
+  * Runs on a TCompute worker thread, not on the caller thread and not on
+  * the simulated main thread.
+  *
+  * [PITFALL] The user callback is invoked through a raw function pointer.
+  *   Any exception it raises is swallowed by try...except; do not rely on
+  *   exceptions for control flow.
+  *
+  * [PITFALL] thSender.UserData is the UTF-8 PAnsiChar buffer allocated by
+  *   BuildUTF8AnsiChar in Do_LF_Network_Connect. It is freed here, AFTER
+  *   the callback returns. A callback that stores the pointer without
+  *   copying will retain a dangling reference.
+*)
+begin
+  try
+      Z.LingoFuse_Export.On_Network_Connect_Event(thSender.UserData);
+  except
+  end;
+  TLF_String.FreeUTF8AnsiChar(thSender.UserData);
+end;
+
+procedure Do_LF_Network_Connect(addr_: TLF_String);
+(*
+  * Trigger entry point for the "client is online" notification.
+  *
+  * [PITFALL] This is NOT a TCP handshake notification. It fires only after
+  *   the client has received its first service-API-info broadcast from the
+  *   server (see TC40_LF_Client.cmd_update_service_api_info). That is the
+  *   earliest point at which remote routing can be performed.
+  *
+  * [PITFALL] Fires exactly once per connection lifecycle, gated by the
+  *   FService_Info_Is_Onlne False → True transition on the client.
+  *
+  * [PITFALL] The actual user callback is dispatched to a background
+  *   TCompute worker thread via RunC. This function returns immediately
+  *   after enqueuing; it does NOT wait for the callback to complete.
+  *
+  * [PITFALL] If no callback is installed (On_Network_Connect_Event = nil),
+  *   this function returns silently without allocating any buffer. It is
+  *   safe to call unconditionally.
+  *
+  * @param addr_  Human-readable remote endpoint (e.g. "127.0.0.1:9898"
+  *               or "ipc:service_name"). Converted to UTF-8 before being
+  *               handed to the worker; the original TLF_String is not
+  *               retained.
+  *
+  * @see LF_Set_Network_Event  in Z.LingoFuse_Export.pas for the C ABI
+  *                            installation API and the full callback
+  *                            contract.
+*)
+begin
+  if Assigned(Z.LingoFuse_Export.On_Network_Connect_Event) then
+      TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Th___);
+end;
+
+procedure Do_LF_Network_Disconnect_Th___(thSender: TCompute);
+(*
+  * Background-worker half of the disconnect notification.
+  *
+  * Runs on a TCompute worker thread. Contract is identical to
+  * Do_LF_Network_Connect_Th___:
+  *   – Callback exceptions are swallowed.
+  *   – thSender.UserData is the UTF-8 PAnsiChar buffer; it is freed here
+  *     after the callback returns. Callbacks must copy the string if they
+  *     need it beyond the call.
+*)
+begin
+  try
+      Z.LingoFuse_Export.On_Network_Disconnect_Event(thSender.UserData);
+  except
+  end;
+  TLF_String.FreeUTF8AnsiChar(thSender.UserData);
+end;
+
+procedure Do_LF_Network_Disconnect(addr_: TLF_String);
+(*
+  * Trigger entry point for the "client went offline" notification.
+  *
+  * Fired by TC40_LF_Client.DoNetworkOffline when the physical link to the
+  * service is lost. At this point remote calls will fail; local calls
+  * (via Find_Local_) may still succeed if other clients remain online.
+  *
+  * [PITFALL] Fires once per DoNetworkOffline invocation, i.e. once per
+  *   physical link loss. Client auto-reconnect will trigger a fresh
+  *   connect notification (via Do_LF_Network_Connect) after the next
+  *   service-API-info broadcast, but NOT another disconnect.
+  *
+  * [PITFALL] The user callback is dispatched to a background TCompute
+  *   worker thread. Do not touch UI controls from the callback; marshal
+  *   to the main thread instead.
+  *
+  * [PITFALL] The addr_ parameter is validated and copied to UTF-8 before
+  *   the worker dispatch, but the callback receives the UTF-8 buffer only
+  *   during its own execution. Storing the pointer without copying is
+  *   undefined behaviour.
+  *
+  * @param addr_  Human-readable remote endpoint (same format as for
+  *               Do_LF_Network_Connect).
+  *
+  * @see LF_Set_Network_Event  in Z.LingoFuse_Export.pas for the C ABI
+  *                            installation API and the full callback
+  *                            contract.
+*)
+begin
+  if Assigned(Z.LingoFuse_Export.On_Network_Disconnect_Event) then
+      TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Disconnect_Th___);
 end;
 
 constructor TC40_LF_RecvTunnel.Create(Owner_: TPeerIO);
@@ -1516,6 +1687,7 @@ procedure TC40_LF_Client.cmd_update_service_api_info(Sender: TPeerIO; InData: PB
 var
   m64: TMS64;
   d: TDFE;
+  addr_: TLF_String;
 begin
   m64 := TMS64.Create;
   m64.Mapping(InData, DataSize);
@@ -1529,6 +1701,15 @@ begin
       Find_Safe_Critical.UnLock;
   end;
   DisposeObject(d);
+
+  if not FService_Info_Is_Onlne then
+    begin
+      if C40PhysicsTunnel.IPC_Mode then
+          addr_ := C40PhysicsTunnel.PhysicsAddr
+      else
+          addr_ := Build_Host_URL(C40PhysicsTunnel.PhysicsAddr, C40PhysicsTunnel.PhysicsPort);
+      Do_LF_Network_Connect(addr_);
+    end;
   FService_Info_Is_Onlne := True;
 end;
 
@@ -1698,10 +1879,18 @@ end;
 
 procedure TC40_LF_Client.DoNetworkOffline;
 { * Called when the client disconnects; resets the online flag. }
+var
+  addr_: TLF_String;
 begin
   inherited DoNetworkOffline;
   FAPI_APP_Is_Online := False;
   FService_Info_Is_Onlne := False;
+
+  if C40PhysicsTunnel.IPC_Mode then
+      addr_ := C40PhysicsTunnel.PhysicsAddr
+  else
+      addr_ := Build_Host_URL(C40PhysicsTunnel.PhysicsAddr, C40PhysicsTunnel.PhysicsPort);
+  Do_LF_Network_Disconnect(addr_);
 end;
 
 procedure TC40_LF_Client.Update_LocalThread_State_To_Service;

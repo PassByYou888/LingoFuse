@@ -183,7 +183,8 @@ exports
   LF_GetStatusCount,
   LF_GetStatus,
   LF_PostStatus,
-  LF_Shutdown;
+  LF_Shutdown,
+  LF_Set_Network_Event;
 
 begin
 end.

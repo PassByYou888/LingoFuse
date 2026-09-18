@@ -23,6 +23,13 @@ local listening address (e.g., listen on 0.0.0.0:9898, advertise
 against the wrong endpoint, leading to timeouts or empty responses.
 The correct behaviour is to connect to the LOCAL listening address,
 matching what `start()` already does.
+
+{!!!!!  STRING PARAMETERS  !!!!!}
+Every string argument passed to an LF_* function from this module is
+routed through `lingofuse.lf_io.cstr`, which supplies NUL-terminated
+UTF-8 bytes for the c_char_p parameter. This removes the previous
+reliance on the hidden NUL byte inside CPython bytes objects and
+makes the wire contract explicit.
 """
 
 import base64
@@ -40,6 +47,19 @@ from ._lf_native import (
     LF_CheckMainThread,
 )
 from .errors import LingoFuseError, ConnectionError
+
+# Unified LingoFuse payload I/O.
+#
+# cstr() is the single source of truth for NUL-terminated UTF-8 bytes
+# for every LF_* c_char_p parameter in this package. The Server class
+# uses it for LF_PrepareService / LF_PrepareClient / LF_Notify /
+# LF_Sequenced_Notify / LF_Call.
+#
+# Note: the JSON payload I/O of the Server's own json_* methods goes
+# through DataHandle.write_json / read_json, which were delegated to
+# lf_io in the previous revision. No additional import is needed for
+# that path.
+from .lf_io import cstr
 
 
 # ======================================================================
@@ -79,12 +99,24 @@ def _convert_from_serializable(obj):
 
 
 def _read_json(hnd: DataHandle):
-    """Read JSON from a DataHandle using its built-in read_json."""
+    """
+    Read JSON from a DataHandle using its built-in read_json.
+
+    DataHandle.read_json was delegated to lingofuse.lf_io in a
+    previous revision, so this function already benefits from the
+    unified serialization and framing policy without further change.
+    """
     return hnd.read_json()
 
 
 def _write_json(hnd: DataHandle, obj):
-    """Write a Python object as JSON to a DataHandle."""
+    """
+    Write a Python object as JSON to a DataHandle.
+
+    DataHandle.write_json was delegated to lingofuse.lf_io in a
+    previous revision, so this function already benefits from the
+    unified serialization and framing policy without further change.
+    """
     serializable = _convert_to_serializable(obj)
     hnd.write_json(serializable)
 
@@ -292,8 +324,8 @@ class Server:
         LF_ResetPrepare()
 
         serv_ret = LF_PrepareService(
-            addr.encode("utf-8"),
-            public_addr.encode("utf-8"),
+            cstr(addr),
+            cstr(public_addr),
         )
         if serv_ret == -1:
             raise ConnectionError(
@@ -302,7 +334,7 @@ class Server:
             )
 
         # Connect the internal client to the LOCAL listening address.
-        client_ret = LF_PrepareClient(addr.encode("utf-8"), self._app.raw)
+        client_ret = LF_PrepareClient(cstr(addr), self._app.raw)
         if client_ret == -1:
             raise ConnectionError(
                 f"LF_PrepareClient returned -1 for address '{addr}'. "
@@ -395,8 +427,8 @@ class Server:
         failed = False
         for listen, pub in zip(addr_list, pub_list):
             serv_ret = LF_PrepareService(
-                listen.encode("utf-8"),
-                pub.encode("utf-8"),
+                cstr(listen),
+                cstr(pub),
             )
             if serv_ret == -1:
                 print(f"[WARN] LF_PrepareService failed for {listen}")
@@ -406,7 +438,7 @@ class Server:
             # not the public one. This mirrors start() and is required
             # for the local client to be able to reach the local service.
             client_ret = LF_PrepareClient(
-                listen.encode("utf-8"),
+                cstr(listen),
                 self._app.raw,
             )
             if client_ret == -1:
@@ -440,7 +472,13 @@ class Server:
     # ------------------------------------------------------------------
 
     def json_notify(self, api_name: str, *args):
-        """Send a one-way notification with JSON-serialized arguments."""
+        """
+        Send a one-way notification with JSON-serialized arguments.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Notify.
+        """
         if not self._running:
             raise RuntimeError("Server not started")
         if self._app.raw is None:
@@ -448,12 +486,18 @@ class Server:
         req = DataHandle(api_name)
         try:
             _write_json(req, list(args) if args else None)
-            LF_Notify(self._app.name.encode("utf-8"), req.raw)
+            LF_Notify(cstr(self._app.name), req.raw)
         finally:
             req.free()
 
     def json_sequenced_notify(self, api_name: str, *args):
-        """Send a sequenced notification with JSON-serialized arguments."""
+        """
+        Send a sequenced notification with JSON-serialized arguments.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Sequenced_Notify.
+        """
         if not self._running:
             raise RuntimeError("Server not started")
         if self._app.raw is None:
@@ -461,7 +505,7 @@ class Server:
         req = DataHandle(api_name)
         try:
             _write_json(req, list(args) if args else None)
-            LF_Sequenced_Notify(self._app.name.encode("utf-8"), req.raw)
+            LF_Sequenced_Notify(cstr(self._app.name), req.raw)
         finally:
             req.free()
 
@@ -472,6 +516,10 @@ class Server:
         Returns the deserialized JSON object. If the remote handler
         reported an error via the ``__error__`` convention, raises
         RuntimeError with the original message.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Call.
         """
         if not self._running:
             raise RuntimeError("Server not started")
@@ -482,7 +530,7 @@ class Server:
         try:
             _write_json(req, list(args) if args else None)
             resp_raw = LF_Call(
-                self._app.name.encode("utf-8"),
+                cstr(self._app.name),
                 req.raw,
                 timeout,
             )

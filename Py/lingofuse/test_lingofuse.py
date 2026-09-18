@@ -29,6 +29,33 @@ Network event callbacks are process-global. Tests that install them
 must clear them (via clear_network_event) in a finally block, otherwise
 subsequent tests may see the previous callbacks and fail assertions
 such as is_network_event_installed() == False.
+
+{!!!!!  LOW-LEVEL ABI TESTS ARE INTENTIONAL  !!!!!}
+Several tests in this file call the low-level LF_* functions directly
+(LF_WriteBuffer, LF_ReadBuffer, LF_CreateData, LF_SetPos, ...) instead
+of using the high-level DataHandle / App wrappers. This is DELIBERATE:
+the purpose of these tests is to cover the ABI boundary itself.
+
+In particular:
+  * TestDataHandle.test_read_string_invalid_utf8 exercises the raw
+    byte-level behaviour of the underlying buffer, which the wrapper
+    methods (write_string / read_string) deliberately abstract away.
+  * TestBindApp and TestOverlapAndFree manipulate raw TDataHnd and
+    TAppHnd values to verify that the C-level contracts hold
+    independently of the Python wrapper's convenience logic.
+  * TestModuleHelpers uses LF_ResetPrepare / LF_PrepareService /
+    LF_PrepareClient / LF_PrepareDone directly to exercise the exact
+    call sequences that LF_PrepareDone's "returns 1 only once"
+    constraint requires.
+
+These tests are therefore OUTSIDE the scope of the lf_io
+unification. They intentionally bypass lingofuse.lf_io and talk to
+the native library through lingofuse._lf_native, so that a regression
+in the ABI layer is caught before it can affect the higher-level
+modules. Do not "clean them up" by routing them through lf_io: doing
+so would remove the only coverage of the raw byte-level contract.
+
+All comments and status output are in English.
 """
 
 import ctypes
@@ -217,6 +244,10 @@ class TestDataHandle(unittest.TestCase):
         """
         read_string() must raise LingoFuseError, not a raw
         UnicodeDecodeError, when the buffer contains invalid UTF-8.
+
+        Low-level LF_WriteBuffer is used here on purpose: this test
+        verifies the ABI boundary, which the high-level write_string
+        wrapper deliberately abstracts away.
         """
         dh = DataHandle("test")
         # 0xFF alone is not valid UTF-8; no NUL terminator is added.

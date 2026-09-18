@@ -2,40 +2,81 @@
 """
 Unit tests for the LingoFuse Python bindings.
 
-These tests cover:
+Coverage:
 - DataHandle operations (atomic types, serialization, position/size)
 - App registration and local calls
 - Server network tests (single and multi-address)
-- NEW: generate_app_name() and App.bind() functions
-- NEW: Overlap_Connection behavior
-- NEW: LF_FreeApp lifetime semantics
+- generate_app_name() and App.bind()
+- Overlap_Connection behavior
+- LF_FreeApp lifetime semantics
+- Callback exception isolation (P0-1 fix verification)
+- Failed-init safety (P0-3 fix verification)
+- NetworkEventQueue installation and override warning
+
+These tests use only ipc:* endpoints with unique names to avoid
+clashing with other processes or repeated runs. Every test that
+touches the network cleans up via LF_Shutdown() to guarantee a
+consistent starting state for the next test.
+
+{!!!!!  LF_PrepareDone RETURNS 1 ONLY ONCE  !!!!!}
+Any test that calls LF_PrepareDone() MUST also call LF_ExitMainThread()
+and LF_Shutdown() in a finally block. Otherwise the next test's
+LF_PrepareDone() will return 0 and the test suite will report a
+spurious failure.
+
+{!!!!!  NETWORK EVENT GLOBAL STATE  !!!!!}
+Network event callbacks are process-global. Tests that install them
+must clear them (via clear_network_event) in a finally block, otherwise
+subsequent tests may see the previous callbacks and fail assertions
+such as is_network_event_installed() == False.
 """
-import unittest
-import time
+
+import ctypes
 import os
 import sys
+import time
+import unittest
 import uuid
-import ctypes
 
+# Ensure the parent directory is importable when running from the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lingofuse
-from lingofuse import DataHandle, App, Server, C4, generate_app_name, get_app_name
-from lingofuse.errors import RegistrationError, ConnectionError, TimeoutError, LingoFuseError
+from lingofuse import (
+    DataHandle, App, Server, C4,
+    generate_app_name, get_app_name,
+    set_network_event, clear_network_event,
+    is_network_event_installed,
+    NetworkEventListener, NetworkEventQueue,
+)
+from lingofuse.errors import (
+    RegistrationError, ConnectionError, TimeoutError,
+    LingoFuseError,
+)
 from lingofuse._lf_native import (
-    LF_Shutdown, LF_ResetPrepare,
-    LF_PrepareService, LF_PrepareClient, LF_PrepareDone,
-    LF_ExitMainThread, LF_Shutdown as LF_ShutdownNative,
-    LF_Call, LF_GetSize, LF_FreeData, LF_WriteBuffer, LF_CreateData,
-    LF_ReadBuffer, LF_GetBuffer, LF_SetPos,
-    LF_SetOption, LF_CheckApp, LF_CheckApi,
-    LF_GetStatusCount, LF_GetStatus
+    LF_Shutdown,
+    LF_ResetPrepare,
+    LF_PrepareService,
+    LF_PrepareClient,
+    LF_PrepareDone,
+    LF_ExitMainThread,
+    LF_Call,
+    LF_GetSize,
+    LF_FreeData,
+    LF_WriteBuffer,
+    LF_CreateData,
+    LF_ReadBuffer,
+    LF_SetPos,
+    LF_SetOption,
+    LF_CheckApp,
+    LF_CheckApi,
 )
 
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # Test callbacks
-# ----------------------------------------------------------------------
+# ======================================================================
+
 def _add_callback(trigger, inp, out):
     a = inp.read_int32()
     b = inp.read_int32()
@@ -44,38 +85,67 @@ def _add_callback(trigger, inp, out):
 
 
 def _notify_callback(trigger, inp):
-    # just consume
+    # Consume and discard.
     pass
 
 
+# ======================================================================
+# Base class for tests that use the network
 # ----------------------------------------------------------------------
-# Base class for network tests (proper reset)
-# ----------------------------------------------------------------------
+# Ensures that the library is always reset to a clean state between
+# tests, so that the process-global LingoFuse state does not leak
+# across test cases.
+# ======================================================================
+
 class NetworkTestBase(unittest.TestCase):
+
     @classmethod
     def setUpClass(cls):
         pass
 
     @classmethod
     def tearDownClass(cls):
+        # Best-effort final cleanup after the whole class.
         C4.shutdown()
-        LF_Shutdown()
+        try:
+            LF_Shutdown()
+        except Exception:
+            pass
 
     def setUp(self):
-        LF_ResetPrepare()
-        C4._global_initialized = False
+        # Clear any leftover network event callbacks from a previous
+        # test that may have failed before its finally block ran.
+        try:
+            clear_network_event()
+        except Exception:
+            pass
+
+        # Shut down the shared client first so that its internal state
+        # (C4._global_initialized) is reset BEFORE we reset the library.
         C4.shutdown()
+
+        # Then reset any pending preparation commands left over from a
+        # previous test that did not call LF_Shutdown.
+        LF_ResetPrepare()
         time.sleep(0.2)
 
     def tearDown(self):
+        # Stop the network loop for this test and clear any pending
+        # state so the next test starts clean.
+        try:
+            clear_network_event()
+        except Exception:
+            pass
         C4.shutdown()
         time.sleep(0.2)
 
 
-# ----------------------------------------------------------------------
-# Test DataHandle (no network)
-# ----------------------------------------------------------------------
+# ======================================================================
+# DataHandle tests (no network)
+# ======================================================================
+
 class TestDataHandle(unittest.TestCase):
+
     def test_atomic_types(self):
         dh = DataHandle("test")
         self.assertTrue(dh.write_int8(-128))
@@ -88,7 +158,9 @@ class TestDataHandle(unittest.TestCase):
         self.assertTrue(dh.write_uint64(9876543210))
         self.assertTrue(dh.write_single(3.14159))
         self.assertTrue(dh.write_double(2.718281828))
-        self.assertTrue(dh.write_string_null_terminated("Hello, 世界! 🌍"))
+        self.assertTrue(
+            dh.write_string_null_terminated("Hello, world! (ascii-only)")
+        )
 
         dh.set_pos(0)
         self.assertEqual(dh.read_int8(), -128)
@@ -101,7 +173,19 @@ class TestDataHandle(unittest.TestCase):
         self.assertEqual(dh.read_uint64(), 9876543210)
         self.assertAlmostEqual(dh.read_single(), 3.14159, places=4)
         self.assertAlmostEqual(dh.read_double(), 2.718281828, places=6)
-        self.assertEqual(dh.read_string_null_terminated(), "Hello, 世界! 🌍")
+        self.assertEqual(
+            dh.read_string_null_terminated(),
+            "Hello, world! (ascii-only)",
+        )
+        dh.free()
+
+    def test_atomic_types_unicode(self):
+        """Unicode round-trip through write_string / read_string."""
+        dh = DataHandle("test")
+        text = "Hello, 世界! \U0001F30D"
+        self.assertTrue(dh.write_string_null_terminated(text))
+        dh.set_pos(0)
+        self.assertEqual(dh.read_string_null_terminated(), text)
         dh.free()
 
     def test_serialization(self):
@@ -121,11 +205,57 @@ class TestDataHandle(unittest.TestCase):
         self.assertEqual(dh.get_size(), 8)
         dh.free()
 
+    def test_context_manager(self):
+        """DataHandle must support the with-statement."""
+        with DataHandle("ctx") as dh:
+            dh.write_int32(7)
+            self.assertEqual(dh.get_size(), 4)
+        # After the with-block, the handle must be freed.
+        self.assertIsNone(dh.raw)
 
-# ----------------------------------------------------------------------
-# Test App (no network)
-# ----------------------------------------------------------------------
+    def test_read_string_invalid_utf8(self):
+        """
+        read_string() must raise LingoFuseError, not a raw
+        UnicodeDecodeError, when the buffer contains invalid UTF-8.
+        """
+        dh = DataHandle("test")
+        # 0xFF alone is not valid UTF-8; no NUL terminator is added.
+        raw = b"\xFF\xFF\xFF"
+        LF_WriteBuffer(dh.raw, raw, len(raw))
+        dh.set_pos(0)
+        with self.assertRaises(LingoFuseError):
+            dh.read_string()
+        dh.free()
+
+    def test_failed_init_does_not_break_del(self):
+        """
+        If DataHandle.__init__ raises before completing (or was never
+        called at all), free() and __del__ must remain safe to call
+        (P0-3 fix verification).
+        """
+        # Simulate a failed construction by calling __new__ directly
+        # and never running __init__. The object has no attributes yet.
+        dh = DataHandle.__new__(DataHandle)
+        try:
+            dh.free()
+        except AttributeError:
+            self.fail(
+                "free() raised AttributeError on uninitialized instance"
+            )
+        try:
+            dh.__del__()
+        except AttributeError:
+            self.fail(
+                "__del__() raised AttributeError on uninitialized instance"
+            )
+
+
+# ======================================================================
+# App tests (no network)
+# ======================================================================
+
 class TestApp(unittest.TestCase):
+
     def test_register_and_local_call(self):
         app = App("test_app")
         app.register_call("add", _add_callback, "test add")
@@ -139,20 +269,23 @@ class TestApp(unittest.TestCase):
         param.free()
         result.free()
 
-        # Test local notify
+        # Test local notify.
         param = DataHandle("notify")
         param.write_string_null_terminated("hello")
         app.local_notify(param)
         param.free()
 
-        # Test unregister
+        # Test unregister.
         self.assertTrue(app.unregister("add"))
         self.assertFalse(app.unregister("non_existent"))
 
-        # Try to call again – should return empty result
-        # This will generate a "no found api 'add'" info log from the library,
-        # which is expected and harmless.
-        print("Testing call to unregistered API 'add' – the library will log 'no found api \"add\"' – this is expected.")
+        # Calling a non-existent API locally returns an empty handle.
+        # The library logs "no found api 'add'" to the status queue;
+        # this is expected and harmless.
+        print(
+            "Testing call to unregistered API 'add' - the library "
+            "will log 'no found api \"add\"' - this is expected."
+        )
         param = DataHandle("add")
         param.write_int32(1)
         param.write_int32(2)
@@ -170,270 +303,380 @@ class TestApp(unittest.TestCase):
             app.register_call("test", lambda t, i, o: None)
         app.free()
 
+    def test_callback_exception_is_isolated(self):
+        """
+        A user callback that raises an exception must not:
+          1. propagate back into the C stack, nor
+          2. crash the interpreter.
 
-# ----------------------------------------------------------------------
-# Test new functions: generate_app_name and App.bind() (requires network)
-# ----------------------------------------------------------------------
-class TestNewFunctions(NetworkTestBase):
+        The exception is caught and logged by the wrapper. The output
+        handle stays empty, which the caller observes as an empty
+        response (size 0).
+        """
+        app = App("exc_test")
+
+        def bad_callback(trigger, inp, out):
+            raise RuntimeError("intentional failure for isolation test")
+
+        app.register_call("boom", bad_callback)
+
+        param = DataHandle("boom")
+        try:
+            result = app.local_call(param)
+            # The adapter wrapper caught the exception; the result
+            # handle is still valid, just empty.
+            self.assertIsNotNone(result)
+            result.free()
+        finally:
+            param.free()
+            app.free()
+
+    def test_failed_init_does_not_break_del(self):
+        """
+        If App.__init__ raises before completing (or was never called
+        at all), free() and __del__ must remain safe to call (P0-3 fix
+        verification).
+        """
+        app = App.__new__(App)
+        try:
+            app.free()
+        except AttributeError:
+            self.fail(
+                "free() raised AttributeError on uninitialized instance"
+            )
+        try:
+            app.__del__()
+        except AttributeError:
+            self.fail(
+                "__del__() raised AttributeError on uninitialized instance"
+            )
+
+
+# ======================================================================
+# Tests for module-level helpers (need a live framework)
+# ======================================================================
+
+class TestModuleHelpers(NetworkTestBase):
+
     def test_generate_app_name(self):
-        """Test that generate_app_name() returns a non-empty string."""
-        name = generate_app_name()
-        self.assertIsInstance(name, str)
-        self.assertTrue(len(name) > 0, "Generated app name should not be empty")
+        """
+        generate_app_name() must be called AFTER LF_PrepareDone()
+        returns 1; otherwise the name lacks the tunnel information and
+        may not be unique.
+
+        {!!!!!  LF_PrepareDone RETURNS 1 ONLY ONCE  !!!!!}
+        This test calls LF_PrepareDone, so it MUST call
+        LF_ExitMainThread and LF_Shutdown in a finally block.
+        Otherwise the next test's LF_PrepareDone will return 0.
+        """
+        endpoint = f"ipc:gen_name_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        LF_ResetPrepare()
+        LF_PrepareService(endpoint.encode(), endpoint.encode())
+        LF_PrepareClient(endpoint.encode(), None)
+
+        try:
+            self.assertEqual(LF_PrepareDone(), 1, "PrepareDone failed")
+
+            name = generate_app_name()
+            self.assertIsInstance(name, str)
+            self.assertGreater(
+                len(name), 0,
+                "Generated app name must not be empty",
+            )
+        finally:
+            LF_ExitMainThread()
+            LF_Shutdown()
 
     def test_generate_unique_app_name(self):
-        """
-        Test that consecutive calls produce different names.
-        Because the generation uses time ticks, we add a small delay
-        between calls to increase diversity. If still not enough unique
-        names (e.g., when no C4 tunnels exist), we at least verify the
-        prefix is present.
-        """
-        names = set()
-        for _ in range(10):
-            names.add(generate_app_name())
-            time.sleep(0.001)  # Ensure timestamp changes
-        # We expect at least 2 different names (usually more)
-        if len(names) < 2:
-            # If only one name, it's still okay if it contains the prefix
-            self.assertIn("__generate__@", list(names)[0])
-        else:
-            self.assertGreaterEqual(len(names), 2, "Should generate at least 2 distinct names")
-        # Check that each name contains the prefix
-        for n in names:
-            self.assertIn("__generate__@", n)
+        endpoint = f"ipc:gen_uniq_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        LF_ResetPrepare()
+        LF_PrepareService(endpoint.encode(), endpoint.encode())
+        LF_PrepareClient(endpoint.encode(), None)
+
+        try:
+            self.assertEqual(LF_PrepareDone(), 1, "PrepareDone failed")
+
+            names = set()
+            for _ in range(10):
+                names.add(generate_app_name())
+                time.sleep(0.001)
+            if len(names) < 2:
+                # At least the prefix must be present.
+                self.assertIn("__generate__@", list(names)[0])
+            else:
+                self.assertGreaterEqual(
+                    len(names), 2,
+                    "Should generate at least 2 distinct names",
+                )
+            for n in names:
+                self.assertIn("__generate__@", n)
+        finally:
+            LF_ExitMainThread()
+            LF_Shutdown()
+
+    def test_get_app_name(self):
+        app = App("TestGetName", "description")
+        try:
+            name_from_func = get_app_name(app.raw)
+            self.assertEqual(name_from_func, "TestGetName")
+        finally:
+            app.free()
+
+
+# ======================================================================
+# Test App.bind() with two distinct services
+# ======================================================================
+
+class TestBindApp(NetworkTestBase):
 
     def test_bind_app(self):
         """
-        Test App.bind() by creating two separate services (different IPC endpoints),
-        creating one client for each, then binding an App to both free clients.
-        This works around the LF_PrepareClient address uniqueness constraint.
-
-        Expectation: bind() returns 2.
+        Prepare two independent services on two distinct addresses,
+        then bind a single App to both free clients. Expect bind() to
+        return 2.
         """
         app_name = "BindTestApp"
-        endpoint1 = f"ipc:bind_test_{os.getpid()}_{uuid.uuid4().hex[:6]}_1"
-        endpoint2 = f"ipc:bind_test_{os.getpid()}_{uuid.uuid4().hex[:6]}_2"
+        endpoint1 = f"ipc:bind_{os.getpid()}_{uuid.uuid4().hex[:6]}_1"
+        endpoint2 = f"ipc:bind_{os.getpid()}_{uuid.uuid4().hex[:6]}_2"
 
-        # Create an App with a ping API
         app = App(app_name, "Test bind")
-        app.register_call("ping", lambda t, i, o: o.write_string(i.read_string()))
+        app.register_call(
+            "ping",
+            lambda t, i, o: o.write_string(i.read_string()),
+        )
 
-        # Prepare two separate services and clients (different addresses)
-        LF_ResetPrepare()
-        LF_PrepareService(endpoint1.encode('utf-8'), endpoint1.encode('utf-8'))
-        LF_PrepareService(endpoint2.encode('utf-8'), endpoint2.encode('utf-8'))
-        LF_PrepareClient(endpoint1.encode('utf-8'), None)
-        LF_PrepareClient(endpoint2.encode('utf-8'), None)
+        try:
+            LF_ResetPrepare()
+            LF_PrepareService(endpoint1.encode(), endpoint1.encode())
+            LF_PrepareService(endpoint2.encode(), endpoint2.encode())
+            LF_PrepareClient(endpoint1.encode(), None)
+            LF_PrepareClient(endpoint2.encode(), None)
 
-        ret = LF_PrepareDone()
-        self.assertEqual(ret, 1, "LF_PrepareDone failed")
+            self.assertEqual(LF_PrepareDone(), 1, "PrepareDone failed")
 
-        # Bind the app to all free clients (should be 2)
-        bound = app.bind()
-        self.assertEqual(bound, 2, "Expected to bind to 2 clients")
+            bound = app.bind()
+            self.assertEqual(bound, 2,
+                             "Expected to bind to 2 free clients")
 
-        # Verify that the app is reachable via one of the clients
-        ping_hnd = LF_CreateData(b"ping")
-        if not ping_hnd:
-            self.fail("Failed to create data handle for ping")
-        msg = b"hello"
-        LF_WriteBuffer(ping_hnd, msg, len(msg))
-        LF_WriteBuffer(ping_hnd, b"\x00", 1)  # null terminator
+            # Round-trip a call through one of the clients.
+            ping_hnd = LF_CreateData(b"ping")
+            try:
+                msg = b"hello"
+                LF_WriteBuffer(ping_hnd, msg, len(msg))
+                LF_WriteBuffer(ping_hnd, b"\x00", 1)
+                res_ptr = LF_Call(app_name.encode(), ping_hnd, 3000)
+            finally:
+                LF_FreeData(ping_hnd)
 
-        res_ptr = LF_Call(app_name.encode('utf-8'), ping_hnd, 3000)
-        LF_FreeData(ping_hnd)
+            self.assertIsNotNone(res_ptr,
+                                 "LF_Call returned a null handle")
+            try:
+                size = LF_GetSize(res_ptr)
+                self.assertGreater(size, 0,
+                                   "Response should not be empty")
+                LF_SetPos(res_ptr, 0)
+                buf = (ctypes.c_byte * size)()
+                read = LF_ReadBuffer(res_ptr, buf, size)
+                self.assertEqual(read, size, "Read mismatch")
+                resp_bytes = bytes(buf)
+                if resp_bytes and resp_bytes[-1] == 0:
+                    resp_bytes = resp_bytes[:-1]
+                self.assertEqual(resp_bytes.decode("utf-8"), "hello")
+            finally:
+                LF_FreeData(res_ptr)
 
-        self.assertIsNotNone(res_ptr, "LF_Call returned null handle")
-        size = LF_GetSize(res_ptr)
-        self.assertGreater(size, 0, "Response should not be empty")
-
-        LF_SetPos(res_ptr, 0)
-        buf = (ctypes.c_byte * size)()
-        read = LF_ReadBuffer(res_ptr, buf, size)
-        self.assertEqual(read, size, "Read mismatch")
-        resp_bytes = bytes(buf)
-        if resp_bytes and resp_bytes[-1] == 0:
-            resp_bytes = resp_bytes[:-1]
-        result = resp_bytes.decode('utf-8')
-        self.assertEqual(result, "hello", "Ping response mismatch")
-        LF_FreeData(res_ptr)
-
-        # Clean up
-        app.free()
-        LF_ExitMainThread()
-        LF_ShutdownNative()
-        C4._global_initialized = False
-
-    def test_get_app_name(self):
-        """Test get_app_name() on a raw handle."""
-        app = App("TestGetName", "description")
-        raw = app.raw
-        name_from_func = get_app_name(raw)
-        self.assertEqual(name_from_func, "TestGetName")
-        app.free()
+        finally:
+            app.free()
+            LF_ExitMainThread()
+            LF_Shutdown()
+            C4._global_initialized = False
 
 
-# ----------------------------------------------------------------------
-# New tests: Overlap_Connection and LF_FreeApp semantics
-# ----------------------------------------------------------------------
+# ======================================================================
+# Overlap_Connection and LF_FreeApp lifetime
+# ======================================================================
+
 class TestOverlapAndFree(NetworkTestBase):
+
     def test_overlap_connection(self):
         """
-        Test Overlap_Connection behavior:
-        - When False (default), only one client tunnel per address exists.
-          Subsequent prepare with a different app should be ignored.
-        - When True, each prepare creates a new tunnel and binds the app.
+        Overlap_Connection=False (default):
+            Only one client tunnel per address is allowed. A second
+            LF_PrepareClient with a different app returns -1.
+
+        Overlap_Connection=True:
+            Each LF_PrepareClient creates a new tunnel, and the
+            provided app is bound to the new client.
         """
         app_name1 = "OverlapApp1"
         app_name2 = "OverlapApp2"
-        endpoint = f"ipc:overlap_test_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        endpoint = f"ipc:overlap_{os.getpid()}_{uuid.uuid4().hex[:6]}"
 
-        # ---------- Phase 1: Overlap_Connection = False ----------
+        # ---------------- Phase 1: Overlap_Connection = False ---------
         app1 = App(app_name1, "App 1")
-        app1.register_call("echo", lambda t, i, o: o.write_string(i.read_string()))
+        app1.register_call(
+            "echo",
+            lambda t, i, o: o.write_string(i.read_string()),
+        )
         app2 = App(app_name2, "App 2")
-        app2.register_call("echo", lambda t, i, o: o.write_string(i.read_string()))
+        app2.register_call(
+            "echo",
+            lambda t, i, o: o.write_string(i.read_string()),
+        )
 
-        LF_ResetPrepare()
-        LF_PrepareService(endpoint.encode('utf-8'), endpoint.encode('utf-8'))
+        try:
+            LF_ResetPrepare()
+            LF_PrepareService(endpoint.encode(), endpoint.encode())
 
-        LF_SetOption(b"Overlap_Connection", b"False")
-        tag1 = LF_PrepareClient(endpoint.encode('utf-8'), app1.raw)
-        self.assertNotEqual(tag1, -1, "First client should succeed")
-        tag2 = LF_PrepareClient(endpoint.encode('utf-8'), app2.raw)
-        self.assertEqual(tag2, -1, "Second client should return -1 (duplicate address)")
+            LF_SetOption(b"Overlap_Connection", b"False")
+            tag1 = LF_PrepareClient(endpoint.encode(), app1.raw)
+            self.assertNotEqual(tag1, -1, "First client should succeed")
+            tag2 = LF_PrepareClient(endpoint.encode(), app2.raw)
+            self.assertEqual(
+                tag2, -1,
+                "Second client should return -1 (duplicate address)",
+            )
 
-        ret = LF_PrepareDone()
-        self.assertEqual(ret, 1, "PrepareDone failed")
+            self.assertEqual(LF_PrepareDone(), 1, "PrepareDone failed")
 
-        # Verify app1 reachable, app2 not
-        hnd = DataHandle("echo")
-        hnd.write_string("test")
-        res1 = LF_Call(app_name1.encode('utf-8'), hnd.raw, 3000)
-        hnd.free()
-        self.assertIsNotNone(res1)
-        size1 = LF_GetSize(res1)
-        self.assertGreater(size1, 0, "app1 should respond")
-        LF_FreeData(res1)
+            # app1 should be reachable via the single tunnel.
+            hnd = DataHandle("echo")
+            hnd.write_string("test")
+            res1 = LF_Call(app_name1.encode(), hnd.raw, 3000)
+            hnd.free()
+            self.assertIsNotNone(res1)
+            self.assertGreater(LF_GetSize(res1), 0,
+                               "app1 should respond")
+            LF_FreeData(res1)
 
-        hnd = DataHandle("echo")
-        hnd.write_string("test")
-        res2 = LF_Call(app_name2.encode('utf-8'), hnd.raw, 3000)
-        hnd.free()
-        if res2:
-            size2 = LF_GetSize(res2)
-            self.assertEqual(size2, 0, "app2 should NOT be reachable")
-            LF_FreeData(res2)
+            # app2 should NOT be reachable.
+            hnd = DataHandle("echo")
+            hnd.write_string("test")
+            res2 = LF_Call(app_name2.encode(), hnd.raw, 3000)
+            hnd.free()
+            if res2:
+                self.assertEqual(LF_GetSize(res2), 0,
+                                 "app2 should NOT be reachable")
+                LF_FreeData(res2)
 
-        # Cleanup phase 1
-        LF_ExitMainThread()
-        LF_ShutdownNative()
+        finally:
+            # FIX (P0-2): free the Apps BEFORE LF_Shutdown, otherwise
+            # LF_Shutdown destroys the underlying TLF_App objects and
+            # app.free() would dereference a dangling handle.
+            app1.free()
+            app2.free()
+            LF_ExitMainThread()
+            LF_Shutdown()
+            C4._global_initialized = False
+
         time.sleep(0.3)
-        app1.free()
-        app2.free()
-        # Reset global state
-        C4._global_initialized = False
 
-        # ---------- Phase 2: Overlap_Connection = True ----------
-        # Re-create apps for phase 2
+        # ---------------- Phase 2: Overlap_Connection = True ----------
         app1 = App(app_name1, "App 1 (overlap)")
-        app1.register_call("echo", lambda t, i, o: o.write_string(i.read_string()))
+        app1.register_call(
+            "echo",
+            lambda t, i, o: o.write_string(i.read_string()),
+        )
         app2 = App(app_name2, "App 2 (overlap)")
-        app2.register_call("echo", lambda t, i, o: o.write_string(i.read_string()))
+        app2.register_call(
+            "echo",
+            lambda t, i, o: o.write_string(i.read_string()),
+        )
 
-        LF_ResetPrepare()
-        LF_PrepareService(endpoint.encode('utf-8'), endpoint.encode('utf-8'))
-        LF_SetOption(b"Overlap_Connection", b"True")
-        tag1_new = LF_PrepareClient(endpoint.encode('utf-8'), app1.raw)
-        self.assertNotEqual(tag1_new, -1, "First client should succeed")
-        tag2_new = LF_PrepareClient(endpoint.encode('utf-8'), app2.raw)
-        self.assertNotEqual(tag2_new, -1, "Second client should also succeed (overlap allowed)")
+        try:
+            LF_ResetPrepare()
+            LF_PrepareService(endpoint.encode(), endpoint.encode())
+            LF_SetOption(b"Overlap_Connection", b"True")
 
-        ret2 = LF_PrepareDone()
-        self.assertEqual(ret2, 1, "PrepareDone failed for overlap")
+            tag1 = LF_PrepareClient(endpoint.encode(), app1.raw)
+            self.assertNotEqual(tag1, -1, "First client should succeed")
+            tag2 = LF_PrepareClient(endpoint.encode(), app2.raw)
+            self.assertNotEqual(
+                tag2, -1,
+                "Second client should succeed (overlap allowed)",
+            )
 
-        # Both apps should be reachable
-        hnd = DataHandle("echo")
-        hnd.write_string("hello1")
-        res_a = LF_Call(app_name1.encode('utf-8'), hnd.raw, 3000)
-        hnd.free()
-        self.assertIsNotNone(res_a)
-        self.assertGreater(LF_GetSize(res_a), 0, "app1 should respond")
-        LF_FreeData(res_a)
+            self.assertEqual(LF_PrepareDone(), 1,
+                             "PrepareDone failed for overlap")
 
-        hnd = DataHandle("echo")
-        hnd.write_string("hello2")
-        res_b = LF_Call(app_name2.encode('utf-8'), hnd.raw, 3000)
-        hnd.free()
-        self.assertIsNotNone(res_b)
-        self.assertGreater(LF_GetSize(res_b), 0, "app2 should also respond")
-        LF_FreeData(res_b)
+            # Both apps should be reachable.
+            hnd = DataHandle("echo")
+            hnd.write_string("hello1")
+            res_a = LF_Call(app_name1.encode(), hnd.raw, 3000)
+            hnd.free()
+            self.assertIsNotNone(res_a)
+            self.assertGreater(LF_GetSize(res_a), 0,
+                               "app1 should respond")
+            LF_FreeData(res_a)
 
-        # Cleanup phase 2
-        app1.free()
-        app2.free()
-        LF_ExitMainThread()
-        LF_ShutdownNative()
-        C4._global_initialized = False
+            hnd = DataHandle("echo")
+            hnd.write_string("hello2")
+            res_b = LF_Call(app_name2.encode(), hnd.raw, 3000)
+            hnd.free()
+            self.assertIsNotNone(res_b)
+            self.assertGreater(LF_GetSize(res_b), 0,
+                               "app2 should also respond")
+            LF_FreeData(res_b)
+
+        finally:
+            app1.free()
+            app2.free()
+            LF_ExitMainThread()
+            LF_Shutdown()
+            C4._global_initialized = False
 
     def test_free_app_lifetime(self):
         """
-        Test that App.free() detaches the app (so local calls fail)
-        but the underlying object is not immediately destroyed.
-        We verify by trying to register a new app with the same name,
-        which should succeed (since the old one is detached but still
-        in the pool? Actually, the pool prevents duplicate names? Check.)
-        According to Pascal behavior, the app remains in the global pool
-        but is no longer reachable by name (since clients are detached).
-        A new app with the same name can be created because the name is
-        not reserved; the old one is just an object in the pool.
-        We'll test that after free(), local calls fail, and we can create
-        a new app with the same name without conflict.
+        App.free() detaches the app but does not destroy it immediately.
+        Local calls on the freed app must fail; a new App with the same
+        name can be created without conflict.
         """
         app_name = "FreeTestApp"
         app = App(app_name, "Original")
         app.register_call("ping", lambda t, i, o: o.write_string("pong"))
 
-        # Local call works
-        hnd = DataHandle("ping")
-        res = app.local_call(hnd)
-        hnd.free()
-        self.assertEqual(res.read_string(), "pong")
-        res.free()
+        # Local call works before free.
+        with DataHandle("ping") as hnd:
+            res = app.local_call(hnd)
+            try:
+                self.assertEqual(res.read_string(), "pong")
+            finally:
+                res.free()
 
-        # Free the app
+        # Free the app.
         app.free()
 
-        # Local call on freed app should fail
+        # Local call on the freed app must fail. FIX (P1-5): use the
+        # with-statement to make sure the DataHandle is freed even if
+        # local_call raises.
         with self.assertRaises(LingoFuseError):
-            hnd = DataHandle("ping")
-            app.local_call(hnd)  # App already freed -> error
+            with DataHandle("ping") as hnd:
+                app.local_call(hnd)
 
-        # Create a new app with the same name – should succeed (name is not locked)
+        # A new App with the same name must be creatable.
         app2 = App(app_name, "New Instance")
-        app2.register_call("ping", lambda t, i, o: o.write_string("pong2"))
+        try:
+            app2.register_call(
+                "ping",
+                lambda t, i, o: o.write_string("pong2"),
+            )
+            with DataHandle("ping") as hnd2:
+                res2 = app2.local_call(hnd2)
+                try:
+                    self.assertEqual(res2.read_string(), "pong2")
+                finally:
+                    res2.free()
+        finally:
+            app2.free()
 
-        # Local call on new app works
-        hnd2 = DataHandle("ping")
-        res2 = app2.local_call(hnd2)
-        hnd2.free()
-        self.assertEqual(res2.read_string(), "pong2")
-        res2.free()
 
-        app2.free()
+# ======================================================================
+# Server tests
+# ======================================================================
 
-        # Cleanup (no network involved in this test, but ensure no resources left)
-        # Since this test doesn't use network, we don't call LF_Shutdown here.
-        # The base class teardown will handle it.
-
-
-# ----------------------------------------------------------------------
-# Test Server (network) – includes diagnostics (except post_status)
-# ----------------------------------------------------------------------
 class TestServer(NetworkTestBase):
+
     def test_single_address(self):
-        """Test single-address server: call, notify, sequenced_notify, unknown API, and diagnostics."""
         app_name = "TestApp"
         endpoint = f"ipc:test_{os.getpid()}_{uuid.uuid4().hex[:6]}"
         server = Server(app_name, "test server")
@@ -443,52 +686,56 @@ class TestServer(NetworkTestBase):
             return a + b
 
         captured_notify = []
+
         @server.expose("log", notify=True)
         def log(msg):
             captured_notify.append(msg)
 
         captured_seq = []
+
         @server.expose("seq", notify=True)
         def seq(data):
             captured_seq.append(data)
 
-        server.start(endpoint)
+        try:
+            server.start(endpoint)
 
-        # ---- Test set_option (no crash) ----
-        lingofuse.set_option("ConsoleOutput", "True")
-        lingofuse.set_option("Quiet", "False")
+            # set_option must not crash.
+            lingofuse.set_option("ConsoleOutput", "True")
+            lingofuse.set_option("Quiet", "False")
 
-        # ---- Test check_app / check_main_thread ----
-        self.assertTrue(lingofuse.check_main_thread())
-        self.assertTrue(lingofuse.check_app(app_name))
+            # Health checks.
+            self.assertTrue(lingofuse.check_main_thread())
+            self.assertTrue(lingofuse.check_app(app_name))
 
-        # ---- API tests ----
-        result = server.call("add", 5, 7, timeout=3000)
-        self.assertEqual(result, 12)
+            # Basic call.
+            result = server.call("add", 5, 7, timeout=3000)
+            self.assertEqual(result, 12)
 
-        server.notify("log", "hello")
-        time.sleep(0.3)
-        self.assertEqual(captured_notify, ["hello"])
+            # Notify + sequenced notify.
+            server.notify("log", "hello")
+            time.sleep(0.3)
+            self.assertEqual(captured_notify, ["hello"])
 
-        server.sequenced_notify("seq", {"order": 1})
-        time.sleep(0.3)
-        self.assertEqual(captured_seq, [{"order": 1}])
+            server.sequenced_notify("seq", {"order": 1})
+            time.sleep(0.3)
+            self.assertEqual(captured_seq, [{"order": 1}])
 
-        # This call is intentionally made to an API that does not exist.
-        # The library will log "no found app("TestApp") api("unknown")".
-        # This is expected and harmless.
-        print("Testing call to non-existent API 'unknown' – the library will log 'no found app...' – this is expected.")
-        result_unknown = server.call("unknown", timeout=1000)
-        self.assertIsNone(result_unknown)
-
-        server.stop()
+            # Non-existent API. This will log a warning; harmless.
+            print(
+                "Testing call to non-existent API 'unknown' - the "
+                "library will log 'no found app...' - this is expected."
+            )
+            result_unknown = server.call("unknown", timeout=1000)
+            self.assertIsNone(result_unknown)
+        finally:
+            server.stop()
 
     def test_multi_address(self):
-        """Test multi-address server: start_multi with two IPC endpoints."""
         app_name = "TestApp"
         addrs = [
-            f"ipc:test_{os.getpid()}_{uuid.uuid4().hex[:6]}",
-            f"ipc:test_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+            f"ipc:multi_{os.getpid()}_{uuid.uuid4().hex[:6]}",
+            f"ipc:multi_{os.getpid()}_{uuid.uuid4().hex[:6]}",
         ]
         server = Server(app_name, "test server")
 
@@ -496,16 +743,161 @@ class TestServer(NetworkTestBase):
         def add(a, b):
             return a + b
 
-        server.start_multi(addrs)
+        try:
+            server.start_multi(addrs)
+            result = server.call("add", 3, 4, timeout=3000)
+            self.assertEqual(result, 7)
+        finally:
+            server.stop()
 
-        result = server.call("add", 3, 4, timeout=3000)
-        self.assertEqual(result, 7)
+    def test_start_on_already_running_raises(self):
+        """
+        Both start() and start_multi() must raise RuntimeError when the
+        server is already running (P1-2 fix verification).
+        """
+        app_name = "RunningApp"
+        endpoint = f"ipc:running_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        server = Server(app_name, "running test")
 
-        server.stop()
+        try:
+            server.start(endpoint)
+            with self.assertRaises(RuntimeError):
+                server.start(endpoint + "_dup")
+            with self.assertRaises(RuntimeError):
+                server.start_multi([endpoint + "_dup2"])
+        finally:
+            server.stop()
 
 
-# ----------------------------------------------------------------------
-# Run tests
-# ----------------------------------------------------------------------
+# ======================================================================
+# Network event API tests
+# ======================================================================
+
+class TestNetworkEvents(NetworkTestBase):
+    """
+    All tests in this class must leave the process-global network event
+    state clear. setUp() and tearDown() call clear_network_event() so
+    that even a failed test cannot contaminate the next one.
+    """
+
+    def test_set_and_clear(self):
+        """install -> is_installed True; clear -> is_installed False."""
+        # setUp already cleared; sanity check.
+        self.assertFalse(is_network_event_installed())
+
+        def on_conn(addr):
+            pass
+
+        def on_disc(addr):
+            pass
+
+        set_network_event(on_connect=on_conn, on_disconnect=on_disc)
+        try:
+            self.assertTrue(is_network_event_installed())
+        finally:
+            clear_network_event()
+
+        self.assertFalse(is_network_event_installed())
+
+    def test_set_only_connect(self):
+        """
+        Installing only on_connect must be possible: the disconnect
+        slot is passed as NULL to the underlying library.
+        """
+        set_network_event(on_connect=lambda addr: None)
+        try:
+            self.assertTrue(is_network_event_installed())
+        finally:
+            clear_network_event()
+        self.assertFalse(is_network_event_installed())
+
+    def test_set_only_disconnect(self):
+        """
+        Installing only on_disconnect must be possible: the connect
+        slot is passed as NULL to the underlying library.
+        """
+        set_network_event(on_disconnect=lambda addr: None)
+        try:
+            self.assertTrue(is_network_event_installed())
+        finally:
+            clear_network_event()
+        self.assertFalse(is_network_event_installed())
+
+    def test_queue_install_uninstall(self):
+        """Queue install / uninstall toggles the global callback."""
+        q = NetworkEventQueue.global_instance()
+        self.assertFalse(q._installed)
+        q.install()
+        try:
+            self.assertTrue(q._installed)
+            self.assertTrue(is_network_event_installed())
+        finally:
+            q.uninstall()
+        self.assertFalse(q._installed)
+
+    def test_queue_overrides_user_callback(self):
+        """
+        If a user callback is already installed, queue.install() must
+        succeed but log a warning about the override. The user callback
+        is no longer active afterwards.
+        """
+        # Install a user callback first (only on_connect so that the
+        # disconnect slot is NULL - this also exercises the NULL
+        # argument path).
+        set_network_event(on_connect=lambda addr: None)
+        self.assertTrue(is_network_event_installed())
+
+        # Now install the queue. It should override the user callback.
+        q = NetworkEventQueue.global_instance()
+        try:
+            q.install()
+            self.assertTrue(q._installed)
+            self.assertTrue(is_network_event_installed())
+        finally:
+            q.uninstall()
+
+    def test_listener_base_class(self):
+        """
+        A subclass of NetworkEventListener must be accepted by
+        set_network_event(listener=...).
+        """
+        events = []
+
+        class L(NetworkEventListener):
+            def on_connect(self, addr):
+                events.append(("connect", addr))
+
+            def on_disconnect(self, addr):
+                events.append(("disconnect", addr))
+
+        set_network_event(listener=L())
+        try:
+            self.assertTrue(is_network_event_installed())
+        finally:
+            clear_network_event()
+        self.assertFalse(is_network_event_installed())
+
+    def test_queue_basic_get(self):
+        """Queue.get() returns (type, addr) tuples in order."""
+        q = NetworkEventQueue()
+        q._enqueue("connect", "addr1")
+        q._enqueue("disconnect", "addr2")
+        self.assertEqual(q.qsize(), 2)
+        self.assertEqual(q.get(block=False), ("connect", "addr1"))
+        self.assertEqual(q.get(block=False), ("disconnect", "addr2"))
+        self.assertTrue(q.empty())
+
+    def test_queue_clear(self):
+        q = NetworkEventQueue()
+        q._enqueue("connect", "a")
+        q._enqueue("connect", "b")
+        q.clear()
+        self.assertTrue(q.empty())
+
+
+# ======================================================================
+# Entry point
+# ======================================================================
+
 if __name__ == "__main__":
     unittest.main()

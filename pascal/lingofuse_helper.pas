@@ -361,34 +361,36 @@ type
   public
     { ---- Static (class) methods for global operations ---- }
 
-    class function Generate_AppName: string;
-    class procedure ResetPrepare;
+    class function Generate_AppName: string; static;
+    class procedure ResetPrepare; static;
 
-    class function PrepareService(const ListeningAddr, PhysicsAddr: string): integer; overload;
-    class function PrepareService(const ListeningAddr, PhysicsAddr: string; App: TAppHandle): integer; overload;
+    class function PrepareService(const ListeningAddr, PhysicsAddr: string): integer; overload; static;
+    class function PrepareService(const ListeningAddr, PhysicsAddr: string; App: TAppHandle): integer; overload; static;
     { * Prepares a client. Note: behaviour depends on global Overlap_Connection
       * setting (see LF.SetOption). If Overlap_Connection=False (default), only
       * one client per address is created and subsequent calls with a different
       * App will be ignored. }
-    class function PrepareClient(const PhysicsAddr: string; App: TAppHandle): integer;
-    class function PrepareDone: boolean;
-    class procedure ExitMainThread;
+    class function PrepareClient(const PhysicsAddr: string; App: TAppHandle): integer; static;
+    class function PrepareDone: boolean; static;
+    class procedure ExitMainThread; static;
 
-    class function CallApp(const AppName: string; Param: TDataHandle; TimeoutMs: uint64): TDataHandle;
-    class procedure NotifyApp(const AppName: string; Param: TDataHandle);
-    class procedure SequencedNotifyApp(const AppName: string; Param: TDataHandle);
+    class function CallApp(const AppName: string; Param: TDataHandle; TimeoutMs: uint64): TDataHandle; static;
+    class procedure NotifyApp(const AppName: string; Param: TDataHandle); static;
+    class procedure SequencedNotifyApp(const AppName: string; Param: TDataHandle); static;
 
-    class procedure SetOption(const Option, Value: string);
-    class function Sync: integer;
-    class procedure Shutdown;
+    class procedure SetOption(const Option, Value: string); static;
+    class function Sync: integer; static;
+    class procedure Shutdown; static;
 
-    class function GetStatus: string;
-    class function Get_Status_Num: integer;
-    class procedure PostStatus(const Status: string);
+    class function GetStatus: string; static;
+    class function Get_Status_Num: integer; static;
+    class procedure PostStatus(const Status: string); static;
 
-    class function CheckMainThread: boolean;
-    class function CheckApp(const AppName: string): boolean;
-    class function CheckApi(AppName, ApiName: string): boolean;
+    class function CheckMainThread: boolean; static;
+    class function CheckApp(const AppName: string): boolean; static;
+    class function CheckApi(AppName, ApiName: string): boolean; static;
+
+    class procedure Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event); static;
   end;
 
   { * Alias for LF, for convenience. }
@@ -627,6 +629,8 @@ type
     class function LF_CheckMainThreadEx: boolean; static;
     class function LF_CheckAppEx(const AppName: string): boolean; static;
     class function LF_CheckApiEx(const AppName, ApiName: string): boolean; static;
+
+    class procedure LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event); static;
   end;
 
   { * Alias for LF___, for compatibility. }
@@ -1462,6 +1466,11 @@ begin
   Result := LF_CheckApiEx(AppName, ApiName);
 end;
 
+class procedure LF.Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event);
+begin
+  LF_Set_Network_Event(On_Connect_, On_Disconnect_);
+end;
+
 { ----------------------------------------------------------------------------
   LF___ compatibility class – forwards to lingofuse_import
   ---------------------------------------------------------------------------- }
@@ -1918,6 +1927,11 @@ end;
 class function LF___.LF_CheckApiEx(const AppName, ApiName: string): boolean;
 begin
   Result := lingofuse_import.LF_CheckApiEx(AppName, ApiName);
+end;
+
+class procedure LF___.LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event); static;
+begin
+  lingofuse_import.LF_Set_Network_Event(On_Connect_, On_Disconnect_);
 end;
 
 end.

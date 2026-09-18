@@ -53,12 +53,42 @@ curl -X POST http://127.0.0.1:8081/exp -d '{"args":["1+2*3"]}'
 ==================== DEPENDENCIES ====================
 - lingofuse package (must be on PYTHONPATH)
 - Flask
+
+==================== WIRE FORMAT POLICY ====================
+The JSON serialization policy, the NUL termination convention, and
+the c_char_p parameter encoding used by this file are ALL delegated
+to lingofuse.lf_io. This file no longer carries its own local copy
+of those helpers.
+
+lingofuse.lf_io is the single source of truth for the LingoFuse
+toolchain on the Python side. It guarantees:
+
+  * Every JSON payload is serialized with ensure_ascii=False, so
+    non-ASCII content (Chinese, emoji, accented Latin letters) is
+    emitted as literal UTF-8 bytes. No \\uXXXX escape ever appears on
+    the wire.
+
+  * Every string written to a DataHandle is NUL-terminated, matching
+    Pascal's LF_ReadString (see lingofuse_import.pas).
+
+  * Every string read from a DataHandle stops at the first NUL, and
+    tolerates a missing NUL by consuming the remainder of the buffer.
+    This accepts payloads produced by non-Pascal producers.
+
+  * Every c_char_p parameter of an LF_* function is passed NUL-
+    terminated UTF-8 bytes via cstr(), instead of relying on the
+    hidden NUL inside CPython bytes objects.
+
+Historical note: this file used to carry its own local copy of the
+I/O helpers, on the rationale of "avoiding a cross-package dependency
+between lingofuse and llm_common". With the relocation of lf_io from
+llm_common into the lingofuse package, that rationale no longer
+holds: both modules now belong to the same package, and reusing
+lf_io directly is the correct choice.
 """
 
 import argparse
 import atexit
-import ctypes
-import json
 import logging
 import os
 import sys
@@ -74,10 +104,35 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lingofuse import set_option, check_api, get_status, get_status_num
 from lingofuse.errors import ConnectionError, TimeoutError, LingoFuseError
 from lingofuse._lf_native import (
-    LF_ResetPrepare, LF_PrepareClient, LF_PrepareDone,
-    LF_Call, LF_GetSize, LF_FreeData,
-    LF_WriteBuffer, LF_CreateData, LF_SetPos, LF_ReadBuffer,
-    LF_ExitMainThread, LF_Shutdown,
+    LF_ResetPrepare,
+    LF_PrepareClient,
+    LF_PrepareDone,
+    LF_Call,
+    LF_FreeData,
+    LF_CreateData,
+    LF_ExitMainThread,
+    LF_Shutdown,
+)
+
+# ----------------------------------------------------------------------
+# Unified LingoFuse payload I/O
+# ----------------------------------------------------------------------
+#
+# Every JSON serialization, NUL framing operation, and c_char_p
+# parameter encoding in this file goes through lingofuse.lf_io, the
+# single source of truth for the toolchain's wire format policy.
+#
+# Functions used here:
+#     cstr               - NUL-terminated UTF-8 bytes for c_char_p args
+#     dumps_json         - toolchain-wide JSON serialization policy
+#     write_string_bytes - write raw bytes followed by a NUL terminator
+#     read_string_bytes  - read up to the first NUL (or the whole
+#                          buffer when no NUL is present)
+from lingofuse.lf_io import (
+    cstr,
+    dumps_json,
+    read_string_bytes,
+    write_string_bytes,
 )
 
 
@@ -117,6 +172,11 @@ class BridgeConfig:
     log_file: Optional[str] = None
 
 
+# The active configuration is stored in this module-level instance.
+# It is populated by `run_bridge()` before Flask starts serving.
+config = BridgeConfig()
+
+
 # ======================================================================
 # Logging
 # ======================================================================
@@ -130,7 +190,15 @@ logger.addHandler(_stderr_handler)
 
 
 def configure_logging(debug: bool, file_path: Optional[str] = None) -> None:
-    """Configure logging level and optional file output."""
+    """
+    Configure logging level and optional file output.
+
+    Args:
+        debug:     When True, enable DEBUG level and suppress
+                   Werkzeug's request log to avoid noise.
+        file_path: When provided, additional log output is written to
+                   this file.
+    """
     if debug:
         logger.setLevel(logging.DEBUG)
         # Reduce noise from Werkzeug's request log.
@@ -175,11 +243,6 @@ def _after_request(response: Response) -> Response:
     return response
 
 
-# The active configuration is stored in this module-level instance.
-# It is populated by `run_bridge()` before Flask starts serving.
-config = BridgeConfig()
-
-
 # ======================================================================
 # Cleanup
 # ======================================================================
@@ -206,7 +269,9 @@ def cleanup() -> None:
            releases the Python-side strong references held by
            `lingofuse.network_events` (see the module's "REPLACE
            SEMANTICS" section).
+
         2. Stop the LingoFuse main thread (`LF_ExitMainThread`).
+
         3. Unload the library (`LF_Shutdown`).
 
     The bridge does not own any `App` objects (it is a pure client),
@@ -267,20 +332,20 @@ def jsonify_error(code: int, msg: str,
             status can still parse the JSON body and read the message.
 
     Args:
-        code: Bridge-level error code (negative).
-        msg: Human-readable error message.
+        code:        Bridge-level error code (negative).
+        msg:         Human-readable error message.
         http_status: HTTP status code to return. Defaults to 200 so
-            that clients relying on a fixed status can still parse the
-            JSON body; request-shape errors use 400 instead.
+                     that clients relying on a fixed status can still
+                     parse the JSON body; request-shape errors use 400
+                     instead.
 
     Returns:
-        A Flask Response carrying the JSON-encoded error object.
+        A Flask Response carrying the JSON-encoded error object. The
+        JSON is produced via dumps_json, so the body is guaranteed to
+        contain literal UTF-8 rather than \\uXXXX escapes.
     """
     return app.response_class(
-        response=json.dumps(
-            {"code": code, "error": msg},
-            ensure_ascii=False,
-        ).encode("utf-8"),
+        response=dumps_json({"code": code, "error": msg}).encode("utf-8"),
         status=http_status,
         mimetype='application/json',
     )
@@ -408,50 +473,20 @@ def handle_call(path: str):
     # ------------------------------------------------------------------
     # Forward to the backend and return the response.
     #
-    # NOTE ON `c_char_p` AND NULL TERMINATORS
-    # ---------------------------------------
-    # Both `LF_CreateData` and `LF_Call` declare their string argument
-    # as `ctypes.c_char_p`. When a Python `bytes` object is passed to a
-    # `c_char_p` parameter, ctypes hands the underlying buffer pointer
-    # directly to the C side. CPython's `bytes` objects always carry a
-    # trailing NUL byte internally (a long-standing implementation
-    # detail that lets them be used as C strings), so the C side reads
-    # the expected string without any manual `b'\x00'` suffix.
-    #
-    # We deliberately do NOT append `b'\x00'` here, matching the style
-    # used by `lingofuse/core.py`, `lingofuse/server.py`,
-    # `lingofuse/client.py`, and by the top-level services
-    # (`llm_service.py`, `llm_proxy.py`, `llm_proxy_tool.py`,
-    # `llm_test.py`). The few places in `lingofuse/__init__.py` that do
-    # append a NUL (set_option / check_api / check_app / post_status)
-    # are the exception, not the rule.
+    # All DataHandle I/O and c_char_p parameter construction goes
+    # through lingofuse.lf_io. Both the request handle and the
+    # response handle are released in finally blocks so that an
+    # exception during payload I/O cannot leak a DataHandle.
     # ------------------------------------------------------------------
     try:
-        # `LF_CreateData` takes the API method name.
-        hnd_in = LF_CreateData(api_name.encode('utf-8'))
+        hnd_in = LF_CreateData(cstr(api_name))
         if not hnd_in:
             raise LingoFuseError("Failed to create DataHandle")
 
-        # Append a null terminator to the *body*, so that the Pascal-
-        # side `LF_ReadString` stops at the right place. If the body is
-        # empty, we still write a single null byte so the receiver
-        # sees an empty string rather than nothing at all.
         try:
-            if body:
-                data_to_send = body + b'\x00'
-                written = LF_WriteBuffer(
-                    hnd_in, data_to_send, len(data_to_send)
-                )
-                if written != len(data_to_send):
-                    raise LingoFuseError(
-                        f"WriteBuffer wrote only {written} of "
-                        f"{len(data_to_send)} bytes"
-                    )
-            else:
-                LF_WriteBuffer(hnd_in, b'\x00', 1)
-
+            write_string_bytes(hnd_in, body)
             res_ptr = LF_Call(
-                app_name.encode('utf-8'),
+                cstr(app_name),
                 hnd_in,
                 config.timeout_ms,
             )
@@ -461,39 +496,10 @@ def handle_call(path: str):
         if not res_ptr:
             raise LingoFuseError("Remote call returned a null handle")
 
-        size = LF_GetSize(res_ptr)
-        if config.debug:
-            logger.debug(f"Response size: {size}")
-
-        if size == 0:
-            LF_FreeData(res_ptr)
-            if config.debug:
-                _drain_status(3)
-            return Response(
-                b'',
-                status=200,
-                content_type='application/octet-stream',
-            )
-
-        # Read the response using LF_ReadBuffer (reliable for binary
-        # data, and avoids depending on the internal buffer pointer
-        # staying valid across the free).
         try:
-            buf = (ctypes.c_byte * size)()
-            LF_SetPos(res_ptr, 0)
-            read = LF_ReadBuffer(res_ptr, buf, size)
-            if read != size:
-                raise RuntimeError(
-                    f"Read mismatch: expected {size}, got {read}"
-                )
-            result_bytes = bytes(buf)
+            result_bytes = read_string_bytes(res_ptr)
         finally:
             LF_FreeData(res_ptr)
-
-        # Strip the trailing null terminator, if any, so that HTTP
-        # clients relying on strict JSON parsing are not confused.
-        if result_bytes and result_bytes[-1] == 0:
-            result_bytes = result_bytes[:-1]
 
         if config.debug:
             logger.debug(f"Response size={len(result_bytes)}")
@@ -513,6 +519,9 @@ def handle_call(path: str):
                     f"response (hex) first 64 bytes: "
                     f"{result_bytes.hex()[:64]}..."
                 )
+
+        if not result_bytes and config.debug:
+            _drain_status(3)
 
         return Response(
             result_bytes,
@@ -539,7 +548,7 @@ def setup_network(ep: str) -> bool:
         # Requests will time out gracefully until it comes online.
         set_option("Wait_Connection_ReadyOk", "False")
         LF_ResetPrepare()
-        LF_PrepareClient(ep.encode('utf-8'), None)
+        LF_PrepareClient(cstr(ep), None)
         ret = LF_PrepareDone()
         if ret != 1:
             raise ConnectionError(f"LF_PrepareDone returned {ret}")
@@ -569,16 +578,16 @@ def run_bridge(
     Start the LingoFuse HTTP Bridge.
 
     Args:
-        host: Listening address.
-        port: Listening port.
-        endpoint_addr: LingoFuse service endpoint.
-        timeout: Default timeout in milliseconds for all calls.
-        default_app: Default target application name (used when the path
-            contains only an API name).
-        threaded_enabled: Enable multi-threaded request handling.
-        debug: Enable debug logging.
+        host:              Listening address.
+        port:              Listening port.
+        endpoint_addr:     LingoFuse service endpoint.
+        timeout:           Default timeout in milliseconds for all calls.
+        default_app:       Default target application name (used when the
+                           path contains only an API name).
+        threaded_enabled:  Enable multi-threaded request handling.
+        debug:             Enable debug logging.
         no_precheck_param: Disable API pre-check (check_api).
-        log_file_path: Path to log file (None for stderr).
+        log_file_path:     Path to log file (None for stderr).
     """
     # Populate the module-level configuration instance.
     config.host = host

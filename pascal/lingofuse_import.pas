@@ -723,6 +723,7 @@ unit lingofuse_import;
 interface
 
 uses SysUtils, Classes;
+
 type
   { * TDataHnd___: Opaque handle to a LingoFuse data buffer.
     * Never dereference this pointer; always use the provided functions.
@@ -1257,6 +1258,149 @@ function LF_CheckApiEx(appName, apiName: string): boolean;
   *        LF_Shutdown ensures they are properly destroyed, preventing leaks.
   * }
 procedure LF_Shutdown; cdecl; external liblingofuse name 'LF_Shutdown';
+
+{ ---- Network Events ---- }
+
+(*
+  * TLF_Network_Event: Callback prototype for network connect/disconnect
+  * notifications at the transport layer.
+  *
+  * ===========================================================================
+  * TRIGGER MECHANICS (confirmed by source inspection)
+  * ===========================================================================
+  *
+  *   Connect    ← TC40_LF_Client.cmd_update_service_api_info
+  *                (fires once, on the first service-API-info broadcast
+  *                 received from the server; gated by the
+  *                 FService_Info_Is_Onlne False → True transition)
+  *
+  *   Disconnect ← TC40_LF_Client.DoNetworkOffline
+  *                (fires once per physical link loss; NOT fired on the
+  *                 auto-reconnect attempt itself)
+  *
+  * ===========================================================================
+  * SEMANTIC CONTRACT
+  * ===========================================================================
+  *
+  *   - "Connect" is NOT the TCP handshake completed. It is the earliest
+  *     point at which the client can actually route remote calls.
+  *   - Both events fire exactly once per connection lifecycle.
+  *   - Global scope: no per-client registration API. If you need to
+  *     distinguish clients, filter by the addr_ string in the callback.
+  *
+  * ===========================================================================
+  * {!!!!!  CRITICAL PITFALLS  !!!!!}
+  * ===========================================================================
+  *
+  *   [THREADING] The callback runs on a BACKGROUND TCompute WORKER THREAD.
+  *     It is neither the caller thread nor the main thread. Do NOT touch
+  *     UI controls directly; marshal to the main thread with TThread.Queue
+  *     (VCL / LCL) or an equivalent mechanism.
+  *
+  *   [LIFETIME] The addr_ parameter is a raw UTF-8 PAnsiChar buffer owned
+  *     by the library and freed IMMEDIATELY AFTER the callback returns
+  *     (via TLF_String.FreeUTF8AnsiChar). Do NOT store the pointer; copy
+  *     the string inside the callback if you need to retain it.
+  *
+  *   [EXCEPTIONS] Any exception raised inside the callback is SILENTLY
+  *     SWALLOWED by the library. Do not use exceptions for control flow.
+  *
+  *   [ABI] The callback MUST be declared cdecl to be compatible with the
+  *     C export layer. The default Pascal convention (register / fastcall)
+  *     will corrupt the stack.
+  *
+  *   [BLOCKING] Never call blocking LingoFuse functions (LF_Call,
+  *     LF_LocalCall, LF_PrepareDone, LF_Shutdown) inside the callback.
+  *     It will deadlock.
+  *
+  *   [MANAGED LANGUAGES] In C# / Java / Python-ctypes the delegate /
+  *     callback object MUST be kept alive with a strong reference;
+  *     otherwise the GC may collect it while the library still holds the
+  *     function pointer, causing a crash on the next invocation.
+  *
+  * @param addr_  Null-terminated UTF-8 string identifying the remote
+  *               endpoint (e.g. "127.0.0.1:9898" or "ipc:service_name").
+  *               Valid ONLY during the callback invocation.
+  *
+  * @Example (Pascal):
+  *   procedure OnConnect(addr: PAnsiChar); cdecl;
+  *   var s: string;
+  *   begin
+  *     s := UTF8ToString(addr);   // copy NOW, addr_ dies after return
+  *     TThread.Queue(nil,
+  *       procedure
+  *       begin
+  *         Memo1.Lines.Add('Connected to ' + s);
+  *       end);
+  *   end;
+  *
+  * @Example (C):
+  *   static void __cdecl OnConnect(const char* addr) {
+  *       char* copy = strdup(addr);   // copy NOW
+  *       post_to_ui_thread(copy);
+  *   }
+  *)
+type
+  TLF_Network_Event = procedure(addr_: pansichar); cdecl;
+
+(*
+  * LF_Set_Network_Event: Installs or clears the global network event
+  * handlers.
+  *
+  * @param On_Connect_     Callback invoked when a client becomes online.
+  *                        Pass nil to disable the connect notification.
+  * @param On_Disconnect_  Callback invoked when a client goes offline.
+  *                        Pass nil to disable the disconnect notification.
+  *
+  * ===========================================================================
+  * {!!!!!  CRITICAL PITFALLS  !!!!!}
+  * ===========================================================================
+  *
+  *   [GLOBAL SCOPE] Both handlers are process-global. Installing a handler
+  *     affects every LingoFuse client in the current process. There is no
+  *     per-client registration API.
+  *
+  *   [RAW FUNCTION POINTER] The handlers are stored as raw pointers.
+  *     The library does NOT own them. If the caller unloads its own module
+  *     while a handler is still installed, subsequent invocations will
+  *     jump into freed memory. Clear the handlers (pass nil) before
+  *     unloading your module.
+  *
+  *   [MANAGED LANGUAGES] The delegate / callback object MUST be kept alive
+  *     with a strong reference for as long as the handler is installed.
+  *     Otherwise the GC may collect it while the library still invokes it.
+  *
+  *   [SHUTDOWN] LF_Shutdown automatically clears both handlers before
+  *     tearing down the framework. It is safe (but not required) to call
+  *     LF_Set_Network_Event(nil, nil) explicitly before LF_Shutdown.
+  *
+  *   [THREADING] The callbacks run on background TCompute worker threads.
+  *     See TLF_Network_Event for the full contract.
+  *
+  * @Example (Pascal):
+  *   procedure OnConnect(addr: PAnsiChar); cdecl;
+  *   var s: string;
+  *   begin
+  *     s := UTF8ToString(addr);   // copy inside the callback
+  *     TThread.Queue(nil,
+  *       procedure
+  *       begin
+  *         Memo1.Lines.Add('Connected: ' + s);
+  *       end);
+  *   end;
+  *
+  *   LF_Set_Network_Event(@OnConnect, nil);
+  *   // ... later, before unloading your module:
+  *   LF_Set_Network_Event(nil, nil);
+  *
+  * @Example (C):
+  *   static void __cdecl OnConnect(const char* addr) {
+  *       char* copy = strdup(addr);
+  *       post_to_ui_thread(copy);
+  *   }
+  *   LF_Set_Network_Event(OnConnect, NULL);
+  *)
+procedure LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event); cdecl; external liblingofuse name 'LF_Set_Network_Event';
 
 implementation
 

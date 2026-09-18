@@ -36,6 +36,13 @@ second call will fail because LF_PrepareClient cannot reuse addresses.
 To create a new connection to the same service after shutdown, use a
 different address (e.g., a different port) or restart the entire
 framework.
+
+{!!!!!  STRING PARAMETERS  !!!!!}
+Every string argument passed to an LF_* function from this module is
+routed through `lingofuse.lf_io.cstr`, which supplies NUL-terminated
+UTF-8 bytes for the c_char_p parameter. This removes the previous
+reliance on the hidden NUL byte inside CPython bytes objects and
+makes the wire contract explicit.
 """
 
 import threading
@@ -49,6 +56,19 @@ from ._lf_native import (
 from .core import DataHandle
 from .errors import LingoFuseError, ConnectionError, TimeoutError
 from .serializers import default_serializer, default_deserializer
+
+# Unified LingoFuse payload I/O.
+#
+# cstr() is the single source of truth for NUL-terminated UTF-8 bytes
+# for every LF_* c_char_p parameter in this package. The C4 client
+# uses it for LF_PrepareClient / LF_Call / LF_Notify /
+# LF_Sequenced_Notify.
+#
+# Note: the JSON payload I/O of the C4 json_* methods goes through
+# DataHandle.write / read (which use the serializers module) or
+# DataHandle.write_json / read_json (which were delegated to lf_io in
+# a previous revision). No additional import is needed for that path.
+from .lf_io import cstr
 
 
 # ======================================================================
@@ -80,6 +100,11 @@ class C4:
     Both methods also clear any installed network event callbacks.
 
     See the module docstring for the full rationale on explicit cleanup.
+
+    {!!!!!  STRING PARAMETERS  !!!!!}
+    Every string argument passed to an LF_* function from this class
+    is routed through `lingofuse.lf_io.cstr`, which supplies
+    NUL-terminated UTF-8 bytes for the c_char_p parameter.
     """
 
     # Global connection state, protected by _global_lock.
@@ -127,7 +152,9 @@ class C4:
             self._log(f"Initializing connection to {self._endpoint}")
             LF_ResetPrepare()
 
-            ret = LF_PrepareClient(self._endpoint.encode("utf-8"), None)
+            # cstr() supplies the NUL-terminated UTF-8 bytes expected
+            # by the c_char_p parameter of LF_PrepareClient.
+            ret = LF_PrepareClient(cstr(self._endpoint), None)
             if ret == -1:
                 # This may happen if the address was already used or is
                 # malformed. Since we hold the global lock, no other
@@ -183,8 +210,10 @@ class C4:
 
             data = DataHandle(api_name, param_data, self._serializer)
             try:
+                # cstr() supplies the NUL-terminated UTF-8 bytes
+                # expected by the c_char_p parameter of LF_Call.
                 h_res = LF_Call(
-                    self._app_name.encode("utf-8"),
+                    cstr(self._app_name),
                     data.raw,
                     self._timeout,
                 )
@@ -214,10 +243,16 @@ class C4:
     # ------------------------------------------------------------------
 
     def json_notify(self, api_name: str, data: Any):
-        """Send a one-way notification with a serialized payload."""
+        """
+        Send a one-way notification with a serialized payload.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Notify.
+        """
         hnd = DataHandle(api_name, data, self._serializer)
         try:
-            LF_Notify(self._app_name.encode("utf-8"), hnd.raw)
+            LF_Notify(cstr(self._app_name), hnd.raw)
         finally:
             hnd.free()
 
@@ -227,19 +262,29 @@ class C4:
 
         This guarantees FIFO order for the given (app_name, api_name)
         pair.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Sequenced_Notify.
         """
         hnd = DataHandle(api_name, data, self._serializer)
         try:
-            LF_Sequenced_Notify(self._app_name.encode("utf-8"), hnd.raw)
+            LF_Sequenced_Notify(cstr(self._app_name), hnd.raw)
         finally:
             hnd.free()
 
     def json_call(self, api_name: str, data: Any) -> Any:
-        """Synchronous JSON call: returns deserialized JSON response."""
+        """
+        Synchronous JSON call: returns deserialized JSON response.
+
+        The app name is passed through lingofuse.lf_io.cstr, which
+        supplies the NUL-terminated UTF-8 bytes expected by the
+        underlying c_char_p parameter of LF_Call.
+        """
         hnd = DataHandle(api_name, data, self._serializer)
         try:
             h_res = LF_Call(
-                self._app_name.encode("utf-8"),
+                cstr(self._app_name),
                 hnd.raw,
                 self._timeout,
             )

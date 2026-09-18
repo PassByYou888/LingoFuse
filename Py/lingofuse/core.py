@@ -45,33 +45,54 @@ Local execution:
 - local_notify() sends a notification locally.
 
 NEW functions (since v1.1):
-- bind() – binds this application to all currently unbound LingoFuse clients.
-  Returns the number of clients bound. A return value of 0 means no free
-  clients or the main thread is not active. Note that clients must have
-  been prepared with distinct physical addresses (LF_PrepareClient cannot
-  reuse the same address). Therefore, to bind to multiple clients, you
-  must prepare them with different addresses (e.g., different IPC names
-  or different ports).
+- bind() - binds this application to all currently unbound LingoFuse
+  clients. Returns the number of clients bound. A return value of 0
+  means no free clients or the main thread is not active. Note that
+  clients must have been prepared with distinct physical addresses
+  (LF_PrepareClient cannot reuse the same address). Therefore, to bind
+  to multiple clients, you must prepare them with different addresses
+  (e.g., different IPC names or different ports).
 
 - App also provides a convenient `sequenced_notify()` method.
 
 Thread-safety:
 - All methods are thread-safe, but callback registration should be done
   before starting the network.
-- Callbacks registered via register_call/register_notify run in background
-  threads. They must not block or call any blocking LingoFuse function
-  (e.g., LF_Call) to avoid deadlocks.
+- Callbacks registered via register_call/register_notify run in
+  background threads. They must not block or call any blocking
+  LingoFuse function (e.g., LF_Call) to avoid deadlocks.
+
+{!!!!!  CALLBACK EXCEPTION ISOLATION  !!!!!}
+Callbacks are wrapped so that any exception raised inside them is caught
+and logged, and never allowed to propagate back into the C stack. This
+matches the behaviour of the Pascal core (TLF_Engine.Execute_Call /
+Execute_Notify) which wraps user callbacks in try/except. Without this
+isolation, ctypes would print a traceback to stderr for every failing
+callback, and the caller would receive an empty response without any
+indication of the failure.
+
+{!!!!!  ROBUST CLEANUP  !!!!!}
+free() and __del__ are written defensively: they use getattr with safe
+defaults so that they behave correctly even when the instance was
+created via __new__(cls) without ever running __init__. This is
+important for tests that exercise construction-failure paths, and for
+subclasses that may run custom __init__ logic.
 
 {!!!!!  APP LIFETIME  !!!!!}
-- `App.free()` detaches the application but does NOT destroy it immediately.
-  The underlying object remains in the global pool until `LF_Shutdown()` is called.
+- `App.free()` detaches the application but does NOT destroy it
+  immediately. The underlying object remains in the global pool until
+  `LF_Shutdown()` is called.
 - For proper resource cleanup, always call `LF_Shutdown()` or use the
-  `full_cleanup()` methods provided by `Server` and `C4` when you are done.
+  `full_cleanup()` methods provided by `Server` and `C4` when you are
+  done.
 """
+
 import ctypes
+import logging
 import struct
 import json
 from typing import Any, Optional, Callable
+
 from ._lf_native import (
     DataHnd, AppHnd,
     LF_CreateData, LF_FreeData,
@@ -93,7 +114,14 @@ from .errors import LingoFuseError, RegistrationError
 from .serializers import default_serializer, default_deserializer
 
 
-# ---- New module-level convenience functions ----
+# Module-level logger for callback failures. All messages are in English
+# so that they can be collected by a standard logging pipeline.
+_log = logging.getLogger("lingofuse.core")
+
+
+# ======================================================================
+# Module-level convenience functions
+# ======================================================================
 
 def generate_app_name() -> str:
     """
@@ -138,51 +166,86 @@ def get_app_name(app_handle: AppHnd) -> str:
     return ptr.decode("utf-8")
 
 
+# ======================================================================
+# DataHandle
+# ======================================================================
+
 class DataHandle:
     """
     RAII wrapper for a LingoFuse data handle (TDataHnd).
 
     Context manager support: use `with DataHandle(...) as dh:` to auto-free.
-    Ownership: by default, the object owns the handle and frees it on destruction.
-    You can also wrap a raw handle with `_from_raw(hnd, owned=True)`.
+    Ownership: by default, the object owns the handle and frees it on
+    destruction. You can also wrap a raw handle with
+    `_from_raw(hnd, owned=True)`.
 
-    All read/write methods update an internal timestamp used by the library's
-    idle-timeout reclaimer. However, you should still free handles explicitly
-    when they are no longer needed.
+    All read/write methods update an internal timestamp used by the
+    library's idle-timeout reclaimer. However, you should still free
+    handles explicitly when they are no longer needed.
+
+    {!!!!!  INITIALIZATION ORDER  !!!!!}
+    All instance attributes are initialized to safe defaults BEFORE any
+    native call that might fail. This ensures __del__ / free() can run
+    safely even if __init__ raises an exception partway through.
+
+    Additionally, free() and __del__ use getattr-based defaults so that
+    they also work when the instance was created via __new__(cls)
+    without ever running __init__ (a pattern used by tests that
+    exercise construction-failure paths, and by subclasses).
     """
 
-    def __init__(self, api_name: str, data: Any = None, serializer=None):
+    def __init__(self, api_name: str, data: Any = None,
+                 serializer: Optional[Callable] = None,
+                 deserializer: Optional[Callable] = None):
         """
         Create a new data handle for the given API name.
 
-        The API name is stored internally and will be used as the MethodName
-        in the wire protocol. The buffer is initially empty.
+        The API name is stored internally and will be used as the
+        MethodName in the wire protocol. The buffer is initially empty.
 
-        If `data` is provided, it is serialized using the default serializer
-        (JSON) and written to the buffer immediately.
+        If `data` is provided, it is serialized using the default
+        serializer (JSON) and written to the buffer immediately.
 
         Args:
             api_name: Name of the target API (UTF-8).
             data: Optional object to serialize and write.
-            serializer: Callable that converts object to bytes (default JSON).
+            serializer: Callable that converts object to bytes
+                (default JSON).
+            deserializer: Callable that converts bytes to object
+                (default JSON).
         """
+        # Initialize all instance attributes to safe defaults FIRST.
+        # If LF_CreateData fails and we raise before assigning these,
+        # __del__ will still be able to run without AttributeError.
+        self._hnd = None
+        self._owned = False
+        self._serializer = serializer or default_serializer
+        self._deserializer = deserializer or default_deserializer
+
+        # Now create the native handle.
         self._hnd = LF_CreateData(api_name.encode("utf-8"))
         if not self._hnd:
-            raise LingoFuseError("Failed to create DataHandle")
+            raise LingoFuseError(
+                f"Failed to create DataHandle for API '{api_name}'"
+            )
         self._owned = True
-        self._serializer = serializer or default_serializer
-        self._deserializer = default_deserializer  # 显式初始化
+
         if data is not None:
             self.write(data)
 
     @classmethod
-    def _from_raw(cls, hnd: DataHnd, owned: bool = True):
+    def _from_raw(cls, hnd: DataHnd, owned: bool = True,
+                  serializer: Optional[Callable] = None,
+                  deserializer: Optional[Callable] = None):
         """
         Wrap an existing raw data handle.
 
         Args:
             hnd: The raw handle (DataHnd) to wrap.
-            owned: If True, LF_FreeData will be called when this object is destroyed.
+            owned: If True, LF_FreeData will be called when this object
+                is destroyed.
+            serializer: Optional serializer to use for write().
+            deserializer: Optional deserializer to use for read().
 
         Returns:
             A new DataHandle instance.
@@ -190,8 +253,8 @@ class DataHandle:
         obj = cls.__new__(cls)
         obj._hnd = hnd
         obj._owned = owned
-        obj._serializer = default_serializer
-        obj._deserializer = default_deserializer
+        obj._serializer = serializer or default_serializer
+        obj._deserializer = deserializer or default_deserializer
         return obj
 
     def __enter__(self):
@@ -201,26 +264,42 @@ class DataHandle:
         self.free()
 
     def __del__(self):
-        self.free()
+        # __del__ must be bullet-proof: swallow any exception so that
+        # garbage collection never writes noise to stderr.
+        try:
+            self.free()
+        except Exception:
+            pass
 
     def free(self):
-        """Free the underlying handle if owned."""
-        if self._owned and self._hnd:
-            LF_FreeData(self._hnd)
+        """
+        Free the underlying handle if owned.
+
+        Safe to call multiple times. Safe to call on instances whose
+        __init__ never ran or failed partway through: all attribute
+        accesses use getattr-based defaults.
+        """
+        owned = getattr(self, "_owned", False)
+        hnd = getattr(self, "_hnd", None)
+        if owned and hnd:
+            LF_FreeData(hnd)
             self._hnd = None
 
     @property
     def raw(self) -> DataHnd:
         """Return the raw ctypes handle for low-level operations."""
-        return self._hnd
+        return getattr(self, "_hnd", None)
 
     def write(self, obj: Any) -> int:
-        """Write a Python object using the default serializer (JSON)."""
+        """Write a Python object using the configured serializer."""
         data = self._serializer(obj)
         return LF_WriteBuffer(self._hnd, data, len(data))
 
-    def read(self, deserializer=None) -> Any:
-        """Read and deserialize data using the default or custom deserializer."""
+    def read(self, deserializer: Optional[Callable] = None) -> Any:
+        """
+        Read and deserialize data using the configured or provided
+        deserializer.
+        """
         size = LF_GetSize(self._hnd)
         if size == 0:
             return None
@@ -232,23 +311,30 @@ class DataHandle:
         return des(raw)
 
     # ---- Position and size operations ----
+
     def get_pos(self) -> int:
+        """Return the current read/write position."""
         return LF_GetPos(self._hnd)
 
     def set_pos(self, pos: int) -> None:
+        """Set the current read/write position."""
         LF_SetPos(self._hnd, pos)
 
     def get_size(self) -> int:
+        """Return the total buffer size in bytes."""
         return LF_GetSize(self._hnd)
 
     def set_size(self, size: int) -> None:
+        """Resize the buffer. Newly added space is uninitialized."""
         LF_SetSize(self._hnd, size)
 
     @property
     def size(self) -> int:
+        """Return the total buffer size in bytes."""
         return self.get_size()
 
     # ---------- Atomic types (little-endian) ----------
+
     def write_int8(self, value: int) -> bool:
         return self._write_pack('<b', value) == 1
 
@@ -280,6 +366,7 @@ class DataHandle:
         return self._write_pack('<d', value) == 8
 
     # ---- Read helpers (atomic types) ----
+
     def read_int8(self) -> int:
         return self._read_unpack('<b')
 
@@ -310,14 +397,15 @@ class DataHandle:
     def read_double(self) -> float:
         return self._read_unpack('<d')
 
-    # ---- String and JSON helpers ----
+    # ---- String helpers ----
+
     def write_string(self, value: str) -> bool:
         """
         Write a UTF-8 string followed by a null terminator (\\0).
 
         This is the preferred method for writing plain text strings.
-        It automatically encodes to UTF-8 and appends a zero byte, which is
-        required for compatibility with Pascal's LF_ReadString.
+        It automatically encodes to UTF-8 and appends a zero byte,
+        which is required for compatibility with Pascal's LF_ReadString.
 
         Returns True if the full string (including terminator) was written.
         """
@@ -327,7 +415,7 @@ class DataHandle:
             return False
         return self._write_pack('<B', 0) == 1
 
-    # Alias for backward compatibility
+    # Alias for backward compatibility.
     write_string_null_terminated = write_string
 
     def read_string(self) -> str:
@@ -335,11 +423,18 @@ class DataHandle:
         Read a null-terminated UTF-8 string from the current position.
 
         Fault-tolerant:
-        - Scans for a '\\0' byte; if found, returns content before it and advances past it.
-        - If no '\\0' is found, returns the entire remaining buffer as a string and moves to end.
-        This handles both null-terminated and raw data (e.g., plain JSON from HTTP bridges).
+        - Scans for a '\\0' byte; if found, returns content before it
+          and advances past it.
+        - If no '\\0' is found, returns the entire remaining buffer as
+          a string and moves to end.
+        This handles both null-terminated and raw data (e.g., plain
+        JSON from HTTP bridges).
 
         Returns an empty string if at end of buffer.
+
+        Raises:
+            LingoFuseError: if the buffer contains bytes that are not
+                valid UTF-8. (In that case, use read_bytes() instead.)
         """
         pos = self.get_pos()
         size = self.get_size()
@@ -348,7 +443,7 @@ class DataHandle:
 
         ptr = LF_GetBuffer(self._hnd)
         if not ptr:
-            raise BufferError("DataHandle buffer is invalid")
+            raise LingoFuseError("DataHandle buffer is invalid")
 
         end = pos
         while end < size:
@@ -359,22 +454,48 @@ class DataHandle:
         if end < size:
             raw = ctypes.string_at(ptr + pos, end - pos)
             self.set_pos(end + 1)
-            return raw.decode('utf-8')
+        else:
+            # No null terminator: consume all remaining data.
+            raw = ctypes.string_at(ptr + pos, size - pos)
+            self.set_pos(size)
 
-        # No null: consume all remaining data
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError as e:
+            raise LingoFuseError(
+                f"read_string: buffer contains invalid UTF-8 at "
+                f"position {pos} (raw {len(raw)} bytes): {e}"
+            ) from e
+
+    # Alias for backward compatibility.
+    read_string_null_terminated = read_string
+
+    def read_bytes(self) -> bytes:
+        """
+        Read all remaining bytes from the current position to the end
+        of the buffer. Does not assume UTF-8. Moves position to end.
+        """
+        pos = self.get_pos()
+        size = self.get_size()
+        if pos >= size:
+            return b""
+        ptr = LF_GetBuffer(self._hnd)
+        if not ptr:
+            raise LingoFuseError("DataHandle buffer is invalid")
         raw = ctypes.string_at(ptr + pos, size - pos)
         self.set_pos(size)
-        return raw.decode('utf-8')
+        return raw
 
-    # Alias for backward compatibility
-    read_string_null_terminated = read_string
+    # ---- JSON helpers ----
 
     def write_json(self, obj: Any) -> int:
         """
-        Serialize a Python object to JSON and write as null-terminated UTF-8.
+        Serialize a Python object to JSON and write as null-terminated
+        UTF-8.
 
-        Uses ensure_ascii=False for compact Unicode output. The JSON string
-        is encoded as UTF-8 and a terminating null byte is appended.
+        Uses ensure_ascii=False for compact Unicode output. The JSON
+        string is encoded as UTF-8 and a terminating null byte is
+        appended.
 
         Returns the number of bytes written.
         """
@@ -383,10 +504,11 @@ class DataHandle:
 
     def read_json(self) -> Any:
         """
-        Read null-terminated UTF-8 JSON data and deserialize to a Python object.
+        Read null-terminated UTF-8 JSON data and deserialize to a
+        Python object.
 
-        Removes the trailing null byte (if present) before decoding and parsing.
-        Returns None if the buffer is empty or parsing fails.
+        Removes the trailing null byte (if present) before decoding and
+        parsing. Returns None if the buffer is empty or parsing fails.
         """
         size = self.get_size()
         if size == 0:
@@ -403,6 +525,7 @@ class DataHandle:
             return None
 
     # ---------- Low-level helpers ----------
+
     def _write_pack(self, fmt: str, value) -> int:
         data = struct.pack(fmt, value)
         return self._write_bytes(data)
@@ -416,7 +539,10 @@ class DataHandle:
         size = struct.calcsize(fmt)
         data = self._read_bytes(size)
         if len(data) != size:
-            raise BufferError(f"Not enough data to read {fmt}")
+            raise LingoFuseError(
+                f"Not enough data to read {fmt} "
+                f"(expected {size} bytes, got {len(data)})"
+            )
         return struct.unpack(fmt, data)[0]
 
     def _read_bytes(self, n: int) -> bytes:
@@ -425,9 +551,15 @@ class DataHandle:
         buf = (ctypes.c_byte * n)()
         read = LF_ReadBuffer(self._hnd, buf, n)
         if read != n:
-            raise BufferError(f"Read only {read} bytes, expected {n}")
+            raise LingoFuseError(
+                f"Read only {read} bytes, expected {n}"
+            )
         return bytes(buf)
 
+
+# ======================================================================
+# App
+# ======================================================================
 
 class App:
     """
@@ -438,26 +570,38 @@ class App:
 
     Important notes (from Pascal import):
     - API names are case-insensitive when matching, but stored as given.
-    - If you register the same API name twice, the second registration fails.
-    - The Trigger pointer passed to register_call/register_notify is unused
-      in these Python bindings; you can safely pass None (the callbacks
-      are object methods that don't need extra context).
+    - If you register the same API name twice, the second registration
+      fails.
+    - The Trigger pointer passed to register_call/register_notify is
+      unused in these Python bindings; you can safely pass None (the
+      callbacks are object methods that don't need extra context).
     - Use the Sync variants if your callback accesses UI components or
-      non-thread-safe objects; otherwise, use non-sync for better performance.
-    - Do not call any blocking LingoFuse function (e.g., LF_Call) from inside
-      a callback to avoid deadlocks.
+      non-thread-safe objects; otherwise, use non-sync for better
+      performance.
+    - Do not call any blocking LingoFuse function (e.g., LF_Call) from
+      inside a callback to avoid deadlocks.
+
+    {!!!!!  CALLBACK EXCEPTION ISOLATION  !!!!!}
+    User callbacks registered via register_call / register_notify are
+    wrapped so that any exception they raise is caught and logged to
+    the "lingofuse.core" logger. The exception is never allowed to
+    propagate back into the C stack. This matches the behaviour of the
+    Pascal core (TLF_Engine.Execute_Call / Execute_Notify).
 
     {!!!!!  LIFETIME  !!!!!}
     - `free()` detaches the app but does NOT destroy it immediately.
-      The object remains in the global pool until `LF_Shutdown()` is called.
-    - To fully release resources, use `Server.full_cleanup()`, `C4.full_cleanup()`,
-      or call `LF.Shutdown()` directly.
+      The object remains in the global pool until `LF_Shutdown()` is
+      called.
+    - To fully release resources, use `Server.full_cleanup()`,
+      `C4.full_cleanup()`, or call `LF.Shutdown()` directly.
+
+    {!!!!!  ROBUST CLEANUP  !!!!!}
+    free() and __del__ use getattr-based defaults so that they also
+    work when the instance was created via __new__(cls) without ever
+    running __init__.
 
     New in v1.1:
     - bind() method to dynamically attach this App to free clients.
-      Note: The number of clients you can bind to is limited by how many
-      distinct addresses you prepared with LF_PrepareClient. You cannot
-      create multiple clients on the same address.
     - sequenced_notify() convenience method.
     """
 
@@ -465,13 +609,21 @@ class App:
         """
         Create a new application with the given name and description.
 
-        The name must be unique within the network and is used for routing.
+        The name must be unique within the network and is used for
+        routing.
         """
+        # Initialize all instance attributes to safe defaults FIRST.
         self._name = name
-        self._hnd = LF_CreateApp(name.encode("utf-8"), description.encode("utf-8"))
+        self._hnd = None
+        self._callbacks = []
+
+        # Now create the native handle.
+        self._hnd = LF_CreateApp(
+            name.encode("utf-8"),
+            description.encode("utf-8"),
+        )
         if not self._hnd:
             raise LingoFuseError(f"Failed to create App '{name}'")
-        self._callbacks = []
 
     def __enter__(self):
         return self
@@ -480,136 +632,208 @@ class App:
         self.free()
 
     def __del__(self):
-        self.free()
+        # __del__ must be bullet-proof.
+        try:
+            self.free()
+        except Exception:
+            pass
 
     def free(self):
         """
-        Detach the application from all clients and stop its sequenced threads.
+        Detach the application from all clients and stop its sequenced
+        threads.
 
         {!!!!!  IMPORTANT  !!!!!}
-        This method calls `LF_FreeApp`, which **does not immediately destroy**
-        the underlying `TLF_App` object. The object remains alive in the global
-        pool until `LF_Shutdown()` is called. This prevents dangling pointers
-        while allowing network broadcasts to continue referencing the app data.
+        This method calls `LF_FreeApp`, which does NOT immediately
+        destroy the underlying `TLF_App` object. The object remains
+        alive in the global pool until `LF_Shutdown()` is called. This
+        prevents dangling pointers while allowing network broadcasts
+        to continue referencing the app data.
 
-        To completely destroy the application and release its memory, you must
-        call `LF_Shutdown()` (or use `Server.full_cleanup()` / `C4.full_cleanup()`
-        if using those high-level wrappers).
+        To completely destroy the application and release its memory,
+        you must call `LF_Shutdown()` (or use `Server.full_cleanup()` /
+        `C4.full_cleanup()` if using those high-level wrappers).
+
+        Safe to call multiple times. Safe to call on instances whose
+        __init__ never ran or failed partway through: all attribute
+        accesses use getattr-based defaults.
         """
-        if self._hnd:
-            LF_FreeApp(self._hnd)
+        hnd = getattr(self, "_hnd", None)
+        if hnd:
+            LF_FreeApp(hnd)
             self._hnd = None
-            self._callbacks.clear()
+            # Release strong references to ctypes callbacks so they
+            # can be garbage collected.
+            callbacks = getattr(self, "_callbacks", None)
+            if callbacks is not None:
+                try:
+                    callbacks.clear()
+                except Exception:
+                    pass
 
     @property
     def raw(self) -> AppHnd:
         """Return the raw ctypes handle for low-level operations."""
-        return self._hnd
+        return getattr(self, "_hnd", None)
 
     @property
     def name(self) -> str:
         """Return the application name."""
-        return self._name
+        return getattr(self, "_name", "")
 
-    # ---- NEW: Bind this application to unbound clients ----
+    # ---- Bind this application to unbound clients ----
+
     def bind(self) -> int:
         """
         Bind this application to all currently unbound LingoFuse clients.
 
-        This method must be called after the C4 main thread is active (i.e.,
-        after LF_PrepareDone). It registers the application with all clients
-        that do not already have an app attached.
+        This method must be called after the C4 main thread is active
+        (i.e., after LF_PrepareDone). It registers the application with
+        all clients that do not already have an app attached.
 
         Returns:
-            The number of clients to which the application was successfully bound.
-            A return value of 0 means no clients were available (all already occupied)
-            or the main thread is not active.
+            The number of clients to which the application was
+            successfully bound. A return value of 0 means no clients
+            were available (all already occupied) or the main thread
+            is not active.
 
-        Important: The number of bound clients depends on how many distinct
-        addresses were used when preparing clients. Clients prepared with the
-        same address are not allowed – the underlying LF_PrepareClient will
-        reject duplicate addresses. To bind to multiple clients, prepare each
-        with a unique address (e.g., different IPC names or different ports).
+        Important: The number of bound clients depends on how many
+        distinct addresses were used when preparing clients. Clients
+        prepared with the same address are not allowed - the underlying
+        LF_PrepareClient will reject duplicate addresses. To bind to
+        multiple clients, prepare each with a unique address (e.g.,
+        different IPC names or different ports).
         """
         if not self._hnd:
             raise LingoFuseError("App already freed")
         return LF_BindApp(self._hnd)
 
     # ---- API registration ----
-    def register_call(self, api_name: str, func: Callable, description: str = ""):
+
+    def register_call(self, api_name: str, func: Callable,
+                      description: str = ""):
         """
         Register a Call API (request-response).
 
-        The callback `func` will be invoked with `(trigger, inp, out)` where
-        inp and out are DataHandle objects. The trigger is unused.
+        The callback `func` will be invoked with `(trigger, inp, out)`
+        where inp and out are DataHandle objects. The trigger is unused.
+
+        {!!!!!  EXCEPTION ISOLATION  !!!!!}
+        Any exception raised inside `func` is caught and logged. The
+        exception never escapes into the C stack.
 
         Note: If the API name already exists, RegistrationError is raised.
         """
         if not self._hnd:
             raise LingoFuseError("App already freed")
+
         def _c_call(trig, inp, out):
             h_in = DataHandle._from_raw(inp, owned=False)
             h_out = DataHandle._from_raw(out, owned=False)
-            func(trig, h_in, h_out)
+            try:
+                func(trig, h_in, h_out)
+            except Exception:
+                # Match the Pascal-side semantics: callbacks must never
+                # let exceptions escape into the C stack. Log and
+                # continue.
+                _log.exception(
+                    "Call callback for API '%s' raised an exception; "
+                    "the exception has been suppressed",
+                    api_name,
+                )
+
         c_func = LFCallFunc(_c_call)
         self._callbacks.append(c_func)
-        ret = LF_RegisterCall(self._hnd,
-                              api_name.encode("utf-8"),
-                              description.encode("utf-8"),
-                              ctypes.c_void_p(0),
-                              c_func)
+        ret = LF_RegisterCall(
+            self._hnd,
+            api_name.encode("utf-8"),
+            description.encode("utf-8"),
+            ctypes.c_void_p(0),
+            c_func,
+        )
         if ret != 1:
-            raise RegistrationError(f"Failed to register Call API '{api_name}'")
+            raise RegistrationError(
+                f"Failed to register Call API '{api_name}'"
+            )
 
-    def register_notify(self, api_name: str, func: Callable, description: str = ""):
+    def register_notify(self, api_name: str, func: Callable,
+                        description: str = ""):
         """
         Register a Notify API (one-way).
 
         The callback `func` will be invoked with `(trigger, inp)` where
         inp is a DataHandle. No output is expected.
 
+        {!!!!!  EXCEPTION ISOLATION  !!!!!}
+        Any exception raised inside `func` is caught and logged. The
+        exception never escapes into the C stack.
+
         Note: If the API name already exists, RegistrationError is raised.
         """
         if not self._hnd:
             raise LingoFuseError("App already freed")
+
         def _c_notify(trig, inp):
             h_in = DataHandle._from_raw(inp, owned=False)
-            func(trig, h_in)
+            try:
+                func(trig, h_in)
+            except Exception:
+                _log.exception(
+                    "Notify callback for API '%s' raised an exception; "
+                    "the exception has been suppressed",
+                    api_name,
+                )
+
         c_func = LFNotifyFunc(_c_notify)
         self._callbacks.append(c_func)
-        ret = LF_RegisterNotify(self._hnd,
-                                api_name.encode("utf-8"),
-                                description.encode("utf-8"),
-                                ctypes.c_void_p(0),
-                                c_func)
+        ret = LF_RegisterNotify(
+            self._hnd,
+            api_name.encode("utf-8"),
+            description.encode("utf-8"),
+            ctypes.c_void_p(0),
+            c_func,
+        )
         if ret != 1:
-            raise RegistrationError(f"Failed to register Notify API '{api_name}'")
+            raise RegistrationError(
+                f"Failed to register Notify API '{api_name}'"
+            )
 
     def unregister(self, api_name: str) -> bool:
         """
         Unregister a previously registered API by name.
 
-        The removal is immediate locally. Remote peers may still see the API
-        for up to ~3 seconds until the network broadcast propagates.
+        The removal is immediate locally. Remote peers may still see the
+        API for up to ~3 seconds until the network broadcast propagates.
         """
         if not self._hnd:
             return False
         return LF_Unregister(self._hnd, api_name.encode("utf-8")) == 1
 
     # ---- Local execution ----
+
     def local_call(self, param: DataHandle) -> DataHandle:
         """
         Execute a Call API locally within the same process.
 
-        The call is synchronous and returns a new DataHandle containing the result.
-        The input handle is not freed by this method; the caller must free it.
+        The call is synchronous and returns a new DataHandle containing
+        the result. The input handle is not freed by this method; the
+        caller must free it.
+
+        The returned DataHandle inherits this App's serializer settings
+        (the module-level defaults, since App itself does not customize
+        serialization).
         """
         if not self._hnd:
             raise LingoFuseError("App already freed")
         h_res = LF_LocalCall(self._hnd, param.raw)
         if not h_res:
-            raise LingoFuseError("Local call failed")
-        return DataHandle._from_raw(h_res, owned=True)
+            raise LingoFuseError("Local call returned a null handle")
+        return DataHandle._from_raw(
+            h_res,
+            owned=True,
+            serializer=param._serializer,
+            deserializer=param._deserializer,
+        )
 
     def local_notify(self, param: DataHandle):
         """
@@ -622,6 +846,7 @@ class App:
         LF_LocalNotify(self._hnd, param.raw)
 
     # ---- Sequenced notification ----
+
     def sequenced_notify(self, param: DataHandle):
         """
         Send a sequenced notification to this application.

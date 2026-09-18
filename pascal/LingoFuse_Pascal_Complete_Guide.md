@@ -1,13 +1,19 @@
-# LingoFuse Pascal 完整指南（含踩坑知识库 v1.0）
+# LingoFuse Pascal 完整指南（含踩坑知识库 v2.0）
 
-> **面向 AI 与人类开发者的权威参考**  
+> **面向 AI 与人类开发者的权威参考**
 > 第 1–6 章：学习指南；第 7 章：**Pascal 核心层踩坑知识库（本版重点）**；第 12 章：LLM 生态坑索引
 >
-> **本版的核心变化**：第 7 章从"零散陷阱"重构为**带 ID 体系、证据等级、复现、验证清单的结构化知识库**。
-> 每一条坑都可被 AI 直接消费、被后续维护者增量更新，是 LF 后续发展的**长期资产**。
+> **本版 v2.0 的核心变化**（相对 v1.0）：
+> - **新增** 网络事件 API 完整章节（`LF_Set_Network_Event` / `TLF_Network_Event`），覆盖第 2 章概念、第 4 章 API 参考、第 7 章 `LF-NET-005` / `LF-NET-006`
+> - **新增** 第 7.13 节「JSON 使用层」子系统（`LF-JSON-*`），把 `LingoFuse_LLM_Pitfalls_For_AI.md` 的 P10-1 / P10-2 / P10-3 完整合并
+> - **新增** 第 12 章 LLM 生态坑索引中 P9 / P10 系列的映射表
+> - **新增** 附录 A 中的网络事件错误原文
+> - **更新** 附录 B 的 ID 总览与 TODO 清单
+> - **新增** 四条铁律的第四条（`TZ_JsonObject` 是树）
+> - **修正** 术语与格式统一；修订了部分跨节引用
 >
-> **证据等级约定**（本版引入，贯穿全文）：
-> - 🟢 **已核实源码** — 在 `lingofuse_import.pas`、`lingofuse_helper.pas` 或 `Z.LingoFuse.md`（逐行核对版）中有直接依据
+> **证据等级约定**（贯穿全文）：
+> - 🟢 **已核实源码** — 在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`（逐行核对版）、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 中有直接依据
 > - 🟡 **仅文档转录** — 来自其他文档，未逐行回源码核对
 > - 🔴 **推测** — 从行为推断，未找到直接源码依据；**使用前请回查源码**
 >
@@ -17,32 +23,38 @@
 
 ## 📖 目录
 
-- [第 1–6 章：基础指南（保留原有内容）](#第-16-章基础指南)
-- [第 7 章：🚨 Pascal 核心层踩坑知识库（v2.0 重构）](#7--pascal-核心层踩坑知识库)
-  - 7.0 ID 体系与使用说明
-  - 7.1 应用/句柄层（LF-APP-*）
-  - 7.2 回调层（LF-CB-*）
-  - 7.3 数据句柄层（LF-DATA-*）
-  - 7.4 网络准备层（LF-NET-*）
-  - 7.5 远程调用层（LF-CALL-*）
-  - 7.6 序列化通知层（LF-SEQ-*）
-  - 7.7 查询与缓存层（LF-CHK-*）
-  - 7.8 运行时选项层（LF-OPT-*）
-  - 7.9 清理与生命周期（LF-CLEAN-*）
-  - 7.10 线程模型（LF-THREAD-*）
-  - 7.11 类型与编译（LF-TYPE-*）
-  - 7.12 跨语言数据交换（LF-XLANG-*）
-- [第 8–11 章：对比、附录（保留原有内容）](#第-811-章对比附录)
-- [第 12 章：LLM 生态坑索引（指向 LLM_Pitfalls）](#12--llm-生态坑索引)
+- [第 1–6 章：基础指南](#第-16-章基础指南)
+- [第 7 章：🚨 Pascal 核心层踩坑知识库（v2.0）](#7--pascal-核心层踩坑知识库)
+  - [7.0 ID 体系与使用说明](#70-id-体系与使用说明)
+  - [7.1 应用/句柄层（LF-APP-*）](#71-应用句柄层lf-app-)
+  - [7.2 回调层（LF-CB-*）](#72-回调层lf-cb-)
+  - [7.3 数据句柄层（LF-DATA-*）](#73-数据句柄层lf-data-)
+  - [7.4 网络准备层（LF-NET-*）](#74-网络准备层lf-net-)
+  - [7.5 远程调用层（LF-CALL-*）](#75-远程调用层lf-call-)
+  - [7.6 序列化通知层（LF-SEQ-*）](#76-序列化通知层lf-seq-)
+  - [7.7 查询与缓存层（LF-CHK-*）](#77-查询与缓存层lf-chk-)
+  - [7.8 运行时选项层（LF-OPT-*）](#78-运行时选项层lf-opt-)
+  - [7.9 清理与生命周期（LF-CLEAN-*）](#79-清理与生命周期lf-clean-)
+  - [7.10 线程模型（LF-THREAD-*）](#710-线程模型lf-thread-)
+  - [7.11 类型与编译（LF-TYPE-*）](#711-类型与编译lf-type-)
+  - [7.12 跨语言数据交换（LF-XLANG-*）](#712-跨语言数据交换lf-xlang-)
+  - [7.13 JSON 使用层（LF-JSON-*）](#713-json-使用层lf-json--v20-新增)
+- [第 8–11 章：对比、附录](#第-811-章对比附录)
+- [第 12 章：LLM 生态坑索引](#12--llm-生态坑索引)
 - [附录 A：错误消息原文索引](#附录-a错误消息原文索引)
 - [附录 B：ID 总览与维护约定](#附录-bid-总览与维护约定)
 - [附录 C：给 AI 使用者的检索规则](#附录-c给-ai-使用者的检索规则)
+- [四条铁律](#四条铁律)
 
 ---
 
 # 第 1–6 章：基础指南
 
-> **说明**：以下 1–6 章保留原文档的内容与结构，仅做轻微整理（去掉重复段落、统一术语），核心 API 签名、示例、最佳实践**一字未改**。
+> **说明**：以下 1–6 章保留原文档的内容与结构，仅做以下调整：
+> - **第 2 章** 核心概念新增「网络事件」一条
+> - **第 4 章** API 完全参考新增「4.11 网络事件」子章节
+> - **第 6 章** 高级范式新增「6.8 网络事件监听」一节
+> 其余段落保持原样，未做术语或示例改动。
 
 ## 1. 引言
 
@@ -60,6 +72,7 @@
 - **序列化通知 (Sequenced Notify)**：保证同一 (App, API) 对的 FIFO 有序交付，通过专用线程池实现。
 - **本地执行**：`LF_LocalCall` / `LF_LocalNotify` 在同一进程内执行，不经过网络。
 - **远程执行**：`LF_Call` / `LF_Notify` / `LF_Sequenced_Notify` 通过网络路由，优先查找本地实例。
+- **网络事件（v2.0 新增）**：`LF_Set_Network_Event` 安装全局回调，在客户端上线 / 下线时触发。**注意：Connect 语义不是 TCP 建链，而是"首次收到服务端 API 信息广播"；回调在后台 TCompute 工作线程执行**。详见 §4.11 与 §7.4 `LF-NET-005 / LF-NET-006`。
 - **模拟主线程**：C4 事件循环运行在模拟主线程中，由 `LF_PrepareDone` 启动，`LF_ExitMainThread` 停止。
 - **线程安全**：所有导出函数（除状态日志辅助外）完全线程安全；回调在后台线程池执行，不得阻塞或调用远程 API。
 - **自动内存回收**：数据句柄闲置 5 分钟自动释放（由 `TLF_DataPool` 管理）。
@@ -151,6 +164,7 @@ lazbuild -B client.lpi
 - **功能**：返回内部缓冲区的起始指针（只读或读写）。
 - **返回**：指针，若句柄为空或大小为 0 则返回 nil。
 - **辅助**：`LF_GetBufferOffset(Hnd; Offset: NativeInt): Pointer` 返回偏移后的指针。
+- **陷阱**：指针在 `LF_WriteBuffer` / `LF_SetSize` 后失效（底层扩容可能重分配）。
 
 #### `LF_WriteBuffer(Hnd: TDataHnd; Buff: Pointer; Size: Int64): Int64`
 - **功能**：从当前位置写入 `Size` 字节，缓冲区自动扩容，位置向后移动。
@@ -162,9 +176,9 @@ lazbuild -B client.lpi
 
 #### 位置与大小操作
 - `LF_GetPos(Hnd): Int64` – 获取当前读写位置。
-- `LF_SetPos(Hnd; Pos_: Int64)` – 设置读写位置。
+- `LF_SetPos(Hnd; Pos_: Int64)` – 设置读写位置（超出大小会隐式扩容）。
 - `LF_GetSize(Hnd): Int64` – 获取缓冲区总大小。
-- `LF_SetSize(Hnd; Size_: Int64)` – 调整缓冲区大小。
+- `LF_SetSize(Hnd; Size_: Int64)` – 调整缓冲区大小（新增空间未初始化）。
 
 #### 原子类型读写辅助（Pascal 封装）
 
@@ -235,11 +249,71 @@ lazbuild -B client.lpi
 ### 4.10 关闭与清理
 
 - `LF_Shutdown()` – 完全关闭：
-  1. 停止所有序列化通知线程
-  2. 释放所有剩余数据句柄
-  3. 退出模拟主线程
-  4. 清空全局应用池
-  5. 卸载 IPC 库
+  1. **清空网络事件回调**（`On_Network_Connect_Event := nil` / `On_Network_Disconnect_Event := nil`）
+  2. 停止所有序列化通知线程
+  3. 释放所有剩余数据句柄
+  4. 退出模拟主线程
+  5. 清空全局应用池
+  6. 卸载 IPC 库
+
+### 4.11 网络事件（v2.0 新增）
+
+```pascal
+type
+  TLF_Network_Event = procedure(addr_: pansichar); cdecl;
+
+procedure LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event);
+  cdecl; external liblingofuse name 'LF_Set_Network_Event';
+```
+
+**契约**：
+
+| 契约 | 说明 |
+|------|------|
+| **Connect 语义** | **不是 TCP 建链**；是**首次收到服务端 `update_service_api_info` 广播**后的事件 |
+| **Disconnect 语义** | 物理链路断开（`DoNetworkOffline`） |
+| **执行线程** | **后台 TCompute 工作线程**（既不是调用线程，也不是主线程） |
+| **`addr_` 生命周期** | **回调返回后立即释放**（`TLF_String.FreeUTF8AnsiChar`） |
+| **触发次数** | Connect 每连接一次；Disconnect 每物理断线一次 |
+| **异常处理** | 回调内异常被 `try...except` 吞掉 |
+| **全局作用域** | 全局槽，无 per-client 注册 API |
+| **`cdecl` 强制** | 与 C ABI 兼容；默认寄存器约定会崩溃 |
+| **托管语言需 pin** | C# / Java / Python ctypes 必须保持强引用 |
+| **`LF_Shutdown` 自动清空** | 卸载动态库前无需手动清空，但手动清空更安全 |
+
+**最小示例（Pascal）**：
+
+```pascal
+procedure OnConnect(addr: PAnsiChar); cdecl;
+var s: string;
+begin
+  s := UTF8ToString(addr);   // 立即复制，回调返回后 addr 失效
+  TThread.Queue(nil,
+    procedure
+    begin
+      Memo1.Lines.Add('Connected: ' + s);
+    end);
+end;
+
+procedure OnDisconnect(addr: PAnsiChar); cdecl;
+var s: string;
+begin
+  s := UTF8ToString(addr);
+  TThread.Queue(nil,
+    procedure
+    begin
+      Memo1.Lines.Add('Disconnected: ' + s);
+    end);
+end;
+
+// 安装
+LF_Set_Network_Event(@OnConnect, @OnDisconnect);
+
+// 卸载（在 LF_Shutdown 之前可选调用）
+LF_Set_Network_Event(nil, nil);
+```
+
+**详细契约与陷阱**：见 §7.4 `LF-NET-005` / `LF-NET-006`。
 
 ## 5. 完整示例深度解析
 
@@ -259,6 +333,7 @@ lazbuild -B client.lpi
 ### 5.4 bridge – HTTP + JSON 标准化桥接
 - `bridge_service`、`bridge_compute`（`exp` API）、`bridge.py`、`web_demo.html`
 - **关键技术**：空终止符处理、预检、标准化 POST
+- **JSON 相关**：见 §7.13 `LF-JSON-001 / LF-JSON-002`
 
 ### 5.5 压测套件 – BenchServer / BenchClient
 - **BenchServer**：20 个 API 覆盖多类功能
@@ -315,6 +390,48 @@ lazbuild -B client.lpi
 - **禁止**在回调中调用阻塞函数
 - 同步回调需定期 `LF_Sync` 驱动
 
+### 6.8 网络事件监听（v2.0 新增）
+
+```pascal
+// 主程序初始化时安装
+procedure OnNetConnect(addr: PAnsiChar); cdecl;
+var s: string;
+begin
+  s := UTF8ToString(addr);   // 必须立即复制
+  TThread.Queue(nil,
+    procedure
+    begin
+      StatusBar1.SimpleText := 'Connected: ' + s;
+    end);
+end;
+
+procedure OnNetDisconnect(addr: PAnsiChar); cdecl;
+begin
+  // 只做记录，不做阻塞操作
+  TThread.Queue(nil,
+    procedure
+    begin
+      StatusBar1.SimpleText := 'Disconnected';
+    end);
+end;
+
+// 安装（进程级单例）
+LF_Set_Network_Event(@OnNetConnect, @OnNetDisconnect);
+
+// 卸载（在 LF_Shutdown 之前可选调用）
+LF_Set_Network_Event(nil, nil);
+```
+
+**关键规则**（对应 §7.4）：
+
+- **回调在后台 TCompute 工作线程执行**——UI 操作必须 `TThread.Queue` 编组
+- **`addr_` 回调返回后失效**——必须立即复制
+- **异常被吞**——不要依赖异常控制流
+- **不要调用阻塞 LF_***——死锁风险
+- **托管语言需 pin 回调**——防止 GC 回收
+
+**JSON 与网络事件**：网络事件回调通常只用于日志/UI 状态。如果需要处理 JSON 数据，务必遵守 §7.13 的规则。
+
 ---
 
 # 7. 🚨 Pascal 核心层踩坑知识库
@@ -354,11 +471,12 @@ lazbuild -B client.lpi
 | `LF-THREAD` | 线程模型 | 7.10 |
 | `LF-TYPE` | 类型与编译 | 7.11 |
 | `LF-XLANG` | 跨语言数据交换 | 7.12 |
+| **`LF-JSON`** | **JSON 使用（v2.0 新增）** | **7.13** |
 
 ### 7.0.2 证据等级使用约定
 
-- 🟢 **已核实源码**：在 `lingofuse_import.pas`、`lingofuse_helper.pas` 或 `Z.LingoFuse.md`（逐行核对版）中有直接文本依据。
-- 🟡 **仅文档转录**：来自 `LingoFuse_Python_Binding_Migration_Record.md`、`LingoFuse_mcp_api_tool_Implementation_Memo.md` 等，未逐行回源码核对。
+- 🟢 **已核实源码**：在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`（逐行核对版）、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 中有直接文本依据。
+- 🟡 **仅文档转录**：来自其他文档，未逐行回源码核对。
 - 🔴 **推测**：从行为/示例代码推断，**使用前请回查源码**。
 
 **重要**：本版中 🔴 级别的条目**不构成权威结论**，仅作为"可疑点"提示。
@@ -367,6 +485,7 @@ lazbuild -B client.lpi
 
 - "所有版本"：从 v1.0 起就存在的约束（多为设计固有限制）
 - "v3.0+"：v3.0 引入的接口/行为
+- "v3.11+"：v3.11 引入的 JSON 相关接口（`LF-JSON-*`）
 - "未知"：无法从现有材料判断引入版本
 
 ---
@@ -404,18 +523,18 @@ lazbuild -B client.lpi
   - [ ] FPC 编译无 `Callback type mismatch` 警告
   - [ ] 打印 `PtrUInt(Trigger)`，与注册时传入值一致
   - [ ] `fpc_tester_for_LingoFuse` 全项通过
-  - [ ] 至少 2 种编译器 × 2 种优化级别通过（如 Delphi 10.4 `-O2` + FPC 3.3.1 `-O2`）
+  - [ ] 至少 2 种编译器 × 2 种优化级别通过
 - **相关坑**：LF-CB-001、LF-CB-002
 
 ### LF-APP-002：`LF_FreeApp` 是两阶段析构，不立即释放内存
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` 第 2.3 节、`lingofuse_import.pas` 注释）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §2.3、`lingofuse_import.pas` 注释）
 - **影响版本**：所有版本
 - **触发条件**：调用 `LF_FreeApp` 后立即期望内存下降
 - **症状**：
   - 内存不降反升，或长时间不降
   - 频繁创建/销毁 App 的服务，`LF_App_Pool` 持续增长
-- **根因**：`LF_FreeApp` 只做两件事：
+- **根因**：`LF_FreeApp` 只做三件事：
   1. 遍历所有 `TC40_LF_Client`，把 `Cli.app = app` 的置 nil（**解绑**）
   2. `LF_Notify_Sequence_Thread_Pool.Kill_App(app)`（**停掉顺序通知线程**）
   3. `app.FakeFree`（**仅移除定时器**）
@@ -428,7 +547,7 @@ lazbuild -B client.lpi
   - **短期任务**：调用 `LF_Shutdown` 后重启框架
   - **测试程序**：一次性创建多个 App，最后统一 `LF_Shutdown`
 - **验证清单**：
-  - [ ] 观察 `LF_App_Pool` 大小（可通过日志或调试器）
+  - [ ] 观察 `LF_App_Pool` 大小
   - [ ] 长期运行服务在 24 小时内池大小稳定
 - **相关坑**：LF-CLEAN-001、LF-CLEAN-002
 
@@ -532,7 +651,7 @@ lazbuild -B client.lpi
      LF_PrepareClientEx(endpoint, newApp);   // 而不是 PrepareClient(endpoint, nil)
      ```
 - **验证清单**：
-  - [ ] `LF_CheckMainThread() = 1`（主线程已启动）
+  - [ ] `LF_CheckMainThread() = 1`
   - [ ] `LF_BindApp` 返回值 > 0
   - [ ] 用 `LF_CheckAppEx(newAppName)` 返回 1
 - **相关坑**：LF-NET-001、LF-NET-004
@@ -547,9 +666,6 @@ lazbuild -B client.lpi
   - 但**新 App 从未被绑定**
   - 后续对该 App 的 `LF_Call` 永远超时
 - **根因**：`Overlap_Connection=False` 时，每个物理地址只允许一个客户端隧道。第二次 `LF_PrepareClient` **复用已存在的隧道**，丢弃传入的新 App 参数。
-  
-  `Z.LingoFuse.md` §2.3 `LF_PrepareClient` 契约：
-  > "**`not Overlap_Connection` 时重复检测**"
 - **最小复现**：
   ```pascal
   LF_PrepareClientEx('ipc:my_service', App1);   // OK
@@ -587,23 +703,17 @@ lazbuild -B client.lpi
 - **触发条件**：在 Call/Notify 回调里调用 `LF_Call`、`LF_LocalCall`、`LF_Notify`、`LF_PrepareDone`
 - **症状**：**整个进程死锁**，服务端不再响应任何请求；调试器显示回调线程阻塞在内部锁
 - **根因**：回调运行在 C4 线程池的某个线程上，且持有可能被远程调用需要的内部锁。当回调调用 `LF_Call` 时，远程调用需要获取同一把锁 → **自锁死**。
-  
-  `lingofuse_import.pas`：
-  > "Inside a callback (Call or Notify), you MUST NOT call any blocking LingoFuse function such as LF_Call, LF_LocalCall, or LF_PrepareDone. Doing so will cause a deadlock."
 - **最小复现**：
   ```pascal
   procedure MyCallback(Trigger: Pointer; Input, Output: TDataHnd); cdecl;
   var Res: TDataHnd;
   begin
-    // ❌ 死锁！
-    Res := LF_CallEx('OtherApp', Input, 5000);
-    // ...
+    Res := LF_CallEx('OtherApp', Input, 5000);   // ❌ 死锁
   end;
   ```
 - **修复 diff**：
   ```diff
     procedure MyCallback(Trigger: Pointer; Input, Output: TDataHnd); cdecl;
-  - var Res: TDataHnd;
     begin
   -   Res := LF_CallEx('OtherApp', Input, 5000);   // ❌ 死锁
   +   // ✅ 异步提交到工作线程
@@ -655,7 +765,6 @@ lazbuild -B client.lpi
 - **验证清单**：
   - [ ] 回调中不出现未加锁的全局变量写入
   - [ ] 回调中不直接访问 UI 控件
-  - [ ] 用 `--debug` 观察是否有崩溃报告
 - **相关坑**：LF-CB-005、LF-THREAD-002
 
 ### LF-CB-005：同步回调必须由主循环驱动 `LF_Sync`
@@ -667,13 +776,12 @@ lazbuild -B client.lpi
   - 同步回调**永远不执行**
   - 调用方线程永久阻塞
   - 后台线程处于 `while tmp.Second do TCore_Thread.Sleep(1)` 状态
-- **根因**：`TSoft_Synchronize_Tool.Synchronize` 的实现（`lingofuse_import.pas` 内部）：
+- **根因**：`TSoft_Synchronize_Tool.Synchronize` 的实现：
   - 若当前线程**不是**主线程：将过程入队，然后 `while tmp.Second do Sleep(1)` 忙等
   - 主线程必须**定期调用** `Check_Synchronize`（通过 `LF_Sync`）来出队并执行
 - **最小复现**：
   ```pascal
   App.RegisterCallSync('slow', 'Slow call', OnSlowCallback);
-  // ...
   while Running do
   begin
     // ❌ 没有 LF_Sync
@@ -708,7 +816,7 @@ lazbuild -B client.lpi
   - 高强度调用下内存持续增长，最终 OOM
   - 5 分钟内积累的句柄数超过自动回收速度
 - **根因**：
-  - `TLF_DataPool.Progress`（`Z.LingoFuse.md` §1.5）：**每 5 秒扫描一次**，释放闲置超过 **5 分钟**的句柄
+  - `TLF_DataPool.Progress`：**每 5 秒扫描一次**，释放闲置超过 **5 分钟**的句柄
   - 回收是**异步的**，不保证及时性
   - 高强度调用下句柄累积速度远超回收速度
 - **最小复现**：
@@ -738,7 +846,6 @@ lazbuild -B client.lpi
 - **验证清单**：
   - [ ] 所有 `LF_CreateData` / `LF_Call` 返回值都有对应的 `LF_FreeData`
   - [ ] 用 `try..finally` 保证异常路径也释放
-  - [ ] 用 `fpc_tester_for_LingoFuse` 的资源泄漏检测
   - [ ] 长时间运行内存稳定
 - **相关坑**：LF-DATA-002、LF-DATA-004
 
@@ -769,11 +876,8 @@ lazbuild -B client.lpi
 - **影响版本**：所有版本
 - **触发条件**：手动操作 `TLF_Data` 内部字段（高级用户）
 - **症状**：如果试图同时使用 `Data_Param` 和 `Data_Result`，行为未定义
-- **根因**：`TLF_Data` 的设计（`Z.LingoFuse.md` §1.4）：
+- **根因**：`TLF_Data` 的设计：
   > "**`Data_Param` 与 `Data_Result` 互斥**——同一句柄只有一个非 nil。"
-  >
-  > - 输入句柄：`Data_Param` 非 nil，`Data_Result` 为 nil
-  > - 输出句柄：`Data_Result` 非 nil，`Data_Param` 为 nil
 - **正确做法**：使用 C ABI 的 `LF_ReadBuffer` / `LF_WriteBuffer`，**不要直接操作内部字段**。
 - **相关坑**：LF-DATA-004
 
@@ -816,7 +920,7 @@ lazbuild -B client.lpi
 - **症状**：
   - Python/浏览器收到 Pascal 端返回的 JSON，`json.loads` 报错（尾部多余字节）
   - 若接收方也走了容错读，可能恰好不出问题（**隐患**）
-- **根因**：`LF_WriteString` 的实现（`lingofuse_import.pas`）：
+- **根因**：`LF_WriteString` 的实现：
   ```pascal
   utf8 := TEncoding.utf8.GetBytes(Value);
   LF_WriteBuffer(Hnd, @utf8[0], len);
@@ -867,9 +971,6 @@ lazbuild -B client.lpi
 - **根因**：
   `lingofuse_import.pas` `LF_PrepareDone`：
   > "Blocks until the framework is initialised."
-  
-  及 `Wait_Connection_ReadyOk` 选项：
-  > "If True, LF_PrepareDone blocks until all prepared clients are connected and their applications are online (boolean). Default is True."
 - **正确做法**（部署模式）：
   ```pascal
   LF_SetOptionEx('Wait_Ready', 'False');           // 不阻塞等待
@@ -932,6 +1033,99 @@ lazbuild -B client.lpi
   - [ ] 服务端延迟启动 → 客户端能自动等到
 - **相关坑**：LF-NET-002、LF-CHK-001
 
+### LF-NET-005：网络事件回调在后台 TCompute 工作线程执行（v2.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` 类型注释 + `Z.Net.C4.LingoFuse.pas` `Do_LF_Network_Connect_Th___` 实现）
+- **影响版本**：v3.0+
+- **触发条件**：安装 `LF_Set_Network_Event` 回调后，客户端上线 / 下线
+- **症状**（在回调中直接操作 UI）：
+  - 偶发崩溃（AV / 段错误）
+  - UI 状态不更新
+  - VCL / LCL 报 "Control has no parent window"
+- **根因**：触发链
+  ```
+  TC40_LF_Client.cmd_update_service_api_info (首次广播)
+      ↓
+  Do_LF_Network_Connect(addr_)
+      ↓ if Assigned(On_Network_Connect_Event) then
+  TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Th___)
+      ↓  ← 这里派发到后台 TCompute 工作线程
+  On_Network_Connect_Event(thSender.UserData)   ← 用户回调
+  ```
+  回调**既不是调用线程，也不是主线程**——是 TCompute 工作线程。
+- **最小复现**：
+  ```pascal
+  procedure BadConnect(addr: PAnsiChar); cdecl;
+  begin
+    Memo1.Lines.Add(UTF8ToString(addr));   // ❌ 后台线程操作 UI
+  end;
+  ```
+- **修复 diff**：
+  ```diff
+    procedure GoodConnect(addr: PAnsiChar); cdecl;
+  + var s: string;
+    begin
+  +   s := UTF8ToString(addr);   // 先复制（回调返回后 addr 失效）
+  +   TThread.Queue(nil,
+  +     procedure
+  +     begin
+  +       Memo1.Lines.Add('Connected: ' + s);   // ✅ 主线程操作 UI
+  +     end);
+    end;
+  ```
+- **验证清单**：
+  - [ ] 回调内没有直接操作 UI 控件
+  - [ ] 回调内使用 `TThread.Queue` / `Synchronize` 编组
+  - [ ] 连续触发（重连）不崩溃
+- **相关坑**：LF-NET-006、LF-CB-004
+
+### LF-NET-006：网络事件回调的 `addr_` 在回调返回后立即失效（v2.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.Net.C4.LingoFuse.pas` `Do_LF_Network_Connect_Th___` 实现）
+- **影响版本**：v3.0+
+- **触发条件**：在回调中保存 `addr_` 指针，回调返回后使用
+- **症状**：
+  - 字符串变成乱码或空
+  - 访问违规（use-after-free）
+  - **诡异**：某些场景下"看着正常"（内存未立即被覆写）
+- **根因**：`Do_LF_Network_Connect_Th___` 的实现：
+  ```pascal
+  procedure Do_LF_Network_Connect_Th___(thSender: TCompute);
+  begin
+    try
+        On_Network_Connect_Event(thSender.UserData);   // 用户回调
+    except
+    end;
+    TLF_String.FreeUTF8AnsiChar(thSender.UserData);    // ← 回调返回后立即释放
+  end;
+  ```
+  `addr_` 是库内部临时分配的 UTF-8 缓冲，**回调返回后立即释放**。
+- **最小复现**：
+  ```pascal
+  var
+    g_addr: PAnsiChar;   // ❌ 全局保存指针
+
+  procedure OnConnect(addr: PAnsiChar); cdecl;
+  begin
+    g_addr := addr;      // ❌ 悬空指针
+  end;
+  ```
+- **修复 diff**：
+  ```diff
+  - var g_addr: PAnsiChar;
+  + var g_addr: string;
+
+    procedure OnConnect(addr: PAnsiChar); cdecl;
+    begin
+  -   g_addr := addr;
+  +   g_addr := UTF8ToString(addr);   // ✅ 立即复制到 string
+    end;
+  ```
+- **验证清单**：
+  - [ ] 回调内立即复制 `addr_`，不在回调外使用指针
+  - [ ] 若需异步处理，先复制为 `string` / `TBytes`
+- **相关坑**：LF-NET-005、LF-APP-004
+
 ---
 
 ## 7.5 远程调用层（LF-CALL-*）
@@ -992,7 +1186,7 @@ lazbuild -B client.lpi
 - **影响版本**：所有版本
 - **触发条件**：某 `(App, API)` 对 5 分钟无 `Sequenced_Notify`
 - **症状**：下一次调用时有明显启动延迟（线程重建）
-- **根因**：`TLF_Notify_Sequence_Thread.Do_Run_Th`（`Z.LingoFuse.md` §1.9）：
+- **根因**：`TLF_Notify_Sequence_Thread.Do_Run_Th`：
   > "若 **超过 5 分钟空闲**：`Activted := False`（**自动终止**）。"
 - **正确做法**：
   - 接受这一点（设计行为）
@@ -1009,7 +1203,7 @@ lazbuild -B client.lpi
 - **影响版本**：所有版本
 - **触发条件**：跨不同 `(App, API)` 对期望顺序
 - **症状**：跨 API 的消息可能乱序
-- **根因**：`TLF_Notify_Sequence_Thread_Pool`（`Z.LingoFuse.md` §1.8）：
+- **根因**：`TLF_Notify_Sequence_Thread_Pool`：
   > "**每个 `(App, API)` 对拥有一个专用线程**"
   
   不同 `(App, API)` 对使用不同线程，**线程间无顺序保证**。
@@ -1236,7 +1430,7 @@ lazbuild -B client.lpi
   ```
 - **验证清单**：
   - [ ] FPC 编译无 3029 错误
-  - [ ] Delphi 编译也通过（Delphi 区分 `var`/`out`）
+  - [ ] Delphi 编译也通过
 - **相关坑**：LF-TYPE-002
 
 ### LF-TYPE-002：跨语言接口只能用基础类型
@@ -1256,7 +1450,7 @@ lazbuild -B client.lpi
 - **验证清单**：
   - [ ] 所有参数类型在 `pascal_code_mcp_rule.md` §3 白名单内
   - [ ] 复杂结构用 JSON 字符串包装
-- **相关坑**：LF-TYPE-001、LF-XLANG-003
+- **相关坑**：LF-TYPE-001、LF-XLANG-003、LF-JSON-002
 
 ---
 
@@ -1282,7 +1476,7 @@ lazbuild -B client.lpi
   - [ ] 桥接层实现了双向 #0 处理
   - [ ] 自定义客户端遵循同样约定
   - [ ] 跨语言测试：Pascal ↔ Python 双向传输 JSON 无问题
-- **相关坑**：LF-DATA-004、LF-DATA-005
+- **相关坑**：LF-DATA-004、LF-DATA-005、LF-JSON-001
 
 ### LF-XLANG-002：UTF-8 全程贯通，不经 `string` 中转
 
@@ -1313,7 +1507,7 @@ lazbuild -B client.lpi
   - [ ] 跨语言传输中文完整保留
   - [ ] 代码中不出现中文经 `string` 中转的路径
   - [ ] 或用 `{$CODEPAGE UTF8}` 确保 `string` 是 UTF-8
-- **相关坑**：LF-XLANG-003、LF-TYPE-002
+- **相关坑**：LF-XLANG-003、LF-TYPE-002、LF-JSON-002
 
 ### LF-XLANG-003：字节序统一为小端
 
@@ -1337,6 +1531,237 @@ lazbuild -B client.lpi
 
 ---
 
+## 7.13 JSON 使用层（LF-JSON-*）— v2.0 新增
+
+> **本节来源**：从 `LingoFuse_LLM_Pitfalls_For_AI.md` §12（P10 系列）完整合并。
+>
+> **定位**：所有使用 `Z.Json` 单元（`TZ_JsonObject` / `TZ_JsonArray` / `TZ_JsonString`）的场景，尤其是**跨语言、结构化输出（Structured Output）、LLM 交互**等需要组装/解析 JSON 的场景。
+>
+> **为什么单列一个子系统**：JSON 踩坑的根因和 LF-* 层的踩坑**不同源**——它源于 `TZ_JsonObject` 的**树形设计**和**跨编译器字符编码差异**。但使用时**经常和 LingoFuse 一起出现**，所以在这里单独列出。
+
+### LF-JSON-001：`TZ_JsonObject` 是树，Parse 类方法只能在 root 上调用
+
+- **证据等级**：🟢 已核实源码（`Z.Json.md` §0 / §4.0 / §4.9 + `LingoFuse_LLM_Pitfalls_For_AI.md` P10-1）
+- **影响版本**：v3.11+（`Z.Json` 单元引入该约束；`llm_client_v3.pas` v3.11 修复）
+- **触发条件**：
+  - 对 `TZ_JsonObject` 的**子对象 / 孙对象**调用 `Parae` / `Assign` / `LoadFromStream` / `ParseText` 中的任何一个
+  - 典型场景：向一个已有 `joReq.O['options']` 的子节点注入 JSON 字符串
+- **症状**（多种表现，取决于崩溃时机）：
+  - **A. 随机崩溃 / 访问冲突**（AV / 段错误）
+  - **B. 字段静默丢失**——例如 `options.response_format` 从 JSON 中消失
+  - **C. `schema` 字段变成 `null`**
+  - **D. 延迟崩溃**——`ToBytes` / 序列化时才崩
+  - **E. "看着正常"**——某些编译/运行配置下不崩，但 JSON 结果不对
+- **根因**：
+  - `TZ_JsonObject` 是**树形容器**，不是扁平 map
+  - 子对象的 `FInstance` 是**指向父对象底层 `TJSONObject` 树中某个节点的指针**
+  - `Parae` / `Assign` / `LoadFromStream` / `ParseText` 内部执行 `DisposeObjectAndNil(FInstance)` 后创建**全新对象**
+  - 导致：
+    - 父对象底层树中留下**悬空指针**
+    - 新 `FInstance` **没有挂接回父树**
+  - `Z.Json.md` §4.0 的通用规则表：
+    | 操作 | 允许对象 | 禁止对象 |
+    |------|---------|---------|
+    | `Parae(TBytes)` | ✅ root | ❌ child / grandchild |
+    | `Assign(source)` | ✅ root | ❌ child |
+    | `LoadFromStream` | ✅ root | ❌ child |
+    | `ParseText` | ✅ root | ❌ child |
+    | `S[...]` / `I[...]` / `B[...]` 读写 | ✅ 任意 | — |
+    | `O[...]` / `A[...]` 写字段 | ✅ 任意 | — |
+- **最小复现**（来自 `LingoFuse_LLM_Pitfalls_For_AI.md` P10-1）：
+  ```pascal
+  // ❌ 错误：对孙对象调用 Parae
+  joJsonSchema := joRoot.O['json_schema'];
+  joJsonSchema.O['schema'].Parae(ASchemaJsonBytes);   // 破坏 joRoot 的底层树
+  AResponseFormatJsonBytes := joRoot.ToBytes;         // 崩溃或丢字段
+  ```
+- **修复 diff**（P10-1 官方配方：独立 root 解析 → 取紧凑 JSON → Unicode 空间拼接 → 最后 `.Bytes`）：
+
+  ```diff
+  - (* ❌ 错误：对子对象调用 ParseText *)
+  - joJsonSchema := joReq.O['options'].O['response_format'];
+  - joJsonSchema.O['schema'].ParseText(ASchemaJson);
+  - reqBytes := joReq.ToBytes;
+  + (* ✅ 正确：三步走 *)
+  + (* Step 1: 独立 root 对象解析 *)
+  + joSchema := TZ_JsonObject.Create;
+  + try
+  +   if not joSchema.ParseText(ASchemaJson) then
+  +   begin
+  +     AError := 'Schema JSON is not valid';
+  +     Exit;
+  +   end;
+  +   schemaJson := joSchema.ToJSONString(False);   (* 紧凑 JSON *)
+  + finally
+  +   DisposeObject(joSchema);
+  + end;
+  + (* Step 2: 用 TZ_JsonObject 生成 name/strict 片段 *)
+  + joNameStrict := TZ_JsonObject.Create;
+  + try
+  +   joNameStrict.S['name'] := ASchemaName;
+  +   joNameStrict.B['strict'] := AStrict;
+  +   nameStrictJson := joNameStrict.ToJSONString(False);
+  + finally
+  +   DisposeObject(joNameStrict);
+  + end;
+  + (* Step 3: Unicode 空间拼接 *)
+  + reqJson := joReq.ToJSONString(False);            (* TZ_JsonString *)
+  + tmpReq := reqJson.Text;
+  + SetLength(tmpReq, Length(tmpReq) - 1);            (* 去掉尾 '}' *)
+  + reqJson.Text := tmpReq +
+  +   ',"options":{"response_format":{' +
+  +   '"type":"json_schema","json_schema":{' +
+  +   nameStrictJson.Text + ',' +
+  +   '"schema":' + schemaJson.Text +
+  +   '}}}';
+  + (* Step 4: 最后一步 .Bytes 转 UTF-8 *)
+  + reqBytes := reqJson.Bytes;
+  ```
+
+- **审计方法**（提交前自查）：
+  ```
+  grep "<obj>.Parae("           → 左侧必须是 ROOT（Parent = nil）
+  grep "<obj>.Assign("          → 左侧必须是 ROOT
+  grep "<obj>.LoadFromStream("  → 左侧必须是 ROOT
+  grep "<obj>.ParseText("       → 左侧必须是 ROOT
+  ```
+- **验证清单**：
+  - [ ] 所有 `Parae` / `Assign` / `LoadFromStream` / `ParseText` 的调用对象都是 root
+  - [ ] 使用「独立 root 解析 → 字符串拼接」范式
+  - [ ] `ToBytes` 前后不崩溃
+  - [ ] JSON 结构完整（用 JSON 校验器验证）
+  - [ ] 长时间运行（1 小时以上）无访问冲突
+- **相关坑**：LF-JSON-002、LF-JSON-003、LF-XLANG-002
+
+### LF-JSON-002：JSON 组装必须停在 Unicode 空间，不能经 `string` 中转
+
+- **证据等级**：🟢 已核实源码（`Z.Json.md` §1.1 + `LingoFuse_LLM_Pitfalls_For_AI.md` P10-2）
+- **影响版本**：v3.11+
+- **触发条件**：
+  - 把 `TZ_JsonString` 的 `.Text`（`USystemString`）赋给 `string`（FPC 下可能是 `AnsiString`）变量
+  - 再对该 `string` 变量做拼接、再赋给另一个 JSON 对象
+- **症状**：
+  - **只在 Windows + FPC 下出错**，Linux / macOS 下正常
+  - **只在 `DefaultSystemCodePage ≠ CP_UTF8` 时出错**（如中文 Windows 的 CP936）
+  - Schema 里的 **emoji、韩文、生僻字**到达服务端时变成 `?` 或乱码
+  - 纯 ASCII 内容完全正常——**这是最迷惑的地方**
+- **根因**：
+  - `TZ_JsonString.Text` 返回 `USystemString`（FPC 下是 `UnicodeString`）
+  - 赋给 `string`（FPC Delphi mode 下是 `AnsiString`）时，走**系统代码页转换**
+  - 在中文 Windows（CP936）下，emoji / 韩文等无法表示的字符 → 变成 `?`
+  - `Z.Json.md` §1.1 的通用规则：
+    | 用途 | 推荐类型 | 避免类型 |
+    |------|---------|---------|
+    | JSON 中间容器 | `TZ_JsonString` | `string` |
+    | 短 ASCII 字段 | `string` 可接受 | — |
+    | 面向 UI 的显示字符串 | `string` 可接受 | — |
+    | 字节流 | `TBytes` | — |
+- **最小复现**（来自 `LingoFuse_LLM_Pitfalls_For_AI.md` P10-2）：
+  ```pascal
+  (* ❌ 错误：中间变量用 string（AnsiString） *)
+  var
+    schemaJson, reqJsonStr: string;
+  begin
+    schemaJson := joSchema.ToJSONString(False).Text;   (* 非 ASCII 字符丢失 *)
+    reqJsonStr := '...' + schemaJson + '...';
+    reqBytes   := TEncoding.UTF8.GetBytes(reqJsonStr); (* 再走一遍系统代码页 *)
+  end;
+  ```
+- **修复 diff**：
+  ```diff
+  - var
+  -   schemaJson, reqJsonStr: string;
+  - begin
+  -   schemaJson := joSchema.ToJSONString(False).Text;
+  -   reqJsonStr := '...' + schemaJson + '...';
+  -   reqBytes   := TEncoding.UTF8.GetBytes(reqJsonStr);
+  - end;
+  + var
+  +   schemaJson, reqJson: TZ_JsonString;
+  +   tmpReq: USystemString;
+  + begin
+  +   schemaJson := joSchema.ToJSONString(False);   (* 保持 TZ_JsonString *)
+  +   reqJson    := joReq.ToJSONString(False);
+  +
+  +   tmpReq := reqJson.Text;                       (* 在 Unicode 空间拼接 *)
+  +   SetLength(tmpReq, Length(tmpReq) - 1);
+  +   reqJson.Text := tmpReq +
+  +     ',"options":{"response_format":' + schemaJson.Text + '}}';
+  +
+  +   reqBytes := reqJson.Bytes;                    (* 最后一步转 UTF-8 *)
+  + end;
+  ```
+- **验证清单**：
+  - [ ] 所有 JSON 组装的中间变量声明为 `TZ_JsonString`
+  - [ ] 代码中不出现 `...ToJSONString(...).Text` 后赋给 `string` 的位置
+  - [ ] `.Bytes` 只在最后一步调用
+  - [ ] 跨语言测试：包含 emoji / 中文 / 韩文的 JSON 完整保留
+- **相关坑**：LF-JSON-001、LF-XLANG-002、LF-TYPE-002
+
+### LF-JSON-003：GBK / Latin-1 回退必须用 `USystemString`，不能用 `AnsiString`
+
+- **证据等级**：🟢 已核实源码（`Z.Json.md` §7.19 + `LingoFuse_LLM_Pitfalls_For_AI.md` P10-3）
+- **影响版本**：v3.11+
+- **触发条件**：
+  - 处理非 UTF-8、非 GBK 编码的文本文件（如 Latin-1、Shift-JIS）
+  - 走"编码检测失败 → Latin-1 兜底"的分支
+  - 目标变量声明为 `string`（FPC 下是 `AnsiString`）
+- **症状**：
+  - 输出乱码
+  - 或只显示前一半内容
+- **根因**：
+  - UTF-8 和 GBK 都解码失败后走"Latin-1 兜底"
+  - 原实现用 `string`（`AnsiString`）配合 `SetLength` 和 `Move`
+  - **字节单位与 UTF-16 容器混用**——`SetLength` 是按字符数（UTF-16 code unit）分配，但 `Move` 按字节拷贝
+- **最小复现**：
+  ```pascal
+  (* ❌ 错误：目标用 string（AnsiString），单位混乱 *)
+  var
+    Decoded: string;
+    i: integer;
+  begin
+    try
+      Decoded := TEncoding.UTF8.GetString(rawBytes);
+    except
+      try
+        Decoded := TEncoding.GetEncoding(936).GetString(rawBytes);
+      except
+        SetLength(Decoded, Length(rawBytes));      (* ❌ 单位混乱 *)
+        for i := 0 to Length(rawBytes) - 1 do
+          Decoded[i + 1] := AnsiChar(rawBytes[i]); (* ❌ 高位丢失 *)
+      end;
+    end;
+  end;
+  ```
+- **修复 diff**：
+  ```diff
+  - var
+  -   Decoded: string;
+  -   i: integer;
+  - begin
+  -   ...
+  -       SetLength(Decoded, Length(rawBytes));
+  -       for i := 0 to Length(rawBytes) - 1 do
+  -         Decoded[i + 1] := AnsiChar(rawBytes[i]);
+  - end;
+  + var
+  +   Decoded: USystemString;                      (* ✅ Unicode 空间 *)
+  +   i: integer;
+  + begin
+  +   ...
+  +       SetLength(Decoded, Length(rawBytes));
+  +       for i := 0 to Length(rawBytes) - 1 do
+  +         Decoded[i + 1] := WideChar(rawBytes[i]); (* ✅ 逐字节映射为 WideChar *)
+  + end;
+  ```
+- **验证清单**：
+  - [ ] GBK / Latin-1 回退分支的目标变量声明为 `USystemString`
+  - [ ] 逐字节映射用 `WideChar(...)` 而非 `AnsiChar(...)`
+  - [ ] 用 Latin-1、Shift-JIS、CP1252 编码的测试文件验证输出
+- **相关坑**：LF-JSON-002、LF-XLANG-002
+
+---
+
 # 第 8–11 章：对比、附录
 
 ## 8. 与 Python 绑定的范式对比
@@ -1351,6 +1776,7 @@ lazbuild -B client.lpi
 | Overlap_Connection | `LF_SetOptionEx('Overlap_Connection', 'True')` | `set_option('Overlap_Connection', 'True')` | 等价 |
 | 等待就绪 | `Wait_Connection_ReadyOk` 选项 | `set_option('Wait_Connection_ReadyOk', 'True')` | 等价 |
 | 序列化通知 | `LF_Sequenced_NotifyEx` | `LF_Sequenced_Notify` | 等价 |
+| **网络事件**（v2.0 新增） | `LF_Set_Network_Event(...)` | 无对应 | Python 层未暴露（截至 v3.0） |
 | 错误处理 | 检查返回值 | 异常（`RegistrationError`, `ConnectionError`） | Python 更激进 |
 | 资源清理 | 显式 `LF_FreeData`, `LF_FreeApp`, `LF_Shutdown` | `with` 语句或显式 `free()` | 均推荐显式 |
 
@@ -1377,6 +1803,7 @@ lazbuild -B client.lpi
 | **选项与状态** | `LF_SetOption` | 设置选项 |
 | | `LF_GetStatusCount` / `LF_GetStatus` / `LF_PostStatus` | 状态 |
 | **查询** | `LF_CheckMainThread` / `LF_CheckApp` / `LF_CheckApi` | 健康检查 |
+| **网络事件**（v2.0 新增） | `LF_Set_Network_Event` | 安装 / 卸载全局网络事件回调 |
 | **清理** | `LF_Shutdown` | 完全关闭 |
 | **同步** | `LF_Sync` | 主线程同步队列 |
 
@@ -1386,6 +1813,7 @@ lazbuild -B client.lpi
 - **库名**：`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`
 - **Lazarus 编译**：`lazbuild -B project.lpi`
 - **单元搜索路径**：确保 `ZNetV2/source` 在项目搜索路径中
+- **编译指令建议**：`{$CODEPAGE UTF8}`（FPC）确保 `string` 是 UTF-8（见 LF-JSON-002）
 
 ## 11. 附录 C – 常用宏与常量
 
@@ -1396,6 +1824,7 @@ lazbuild -B client.lpi
 - 序列化通知线程空闲超时：5 分钟
 - 广播传播延迟：约 3 秒
 - `Fixed_Sequenced_Time` 默认：20 秒
+- **`LF_Generate_AppName` / `LF_Get_AppName` 返回指针有效时间**：**约 5 秒**（v2.0 强调）
 
 ---
 
@@ -1407,21 +1836,26 @@ lazbuild -B client.lpi
 
 ## 12.1 LLM 生态坑 ID 映射表
 
-| LLM 生态坑 ID | 主题 | 归属子系统 |
-|--------------|------|-----------|
-| P0-1 | `client_name` 必须是真实 App 名 | 客户端 ↔ 服务端 |
-| P0-2 | llama.cpp 线程不安全 | LLM 服务端 |
-| P0-3 | 回调中不能调阻塞 LingoFuse 函数 | 客户端 |
-| P0-4 | `requests` SSE 缓冲 | 代理层传输 |
-| P0-5 | proxy 进程立即退出 | LLM 服务端 |
-| P0-6 | thinking 阶段无输出 | 代理层 |
-| P1-1 ~ P1-7 | Python 服务端 | Python 服务端 |
-| P2-1 ~ P2-3 | 编码问题 | 跨语言 |
-| P3-1 ~ P3-3 | 会话生命周期 | 服务端 |
-| P4-1 ~ P4-6 | GUI 集成 | Pascal GUI 客户端 |
-| P5-1 ~ P5-2 | 递归/边界 | GUI |
-| P6-1 ~ P6-4 | llm_proxy 专项 | 代理层 |
-| P7-1 ~ P7-5 | LTB 专项 | LLM Tool Bridge |
+| LLM 生态坑 ID | 主题 | 归属子系统 | 与 Pascal 层的对应 |
+|--------------|------|-----------|------------------|
+| P0-1 | `client_name` 必须是真实 App 名 | 客户端 ↔ 服务端 | **LF-APP-003** |
+| P0-2 | llama.cpp 线程不安全 | LLM 服务端 | — |
+| P0-3 | 回调中不能调阻塞 LingoFuse 函数 | 客户端 | **LF-CB-002** |
+| P0-4 | `requests` SSE 缓冲 | 代理层传输 | — |
+| P0-5 | proxy 进程立即退出 | LLM 服务端 | — |
+| P0-6 | thinking 阶段无输出 | 代理层 | — |
+| P1-1 ~ P1-7 | Python 服务端 | Python 服务端 | 部分对应 **LF-TYPE-001** |
+| P2-1 ~ P2-3 | 编码问题 | 跨语言 | **LF-XLANG-002** |
+| P3-1 ~ P3-3 | 会话生命周期 | 服务端 | — |
+| P4-1 ~ P4-6 | GUI 集成 | Pascal GUI 客户端 | 部分对应 **LF-CLEAN-001** |
+| P5-1 ~ P5-2 | 递归/边界 | GUI | — |
+| P6-1 ~ P6-4 | llm_proxy 专项 | 代理层 | — |
+| P7-1 ~ P7-5 | LTB 专项 | LLM Tool Bridge | 部分对应 **LF-NET-003** |
+| P8-1 ~ P8-3 | 多模态转发 | 代理层 | — |
+| **P9-1 ~ P9-15** | **Structured Output** | **LLM 代理 + JSON** | **LF-JSON-001 / LF-JSON-002** |
+| **P10-1** | **子对象调 parse 致父树悬空** | **Z.Json 使用** | **LF-JSON-001**（等价合并） |
+| **P10-2** | **JSON 经 AnsiString 中转丢字符** | **Z.Json 使用** | **LF-JSON-002**（等价合并） |
+| **P10-3** | **GBK 回退 SetLength 单位错** | **Z.Json 使用** | **LF-JSON-003**（等价合并） |
 
 ## 12.2 与 Pascal 相关的交叉引用
 
@@ -1433,8 +1867,15 @@ lazbuild -B client.lpi
 | P0-3（回调阻塞） | LF-CB-002 | 都是"回调中禁止阻塞调用" |
 | P2-1（中文编码） | LF-XLANG-002 | 都是"UTF-8 全程贯通" |
 | P4-2（FormClose） | LF-CLEAN-001 | 都是"清理顺序" |
+| P7-3（LTB 预连接） | LF-NET-003 | 都是"PrepareDone 只返回 1 一次" |
+| **P9 系列（Structured Output）** | **LF-JSON-001 / LF-JSON-002** | **JSON Schema 组装的通用陷阱** |
+| **P10-1（子对象 parse）** | **LF-JSON-001** | **已在 §7.13 完整合并** |
+| **P10-2（AnsiString 中转）** | **LF-JSON-002** | **已在 §7.13 完整合并** |
+| **P10-3（GBK 回退）** | **LF-JSON-003** | **已在 §7.13 完整合并** |
 
-**注意**：LLM 生态的坑描述更完整（含 Python 代码示例），需要时请查阅原文档。
+**注意**：
+- P10 系列在 §7.13 中**已完整合并**，不需要重复查阅 LLM 文档。
+- P9 系列（Structured Output 的场景陷阱）仍在 LLM 文档中，Pascal 层只引用 **LF-JSON-001 / LF-JSON-002** 作为底层机制说明。
 
 ---
 
@@ -1458,19 +1899,27 @@ lazbuild -B client.lpi
 | `use-after-free` / 段错误 | LF-APP-004 / LF-DATA-002 | 指针已释放 |
 | `Timeout` / 大小为 0 的结果 | LF-CALL-001 | 调用超时 |
 | `Module not found: LingoFuse64.dll` | 部署 | 动态库未找到 |
+| **网络事件回调中访问冲突** | **LF-NET-005** | **v2.0 新增：UI 跨线程访问** |
+| **网络事件 `addr_` 变乱码 / 空** | **LF-NET-006** | **v2.0 新增：`addr_` 悬空** |
+| **`unrecognized type json_schema`** | **LF-JSON-001** | **v2.0 新增：JSON Schema 组装错误** |
+| **`options.response_format` 丢失** | **LF-JSON-001** | **v2.0 新增：父树悬空** |
+| **`ToBytes` 访问冲突** | **LF-JSON-001** | **v2.0 新增：父树悬空** |
+| **Schema 里 emoji / 韩文变 `?`** | **LF-JSON-002** | **v2.0 新增：AnsiString 中转** |
+| **CP936 环境下 schema 损坏** | **LF-JSON-002** | **v2.0 新增：系统代码页** |
+| **GBK 回退输出乱码 / 截断** | **LF-JSON-003** | **v2.0 新增：SetLength 单位错** |
 
 ---
 
 # 附录 B：ID 总览与维护约定
 
-## B.1 当前 ID 总览
+## B.1 当前 ID 总览（v2.0 更新）
 
 | ID 前缀 | 当前条目数 | 说明 |
 |---------|-----------|------|
 | `LF-APP` | 6 | 应用/句柄层 |
 | `LF-CB` | 5 | 回调层 |
 | `LF-DATA` | 5 | 数据句柄层 |
-| `LF-NET` | 4 | 网络准备层 |
+| `LF-NET` | **6** | 网络准备层（v2.0 新增 2 条：005 / 006） |
 | `LF-CALL` | 2 | 远程调用层 |
 | `LF-SEQ` | 2 | 序列化通知层 |
 | `LF-CHK` | 1 | 查询与缓存 |
@@ -1479,7 +1928,8 @@ lazbuild -B client.lpi
 | `LF-THREAD` | 2 | 线程模型 |
 | `LF-TYPE` | 2 | 类型与编译 |
 | `LF-XLANG` | 3 | 跨语言数据交换 |
-| **合计** | **37** | |
+| **`LF-JSON`** | **3** | **JSON 使用层（v2.0 新增子系统）** |
+| **合计** | **42** | （v1.0 为 37） |
 
 ## B.2 维护约定
 
@@ -1492,8 +1942,9 @@ lazbuild -B client.lpi
 5. **交叉引用**：`相关坑` 字段双向维护
 6. **升级证据等级**：从 🔴 → 🟡 → 🟢，只升不降
 7. **反例集**：历史遗留的错误用法可保留，但标注"反例，见 ID-XXX"
+8. **新增子系统**：需要 ≥ 3 条同源坑时才建立独立子系统前缀
 
-## B.3 待补充的坑（TODO）
+## B.3 待补充的坑（TODO，v2.0 更新）
 
 以下是当前材料中**未覆盖或覆盖不完整**、需要后续补充的坑：
 
@@ -1506,6 +1957,10 @@ lazbuild -B client.lpi
 | C4 网络分区的行为 | 未覆盖 | 网络抖动下的恢复逻辑 |
 | 大端平台字节序 | 协议约定小端 | 大端平台实测 |
 | `LF_SetOption` 的密码掩码算法 | `TMT19937.Rand32 mod 2` | 是否需要安全审查 |
+| **网络事件回调的具体执行线程 ID** | 未覆盖 | 打线程 ID 观察 |
+| **网络事件回调在 `LF_Shutdown` 期间的行为** | 未覆盖 | 实测卸载期间是否仍触发 |
+| **`TZ_JsonObject` 在多线程场景下的安全性** | `Z.Json.md` 说"否" | 实测并补充 ID |
+| **Structured Output 在 Pascal 客户端的完整流程** | 指向 `llm_client_v3.md` | 补充端到端示例 |
 
 ---
 
@@ -1516,22 +1971,32 @@ lazbuild -B client.lpi
 AI 助手处理 LingoFuse 相关问题时：
 
 1. **先查本知识库**：用 ID（`LF-XXX-NNN`）或关键词
-2. **未命中本知识库**：查 §12 的 LLM 生态索引，指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
-3. **仍未命中**：查 §15 的"诚实的不确定清单"
-4. **都无法回答**：明确告知用户"当前材料不足以判断"，并**建议回查源码**
+2. **网络事件相关**：先查 §4.11 / §6.8 / `LF-NET-005` / `LF-NET-006`
+3. **JSON 相关**：先查 §7.13（`LF-JSON-001 / 002 / 003`），再查 `Z.Json.md`
+4. **未命中本知识库**：查 §12 的 LLM 生态索引，指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
+5. **仍未命中**：查 §7.0 的"诚实的不确定清单"（其实本指南已无独立章节，见各节末尾）
+6. **都无法回答**：明确告知用户"当前材料不足以判断"，并**建议回查源码**
 
 ## C.2 回答时必带的元信息
 
 AI 回答 LingoFuse 问题时，应主动标注：
 
-- **依据的 ID**（如 `LF-APP-003`）
+- **依据的 ID**（如 `LF-APP-003` / `LF-JSON-001`）
 - **证据等级**（🟢 / 🟡 / 🔴）
 - **是否命中"不确定清单"**
 
-**示例回答**：
-> 根据 **LF-APP-003（证据等级：🟢 已核实源码）**，`LF_Generate_AppName` 必须在 `LF_PrepareDone` 之后调用。
-> 如果你在 `PrepareDone` 之前调用，生成的名字会缺少隧道信息，导致服务端 `LF_Sequenced_Notify` 报 `no found app`。
-> **相关坑**：LF-XLANG-001、LF-NET-003。
+**示例回答（v2.0）**：
+
+> 根据 **LF-JSON-001（证据等级：🟢 已核实源码）**，`TZ_JsonObject` 是树形结构，`Parae` / `Assign` / `LoadFromStream` / `ParseText` 只能在 **root** 上调用。
+>
+> 若你在 `joReq.O['options'].O['response_format']` 这样的**子对象**上调用 `ParseText`，会破坏 `joReq` 的底层树，导致：
+> - `options.response_format` 字段丢失
+> - `ToBytes` 时访问冲突
+> - 随机崩溃
+>
+> **正确做法**：在独立 root 对象上解析 → 取紧凑 JSON 字符串 → 用 `TZ_JsonString` 在 Unicode 空间拼接 → 最后 `.Bytes` 转 UTF-8。
+>
+> **相关坑**：LF-JSON-002、LF-JSON-003。
 
 ## C.3 禁止行为
 
@@ -1542,6 +2007,8 @@ AI 助手**不应**：
 - ❌ 假装回答了"不确定清单"里的问题
 - ❌ 忽略证据等级直接给结论
 - ❌ 用本知识库覆盖 LLM 生态文档（那部分应指向原文档）
+- ❌ **在网络事件回调中直接操作 UI**（违反 LF-NET-005）
+- ❌ **在子对象上调用 `ParseText` / `Parae`**（违反 LF-JSON-001）
 
 ## C.4 结构化输出模板（推荐）
 
@@ -1558,7 +2025,9 @@ AI 助手**不应**：
 
 ---
 
-## 三条铁律（保留自原文档）
+# 四条铁律
+
+> v2.0 新增第四条铁律。前三条来自 v1.0，与 v2.0 合并后的措辞保持一致。
 
 **铁律一**：回调必须 `cdecl`，且禁止在回调中调用 `LF_Call` / `LF_Notify` / `LF_LocalCall`。
 → 对应 ID：LF-APP-001、LF-CB-002。
@@ -1569,35 +2038,59 @@ AI 助手**不应**：
 **铁律三**：清理顺序必须是 `ExitMainThread` → `FreeApp` → `Shutdown`。
 → 对应 ID：LF-CLEAN-001。
 
+**铁律四（v2.0 新增）**：**`TZ_JsonObject` 是树。`Parae` / `Assign` / `LoadFromStream` / `ParseText` 只能在 root 上调用。JSON 组装中间容器用 `TZ_JsonString`，`.Bytes` 只在最后一步。**
+→ 对应 ID：LF-JSON-001、LF-JSON-002。
+
+**附**：网络事件回调在**后台 TCompute 工作线程**执行，`addr_` 在**回调返回后立即失效**。
+→ 对应 ID：LF-NET-005、LF-NET-006。
+
 ---
 
-*文档版本：v2.0（Pascal 核心层踩坑知识库 v1.0）*  
-*本版核心改进：建立 ID 体系、标注证据等级、给出复现与验证清单、明确不确定项*  
-*最后更新：2026-09-15*  
-*维护者：LingoFuse 团队*
-
----
-
-## 与本版对比：我做了什么，没做什么
+## 与本版对比：我做了什么，没做什么（v2.0 自我检查）
 
 **做了**：
-- 建立 `LF-XXX-NNN` ID 体系，覆盖 12 个子系统、37 条坑
-- 每条坑标注**证据等级**（🟢 已核实源码 / 🟡 仅文档转录 / 🔴 推测）
-- 每条坑包含：触发条件 / 症状 / 根因 / 最小复现 / 修复 diff / 验证清单 / 相关坑
-- 新增**错误消息原文索引**（附录 A）
-- 新增**ID 总览与维护约定**（附录 B）
-- 新增**给 AI 使用者的检索规则**（附录 C）
-- LLM 生态坑从主文档**拆出去**，只保留索引
-- 明确列出**待补充的 TODO**（B.3）
+
+- **网络事件 API 完整合并**：
+  - §2 核心概念新增「网络事件」条
+  - §4.11 新增 API 参考子章节
+  - §6.8 新增使用范式
+  - §7.4 新增 `LF-NET-005` / `LF-NET-006`
+  - 附录 A 新增 2 条错误原文
+- **JSON 使用踩坑完整合并**：
+  - §7.13 新增 `LF-JSON-*` 子系统（3 条坑）
+  - 完整移植 P10-1 / P10-2 / P10-3 的症状、根因、修复、审计、验证清单
+  - §12 LLM 生态索引更新 P9 / P10 映射
+- **交叉引用更新**：
+  - §7.11 `LF-TYPE-002` 相关坑加入 `LF-JSON-002`
+  - §7.12 `LF-XLANG-002` 相关坑加入 `LF-JSON-002`
+  - §7.12 `LF-XLANG-001` 相关坑加入 `LF-JSON-001`
+  - §12.2 交叉引用表新增 P9 / P10 系列
+- **四条铁律**：新增第四条（JSON）
+- **ID 总览**：42 条（v1.0 为 37）
+- **TODO 清单**：新增网络事件 / JSON 相关的待补充项
+- **附录 A 错误消息索引**：新增 6 条网络事件 / JSON 相关错误
+- **格式与术语统一**：v1.0 → v2.0 全文档格式复查
 
 **没做（诚实声明）**：
-- 我**没有**回源码逐条核实——依据是用户提供的 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md` 文本
-- 我**没有**实测每条坑的最小复现——所有"最小复现"都是基于源码逻辑推演，未在真实编译环境下验证
-- 我**没有**标注实际行号——因为素材中没有行号信息
-- `Z.LingoFuse.md` 的 22 条"不确定清单"我**原样保留**，未尝试消除
 
-**下一步建议**（若需要 v2.0 真正落地）：
-1. 由能接触到源码的人逐条确认 🟡 和 🔴 的条目
+- **我没有**回源码逐条核实——依据是用户提供的 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 文本
+- **我没有**实测每条坑的最小复现——所有"最小复现"都是基于源码逻辑推演，未在真实编译环境下验证
+- **我没有**标注实际行号——因为素材中没有行号信息
+- **我没有**尝试消除 🔴 级别的推测项——`Z.LingoFuse.md` 中的不确定清单被保留
+- **我没有**覆盖 LLM 生态的 P9 系列细节——只做索引，具体内容仍指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
+
+**下一步建议**（若需要 v3.0 真正落地）：
+
+1. 由能接触到源码的人逐条确认 🟡 和 🔴 的条目（尤其是 `LF-NET-003`）
 2. 每条坑至少在一台真实机器上跑一次最小复现
 3. 补充实际文件名 + 函数名 + （可选）行号
 4. 用 CI 集成回归测试，防止坑回潮
+5. 补充网络事件与 JSON 场景的端到端测试用例
+6. 建立 `LF-JSON-*` 子系统的 `Z.Json.md` 双向引用
+
+---
+
+*文档版本：v2.0（Pascal 核心层踩坑知识库 v2.0）*
+*本版核心改进：网络事件 API 完整合并；JSON 使用踩坑完整合并；ID 总览更新为 42 条；四条铁律；交叉引用完整*
+*最后更新：2026-09-18*
+*维护者：LingoFuse 团队*

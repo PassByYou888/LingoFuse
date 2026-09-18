@@ -1,10 +1,78 @@
-# LingoFuse Python 绑定依赖
-# ===========================
-# 执行安装
-# pip install -r requirements.txt
+# ======================================================================
+# LingoFuse Python Bindings — requirements.txt
+# ======================================================================
+#
+# The `lingofuse` package itself has NO third-party runtime dependency.
+# Everything in lingofuse/ (core.py, client.py, server.py, lf_io.py,
+# network_events.py, serializers.py, errors.py, _lf_native.py) is built
+# on the Python standard library only. Installing just `lingofuse`
+# (e.g. via `pip install -e .`) is sufficient for non-HTTP usage.
+#
+# The dependencies below are only needed for:
+#   * the HTTP bridge gateway          (lingofuse/bridge.py)
+#   * the bridge smoke test            (lingofuse/test_bridge.py)
+#   * the cross bridge demo launcher   (cross/cross_bridge.py)
+#   * running the unit test suite      (lingofuse/test_lingofuse.py)
+#   * code style / linting             (setup.py [extras_require.dev])
+#
+# To install only the bridge extras:
+#     pip install -e ".[bridge]"
+#
+# To install the full development toolchain:
+#     pip install -e ".[dev]"
+#     pip install -r requirements.txt
+#
+# To install only what test_bridge.py + bridge.py need (smallest set):
+#     pip install Flask requests
+# ======================================================================
 
-# HTTP 桥接（bridge.py）
-flask>=2.3.0
 
-# 测试辅助
-requests>=2.31.0
+# ----------------------------------------------------------------------
+# HTTP bridge gateway
+# ----------------------------------------------------------------------
+# lingofuse/bridge.py imports:
+#     from flask import Flask, request, Response
+# cross/cross_bridge.py launches bridge.py as a subprocess.
+#
+# Flask>=2.0 is the version declared in setup.py [extras_require.bridge].
+# Note on Python version compatibility:
+#     Flask 2.2.x  -> Python 3.7+   (matches setup.py python_requires)
+#     Flask 2.3.x  -> Python 3.8+
+#     Flask 3.x    -> Python 3.8+
+# Pin an upper bound explicitly if you must stay on Python 3.7:
+#     Flask>=2.0,<2.3
+Flask>=2.0
+
+
+# ----------------------------------------------------------------------
+# Bridge smoke test
+# ----------------------------------------------------------------------
+# lingofuse/test_bridge.py imports:
+#     import requests
+# and issues an HTTP POST against a running bridge.
+# The toolchain's JSON policy is applied explicitly via
+# lingofuse.lf_io.dumps_json before requests.post(data=...).
+requests>=2.25
+
+
+# ----------------------------------------------------------------------
+# Unit test suite
+# ----------------------------------------------------------------------
+# lingofuse/test_lingofuse.py uses unittest (stdlib) but is designed to
+# be runnable under pytest. It exercises the native ABI directly
+# (LF_WriteBuffer, LF_ReadBuffer, LF_PrepareService, LF_PrepareClient,
+# LF_PrepareDone, LF_Shutdown, ...) and therefore requires a working
+# LingoFuse shared library on PATH or in the current working directory.
+#
+# pytest>=7.0 is the version declared in setup.py [extras_require.dev].
+pytest>=7.0
+
+
+# ----------------------------------------------------------------------
+# Code style / linting
+# ----------------------------------------------------------------------
+# Declared in setup.py [extras_require.dev]. No version pins on purpose:
+# these tools are expected to follow the latest stable release, and the
+# project does not currently enforce a specific formatter version.
+black
+flake8

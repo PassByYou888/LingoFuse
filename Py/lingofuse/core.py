@@ -30,6 +30,36 @@ String handling rules (critical for cross-language compatibility):
 Atomic read/write methods (write_int32, read_int32, etc.) use little-endian
 byte order, which matches the Pascal convention.
 
+=========================== JSON I/O DELEGATION ============================
+As of this revision, the JSON and string payload I/O of DataHandle is
+delegated to `lingofuse.lf_io`, which is the single source of truth
+for:
+    * the serialization policy (ensure_ascii=False, default=str),
+    * the NUL framing on the wire,
+    * the NUL-tolerant read behaviour.
+
+The four public methods that delegate are:
+    write_string  -> lf_io.write_string
+    read_string   -> lf_io.read_string
+    write_json    -> lf_io.write_json
+    read_json     -> lf_io.read_json (with a position reset first)
+
+The public signatures of these four methods are PRESERVED exactly:
+    write_string : returns bool
+    read_string  : raises LingoFuseError on invalid UTF-8
+    write_json   : returns the number of bytes written
+    read_json    : resets the read position to 0, then silently
+                   returns None on any parse failure
+
+These signatures are kept for backward compatibility. The delegation
+is an internal implementation change: callers see the same observable
+behaviour as before, but the serialization and framing policies now
+live in exactly one place (lingofuse.lf_io).
+
+The `write` / `read` methods are NOT affected by this change: they
+use the serializers module (which produces a bytes payload WITHOUT a
+trailing NUL) and belong to a different protocol layer.
+
 =========================== APPLICATION ============================
 App represents a logical service that can host multiple APIs.
 APIs can be registered as Call (request-response) or Notify (one-way).
@@ -112,6 +142,27 @@ from ._lf_native import (
 )
 from .errors import LingoFuseError, RegistrationError
 from .serializers import default_serializer, default_deserializer
+
+# ----------------------------------------------------------------------
+# Unified LingoFuse payload I/O
+# ----------------------------------------------------------------------
+#
+# The four DataHandle payload methods (write_string / read_string /
+# write_json / read_json) delegate to this module. It is the single
+# source of truth for the JSON serialization policy, the NUL framing,
+# and the NUL-tolerant read behaviour.
+#
+# The aliases use a leading underscore so that they cannot be confused
+# with the DataHandle methods of the same name inside this file. The
+# public method implementations below are thin wrappers that preserve
+# the historical signatures and error behaviour of DataHandle.
+from .lf_io import (
+    cstr,
+    read_json as _lf_read_json,
+    read_string as _lf_read_string,
+    write_json as _lf_write_json,
+    write_string as _lf_write_string,
+)
 
 
 # Module-level logger for callback failures. All messages are in English
@@ -222,8 +273,9 @@ class DataHandle:
         self._serializer = serializer or default_serializer
         self._deserializer = deserializer or default_deserializer
 
-        # Now create the native handle.
-        self._hnd = LF_CreateData(api_name.encode("utf-8"))
+        # Now create the native handle. cstr() supplies NUL-terminated
+        # UTF-8 bytes for the c_char_p parameter.
+        self._hnd = LF_CreateData(cstr(api_name))
         if not self._hnd:
             raise LingoFuseError(
                 f"Failed to create DataHandle for API '{api_name}'"
@@ -291,7 +343,16 @@ class DataHandle:
         return getattr(self, "_hnd", None)
 
     def write(self, obj: Any) -> int:
-        """Write a Python object using the configured serializer."""
+        """
+        Write a Python object using the configured serializer.
+
+        This method uses the `serializers` module and produces a bytes
+        payload WITHOUT a trailing NUL. That is a different protocol
+        layer from `write_json`, which produces UTF-8 JSON text with a
+        NUL terminator. Both are kept for backward compatibility; do
+        not mix them on the same handle unless you know what you are
+        doing.
+        """
         data = self._serializer(obj)
         return LF_WriteBuffer(self._hnd, data, len(data))
 
@@ -299,6 +360,9 @@ class DataHandle:
         """
         Read and deserialize data using the configured or provided
         deserializer.
+
+        Uses the `serializers` module (no NUL framing). See the note
+        on `write` above.
         """
         size = LF_GetSize(self._hnd)
         if size == 0:
@@ -334,6 +398,12 @@ class DataHandle:
         return self.get_size()
 
     # ---------- Atomic types (little-endian) ----------
+    #
+    # Atomic type I/O is NOT part of the unified JSON/string payload
+    # path. It writes raw little-endian integers and floats directly
+    # into the buffer and does not use NUL framing or JSON encoding.
+    # These methods therefore keep their local `_write_pack` /
+    # `_read_unpack` helpers.
 
     def write_int8(self, value: int) -> bool:
         return self._write_pack('<b', value) == 1
@@ -397,23 +467,26 @@ class DataHandle:
     def read_double(self) -> float:
         return self._read_unpack('<d')
 
-    # ---- String helpers ----
+    # ---- String helpers (delegated to lingofuse.lf_io) ----
 
     def write_string(self, value: str) -> bool:
         """
         Write a UTF-8 string followed by a null terminator (\\0).
 
-        This is the preferred method for writing plain text strings.
-        It automatically encodes to UTF-8 and appends a zero byte,
-        which is required for compatibility with Pascal's LF_ReadString.
+        Delegates to `lingofuse.lf_io.write_string`, which is the
+        single source of truth for the NUL framing and the UTF-8
+        encoding used on the wire.
 
-        Returns True if the full string (including terminator) was written.
+        The return type is preserved from the previous implementation:
+        True on success, False on a write failure. lf_io raises on a
+        short write, so the wrapper converts that into a `False` return
+        to keep the public signature unchanged.
         """
-        utf8 = value.encode('utf-8')
-        written = self._write_bytes(utf8)
-        if written != len(utf8):
+        try:
+            _lf_write_string(self._hnd, value)
+            return True
+        except Exception:
             return False
-        return self._write_pack('<B', 0) == 1
 
     # Alias for backward compatibility.
     write_string_null_terminated = write_string
@@ -422,50 +495,23 @@ class DataHandle:
         """
         Read a null-terminated UTF-8 string from the current position.
 
-        Fault-tolerant:
-        - Scans for a '\\0' byte; if found, returns content before it
-          and advances past it.
-        - If no '\\0' is found, returns the entire remaining buffer as
-          a string and moves to end.
-        This handles both null-terminated and raw data (e.g., plain
-        JSON from HTTP bridges).
+        Delegates to `lingofuse.lf_io.read_string`, which is the single
+        source of truth for the NUL-tolerant read behaviour:
+          * If a NUL is found, return everything before it and advance
+            the handle position past the NUL.
+          * If no NUL is found, return the entire remaining buffer and
+            advance the position to the end.
 
-        Returns an empty string if at end of buffer.
-
-        Raises:
-            LingoFuseError: if the buffer contains bytes that are not
-                valid UTF-8. (In that case, use read_bytes() instead.)
+        The exception type is preserved from the previous
+        implementation: an invalid UTF-8 payload raises
+        `LingoFuseError` (not the `RuntimeError` that lf_io raises
+        internally). The wrapper converts the exception type so that
+        existing callers keep working unchanged.
         """
-        pos = self.get_pos()
-        size = self.get_size()
-        if pos >= size:
-            return ""
-
-        ptr = LF_GetBuffer(self._hnd)
-        if not ptr:
-            raise LingoFuseError("DataHandle buffer is invalid")
-
-        end = pos
-        while end < size:
-            if ctypes.string_at(ptr + end, 1) == b'\x00':
-                break
-            end += 1
-
-        if end < size:
-            raw = ctypes.string_at(ptr + pos, end - pos)
-            self.set_pos(end + 1)
-        else:
-            # No null terminator: consume all remaining data.
-            raw = ctypes.string_at(ptr + pos, size - pos)
-            self.set_pos(size)
-
         try:
-            return raw.decode('utf-8')
-        except UnicodeDecodeError as e:
-            raise LingoFuseError(
-                f"read_string: buffer contains invalid UTF-8 at "
-                f"position {pos} (raw {len(raw)} bytes): {e}"
-            ) from e
+            return _lf_read_string(self._hnd)
+        except RuntimeError as e:
+            raise LingoFuseError(str(e)) from e
 
     # Alias for backward compatibility.
     read_string_null_terminated = read_string
@@ -486,45 +532,63 @@ class DataHandle:
         self.set_pos(size)
         return raw
 
-    # ---- JSON helpers ----
+    # ---- JSON helpers (delegated to lingofuse.lf_io) ----
 
     def write_json(self, obj: Any) -> int:
         """
-        Serialize a Python object to JSON and write as null-terminated
+        Serialize a Python object to JSON and write as NUL-terminated
         UTF-8.
 
-        Uses ensure_ascii=False for compact Unicode output. The JSON
-        string is encoded as UTF-8 and a terminating null byte is
-        appended.
+        Delegates to `lingofuse.lf_io.write_json`, which guarantees
+        the toolchain-wide serialization policy:
 
-        Returns the number of bytes written.
+            json.dumps(obj, ensure_ascii=False, default=str)
+
+        and appends the NUL terminator required by the Pascal-side
+        LF_ReadString.
+
+        The return type is preserved from the previous implementation:
+        the number of bytes written (including the NUL terminator).
+        lf_io.write_json returns None, so the wrapper measures the
+        buffer size before and after the call to compute the delta.
         """
-        data = json.dumps(obj, ensure_ascii=False).encode('utf-8') + b'\x00'
-        return LF_WriteBuffer(self._hnd, data, len(data))
+        before = LF_GetSize(self._hnd)
+        _lf_write_json(self._hnd, obj)
+        return LF_GetSize(self._hnd) - before
 
     def read_json(self) -> Any:
         """
-        Read null-terminated UTF-8 JSON data and deserialize to a
-        Python object.
+        Read NUL-terminated UTF-8 JSON data and deserialize it.
 
-        Removes the trailing null byte (if present) before decoding and
-        parsing. Returns None if the buffer is empty or parsing fails.
+        Delegates to `lingofuse.lf_io.read_json`, but preserves two
+        historical behaviours of this specific method:
+
+          1. The read always starts from position 0, regardless of the
+             handle's current position. This is what the previous
+             inline implementation did, and some callers rely on it.
+          2. Any failure (invalid UTF-8, invalid JSON, empty payload)
+             results in a silent `None` return rather than a raised
+             exception. This is also what the previous inline
+             implementation did, and it is kept for backward
+             compatibility even though lf_io itself is strict.
+
+        Callers that want the strict lf_io behaviour should call
+        `lingofuse.lf_io.read_json` directly on the raw handle.
         """
-        size = self.get_size()
+        size = LF_GetSize(self._hnd)
         if size == 0:
             return None
-        buf = (ctypes.c_byte * size)()
         LF_SetPos(self._hnd, 0)
-        LF_ReadBuffer(self._hnd, buf, size)
-        raw = bytes(buf)
-        if raw and raw[-1] == 0:
-            raw = raw[:-1]
         try:
-            return json.loads(raw.decode('utf-8'))
+            return _lf_read_json(self._hnd)
         except Exception:
             return None
 
     # ---------- Low-level helpers ----------
+    #
+    # These helpers are used exclusively by the atomic-type methods
+    # above. They are NOT part of the unified JSON/string payload
+    # path and do not touch NUL framing or JSON encoding.
 
     def _write_pack(self, fmt: str, value) -> int:
         data = struct.pack(fmt, value)
@@ -603,6 +667,14 @@ class App:
     New in v1.1:
     - bind() method to dynamically attach this App to free clients.
     - sequenced_notify() convenience method.
+
+    {!!!!!  STRING PARAMETERS  !!!!!}
+    Every string argument passed to an LF_* function (app name,
+    description, API name) is routed through `lingofuse.lf_io.cstr`,
+    which supplies NUL-terminated UTF-8 bytes for the c_char_p
+    parameter. This removes the previous reliance on the hidden NUL
+    byte inside CPython bytes objects and makes the wire contract
+    explicit.
     """
 
     def __init__(self, name: str, description: str = ""):
@@ -617,10 +689,11 @@ class App:
         self._hnd = None
         self._callbacks = []
 
-        # Now create the native handle.
+        # Now create the native handle. cstr() supplies NUL-terminated
+        # UTF-8 bytes for both c_char_p parameters.
         self._hnd = LF_CreateApp(
-            name.encode("utf-8"),
-            description.encode("utf-8"),
+            cstr(name),
+            cstr(description),
         )
         if not self._hnd:
             raise LingoFuseError(f"Failed to create App '{name}'")
@@ -746,8 +819,8 @@ class App:
         self._callbacks.append(c_func)
         ret = LF_RegisterCall(
             self._hnd,
-            api_name.encode("utf-8"),
-            description.encode("utf-8"),
+            cstr(api_name),
+            cstr(description),
             ctypes.c_void_p(0),
             c_func,
         )
@@ -788,8 +861,8 @@ class App:
         self._callbacks.append(c_func)
         ret = LF_RegisterNotify(
             self._hnd,
-            api_name.encode("utf-8"),
-            description.encode("utf-8"),
+            cstr(api_name),
+            cstr(description),
             ctypes.c_void_p(0),
             c_func,
         )
@@ -807,7 +880,7 @@ class App:
         """
         if not self._hnd:
             return False
-        return LF_Unregister(self._hnd, api_name.encode("utf-8")) == 1
+        return LF_Unregister(self._hnd, cstr(api_name)) == 1
 
     # ---- Local execution ----
 
@@ -857,4 +930,4 @@ class App:
         """
         if not self._hnd:
             raise LingoFuseError("App already freed")
-        LF_Sequenced_Notify(self._name.encode("utf-8"), param.raw)
+        LF_Sequenced_Notify(cstr(self._name), param.raw)

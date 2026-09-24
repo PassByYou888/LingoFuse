@@ -1929,7 +1929,7 @@ begin
   Result := lingofuse_import.LF_CheckApiEx(AppName, ApiName);
 end;
 
-class procedure LF___.LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event); static;
+class procedure LF___.LF_Set_Network_Event(On_Connect_, On_Disconnect_: TLF_Network_Event);
 begin
   lingofuse_import.LF_Set_Network_Event(On_Connect_, On_Disconnect_);
 end;

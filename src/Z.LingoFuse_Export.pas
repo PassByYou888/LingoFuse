@@ -112,7 +112,7 @@ unit Z.LingoFuse_Export;
 interface
 
 const
-  C_LingoFuse_Edition = '3.02';
+  C_LingoFuse_Edition = '3.05';
 
 type
   (*
@@ -1351,7 +1351,7 @@ begin
                     tmp := 'notify'
                 else
                     tmp := 'error';
-                DoStatus('  (%s) (%s) "%s"', [tmp.Text, Queue^.Data.Data.Primary, Queue^.Data.Data.Second.Desc.Text]);
+                DoStatus('  (%s) (%s) "%s"', [tmp.Text, Queue^.Data.Data.Primary, Queue^.Data.Data.Second.Desc.ShortText(50, 10, 10).Text]);
               until not Next;
         end;
     end;
@@ -1649,7 +1649,7 @@ begin
                           tmp := 'notify'
                       else
                           tmp := 'error';
-                      DoStatus('  (%s) (%s) "%s"', [tmp.Text, Queue^.Data.Data.Primary, Queue^.Data.Data.Second.Desc.Text]);
+                      DoStatus('  (%s) (%s) "%s"', [tmp.Text, Queue^.Data.Data.Primary, Queue^.Data.Data.Second.Desc.ShortText(50, 10, 10).Text]);
                     until not Next;
               end;
           end;

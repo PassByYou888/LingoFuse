@@ -71,6 +71,28 @@ otherwise drift across files:
      UTF-8 bytes via cstr(), instead of relying on CPython's hidden
      NUL inside bytes objects.
 
+{!!!!!  UNIFIED JSON REPAIR PREPROCESSING  !!!!!}
+As of this revision, both JSON read paths in this module route the
+decoded text through lingofuse.json_repair_preprocess.repair_json_text
+before handing it to json.loads. The policy is:
+
+    * Valid JSON       -> returned unchanged, no log message.
+    * Repairable JSON  -> repaired, one WARNING naming the source.
+    * Unrepairable     -> returned unchanged, one ERROR naming the
+                          source (read_json only; read_json_or_bytes
+                          suppresses the error because a non-JSON
+                          payload is a legitimate outcome there).
+
+The repair engine itself lives in lingofuse.json_repair. If that
+subpackage is unavailable, the preprocessor degrades to validation
+only, and emits a single load-time WARNING. See
+lingofuse/json_repair_preprocess.py for the full contract.
+
+This preprocessing is READ-ONLY in the sense that it never mutates a
+DataHandle: it operates on the decoded text. The write path
+(dumps_json / write_json / write_string) is intentionally NOT
+affected, because json.dumps always produces valid JSON.
+
 Wire format
 -----------
 A JSON payload on a DataHandle is:
@@ -81,7 +103,8 @@ The receiving side:
     1. Reads bytes from the current position up to (but not including)
        the first NUL, or to the end of the buffer if no NUL is present.
     2. Decodes the bytes as UTF-8.
-    3. Parses the result as JSON.
+    3. (NEW) Runs the unified JSON repair preprocessing.
+    4. Parses the result as JSON.
 
 A plain-text payload uses the same framing: <UTF-8 text> <NUL>.
 
@@ -113,6 +136,18 @@ terminator use write_json(). The HTTP path in llm_common.headers.jdump()
 also uses dumps_json(), so the LF path and the HTTP path share one
 policy.
 
+JSON deserialization policy
+---------------------------
+Every JSON text read by the toolchain goes through the unified repair
+preprocessor BEFORE it reaches json.loads(). The two read entry points
+in this module apply different failure-reporting policies:
+
+    read_json           strict reader, reports unrepairable payloads
+                        as ERROR, raises RuntimeError on final failure.
+    read_json_or_bytes  lenient reader, suppresses repair errors
+                        because a non-JSON payload is a legitimate
+                        outcome (returns the raw bytes in that case).
+
 Threading
 ---------
 All helpers are stateless. Concurrent access to the SAME DataHandle
@@ -123,6 +158,7 @@ Dependencies
 ------------
 Standard library: ctypes, json.
 Same package: lingofuse._lf_native (low-level C ABI only).
+Same package: lingofuse.json_repair_preprocess (unified repair).
 This module does NOT depend on lingofuse.core, so it is usable from
 contexts where the RAII wrapper is not available (for example, inside
 language_middleware.py, which works with raw handles).
@@ -133,6 +169,8 @@ Dependency direction (toolchain-wide):
     lingofuse.serializers, lingofuse.bridge, lingofuse.__init__
         -> lingofuse._lf_native
         -> lingofuse.lf_io    (this module)
+        -> lingofuse.json_repair_preprocess
+        -> lingofuse.json_repair
 
     llm_common.headers
         -> lingofuse.lf_io    (this module)
@@ -161,6 +199,7 @@ from ._lf_native import (
     LF_SetPos,
     LF_WriteBuffer,
 )
+from .json_repair_preprocess import repair_json_text
 
 
 # ----------------------------------------------------------------------
@@ -451,6 +490,23 @@ def read_json(hnd: DataHnd) -> Any:
     it is treated as the end of the payload; otherwise the entire
     remaining buffer is consumed.
 
+    {!!!!!  UNIFIED JSON REPAIR PREPROCESSING  !!!!!}
+    The decoded text is passed through
+    lingofuse.json_repair_preprocess.repair_json_text before it is
+    handed to json.loads:
+
+        * Already valid JSON          -> no log message.
+        * Malformed but repairable    -> one WARNING, repaired text
+                                         is what gets parsed.
+        * Malformed and unrepairable  -> one ERROR, and this function
+                                         raises RuntimeError as
+                                         before.
+
+    The repair engine can be disabled with the environment variable
+    LINGOFUSE_JSON_REPAIR=0. In that case, malformed payloads are
+    reported as an ERROR (or the RuntimeError below, depending on the
+    path) but are never rewritten.
+
     Returns ``None`` if the buffer contains no bytes at all. This
     matches the historical convention of the toolchain: an empty
     payload means "no result". Note that a JSON ``null`` (the four
@@ -458,10 +514,10 @@ def read_json(hnd: DataHnd) -> Any:
     distinguish the two must inspect the raw buffer themselves via
     `read_string_bytes`.
 
-    Raises RuntimeError if the bytes are not valid UTF-8 or not valid
-    JSON. This is a protocol error: the other side sent something
-    this module cannot interpret, and there is no useful recovery
-    path.
+    Raises RuntimeError if the bytes are not valid UTF-8, or if the
+    payload is still not valid JSON after the repair preprocessing.
+    This is a protocol error: the other side sent something this
+    module cannot interpret, and there is no useful recovery path.
     """
     raw = _read_until_nul(hnd)
     if not raw:
@@ -472,6 +528,12 @@ def read_json(hnd: DataHnd) -> Any:
         raise RuntimeError(
             f"lf_io.read_json: buffer contains invalid UTF-8: {e}"
         ) from e
+
+    # Unified JSON repair preprocessing. This is a no-op (and emits
+    # no log message) when the payload is already valid JSON. See the
+    # docstring of repair_json_text for the full three-way policy.
+    text = repair_json_text(text, source="lf_io.read_json")
+
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
@@ -493,6 +555,15 @@ def read_json_or_bytes(hnd: DataHnd) -> Any:
       * Valid UTF-8 but invalid JSON -> the raw bytes (NOT decoded)
       * Invalid UTF-8                -> the raw bytes
 
+    {!!!!!  UNIFIED JSON REPAIR PREPROCESSING  !!!!!}
+    Before the strict json.loads call, the decoded text is passed
+    through lingofuse.json_repair_preprocess.repair_json_text with
+    report_failure=False. This path is explicitly lenient: a payload
+    that is not JSON is a legitimate outcome (the caller wants the
+    raw bytes), so an unrepairable payload must not produce
+    error-level noise. A successful repair still emits a WARNING,
+    because rewriting data is always noteworthy.
+
     This is a deliberately lenient reader for callers that historically
     treated a non-JSON response as a payload they should forward or
     log verbatim, rather than as a protocol error. The canonical
@@ -513,6 +584,17 @@ def read_json_or_bytes(hnd: DataHnd) -> Any:
         text = raw.decode(ENCODING)
     except UnicodeDecodeError:
         return raw
+
+    # Unified JSON repair preprocessing with lenient reporting. See
+    # the docstring of repair_json_text for the three-way policy; the
+    # report_failure=False argument suppresses the ERROR branch for
+    # this read path only.
+    text = repair_json_text(
+        text,
+        source="lf_io.read_json_or_bytes",
+        report_failure=False,
+    )
+
     try:
         return json.loads(text)
     except json.JSONDecodeError:

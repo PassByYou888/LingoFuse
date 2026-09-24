@@ -11,6 +11,7 @@
  *   - std::shared_ptr for LibraryLoader reference counting
  *   - std::optional for non-throwing tryCall()
  *   - std::runtime_error for a uniform exception type
+ *   - nlohmann::json for JSON payloads (through lf_io.hpp)
  *
  * All symbols live in the `lingofuse` namespace.
  *
@@ -18,7 +19,43 @@
  * REQUIREMENTS
  * ============================================================================
  *   - C++17 or later (std::optional, if constexpr, structured bindings)
- *   - LingoFuse.h available on the include path
+ *   - LingoFuse.h    available on the include path
+ *   - lf_io.hpp      available on the include path (pulls in json.hpp)
+ *   - json.hpp       available on the include path (nlohmann/json)
+ *
+ * ============================================================================
+ * PAYLOAD I/O DELEGATION TO lf_io.hpp
+ * ============================================================================
+ * The string and JSON payload methods of DataHandle delegate to
+ * `lingofuse::io` (lf_io.hpp), which is the single source of truth for
+ * the whole C++ toolchain:
+ *
+ *     - the JSON serialization policy  (ensure_ascii=false),
+ *     - the NUL framing on the wire    (trailing #0 byte),
+ *     - the NUL-tolerant read behaviour (read to end when no NUL).
+ *
+ * The public signatures of every delegating method are preserved
+ * exactly. Specifically:
+ *
+ *     DataHandle::write(std::string)          -> io::write_string
+ *     DataHandle::write(std::vector<uint8_t>) -> io::write_string_bytes
+ *     DataHandle::readString()                -> io::read_string
+ *     DataHandle::read(std::string&)          -> io::read_string
+ *     DataHandle::readBytes()                 -> io::read_string_bytes
+ *
+ * Two new methods expose the JSON path directly, mirroring the Python
+ * DataHandle API:
+ *
+ *     DataHandle::writeJson(const nlohmann::json&)  -> io::write_json
+ *     DataHandle::readJson()                        -> io::read_json
+ *
+ * The raw byte methods (writeRaw / readRaw) and the atomic scalar I/O
+ * methods (write<int32_t>, read<float>, ...) are NOT affected: they do
+ * not use NUL framing and belong to a different protocol layer.
+ *
+ * Every failure raised by io::LfIoError is translated into a
+ * `lingofuse::Error` with the appropriate ErrorCode, so callers of
+ * this wrapper never see the lower-level exception type.
  *
  * ============================================================================
  * STRING ENCODING - UTF-8 IS MANDATORY
@@ -33,9 +70,11 @@
  * ============================================================================
  *   - DataHandle::write(std::string) appends a #0 terminator automatically.
  *   - DataHandle::write(std::vector<uint8_t>) also appends a #0 terminator.
+ *   - DataHandle::writeJson() appends a #0 terminator.
  *   - DataHandle::writeRaw() writes raw bytes WITHOUT any terminator.
  *
- * Reading is fault-tolerant, matching Pascal's LF_ReadString:
+ * Reading is fault-tolerant, matching Pascal's LF_ReadString and the
+ * Python lf_io module:
  *
  *   Case A - a #0 is found within the buffer:
  *       The bytes before the #0 are returned, and the cursor is advanced
@@ -50,10 +89,9 @@
  *   Case C - the cursor is already at or past the end:
  *       Returns an empty result (or false), cursor unchanged.
  *
- * `readString()`, `read(std::string&)`, `readBytes()` and their C-level
- * counterparts `LF_ReadString` / `LF_ReadStringBytes` all follow the same
- * three cases. Cross-language wrappers (Python / C# / Pascal) behave
- * identically.
+ * `readString()`, `read(std::string&)`, `readBytes()` and `readJson()`
+ * all follow the same three cases. The C / Python / Pascal wrappers
+ * behave identically.
  *
  * ============================================================================
  * QUICK START
@@ -148,6 +186,7 @@
 #pragma once
 
 #include "LingoFuse.h"
+#include "lf_io.hpp"     // Brings in lingofuse::io and nlohmann::json.
 
 #include <cstdint>
 #include <cstring>
@@ -284,7 +323,11 @@ namespace lingofuse {
       * bool (true if the handle is non-null).
       *
       * Write methods throw Error on failure.
-      * Read methods return bool (true on success).
+      * Read methods return bool (true on success) or a value.
+      *
+      * The string and JSON payload methods delegate to lingofuse::io
+      * (lf_io.hpp), which is the single source of truth for the NUL
+      * framing and the JSON serialization policy.
       */
     class DataHandle {
     public:
@@ -425,67 +468,111 @@ namespace lingofuse {
             return static_cast<std::size_t>(got);
         }
 
-        /* ---- String and byte-sequence I/O ---- */
+        /* ---- String and byte-sequence I/O (delegated to lf_io.hpp) ---- */
 
         /**
          * @brief Append a UTF-8 string followed by a null terminator (#0).
          *
-         * Throws Error on failure. Returns nothing; use `s.size()` if you need
-         * the byte count.
+         * Delegates to lingofuse::io::write_string.
+         *
+         * Throws Error on failure.
          */
         void write(const std::string& s) {
             if (!h_) {
                 throw Error(ErrorCode::NullHandle,
                     "DataHandle::write(string): null handle");
             }
-            if (LF_WriteString(h_, s.c_str()) != 1) {
-                throw Error(ErrorCode::WriteFailed,
-                    "DataHandle::write(string): LF_WriteString failed");
+            try {
+                io::write_string(h_, s);
+            }
+            catch (const io::LfIoError& e) {
+                throw Error(ErrorCode::WriteFailed, e.what());
             }
         }
 
         /**
          * @brief Append a raw byte vector followed by a null terminator (#0).
          *
-         * The vector may contain embedded #0 bytes; they are preserved.
+         * Delegates to lingofuse::io::write_string_bytes. The vector may
+         * contain embedded #0 bytes; they are preserved.
          */
         void write(const std::vector<std::uint8_t>& v) {
             if (!h_) {
                 throw Error(ErrorCode::NullHandle,
                     "DataHandle::write(vector): null handle");
             }
-            const void* data = v.empty() ? nullptr : v.data();
-            if (LF_WriteStringBytes(h_, data,
-                static_cast<int64_t>(v.size())) != 1) {
-                throw Error(ErrorCode::WriteFailed,
-                    "DataHandle::write(vector): "
-                    "LF_WriteStringBytes failed");
+            try {
+                io::write_string_bytes(h_, v.data(), v.size());
+            }
+            catch (const io::LfIoError& e) {
+                throw Error(ErrorCode::WriteFailed, e.what());
+            }
+        }
+
+        /**
+         * @brief Serialize `obj` as UTF-8 JSON and write it with a #0
+         *        terminator.
+         *
+         * Delegates to lingofuse::io::write_json, which uses the
+         * toolchain-wide serialization policy:
+         *
+         *     nlohmann::json::dump(
+         *         -1, ' ', false,
+         *         nlohmann::json::error_handler_t::replace)
+         *
+         * i.e. compact output, literal UTF-8 (no \\uXXXX escapes),
+         * and a safe error handler for invalid UTF-8 bytes.
+         *
+         * Throws Error on failure.
+         */
+        void writeJson(const nlohmann::json& obj) {
+            if (!h_) {
+                throw Error(ErrorCode::NullHandle,
+                    "DataHandle::writeJson: null handle");
+            }
+            try {
+                io::write_json(h_, obj);
+            }
+            catch (const io::LfIoError& e) {
+                throw Error(ErrorCode::WriteFailed, e.what());
             }
         }
 
         /**
          * @brief Read a null-terminated UTF-8 string from the cursor.
          *
-         * Fault-tolerant:
+         * Delegates to lingofuse::io::read_string, which is fault-tolerant:
          *   - If a #0 is found, the bytes before it are returned and the
          *     cursor is advanced past the #0.
-         *   - If no #0 is found, the entire remaining buffer is consumed and
-         *     returned, and the cursor is advanced to (buffer size + 1),
-         *     i.e. ONE BYTE PAST the end. The underlying library implicitly
-         *     grows the buffer by one byte to accommodate this, matching
-         *     Pascal's LF_SetPos(Hnd, e + 1).
-         *   - On failure (cursor at end, or handle null), returns an empty
+         *   - If no #0 is found, the entire remaining buffer is consumed
+         *     and returned, and the cursor is advanced to (buffer size
+         *     + 1), i.e. ONE BYTE PAST the end. The underlying library
+         *     implicitly grows the buffer by one byte to accommodate
+         *     this, matching Pascal's LF_SetPos(Hnd, e + 1).
+         *   - If the cursor is at or past the end, returns an empty
          *     string and the cursor is unchanged.
+         *
+         * Errors raised by the underlying layer are translated into an
+         * empty return value, preserving the historical signature.
          */
         std::string readString() {
-            std::string out;
-            read(out);
-            return out;
+            if (!h_) return {};
+            try {
+                return io::read_string(h_);
+            }
+            catch (const io::LfIoError&) {
+                return {};
+            }
         }
 
         /**
          * @brief Read a null-terminated UTF-8 string into `out`.
          * @return true on success, false if no data was available.
+         *
+         * Delegates to lingofuse::io::read_string. The `start >= total`
+         * precondition is checked here so that an exhausted buffer
+         * returns false (matching the historical behaviour) rather
+         * than an empty string.
          *
          * See readString() for the fault-tolerant rules and the exact
          * cursor semantics.
@@ -498,35 +585,55 @@ namespace lingofuse {
             const std::int64_t total = LF_GetSize(h_);
             if (start < 0 || start >= total) return false;
 
-            const auto [ptr, len] = scanUntilNul(start, total);
-            if (ptr == nullptr) return false;
-
-            out.assign(reinterpret_cast<const char*>(ptr),
-                static_cast<std::size_t>(len));
-            return true;
+            try {
+                out = io::read_string(h_);
+                return true;
+            }
+            catch (const io::LfIoError&) {
+                return false;
+            }
         }
 
         /**
-         * @brief Read a byte sequence terminated by #0 or by the end of the
-         *        buffer, into a vector.
+         * @brief Read a byte sequence terminated by #0 or by the end of
+         *        the buffer, into a vector.
          *
-         * Fault-tolerant; see readString() for the exact rules and cursor
-         * semantics. Returns an empty vector if no data was available, and
-         * the cursor is unchanged in that case.
+         * Delegates to lingofuse::io::read_string_bytes. Fault-tolerant;
+         * see readString() for the exact rules and cursor semantics.
+         * Returns an empty vector when no data was available or when the
+         * underlying layer reports an error.
          */
         std::vector<std::uint8_t> readBytes() {
-            std::vector<std::uint8_t> out;
-            if (!h_) return out;
+            if (!h_) return {};
+            try {
+                return io::read_string_bytes(h_);
+            }
+            catch (const io::LfIoError&) {
+                return {};
+            }
+        }
 
-            const std::int64_t start = LF_GetPos(h_);
-            const std::int64_t total = LF_GetSize(h_);
-            if (start < 0 || start >= total) return out;
-
-            const auto [ptr, len] = scanUntilNul(start, total);
-            if (ptr == nullptr) return out;
-
-            out.assign(ptr, ptr + len);
-            return out;
+        /**
+         * @brief Read a UTF-8 JSON payload from the cursor and return it.
+         *
+         * Delegates to lingofuse::io::read_json, which is strict: any
+         * failure (invalid UTF-8, invalid JSON, empty payload) raises
+         * io::LfIoError. This wrapper converts both a null-handle case
+         * and an io::LfIoError into a default-constructed nlohmann::json
+         * (JSON null), preserving the historical signature of an
+         * "empty payload -> null" convention.
+         *
+         * Callers that want the strict behaviour should call
+         * lingofuse::io::read_json on the raw handle directly.
+         */
+        nlohmann::json readJson() {
+            if (!h_) return nlohmann::json();
+            try {
+                return io::read_json(h_);
+            }
+            catch (const io::LfIoError&) {
+                return nlohmann::json();
+            }
         }
 
         /* ---- Cursor and size ---- */
@@ -555,44 +662,6 @@ namespace lingofuse {
     private:
         TDataHnd h_ = nullptr;
         bool     owned_ = false;
-
-        /**
-         * @brief Scan the buffer from `start` until the first #0, then
-         *        advance the cursor to (end + 1).
-         *
-         * Returns a pointer+length pair describing the payload bytes:
-         *   - `first`  points to the start of the payload (never null on
-         *              success; returns {nullptr, 0} if the underlying
-         *              buffer pointer is null, in which case the cursor is
-         *              left unchanged).
-         *   - `second` is the number of bytes before the #0, or the number
-         *              of bytes to the end of the buffer if no #0 was found.
-         *
-         * After a successful scan, the cursor has been advanced to
-         * (end + 1). When no #0 is found, `end == total` and the cursor
-         * becomes `total + 1`; the underlying library then implicitly grows
-         * the buffer by one byte, matching Pascal's LF_SetPos(Hnd, e + 1).
-         *
-         * Preconditions (already validated by the callers):
-         *   - `h_` is non-null
-         *   - 0 <= start < total
-         */
-        std::pair<const std::uint8_t*, std::int64_t>
-            scanUntilNul(std::int64_t start, std::int64_t total) {
-            const auto* base =
-                static_cast<const std::uint8_t*>(LF_GetBuffer(h_));
-            if (base == nullptr) {
-                return { nullptr, 0 };
-            }
-
-            std::int64_t end = start;
-            while (end < total && base[end] != 0) {
-                ++end;
-            }
-
-            LF_SetPos(h_, end + 1);
-            return { base + start, end - start };
-        }
     };
 
     /* ============================================================================

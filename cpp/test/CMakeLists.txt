@@ -1,91 +1,99 @@
 # =============================================================================
-#  test - Build Script for the LingoFuse C++ Test Suite
+#  test - C++ test suites for the LingoFuse wrapper
 # -----------------------------------------------------------------------------
-#  Builds:
-#    test_lingofuse : comprehensive test suite for the C++ RAII wrapper.
+#  Targets:
+#    test_lingofuse       : comprehensive ABI/RAII test suite
+#    test_lingofuse_json  : unified lf_io.hpp JSON/string I/O test suite
 #
-#  Output location:
-#      ../../Binary/          (i.e. LingoFuse/Binary/, next to the DLLs)
+#  Links (both targets):
+#    lingofuse_headers   -> public headers (json.hpp, LingoFuse.h,
+#                           LingoFuse.hpp, lf_io.hpp) via a single
+#                           include path
+#    lingofuse_c_wrapper -> C ABI forwarding layer + platform loader
+#    Threads::Threads    -> std::thread for concurrency tests
 #
-#  Rationale for placing the test executable next to the DLLs:
-#      The C wrapper's LF_LoadLibrary() first tries to load the dynamic
-#      library from the directory containing the current executable. If
-#      test_lingofuse were placed in a separate subdirectory, the loader
-#      would fall back to the system PATH, requiring a manual PATH setup.
-#      Keeping the executable in the same directory as the DLLs makes the
-#      test suite runnable out of the box.
+#  Output: ../../Binary/ (next to the DLLs, so LF_LoadLibrary finds them)
 #
-#  After building, the suite can be run either way:
-#      ctest --output-on-failure              (from the build directory)
-#      ../Binary/test_lingofuse               (direct execution)
+#  Run:
+#    ctest --output-on-failure              (from the build directory)
+#    ../Binary/test_lingofuse               (direct execution)
+#    ../Binary/test_lingofuse_json          (direct execution)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-#  Executable target
+#  Output directory (shared by both test executables)
 # -----------------------------------------------------------------------------
-add_executable(test_lingofuse
-    test_lingofuse.cpp
-)
-
-# std::thread is used by the concurrency test and the network-teardown helper.
-# The top-level script does not call find_package(Threads) itself, so this
-# subdirectory is responsible for requesting it. CMake caches the result,
-# so repeated find_package calls across subdirectories are cheap.
-find_package(Threads REQUIRED)
-
-target_link_libraries(test_lingofuse
-    PRIVATE
-        lingofuse_c_wrapper
-        Threads::Threads
-)
-
-# -----------------------------------------------------------------------------
-#  Output directory
-# -----------------------------------------------------------------------------
-# The top-level CMakeLists.txt does NOT set a global CMAKE_RUNTIME_OUTPUT_DIRECTORY;
-# each subdirectory is responsible for placing its own executables. We mirror
-# the CrossDemo convention and put the test binary in LingoFuse/Binary/ next
-# to the DLLs.
-#
-# Both the unsuffixed variable and the per-configuration variants are set,
-# because CMake appends a per-configuration subdirectory (Debug/, Release/,
-# ...) whenever only the unsuffixed variable is present.
 set(LINGOFUSE_TEST_BINARY_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../Binary")
 
 message(STATUS "test: build output directory = ${LINGOFUSE_TEST_BINARY_DIR}")
 
-set_target_properties(test_lingofuse PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY                "${LINGOFUSE_TEST_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${LINGOFUSE_TEST_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${LINGOFUSE_TEST_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${LINGOFUSE_TEST_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${LINGOFUSE_TEST_BINARY_DIR}"
+# Helper macro: apply the standard output directory and warning level
+# to a test target. Keeps the two targets below identical in shape.
+macro(test_configure_target target_name)
+    set_target_properties(${target_name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY                "${LINGOFUSE_TEST_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${LINGOFUSE_TEST_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${LINGOFUSE_TEST_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${LINGOFUSE_TEST_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${LINGOFUSE_TEST_BINARY_DIR}"
+    )
+
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra)
+    endif()
+endmacro()
+
+# Threads is required by both test suites (concurrency and stress tests).
+find_package(Threads REQUIRED)
+
+# -----------------------------------------------------------------------------
+#  test_lingofuse - ABI / RAII / network test suite
+# -----------------------------------------------------------------------------
+add_executable(test_lingofuse
+    test_lingofuse.cpp
 )
 
-# -----------------------------------------------------------------------------
-#  Compiler warnings
-# -----------------------------------------------------------------------------
-# Matches the warning level used by the CrossDemo executables so that the
-# test suite is held to the same standard.
-if(MSVC)
-    target_compile_options(test_lingofuse PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(test_lingofuse PRIVATE -Wall -Wextra)
-endif()
+target_link_libraries(test_lingofuse
+    PRIVATE
+        lingofuse_headers
+        lingofuse_c_wrapper
+        Threads::Threads
+)
 
-# -----------------------------------------------------------------------------
-#  CTest registration
-# -----------------------------------------------------------------------------
-# Register the suite with CTest so that `ctest` (from the build directory)
-# runs it together with any other tests in the project.
-#
-# The test runs with its working directory set to the output directory,
-# so that the dynamic library sits next to the current working directory
-# as a fallback, even if the executable-directory lookup inside
-# LF_LoadLibrary() somehow fails.
+test_configure_target(test_lingofuse)
+
 add_test(
     NAME test_lingofuse
     COMMAND test_lingofuse
+    WORKING_DIRECTORY "${LINGOFUSE_TEST_BINARY_DIR}"
+)
+
+# -----------------------------------------------------------------------------
+#  test_lingofuse_json - lf_io.hpp JSON / string I/O test suite
+# -----------------------------------------------------------------------------
+#  Offline test suite: exercises the unified payload layer (lf_io.hpp)
+#  without touching the network. It still links lingofuse_c_wrapper
+#  because LibraryLoader is used to load the dynamic library once at
+#  the start of the suite.
+# -----------------------------------------------------------------------------
+add_executable(test_lingofuse_json
+    test_lingofuse_json.cpp
+)
+
+target_link_libraries(test_lingofuse_json
+    PRIVATE
+        lingofuse_headers
+        lingofuse_c_wrapper
+        Threads::Threads
+)
+
+test_configure_target(test_lingofuse_json)
+
+add_test(
+    NAME test_lingofuse_json
+    COMMAND test_lingofuse_json
     WORKING_DIRECTORY "${LINGOFUSE_TEST_BINARY_DIR}"
 )

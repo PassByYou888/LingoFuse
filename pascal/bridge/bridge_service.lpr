@@ -10,50 +10,50 @@ program bridge_service;
 uses
   {$IFDEF UNIX}cthreads,{$ENDIF}
   {$IFDEF MSWINDOWS}
-    Windows,
+  Windows,
   {$ENDIF}
   SysUtils,
   lingofuse_import;
 
-function ToUTF8(const S: string): UTF8String;
+function ToUTF8(const S: string): utf8string;
 begin
-{$IFDEF FPC}
+  {$IFDEF FPC}
   if StringCodePage(S) = CP_UTF8 then
       Result := UTF8String(S)
   else
       Result := UTF8Encode(S);
-{$ELSE}
+  {$ELSE}
   Result := UTF8Encode(S);
-{$ENDIF}
+  {$ENDIF}
 end;
 
 procedure ConsoleWrite(const S: string);
 var
-  UTF8Str: UTF8String;
-{$IFDEF MSWINDOWS}
-  WStr: UnicodeString;
+  UTF8Str: utf8string;
+  {$IFDEF MSWINDOWS}
+  WStr: unicodestring;
   Written: DWORD;
-{$ENDIF}
+  {$ENDIF}
 begin
   if not IsConsole then Exit;
   UTF8Str := ToUTF8(S);
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
   WStr := UTF8Decode(UTF8Str);
   WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE),
-                PWideChar(WStr), Length(WStr), Written, nil);
-{$ELSE}
+    pwidechar(WStr), Length(WStr), Written, nil);
+  {$ELSE}
   Write(UTF8Str);
-{$ENDIF}
+  {$ENDIF}
 end;
 
 procedure ConsoleWriteLn(const S: string = '');
 begin
   if S <> '' then ConsoleWrite(S);
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
   ConsoleWrite(sLineBreak);
-{$ELSE}
+  {$ELSE}
   WriteLn;
-{$ENDIF}
+  {$ENDIF}
 end;
 
 begin

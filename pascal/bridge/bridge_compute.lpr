@@ -9,7 +9,23 @@ program bridge_compute;
 uses
   {$IFDEF UNIX}cthreads,{$ENDIF}
   {$IFDEF MSWINDOWS}Windows,{$ENDIF}
-  SysUtils, Variants, Z.Core, Z.PascalStrings, Z.UPascalStrings, Z.UnicodeMixedLib, Z.Parsing, Z.Expression, Z.MemoryStream, Z.Status, Z.Int128, Z.Geometry2D, Z.Notify, Z.Json, lingofuse_helper, lingofuse_import;
+  SysUtils,
+  Variants,
+  Z.Core,
+  Z.PascalStrings,
+  Z.UPascalStrings,
+  Z.UnicodeMixedLib,
+  Z.Parsing,
+  Z.Expression,
+  Z.MemoryStream,
+  Z.Status,
+  Z.Int128,
+  Z.Geometry2D,
+  Z.Notify,
+  Z.Json,
+  lingofuse_helper,
+  lingofuse_import;
+
 function ToUTF8(const S: string): utf8string;
 begin
   {$IFDEF FPC}

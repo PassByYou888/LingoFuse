@@ -12,5 +12,6 @@ if errorlevel 1 (
 :: 找到 lazbuild.exe，执行编译
 lazbuild.exe -B bridge_service.lpi
 lazbuild.exe -B bridge_compute.lpi
+lazbuild.exe -B test_bridge_via_lf.lpi
 
 echo 所有项目编译完成。

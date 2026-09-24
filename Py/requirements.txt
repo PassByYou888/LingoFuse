@@ -8,15 +8,30 @@
 # on the Python standard library only. Installing just `lingofuse`
 # (e.g. via `pip install -e .`) is sufficient for non-HTTP usage.
 #
-# The dependencies below are only needed for:
+# This includes the JSON repair preprocessing subsystem that was added
+# in the current revision:
+#
+#     lingofuse/json_repair_preprocess.py    (preprocessor entry point)
+#     lingofuse/json_repair/                 (vendored repair engine)
+#
+# The preprocessor and the engine are both pure standard library. The
+# engine has two OPTIONAL dependencies — jsonschema and pydantic — that
+# are used only by the schema-aware repair path and are described in
+# their own section below.
+#
+# The dependencies listed in this file are only needed for:
 #   * the HTTP bridge gateway          (lingofuse/bridge.py)
 #   * the bridge smoke test            (lingofuse/test_bridge.py)
 #   * the cross bridge demo launcher   (cross/cross_bridge.py)
 #   * running the unit test suite      (lingofuse/test_lingofuse.py)
 #   * code style / linting             (setup.py [extras_require.dev])
+#   * schema-aware JSON repair         (setup.py [extras_require.schema])
 #
 # To install only the bridge extras:
 #     pip install -e ".[bridge]"
+#
+# To install only the schema-aware repair extras:
+#     pip install -e ".[schema]"
 #
 # To install the full development toolchain:
 #     pip install -e ".[dev]"
@@ -24,6 +39,9 @@
 #
 # To install only what test_bridge.py + bridge.py need (smallest set):
 #     pip install Flask requests
+#
+# To install only what schema-aware repair needs (smallest set):
+#     pip install jsonschema pydantic
 # ======================================================================
 
 
@@ -41,6 +59,11 @@
 #     Flask 3.x    -> Python 3.8+
 # Pin an upper bound explicitly if you must stay on Python 3.7:
 #     Flask>=2.0,<2.3
+#
+# NOTE: setup.py python_requires is now >=3.10 because of the vendored
+# JSON repair engine. The Python 3.7 compatibility note above is kept
+# for historical reference; on the current distribution the effective
+# floor is 3.10, so any Flask>=2.0 release is acceptable.
 Flask>=2.0
 
 
@@ -52,6 +75,12 @@ Flask>=2.0
 # and issues an HTTP POST against a running bridge.
 # The toolchain's JSON policy is applied explicitly via
 # lingofuse.lf_io.dumps_json before requests.post(data=...).
+#
+# The bridge smoke test also exercises the unified JSON repair
+# preprocessor indirectly: any malformed JSON payload accepted by the
+# bridge is normalized through lingofuse.json_repair_preprocess before
+# it reaches the backend. No extra dependency is required for this,
+# because the preprocessor and the engine are pure standard library.
 requests>=2.25
 
 
@@ -66,6 +95,43 @@ requests>=2.25
 #
 # pytest>=7.0 is the version declared in setup.py [extras_require.dev].
 pytest>=7.0
+
+
+# ----------------------------------------------------------------------
+# JSON repair engine — optional schema-aware path
+# ----------------------------------------------------------------------
+# The vendored repair engine (lingofuse/json_repair/) has NO required
+# third-party dependency. Plain-JSON repair works with the standard
+# library alone. The two packages below are OPTIONAL and are used only
+# by lingofuse/json_repair/schema_repair.py when a caller passes a
+# `schema=` argument to a repair function.
+#
+# They are loaded lazily via importlib.import_module(), so the absence
+# of either package is NOT a startup error. A call that actually needs
+# schema validation will raise a clear ValueError explaining which
+# package is missing:
+#
+#     "jsonschema is required when using schema-aware repair."
+#     "pydantic is required when using schema models."
+#
+# These pins match setup.py [extras_require.schema]. Install with:
+#
+#     pip install -e ".[schema]"
+#
+# or, if you do not want to use the extras mechanism:
+#
+#     pip install jsonschema>=4.0 pydantic>=2.0
+#
+# Why these versions:
+#   * jsonschema>=4.0 is the first major release with the modern
+#     validator API that schema_repair.py relies on
+#     (jsonschema.validators.validator_for, .evolve(), etc.).
+#   * pydantic>=2.0 is required because schema_repair.py uses
+#     model_json_schema() and model_fields, both of which were
+#     introduced in pydantic v2. Pydantic v1 is explicitly rejected
+#     at runtime with a clear ValueError.
+jsonschema>=4.0
+pydantic>=2.0
 
 
 # ----------------------------------------------------------------------

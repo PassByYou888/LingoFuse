@@ -12,11 +12,47 @@ Coverage:
 - Callback exception isolation (P0-1 fix verification)
 - Failed-init safety (P0-3 fix verification)
 - NetworkEventQueue installation and override warning
+- JSON repair preprocessing (this revision):
+    * repair_json_text three-way policy (valid / repairable / unrepairable)
+    * LINGOFUSE_JSON_REPAIR=0 disable path
+    * Graceful degradation when the repair engine is unavailable
+    * lf_io.read_json integration (server-side read path)
+    * lf_io.read_json_or_bytes integration (lenient read path)
+    * serializers.default_deserializer integration (client-side read path)
 
 These tests use only ipc:* endpoints with unique names to avoid
 clashing with other processes or repeated runs. Every test that
 touches the network cleans up via LF_Shutdown() to guarantee a
 consistent starting state for the next test.
+
+{!!!!!  PYTHON VERSION REQUIREMENT  !!!!!}
+This test file (and the entire distribution) requires Python 3.10
+or later. The vendored JSON repair engine uses PEP 604 union syntax
+(``X | None``) and PEP 585 builtin generics (``dict[str, Any]``) at
+runtime without ``from __future__ import annotations``. The
+distribution's ``setup.py`` declares ``python_requires=">=3.10"``.
+
+The new ``assertNoLogs`` context manager used by the JSON repair
+tests is also a Python 3.10+ feature, which is why it is safe to use
+here.
+
+{!!!!!  DISTINGUISHING "INVALID UTF-8" FROM "UNREPAIRABLE JSON"  !!!!!}
+The two failure modes are DIFFERENT and are tested SEPARATELY:
+
+    * Invalid UTF-8 (e.g. ``b"\\x89PNG"``): the byte sequence cannot
+      even be decoded as text. Every read path raises its
+      decode-error exception BEFORE the repair preprocessor is
+      consulted. No repair log is emitted.
+
+    * Unrepairable JSON (e.g. ``b"   "``): the bytes decode fine as
+      UTF-8, but the resulting text is not JSON and the repair engine
+      cannot turn it into JSON. The preprocessor emits one ERROR and
+      returns the text unchanged; the caller then raises its own
+      parse-error exception.
+
+The first class of tests uses invalid UTF-8 and asserts the decode
+exception. The second class uses legal-but-meaningless UTF-8 (only
+whitespace) and asserts the repair ERROR plus the parse exception.
 
 {!!!!!  LF_PrepareDone RETURNS 1 ONLY ONCE  !!!!!}
 Any test that calls LF_PrepareDone() MUST also call LF_ExitMainThread()
@@ -47,20 +83,24 @@ In particular:
     LF_PrepareClient / LF_PrepareDone directly to exercise the exact
     call sequences that LF_PrepareDone's "returns 1 only once"
     constraint requires.
+  * TestLfIoRepairPaths (added in this revision) writes raw bytes to
+    a DataHandle via lingofuse.lf_io.write_string_bytes and reads
+    them back through lingofuse.lf_io.read_json, exercising the
+    unified repair preprocessing at the wire-format boundary.
 
 These tests are therefore OUTSIDE the scope of the lf_io
-unification. They intentionally bypass lingofuse.lf_io and talk to
-the native library through lingofuse._lf_native, so that a regression
-in the ABI layer is caught before it can affect the higher-level
-modules. Do not "clean them up" by routing them through lf_io: doing
-so would remove the only coverage of the raw byte-level contract.
+unification for their low-level byte handling. They intentionally
+bypass the high-level convenience APIs to cover the raw contract.
 
 All comments and status output are in English.
 """
 
 import ctypes
+import json
+import logging
 import os
 import sys
+import threading
 import time
 import unittest
 import uuid
@@ -75,6 +115,7 @@ from lingofuse import (
     set_network_event, clear_network_event,
     is_network_event_installed,
     NetworkEventListener, NetworkEventQueue,
+    repair_json_text,
 )
 from lingofuse.errors import (
     RegistrationError, ConnectionError, TimeoutError,
@@ -98,6 +139,66 @@ from lingofuse._lf_native import (
     LF_CheckApp,
     LF_CheckApi,
 )
+from lingofuse.lf_io import (
+    read_json as lf_read_json,
+    read_json_or_bytes as lf_read_json_or_bytes,
+    write_string_bytes,
+)
+from lingofuse.serializers import default_deserializer
+from lingofuse import json_repair_preprocess
+
+
+# ======================================================================
+# One-time repair engine warmup
+# ----------------------------------------------------------------------
+# The repair preprocessor loads its engine lazily, on the first
+# malformed payload it sees. That first call may emit one WARNING if
+# the vendored engine cannot be imported. To keep that WARNING (and
+# the "Repaired ..." WARNING for the warmup payload itself) out of
+# stderr and out of the assertions made by the test classes below,
+# we trigger the load once here with the module logger temporarily
+# raised to CRITICAL.
+#
+# A module-level lock makes concurrent class setUpClass invocations
+# safe; the warmed-up flag makes subsequent calls no-ops.
+# ======================================================================
+
+_REPAIR_WARMUP_LOCK = threading.Lock()
+_REPAIR_WARMED_UP = False
+
+
+def _warmup_repair_engine() -> None:
+    """Trigger the one-time load of the repair engine, silently.
+
+    Any WARNING emitted by the load (missing engine) or by the repair
+    of the warmup payload is suppressed by temporarily raising the
+    preprocessor logger's level to CRITICAL. The level is restored
+    in a finally block, so subsequent tests observe the logger's
+    normal level.
+    """
+    global _REPAIR_WARMED_UP
+
+    with _REPAIR_WARMUP_LOCK:
+        if _REPAIR_WARMED_UP:
+            return
+
+        preprocessor_logger = logging.getLogger(
+            "lingofuse.json_repair_preprocess"
+        )
+        old_level = preprocessor_logger.level
+        preprocessor_logger.setLevel(logging.CRITICAL)
+        try:
+            try:
+                repair_json_text('{"warmup": 1,}', source="warmup")
+            except Exception:
+                # The warmup is best-effort. A failure here just means
+                # the engine is unavailable; the tests below handle
+                # that case explicitly.
+                pass
+        finally:
+            preprocessor_logger.setLevel(old_level)
+
+        _REPAIR_WARMED_UP = True
 
 
 # ======================================================================
@@ -381,6 +482,469 @@ class TestApp(unittest.TestCase):
             self.fail(
                 "__del__() raised AttributeError on uninitialized instance"
             )
+
+
+# ======================================================================
+# JSON repair preprocessing tests (pure Python, no network)
+# ----------------------------------------------------------------------
+# These tests exercise lingofuse.json_repair_preprocess.repair_json_text
+# directly. They do NOT require a DataHandle and do NOT touch the
+# LingoFuse native library, aside from the fact that importing the
+# lingofuse package loads the shared library at import time.
+# ======================================================================
+
+class TestJsonRepairPreprocess(unittest.TestCase):
+    """
+    Verify the three-way policy of repair_json_text:
+
+        * Valid JSON       -> no log message, text unchanged
+        * Repairable JSON  -> one WARNING, repaired text returned
+        * Unrepairable     -> one ERROR, original text returned
+    """
+
+    #: Logger name used by the preprocessor module.
+    LOGGER = "lingofuse.json_repair_preprocess"
+
+    @classmethod
+    def setUpClass(cls):
+        _warmup_repair_engine()
+
+    def test_valid_json_no_log_and_unchanged(self):
+        """
+        Valid JSON must return the original text and emit NO log
+        message at WARNING or above.
+        """
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            result = repair_json_text('{"a": 1}', source="test")
+        self.assertEqual(result, '{"a": 1}')
+
+    def test_valid_json_object_not_normalized(self):
+        """
+        The preprocessor must NOT rewrite an already valid document,
+        even if the whitespace is non-canonical. Byte-for-byte
+        identity is the contract.
+        """
+        original = '  {"a":   1,  "b": [1, 2, 3]}  '
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            result = repair_json_text(original, source="test")
+        self.assertEqual(result, original)
+
+    def test_repairable_json_emits_warning(self):
+        """
+        A payload with a trailing comma is repairable. The repaired
+        text must be valid JSON, and the preprocessor must emit
+        exactly one WARNING naming the source.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING") as cm:
+            result = repair_json_text('{"a": 1,}', source="my-source")
+
+        # The repaired text must parse as valid JSON.
+        json.loads(result)
+
+        # At least one captured record must mention the source and
+        # the "Repaired" wording.
+        joined = "\n".join(cm.output)
+        self.assertIn("my-source", joined)
+        self.assertIn("Repaired", joined)
+
+    def test_repairable_single_quoted_strings(self):
+        """
+        Single-quoted strings are a common LLM output defect. The
+        repair engine must handle them.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING"):
+            result = repair_json_text(
+                "{'name': 'Alice', 'age': 30}",
+                source="test",
+            )
+        parsed = json.loads(result)
+        self.assertEqual(parsed, {"name": "Alice", "age": 30})
+
+    def test_unrepairable_json_emits_error_and_returns_original(self):
+        """
+        A payload that is not JSON and cannot be repaired must return
+        the original text unchanged, and emit exactly one ERROR
+        naming the source.
+
+        The input used here is passed to repair_json_text as a Python
+        ``str`` (not as bytes), so UTF-8 validity is not part of this
+        test. The point is purely that the repair engine cannot turn
+        the input into valid JSON.
+        """
+        payload = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        with self.assertLogs(self.LOGGER, level="ERROR") as cm:
+            result = repair_json_text(payload, source="my-source")
+
+        self.assertEqual(result, payload)
+        joined = "\n".join(cm.output)
+        self.assertIn("my-source", joined)
+        self.assertIn("could not be repaired", joined)
+
+    def test_unrepairable_whitespace_only_returns_original(self):
+        """
+        Whitespace-only text decodes fine as UTF-8 but the repair
+        engine cannot turn it into JSON. This exercises the
+        "unrepairable" branch with a payload that a naive reader
+        might mistake for valid input.
+        """
+        payload = "   "
+        with self.assertLogs(self.LOGGER, level="ERROR") as cm:
+            result = repair_json_text(payload, source="my-source")
+        self.assertEqual(result, payload)
+        joined = "\n".join(cm.output)
+        self.assertIn("could not be repaired", joined)
+
+    def test_report_failure_false_suppresses_error(self):
+        """
+        The lenient read path (lf_io.read_json_or_bytes,
+        bridge.normalize_json_bytes) passes report_failure=False. In
+        that mode, an unrepairable payload must NOT produce an ERROR
+        log message, and must still return the original text.
+        """
+        payload = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        with self.assertNoLogs(self.LOGGER, level="ERROR"):
+            result = repair_json_text(
+                payload,
+                source="test",
+                report_failure=False,
+            )
+        self.assertEqual(result, payload)
+
+    def test_repair_disabled_returns_original(self):
+        """
+        When LINGOFUSE_JSON_REPAIR=0, the module-level _REPAIR_ENABLED
+        flag is False and the preprocessor must only validate, never
+        rewrite. This test flips the flag directly, because the flag
+        is a snapshot taken at import time and cannot be changed
+        through the environment at runtime.
+        """
+        original_flag = json_repair_preprocess._REPAIR_ENABLED
+        json_repair_preprocess._REPAIR_ENABLED = False
+        try:
+            with self.assertLogs(self.LOGGER, level="ERROR") as cm:
+                result = repair_json_text('{"a": 1,}', source="my-source")
+
+            # No repair happened.
+            self.assertEqual(result, '{"a": 1,}')
+
+            # The ERROR message must mention that repair is disabled.
+            joined = "\n".join(cm.output)
+            self.assertIn("repair is disabled", joined)
+            self.assertIn("my-source", joined)
+        finally:
+            json_repair_preprocess._REPAIR_ENABLED = original_flag
+
+    def test_repair_disabled_report_failure_false_is_silent(self):
+        """
+        Same as above, but with report_failure=False. The lenient
+        path must be completely silent in disabled mode.
+        """
+        original_flag = json_repair_preprocess._REPAIR_ENABLED
+        json_repair_preprocess._REPAIR_ENABLED = False
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                result = repair_json_text(
+                    '{"a": 1,}',
+                    source="test",
+                    report_failure=False,
+                )
+            self.assertEqual(result, '{"a": 1,}')
+        finally:
+            json_repair_preprocess._REPAIR_ENABLED = original_flag
+
+    def test_source_label_propagates_to_log(self):
+        """
+        The source argument must be embedded verbatim in every log
+        message the preprocessor emits, so that operators can trace
+        which read path produced a malformed payload.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING") as cm:
+            repair_json_text(
+                '{"a": 1,}',
+                source="unit.test.source-label",
+            )
+        joined = "\n".join(cm.output)
+        self.assertIn("unit.test.source-label", joined)
+
+
+# ======================================================================
+# Serializer read path tests (pure Python, no network)
+# ----------------------------------------------------------------------
+# These tests exercise lingofuse.serializers.default_deserializer,
+# which is the read path used by the C4 client for JSON responses.
+# ======================================================================
+
+class TestSerializersRepairPaths(unittest.TestCase):
+    """
+    Verify that default_deserializer applies the unified repair
+    preprocessor before handing the text to json.loads.
+    """
+
+    LOGGER = "lingofuse.json_repair_preprocess"
+
+    @classmethod
+    def setUpClass(cls):
+        _warmup_repair_engine()
+
+    def test_valid_json_no_log(self):
+        """
+        A valid JSON payload must decode silently and emit no log
+        message.
+        """
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            result = default_deserializer(b'{"a": 1}')
+        self.assertEqual(result, {"a": 1})
+
+    def test_trailing_comma_is_repaired(self):
+        """
+        A trailing comma is the canonical "LLM output" defect. The
+        deserializer must repair it and emit a WARNING.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING") as cm:
+            result = default_deserializer(b'{"a": 1,}')
+        self.assertEqual(result, {"a": 1})
+        joined = "\n".join(cm.output)
+        self.assertIn("serializers.default_deserializer", joined)
+
+    def test_trailing_nul_is_stripped_before_repair(self):
+        """
+        A NUL-terminated payload (from a Pascal producer) must have
+        its NUL stripped first, then be repaired if necessary.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING"):
+            result = default_deserializer(b'{"a": 1,}\x00')
+        self.assertEqual(result, {"a": 1})
+
+    def test_single_quotes_are_repaired(self):
+        """
+        Single-quoted JSON is a frequent LLM defect. The repair engine
+        must handle it.
+        """
+        with self.assertLogs(self.LOGGER, level="WARNING"):
+            result = default_deserializer(b"{'a': 1}")
+        self.assertEqual(result, {"a": 1})
+
+    def test_invalid_utf8_raises_unicode_decode_error(self):
+        """
+        Invalid UTF-8 must raise UnicodeDecodeError BEFORE the repair
+        preprocessor is consulted. This preserves the historical
+        contract of default_deserializer.
+
+        The payload ``b"\\xff\\xfe\\xfd"`` is deliberately not valid
+        UTF-8: 0xFF, 0xFE and 0xFD are all illegal UTF-8 leading
+        bytes. The test verifies that this class of failure is
+        reported as a decode error, NOT as a JSON parse error, and
+        that no repair log message is produced.
+        """
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            with self.assertRaises(UnicodeDecodeError):
+                default_deserializer(b'\xff\xfe\xfd')
+
+    def test_unrepairable_whitespace_raises_json_decode_error(self):
+        """
+        A payload that decodes fine as UTF-8 but is not JSON and
+        cannot be repaired must raise json.JSONDecodeError. The
+        preprocessor emits one ERROR; then json.loads on the
+        original text raises.
+
+        The input ``b"   "`` (three spaces) is chosen on purpose:
+          * It IS valid UTF-8, so default_deserializer's
+            ``data.decode("utf-8")`` succeeds.
+          * It is NOT valid JSON, so the repair preprocessor is
+            consulted.
+          * The repair engine cannot turn whitespace into JSON, so
+            the preprocessor emits an ERROR and returns the original
+            text unchanged.
+          * The subsequent ``json.loads("   ")`` then raises
+            JSONDecodeError, which is the historical contract of
+            this deserializer for genuinely malformed JSON.
+        """
+        with self.assertLogs(self.LOGGER, level="ERROR"):
+            with self.assertRaises(json.JSONDecodeError):
+                default_deserializer(b'   ')
+
+
+# ======================================================================
+# lf_io read path tests (require a DataHandle)
+# ----------------------------------------------------------------------
+# These tests exercise lingofuse.lf_io.read_json and
+# lingofuse.lf_io.read_json_or_bytes through a real DataHandle. They
+# verify that the wire-format boundary routes through the unified
+# repair preprocessor.
+#
+# A DataHandle requires the native LingoFuse library, so these tests
+# implicitly assume the library loaded successfully at import time
+# (which it must have, since this test file imports lingofuse).
+# ======================================================================
+
+class TestLfIoRepairPaths(unittest.TestCase):
+    """
+    Verify that lf_io.read_json and lf_io.read_json_or_bytes apply
+    the unified repair preprocessor.
+
+    Both functions are tested through a real DataHandle, written to
+    with lingofuse.lf_io.write_string_bytes, which appends the
+    required NUL terminator. This mirrors how the bridge and other
+    lf_io consumers write payloads.
+    """
+
+    LOGGER = "lingofuse.json_repair_preprocess"
+
+    @classmethod
+    def setUpClass(cls):
+        _warmup_repair_engine()
+
+    def _make_handle(self, payload: bytes) -> DataHandle:
+        """
+        Create a DataHandle whose buffer contains `payload` plus a
+        trailing NUL, with the read position reset to 0.
+        """
+        hnd = DataHandle("test")
+        write_string_bytes(hnd.raw, payload)
+        hnd.set_pos(0)
+        return hnd
+
+    # ------------------------------------------------------------------
+    # read_json (strict, reports failures)
+    # ------------------------------------------------------------------
+
+    def test_read_json_valid_no_log(self):
+        """Valid payload -> decoded object, no log message."""
+        hnd = self._make_handle(b'{"a": 1}')
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                result = lf_read_json(hnd.raw)
+            self.assertEqual(result, {"a": 1})
+        finally:
+            hnd.free()
+
+    def test_read_json_trailing_comma_repairs(self):
+        """Trailing comma -> repaired, one WARNING."""
+        hnd = self._make_handle(b'{"a": 1,}')
+        try:
+            with self.assertLogs(self.LOGGER, level="WARNING") as cm:
+                result = lf_read_json(hnd.raw)
+            self.assertEqual(result, {"a": 1})
+            joined = "\n".join(cm.output)
+            self.assertIn("lf_io.read_json", joined)
+        finally:
+            hnd.free()
+
+    def test_read_json_invalid_utf8_raises_runtime_error_no_log(self):
+        """
+        A payload that is not valid UTF-8 must raise RuntimeError
+        from lf_io.read_json, WITHOUT producing a repair ERROR log
+        message.
+
+        The payload ``b"\\x89PNG\\r\\n\\x1a\\n"`` is the classic PNG
+        signature: 0x89 is not a legal UTF-8 leading byte, so the
+        decode step fails before the repair preprocessor is
+        consulted. This is the "invalid UTF-8" failure mode, which is
+        deliberately distinct from the "unrepairable JSON" failure
+        mode tested below.
+        """
+        hnd = self._make_handle(b'\x89PNG\r\n\x1a\n')
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                with self.assertRaises(RuntimeError):
+                    lf_read_json(hnd.raw)
+        finally:
+            hnd.free()
+
+    def test_read_json_unrepairable_raises_runtime_error(self):
+        """
+        A payload that decodes fine as UTF-8 but is not JSON and
+        cannot be repaired must raise RuntimeError from
+        lf_io.read_json, WITH one repair ERROR log message.
+
+        The input ``b"   "`` (three spaces) is chosen on purpose:
+          * It IS valid UTF-8, so lf_io.read_json's
+            ``raw.decode(ENCODING)`` succeeds and reaches the repair
+            preprocessor.
+          * It is NOT valid JSON, so the preprocessor emits exactly
+            one ERROR and returns the original text unchanged.
+          * lf_io.read_json then calls json.loads("   "), which
+            raises JSONDecodeError, which lf_io wraps in a
+            RuntimeError.
+        """
+        hnd = self._make_handle(b'   ')
+        try:
+            with self.assertLogs(self.LOGGER, level="ERROR"):
+                with self.assertRaises(RuntimeError):
+                    lf_read_json(hnd.raw)
+        finally:
+            hnd.free()
+
+    def test_read_json_empty_payload_returns_none(self):
+        """Empty buffer -> None, no log message."""
+        hnd = DataHandle("test")
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                result = lf_read_json(hnd.raw)
+            self.assertIsNone(result)
+        finally:
+            hnd.free()
+
+    # ------------------------------------------------------------------
+    # read_json_or_bytes (lenient, suppresses failures)
+    # ------------------------------------------------------------------
+
+    def test_read_json_or_bytes_valid(self):
+        """Valid payload -> decoded object, no log message."""
+        hnd = self._make_handle(b'{"a": 1}')
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                result = lf_read_json_or_bytes(hnd.raw)
+            self.assertEqual(result, {"a": 1})
+        finally:
+            hnd.free()
+
+    def test_read_json_or_bytes_repairable(self):
+        """
+        Repairable payload -> decoded object, one WARNING. The lenient
+        path still logs repairs, because rewriting data is noteworthy.
+        """
+        hnd = self._make_handle(b'{"a": 1,}')
+        try:
+            with self.assertLogs(self.LOGGER, level="WARNING") as cm:
+                result = lf_read_json_or_bytes(hnd.raw)
+            self.assertEqual(result, {"a": 1})
+            joined = "\n".join(cm.output)
+            self.assertIn("lf_io.read_json_or_bytes", joined)
+        finally:
+            hnd.free()
+
+    def test_read_json_or_bytes_invalid_utf8_returns_raw_bytes(self):
+        """
+        Invalid UTF-8 -> raw bytes returned, NO repair log. The
+        decode step fails first, so the preprocessor is never
+        consulted and the raw bytes are forwarded. This is the whole
+        point of the lenient path (binary passthrough).
+        """
+        raw_payload = b'\x89PNG\r\n\x1a\n'
+        hnd = self._make_handle(raw_payload)
+        try:
+            with self.assertNoLogs(self.LOGGER, level="WARNING"):
+                result = lf_read_json_or_bytes(hnd.raw)
+            self.assertEqual(result, raw_payload)
+        finally:
+            hnd.free()
+
+    def test_read_json_or_bytes_unrepairable_returns_raw_bytes(self):
+        """
+        Unrepairable but valid UTF-8 -> raw bytes returned, NO ERROR
+        log. This exercises the lenient path's silence contract for
+        genuinely non-JSON payloads (the report_failure=False
+        argument suppresses the repair ERROR).
+        """
+        raw_payload = b'   '
+        hnd = self._make_handle(raw_payload)
+        try:
+            with self.assertNoLogs(self.LOGGER, level="ERROR"):
+                result = lf_read_json_or_bytes(hnd.raw)
+            self.assertEqual(result, raw_payload)
+        finally:
+            hnd.free()
 
 
 # ======================================================================

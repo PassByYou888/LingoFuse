@@ -20,6 +20,7 @@ Additionally, module-level convenience functions:
 - check_main_thread(), check_app(), check_api(): health checks.
 - set_network_event() / clear_network_event(): install or remove
   process-global network event callbacks.
+- repair_json_text(): the toolchain-wide JSON repair preprocessor.
 
 All functions are thread-safe. For detailed usage, see the docstrings
 in the respective modules and the Pascal import unit
@@ -41,12 +42,47 @@ in the respective modules and the Pascal import unit
   `LF_Shutdown` to avoid races and to release the Python-side strong
   references held by the module.
 
+{!!!!!  JSON REPAIR PREPROCESSING  !!!!!}
+Every JSON read path in the toolchain (lf_io.read_json,
+lf_io.read_json_or_bytes, serializers.default_deserializer,
+bridge.normalize_json_bytes) routes its decoded text through
+lingofuse.json_repair_preprocess.repair_json_text before it hands the
+text to json.loads. The policy is a strict three-way decision:
+
+    * Valid JSON       -> returned unchanged, NO log message.
+    * Repairable JSON  -> repaired, one WARNING naming the source.
+    * Unrepairable     -> returned unchanged, one ERROR naming the
+                          source (on strict read paths only; the
+                          lenient read paths suppress the error
+                          because a non-JSON payload is a legitimate
+                          outcome there).
+
+The same entry point is re-exported here as `repair_json_text`, so
+that advanced callers -- for example, top-level LLM services that
+need to apply the exact same repair semantics to their own JSON text
+-- can reuse the policy without duplicating the three-way logic.
+
+The repair engine can be disabled globally by setting the
+environment variable LINGOFUSE_JSON_REPAIR=0. When disabled, the
+preprocessor only validates and never rewrites; the historical
+behaviour of every read path is preserved, including the strict
+readers raising on malformed input.
+
+The repair engine itself lives in lingofuse.json_repair. Importing
+lingofuse does NOT eagerly import it: the engine is loaded lazily
+the first time repair_json_text encounters a malformed payload. A
+deployment that strips lingofuse.json_repair will still start
+cleanly, and will degrade to validation-only behaviour with a
+single load-time WARNING.
+
 {!!!!!  STRING PARAMETERS  !!!!!}
 Every string argument passed to an LF_* function from this module is
 routed through `lingofuse.lf_io.cstr`, which supplies NUL-terminated
 UTF-8 bytes for the c_char_p parameter. This removes the previous
 reliance on the hidden NUL byte inside CPython bytes objects and
 makes the wire contract explicit.
+
+All comments, docstrings, and log messages are in English.
 """
 
 from .core import DataHandle, App, generate_app_name, get_app_name
@@ -76,6 +112,21 @@ from ._lf_native import LF_SetOption as _LF_SetOption
 # lets the convenience functions below stop hand-rolling
 # `value.encode("utf-8") + b"\x00"`.
 from .lf_io import cstr
+
+# Unified JSON repair preprocessing.
+#
+# repair_json_text() is the single entry point for the toolchain-wide
+# JSON repair policy. It is used internally by lf_io, serializers, and
+# bridge, and is re-exported here so that advanced callers (for
+# example, the top-level LLM services) can apply the exact same
+# policy to their own JSON text without duplicating the three-way
+# (valid / repairable / unrepairable) decision.
+#
+# This import does NOT trigger the loading of lingofuse.json_repair:
+# the repair engine is loaded lazily, on the first malformed payload
+# that repair_json_text sees. Importing lingofuse therefore keeps its
+# historical startup cost.
+from .json_repair_preprocess import repair_json_text
 
 
 # ======================================================================
@@ -137,6 +188,16 @@ from .lf_io import cstr
 #     if the candidate with the oldest timestamp is older than this
 #     value, the system falls back to the newest client to avoid
 #     starvation (integer).
+#
+# === JSON Repair Preprocessing ===
+# - Not an LF_SetOption key. Controlled by the environment variable
+#   LINGOFUSE_JSON_REPAIR (see lingofuse.json_repair_preprocess):
+#     - unset / "1"    : repair is enabled (default).
+#     - "0" / "false"  : repair is disabled; only validation runs,
+#                        and malformed payloads are never rewritten.
+#   This option is listed here so that operators reading this module
+#   as the entry point of the package can find the full set of
+#   runtime controls in one place.
 # ======================================================================
 
 def set_option(option: str, value: str) -> None:
@@ -282,4 +343,6 @@ __all__ = [
     "NetworkEventListener",
     "NetworkEventQueue",
     "get_network_event_queue",
+    # JSON repair preprocessing
+    "repair_json_text",
 ]

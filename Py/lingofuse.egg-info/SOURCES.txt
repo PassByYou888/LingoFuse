@@ -5,6 +5,8 @@ lingofuse/bridge.py
 lingofuse/client.py
 lingofuse/core.py
 lingofuse/errors.py
+lingofuse/lf_io.py
+lingofuse/network_events.py
 lingofuse/serializers.py
 lingofuse/server.py
 lingofuse/test_bridge.py

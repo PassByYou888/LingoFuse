@@ -1,7 +1,7 @@
 unit pascal_agent_service_unit;
 
 {$DEFINE FPC_DELPHI_MODE}
-{$I ..\..\Z.Define.inc}
+{$I zNetV2\source\Z.Define.inc}
 
 interface
 

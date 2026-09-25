@@ -96,7 +96,7 @@ a third-party client, however, may send any of the following:
     * A payload encoded as GBK / Latin-1 instead of UTF-8.
     * A payload prefixed with a UTF-8 BOM (EF BB BF).
     * A payload with a trailing NUL byte (0x00) left over from a
-      Pascal LF_WriteString call.
+      NUL-terminating string write.
     * A payload with a trailing comma before a closing brace or
       bracket (JSON5-style, not accepted by strict parsers).
     * A payload that escapes every non-ASCII character as \\uXXXX.
@@ -1110,7 +1110,7 @@ def normalize_json_bytes(raw: bytes) -> Tuple[bytes, str]:
          that may be binary is unsafe.
 
       2. Strip trailing NUL bytes. This handles payloads produced by
-         a Pascal LF_WriteString call.
+         a NUL-terminating string write.
 
       3. Decode to a Python str, preferring UTF-8, then GBK (CP936),
          then Latin-1 (which never fails).
@@ -1573,7 +1573,7 @@ def _bridge_post_callback(trigger, inp, out):
     All exceptions are caught and converted into a JSON error response
     written to the output handle. No exception is allowed to propagate
     back into the C stack. This matches the behavior of the LingoFuse
-    Pascal core (TLF_Engine.Execute_Call).
+    reference C core (Engine.Execute_Call).
 
     JSON policy
     -----------
@@ -2229,7 +2229,7 @@ def _setup_network(cfg: BridgeConfig) -> bool:
         # We enable Overlap_Connection before preparing the client,
         # so the bridge does not conflict with an existing client on
         # the same endpoint (e.g. a legacy bridge instance that was
-        # started without an App). See LF-NET-001 in the Pascal guide.
+        # started without an App). See LF-NET-001 in the protocol guide.
         # ------------------------------------------------------------------
         set_option("Overlap_Connection", "True")
 

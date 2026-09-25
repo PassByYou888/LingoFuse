@@ -35,6 +35,35 @@ LingoFuse gateway: HTTP clients can reach LingoFuse services,
 LingoFuse clients can reach external HTTP services, and any
 LingoFuse client can delegate JSON repair to the bridge.
 
+==================== FORWARD-ONLY MODE ====================
+The bridge supports a dedicated FORWARD-ONLY operating mode that
+completely disables the HTTP listener. In this mode:
+
+    * No Flask application is started.
+    * No TCP port is opened.
+    * Only the LingoFuse Call APIs are registered and served:
+        - the outbound HTTP POST proxy (Direction B), and
+        - the JSON repair service (Direction C).
+
+This is useful when:
+    * The bridge runs as a sidecar / internal node that should NOT
+      be reachable over the network, but still needs to provide
+      outbound HTTP proxying and JSON repair to LingoFuse peers.
+    * The HTTP listener is handled by a different process or a
+      reverse proxy, and this instance is dedicated to Call API
+      serving.
+    * Port binding is restricted by the host environment.
+
+The mode is controlled by the `forward_only` field of the global
+`BridgeConfig` instance, and can be set through any of the three
+standard layers (global variable, environment variable, command
+line). See the "CONFIGURATION MODEL" section below.
+
+When forward-only mode is active, the main Python thread simply
+waits (sleeping) while the LingoFuse worker threads service the
+registered APIs. The process exits on Ctrl+C (KeyboardInterrupt)
+or SIGTERM, and the standard `cleanup()` path runs on exit.
+
 ==================== CONFIGURATION MODEL ====================
 All runtime configuration lives in a single BridgeConfig instance
 (the module-level `config` object). The configuration is populated
@@ -49,6 +78,16 @@ reads os.environ or sys.argv directly. Every consumer -- including
 the per-request hot path and the LingoFuse callbacks -- reads the
 global `config` instance. This eliminates the class of bugs where a
 hot path observes a runtime-mutated environment.
+
+A third entry point is available for embedded / programmatic use:
+since `config` is a plain module-level object, code that imports
+this module may assign to any of its fields BEFORE `main()` runs.
+`main()` does NOT overwrite a field that the caller has already
+populated... unless the environment variable or command-line flag
+explicitly targets that field. This lets an embedding application
+pin, for example, `config.forward_only = True` and still allow
+downstream operators to override it via environment / CLI if they
+so choose.
 
 ==================== WHY JSON NORMALIZATION ====================
 A backend service usually expects canonical UTF-8 JSON. A browser or
@@ -269,6 +308,10 @@ The LingoFuse callbacks (_bridge_post_callback and
 _bridge_repair_callback) run on LingoFuse's own worker threads,
 independently of Flask.
 
+In forward-only mode, there is no Flask thread pool at all: only the
+LingoFuse worker threads execute the Call APIs, and the main Python
+thread simply sleeps until the process is asked to exit.
+
 Safe shared state:
     * `config`        : frozen after startup, read-only.
     * `logger`        : thread-safe by design.
@@ -281,7 +324,7 @@ No additional locking is required.
 
 ==================== DEPENDENCIES ====================
 - lingofuse package (must be on PYTHONPATH)
-- Flask
+- Flask (only required when forward-only mode is DISABLED)
 - requests
 
 All comments and log messages are in English.
@@ -396,6 +439,12 @@ DEFAULT_BRIDGE_APP_NAME = '__lf_http_bridge__'
 DEFAULT_BRIDGE_API_NAME = '__lf_outbound_post__'
 DEFAULT_BRIDGE_REPAIR_API_NAME = '__lf_repair_json__'
 
+#: When True, the HTTP listener is COMPLETELY DISABLED and the bridge
+#: only serves its LingoFuse Call APIs (outbound POST proxy and JSON
+#: repair). See the "FORWARD-ONLY MODE" section in the module
+#: docstring for the full rationale.
+DEFAULT_FORWARD_ONLY = False
+
 #: The lower-case HTTP methods the outbound proxy is willing to
 #: forward. Anything else is rejected before the request is built.
 #: This is a security / correctness guard, not a business policy.
@@ -421,6 +470,12 @@ MAX_OUTBOUND_TIMEOUT_S = 300.0
 # instance, no field is ever written again. Concurrent reads from
 # Flask worker threads and LingoFuse callback threads are therefore
 # safe without any lock.
+#
+# A note on embedded / programmatic use: because `config` is a plain
+# module-level object, code that imports this module may assign to
+# any of its fields BEFORE `main()` runs. This is the "global
+# variable" layer of the three-layer configuration mechanism
+# (global variable / environment variable / command line).
 # ======================================================================
 
 @dataclass
@@ -431,6 +486,11 @@ class BridgeConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     threaded: bool = DEFAULT_THREADED
+
+    # --- operating mode ---
+    # When True, the HTTP listener is disabled. Only the LingoFuse
+    # Call APIs are registered and served.
+    forward_only: bool = DEFAULT_FORWARD_ONLY
 
     # --- LingoFuse connection ---
     endpoint: str = DEFAULT_ENDPOINT
@@ -474,6 +534,7 @@ _ENV_VAR_TABLE = {
     'timeout_ms':              'LINGOFUSE_TIMEOUT',
     'default_app':             'LINGOFUSE_APP',
     'threaded':                'LINGOFUSE_THREADED',
+    'forward_only':            'LINGOFUSE_FORWARD_ONLY',
     'debug':                   'LINGOFUSE_DEBUG',
     'no_precheck':             'LINGOFUSE_NO_PRECHECK',
     'normalize_json':          'LINGOFUSE_NORMALIZE_JSON',
@@ -609,6 +670,14 @@ def _apply_environment_defaults(cfg: BridgeConfig) -> None:
     if value is not None:
         cfg.threaded = value
 
+    # forward_only: the environment variable overrides the built-in
+    # default AND any value the embedding application may have
+    # pre-set on `config.forward_only`. The command line (phase 2)
+    # can still override this in turn.
+    value = _env_bool(_ENV_VAR_TABLE['forward_only'])
+    if value is not None:
+        cfg.forward_only = value
+
     value = _env_bool(_ENV_VAR_TABLE['debug'])
     if value is not None:
         cfg.debug = value
@@ -676,10 +745,10 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
             "Environment variables: "
             "LINGOFUSE_HOST, LINGOFUSE_PORT, LINGOFUSE_ENDPOINT, "
             "LINGOFUSE_TIMEOUT, LINGOFUSE_APP, LINGOFUSE_THREADED, "
-            "LINGOFUSE_DEBUG, LINGOFUSE_NO_PRECHECK, "
-            "LINGOFUSE_NORMALIZE_JSON, LINGOFUSE_LOG_FILE, "
-            "LINGOFUSE_BRIDGE_APP, LINGOFUSE_BRIDGE_API, "
-            "LINGOFUSE_BRIDGE_REPAIR_API. "
+            "LINGOFUSE_FORWARD_ONLY, LINGOFUSE_DEBUG, "
+            "LINGOFUSE_NO_PRECHECK, LINGOFUSE_NORMALIZE_JSON, "
+            "LINGOFUSE_LOG_FILE, LINGOFUSE_BRIDGE_APP, "
+            "LINGOFUSE_BRIDGE_API, LINGOFUSE_BRIDGE_REPAIR_API. "
             "Command-line arguments take precedence over environment "
             "variables, which take precedence over built-in defaults. "
             "Set LINGOFUSE_JSON_REPAIR=0 to disable the unified JSON "
@@ -698,6 +767,31 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         type=int,
         default=cfg.port,
         help=f"HTTP listening port (default: {cfg.port})",
+    )
+
+    # --- operating mode ---
+    parser.add_argument(
+        '--forward-only',
+        dest='forward_only',
+        action='store_true',
+        default=cfg.forward_only,
+        help=(
+            "Enable forward-only mode: DISABLE the HTTP listener and "
+            "only serve the LingoFuse Call APIs (outbound HTTP POST "
+            "proxy and JSON repair). No TCP port is opened. This "
+            "overrides the LINGOFUSE_FORWARD_ONLY environment "
+            "variable and any programmatic pre-set of "
+            "config.forward_only."
+        ),
+    )
+    parser.add_argument(
+        '--no-forward-only',
+        dest='forward_only',
+        action='store_false',
+        help=(
+            "Disable forward-only mode (default). The HTTP listener "
+            "is started normally."
+        ),
     )
 
     # --- LingoFuse connection ---
@@ -727,7 +821,8 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         default=cfg.default_app,
         help=(
             "Default target application name (used when the inbound "
-            "URL path has only an API name)"
+            "URL path has only an API name). Ignored in forward-only "
+            "mode."
         ),
     )
 
@@ -769,14 +864,17 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         default=cfg.no_precheck,
         help=(
             "Disable the inbound API pre-check (check_api) to avoid "
-            "cache false negatives"
+            "cache false negatives. Ignored in forward-only mode."
         ),
     )
     parser.add_argument(
         '--precheck',
         dest='no_precheck',
         action='store_false',
-        help="Enable the inbound API pre-check (default)",
+        help=(
+            "Enable the inbound API pre-check (default). Ignored in "
+            "forward-only mode."
+        ),
     )
 
     parser.add_argument(
@@ -852,6 +950,7 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
     # rest of the process lifetime.
     cfg.host = args.host
     cfg.port = args.port
+    cfg.forward_only = args.forward_only
     cfg.endpoint = args.endpoint
     cfg.timeout_ms = args.timeout_ms
     cfg.default_app = args.default_app if args.default_app else None
@@ -1194,6 +1293,13 @@ def normalize_json_bytes(raw: bytes) -> Tuple[bytes, str]:
 
 # ======================================================================
 # Flask application
+# ======================================================================
+#
+# The Flask app object is constructed at module import time, but it is
+# only ever RUN by _run_bridge() when forward_only is False. In
+# forward-only mode the app object still exists (so the module-level
+# symbols are stable), but no listener is started and no route is ever
+# reached.
 # ======================================================================
 
 app = Flask(__name__)
@@ -1806,6 +1912,12 @@ def _bridge_repair_callback(trigger, inp, out):
 # ======================================================================
 # Inbound HTTP request handler
 # ======================================================================
+#
+# The route is only ever reached when forward_only is False. In
+# forward-only mode the Flask app is never run, so this handler is
+# dead code at runtime (but kept in the module so that the symbol
+# surface is stable and the file can be unit-tested).
+# ======================================================================
 
 @app.route('/', defaults={'path': ''}, methods=['POST', 'OPTIONS'])
 @app.route('/<path:path>', methods=['POST', 'OPTIONS'])
@@ -2179,10 +2291,28 @@ def _setup_network(cfg: BridgeConfig) -> bool:
 # ======================================================================
 
 def _log_startup_banner(cfg: BridgeConfig) -> None:
-    """Print the effective configuration once, at startup."""
+    """
+    Print the effective configuration once, at startup.
+
+    The banner explicitly reports the operating mode (forward-only or
+    full) so that operators can tell from a single log line whether
+    an HTTP listener is expected.
+    """
     logger.info("=== LingoFuse HTTP Bridge (bidirectional POST gateway "
                 "with JSON repair service) ===")
-    logger.info("Inbound HTTP listen: http://%s:%d", cfg.host, cfg.port)
+    logger.info(
+        "Operating mode: %s",
+        'FORWARD-ONLY (HTTP listener disabled)'
+        if cfg.forward_only else 'FULL (HTTP listener enabled)',
+    )
+    if cfg.forward_only:
+        logger.info(
+            "Inbound HTTP listen: DISABLED (forward-only mode)"
+        )
+    else:
+        logger.info(
+            "Inbound HTTP listen: http://%s:%d", cfg.host, cfg.port
+        )
     logger.info("LingoFuse endpoint: %s", cfg.endpoint)
     logger.info(
         "Inbound default app: %s",
@@ -2208,8 +2338,15 @@ def _log_startup_banner(cfg: BridgeConfig) -> None:
         "JSON repair LingoFuse API: %s.%s",
         cfg.bridge_app_name, cfg.bridge_repair_api_name,
     )
+    if not cfg.forward_only:
+        logger.info(
+            "Inbound path format: /<app>/<api>  or  /<api> "
+            "(uses default app)"
+        )
     logger.info(
-        "Inbound path format: /<app>/<api>  or  /<api> (uses default app)"
+        "Inbound routing: %s",
+        'DISABLED (forward-only mode)'
+        if cfg.forward_only else 'ENABLED',
     )
 
 
@@ -2219,6 +2356,21 @@ def _run_bridge(cfg: BridgeConfig) -> None:
 
     Called exactly once, from `main()`. From this point on, the
     bridge reads only from `cfg`.
+
+    Behaviour depends on cfg.forward_only:
+
+        * False (default): the LingoFuse Call APIs are registered,
+          then a Flask HTTP listener is started on cfg.host:cfg.port
+          and the function blocks inside Flask's app.run().
+
+        * True: the LingoFuse Call APIs are registered, then the
+          function blocks on a plain sleep loop. No socket is
+          opened, no Flask worker is spawned. The process exits on
+          KeyboardInterrupt (Ctrl+C) or SIGTERM, and cleanup() runs
+          from the finally block.
+
+    In both modes, the standard cleanup() path runs on exit and is
+    idempotent thanks to the _cleanup_done flag.
     """
     _configure_logging(cfg)
     _log_startup_banner(cfg)
@@ -2226,6 +2378,37 @@ def _run_bridge(cfg: BridgeConfig) -> None:
     if not _setup_network(cfg):
         sys.exit(1)
 
+    # ------------------------------------------------------------------
+    # Forward-only mode: no HTTP listener. The LingoFuse worker
+    # threads service the registered Call APIs; the main Python
+    # thread just sleeps until the process is asked to exit.
+    #
+    # We use a long time.sleep() rather than a busy loop or a
+    # signal.pause(), so that:
+    #   * Ctrl+C (KeyboardInterrupt) is delivered promptly on both
+    #     POSIX and Windows,
+    #   * the process consumes no CPU while idle,
+    #   * atexit-registered cleanup still runs on normal interpreter
+    #     exit.
+    # ------------------------------------------------------------------
+    if cfg.forward_only:
+        logger.info(
+            "Forward-only mode active: HTTP listener is DISABLED. "
+            "Only the LingoFuse Call APIs will be served. "
+            "Press Ctrl+C to exit."
+        )
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            logger.info("Interrupted, shutting down...")
+        finally:
+            cleanup()
+        return
+
+    # ------------------------------------------------------------------
+    # Full mode: start the Flask HTTP listener.
+    # ------------------------------------------------------------------
     logger.info(
         "Starting HTTP service: http://%s:%d", cfg.host, cfg.port,
     )
@@ -2257,6 +2440,15 @@ def main() -> None:
     the two-phase configuration load (environment first, then
     command line) and hands control to `_run_bridge()`, which reads
     only the global configuration instance.
+
+    A third, programmatic configuration layer is available to
+    embedded callers: because `config` is a module-level object, any
+    code that imports this module may assign to its fields BEFORE
+    `main()` is called. `_apply_environment_defaults()` and
+    `_apply_command_line()` only overwrite a field when the
+    corresponding environment variable is set or the corresponding
+    CLI flag is present, so a programmatic pre-set survives unless
+    the operator explicitly overrides it.
 
     Running `python bridge.py --help` prints the full usage text
     (including the environment-variable reference) and exits with

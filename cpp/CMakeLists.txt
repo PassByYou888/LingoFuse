@@ -73,6 +73,7 @@ target_sources(lingofuse_headers INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/LingoFuse.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LingoFuse.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/lf_io.hpp
+	${CMAKE_CURRENT_SOURCE_DIR}/lf_http_bridge_client.hpp
 )
 
 # -----------------------------------------------------------------------------

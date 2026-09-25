@@ -74,9 +74,9 @@ a NUL terminator. The two are used by different protocol layers:
            App.local_call / App.expose adapters.
 
     * DataHandle.write_json / read_json (lf_io)
-        -> NUL-terminated. Used by every LF service that speaks to
-           the Pascal side (llm_service, llm_proxy, llm_proxy_tool,
-           mcp_api_tool, language_middleware, bridge).
+        -> NUL-terminated. Used by every LF service that speaks the
+           NUL-framed wire protocol (llm_service, llm_proxy,
+           llm_proxy_tool, mcp_api_tool, language_middleware, bridge).
 
 Both formats are kept for backward compatibility. Do NOT mix them on
 the same handle unless you know what you are doing.
@@ -127,8 +127,9 @@ def default_deserializer(data: bytes) -> Any:
 
     A trailing NUL byte, if present, is stripped before decoding.
     This tolerates payloads that were produced by a NUL-terminating
-    producer (for example, a Pascal client calling LF_WriteString)
-    even though the serializer side of this module never appends one.
+    producer (for example, a client using the standard string-writing
+    primitive with an explicit null terminator) even though the
+    serializer side of this module never appends one.
 
     {!!!!!  UNIFIED JSON REPAIR PREPROCESSING  !!!!!}
     The decoded text is passed through

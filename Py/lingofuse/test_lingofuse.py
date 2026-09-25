@@ -708,8 +708,9 @@ class TestSerializersRepairPaths(unittest.TestCase):
 
     def test_trailing_nul_is_stripped_before_repair(self):
         """
-        A NUL-terminated payload (from a Pascal producer) must have
-        its NUL stripped first, then be repaired if necessary.
+        A NUL-terminated payload (from a NUL-terminating producer)
+        must have its NUL stripped first, then be repaired if
+        necessary.
         """
         with self.assertLogs(self.LOGGER, level="WARNING"):
             result = default_deserializer(b'{"a": 1,}\x00')

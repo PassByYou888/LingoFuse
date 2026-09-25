@@ -7,7 +7,8 @@ All exported functions are loaded from the platform-specific shared library
 
 =========================== THREAD SAFETY ===========================
 All functions are FULLY thread-safe and can be called concurrently
-from any number of threads. This matches the Pascal unit's guarantee.
+from any number of threads. This matches the library's documented
+guarantee.
 
 ==================== CALLBACK EXECUTION CONTEXT ====================
 Callbacks (LFCallFunc, LFNotifyFunc, LFNetworkEventFunc) are executed
@@ -19,10 +20,10 @@ in background threads from the library's internal thread pool. Therefore:
       proper synchronisation.
     * Offload heavy processing to separate worker threads.
 
-These restrictions exactly mirror those documented in the Pascal unit
-Z.LingoFuse_Export and are critical for correct operation.
+These restrictions are part of the LingoFuse callback contract and
+are critical for correct operation across all supported languages.
 
-==================== IMPORTANT NOTES (from Pascal import) ===========
+==================== IMPORTANT NOTES (from the wire protocol) =======
 - Data handles must be freed explicitly with LF_FreeData, although
   an automatic idle-timeout reclaimer (5 minutes) runs on the main thread.
   Relying on it can cause leaks under heavy load.
@@ -106,13 +107,13 @@ in ``_dll_directory_handles``; otherwise the garbage collector would
 silently remove them from the search path and later dynamic loads
 (e.g. of a delayed-loaded dependency) would fail.
 
-==================== PYTHON-SPECIFIC PITFALLS =======================
+==================== LANGUAGE-SPECIFIC PITFALLS ====================
 - ctypes.c_char_p pointers are automatically converted to bytes when
   passed to functions, but the returned string from LF_Generate_AppName
   must be decoded immediately to avoid accessing freed memory.
 - When writing strings to a DataHandle, always append a null terminator
-  (as Pascal's LF_WriteString does) - use the high-level wrapper's
-  write_string() method which does this automatically.
+  (matching the standard wire protocol convention) - use the high-level
+  wrapper's write_string() method which does this automatically.
 - When reading strings from a DataHandle, the incoming data may or may
   not include a null terminator. The high-level read_string() handles
   both cases (fault-tolerant).

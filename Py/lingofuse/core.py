@@ -9,7 +9,7 @@ All string parameters are UTF-8 encoded/decoded automatically.
 DataHandle wraps a binary buffer that can be read/written sequentially.
 It is an RAII object: freeing the Python object calls LF_FreeData.
 
-Important notes from Pascal import (lingofuse_import.pas):
+Important notes from the wire protocol contract:
 - Always free DataHandle objects explicitly (or use `with` / context manager)
   to release resources promptly. The library has an automatic idle-timeout
   reclaimer (5 minutes), but it is not immediate.
@@ -20,15 +20,16 @@ Important notes from Pascal import (lingofuse_import.pas):
 
 String handling rules (critical for cross-language compatibility):
 - write_string() always appends a null terminator (\\0) to match
-  Pascal's LF_WriteString. This is required for the other side to
-  correctly read the string with LF_ReadString.
+  the standard wire protocol for string framing. This is required
+  for the other side to correctly read the string with the
+  corresponding read primitive.
 - read_string() is fault-tolerant: it scans for a \\0 and returns
   the content before it. If no \\0 is found, it returns the entire
   remaining buffer as a string (consuming all data). This handles
   both null-terminated and raw data (e.g., plain JSON without \\0).
 
 Atomic read/write methods (write_int32, read_int32, etc.) use little-endian
-byte order, which matches the Pascal convention.
+byte order, which matches the cross-language convention.
 
 =========================== JSON I/O DELEGATION ============================
 As of this revision, the JSON and string payload I/O of DataHandle is
@@ -95,7 +96,7 @@ Thread-safety:
 {!!!!!  CALLBACK EXCEPTION ISOLATION  !!!!!}
 Callbacks are wrapped so that any exception raised inside them is caught
 and logged, and never allowed to propagate back into the C stack. This
-matches the behaviour of the Pascal core (TLF_Engine.Execute_Call /
+matches the behaviour of the reference C core (Engine.Execute_Call /
 Execute_Notify) which wraps user callbacks in try/except. Without this
 isolation, ctypes would print a traceback to stderr for every failing
 callback, and the caller would receive an empty response without any
@@ -544,8 +545,8 @@ class DataHandle:
 
             json.dumps(obj, ensure_ascii=False, default=str)
 
-        and appends the NUL terminator required by the Pascal-side
-        LF_ReadString.
+        and appends the NUL terminator required by the wire protocol
+        for string framing.
 
         The return type is preserved from the previous implementation:
         the number of bytes written (including the NUL terminator).
@@ -632,7 +633,7 @@ class App:
     An application is a container for related APIs. Each App has a unique
     name used for discovery and routing across the network.
 
-    Important notes (from Pascal import):
+    Important notes (from the wire protocol contract):
     - API names are case-insensitive when matching, but stored as given.
     - If you register the same API name twice, the second registration
       fails.
@@ -650,7 +651,7 @@ class App:
     wrapped so that any exception they raise is caught and logged to
     the "lingofuse.core" logger. The exception is never allowed to
     propagate back into the C stack. This matches the behaviour of the
-    Pascal core (TLF_Engine.Execute_Call / Execute_Notify).
+    reference C core (Engine.Execute_Call / Engine.Execute_Notify).
 
     {!!!!!  LIFETIME  !!!!!}
     - `free()` detaches the app but does NOT destroy it immediately.
@@ -806,9 +807,9 @@ class App:
             try:
                 func(trig, h_in, h_out)
             except Exception:
-                # Match the Pascal-side semantics: callbacks must never
-                # let exceptions escape into the C stack. Log and
-                # continue.
+                # Match the reference C core semantics: callbacks must
+                # never let exceptions escape into the C stack. Log
+                # and continue.
                 _log.exception(
                     "Call callback for API '%s' raised an exception; "
                     "the exception has been suppressed",

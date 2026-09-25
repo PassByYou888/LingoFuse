@@ -58,12 +58,12 @@ otherwise drift across files:
      the wire.
 
   2. Every string written to a DataHandle is NUL-terminated, matching
-     Pascal's LF_ReadString which stops at the first #0 byte (see
-     lingofuse_import.pas).
+     the wire protocol convention where the receiving side stops at
+     the first #0 byte.
 
   3. Every string read from a DataHandle tolerates a missing NUL
      terminator. This is required for inputs that arrive from an HTTP
-     bridge (bridge.py) or any non-Pascal producer that sends raw
+     bridge (bridge.py) or any non-standard producer that sends raw
      JSON without a trailing NUL.
 
   4. LF_* C-ABI string parameters (app name, API name, endpoint,
@@ -108,19 +108,18 @@ The receiving side:
 
 A plain-text payload uses the same framing: <UTF-8 text> <NUL>.
 
-Compatibility with the Pascal side
-----------------------------------
-The framing matches lingofuse_import.pas exactly:
+Compatibility with the wire protocol
+------------------------------------
+The framing follows the standard convention used by the LingoFuse
+ecosystem:
 
-    Pascal LF_WriteString('{"a":1}')
-        -> bytes  7B 22 61 22 3A 31 7D 00
-
+    Reference implementation writes: 7B 22 61 22 3A 31 7D 00
     lf_io.write_json(hnd, {"a": 1})
         -> bytes  7B 22 61 22 3A 31 7D 00
 
-    Pascal LF_ReadString on the receiving side stops at the NUL.
-    lf_io.read_json on the receiving side stops at the NUL too, and
-    falls back to reading the entire buffer if no NUL is present.
+    The receiving side stops at the NUL. lf_io.read_json on the
+    receiving side stops at the NUL too, and falls back to reading
+    the entire buffer if no NUL is present.
 
 JSON serialization policy
 -------------------------
@@ -209,8 +208,8 @@ from .json_repair_preprocess import repair_json_text
 #: The NUL byte used as the string terminator on the wire.
 NUL: bytes = b"\x00"
 
-#: The only text encoding used on the wire. Matches Pascal's UTF-8
-#: convention (lingofuse_import.pas, LF_WriteString).
+#: The only text encoding used on the wire. Matches the UTF-8
+#: convention used across the LingoFuse ecosystem.
 ENCODING: str = "utf-8"
 
 
@@ -226,7 +225,7 @@ ENCODING: str = "utf-8"
 # Guarantees:
 #   * ensure_ascii=False. Non-ASCII characters (Chinese, emoji,
 #     accented Latin letters) are emitted as literal characters in the
-#     returned string. The string NEVER contains a \\uXXXX escape.
+#     returned string. The string NEVER contains a \uXXXX escape.
 #   * default=str. Any object the encoder cannot serialize (a
 #     datetime, a custom class, a tool result with an unexpected type)
 #     degrades to its str() representation instead of raising
@@ -279,7 +278,7 @@ def _read_until_nul(hnd: DataHnd) -> bytes:
     Return bytes from the current position up to the first NUL, and
     advance the handle position accordingly.
 
-    Behaviour matches Pascal's LF_ReadString:
+    Behaviour matches the standard wire protocol:
       * If a NUL is found, return everything before it and advance the
         handle position past the NUL.
       * If no NUL is found, return the entire remaining buffer and
@@ -287,7 +286,7 @@ def _read_until_nul(hnd: DataHnd) -> bytes:
 
     This makes the reader tolerant of inputs written without a NUL
     terminator, which is the case for every payload that arrives from
-    a non-Pascal producer (bridge.py, a browser, a Node.js client).
+    a non-standard producer (bridge.py, a browser, a Node.js client).
     """
     pos = LF_GetPos(hnd)
     size = LF_GetSize(hnd)
@@ -356,8 +355,8 @@ def write_string(hnd: DataHnd, value: str) -> None:
     """
     Write `value` as UTF-8 bytes, followed by a NUL terminator.
 
-    An empty string is written as a single NUL byte, matching
-    Pascal's LF_WriteString('').
+    An empty string is written as a single NUL byte, matching the
+    wire protocol convention for empty strings.
 
     `None` is treated as the empty string, so callers do not need a
     separate check for optional values.

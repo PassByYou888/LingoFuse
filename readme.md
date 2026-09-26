@@ -4,14 +4,16 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**LingoFuse** 是一个跨语言、跨进程、跨机器的 RPC 框架。  
+**LingoFuse** 是一个跨语言、跨进程、跨机器的 RPC 框架。
 不写 IDL，不生成桩代码，不搭 HTTP 服务——任何语言写的函数，任何其他语言都能直接调。
 
 ---
 
-## ⭐ 核心亮点：AI 知识库体系已完善，AI 接管成功率接近绝对
+## ⭐ 核心亮点
 
-> 不是宣传口号，工程现实
+> **AI 知识库体系已完善，AI 接管成功率接近绝对。**
+
+不是宣传口号，工程现实。
 
 ---
 
@@ -33,8 +35,8 @@
 | IDL 依赖 | **无** | 必需 | 无（但需文档） | 无 | 无 |
 | 桩代码生成 | **可选（自动）** | 必需 | 无 | 无 | 无 |
 
-> ¹ **HTTP POST 体系**：以 HTTP POST 为载体的 RPC 方案——JSON-RPC over HTTP、REST POST、SOAP 等。特点是天然跨机、跨语言，但延迟高、无流式、无服务发现、无负载均衡。  
-> ² **SendMessage 体系**：Win32 `SendMessage`、同进程直接调用、LPC 等"同步阻塞"模型。特点是延迟极低、类型安全，但仅限同进程、不跨机、不跨语言。  
+> ¹ **HTTP POST 体系**：以 HTTP POST 为载体的 RPC 方案——JSON-RPC over HTTP、REST POST、SOAP 等。特点是天然跨机、跨语言，但延迟高、无流式、无服务发现、无负载均衡。
+> ² **SendMessage 体系**：Win32 `SendMessage`、同进程直接调用、LPC 等"同步阻塞"模型。特点是延迟极低、类型安全，但仅限同进程、不跨机、不跨语言。
 > 传统方案各有所长但互不覆盖；**LingoFuse 把两者的长处合并，并且跨机、跨语言、带发现。**
 
 **一句话**：具备 HTTP POST 的跨机跨语言能力，具备 SendMessage 的极低延迟和强类型，同时还有流式、服务发现、负载均衡和顺序保证——一个方案全包。
@@ -104,8 +106,8 @@ LingoFuse 不只是 RPC，它是 **AI Agent 调用任意语言函数的底座**�
 |------|------|------|
 | [pasAgent v2](https://github.com/PassByYou888/LingoFuse-pasAgent) | Pascal | 🟢 已发布（纯文本智能体） |
 | [pasAgent v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | 🟢 已发布（多模态智能体） |
-| [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🚀 **即将首推** |
-| [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🚀 **即将首推** |
+| [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🟢 已发布 |
+| [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🚀 即将首推 |
 
 **主仓库专注通讯底座，分支专注各自生态。** 未来会有更多语言的智能体分支接入。
 
@@ -126,8 +128,8 @@ LingoFuse 已经进入 **良性发展阶段**：
 | **HTTP 桥接** | ✅ 生产就绪 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ **已完结** | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ **已完善** | 覆盖所有接口，AI 接管成功率接近绝对 |
-| **C++ 智能体** | 🚀 **即将首推** | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) |
-| **C# 智能体** | 🚀 **即将首推** | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
+| **C++ 智能体** | 🟢 已发布 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) |
+| **C# 智能体** | 🚀 即将首推 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
 | **更多语言绑定** | ⏳ 建设中 | Rust / Go / Java / … |
 
 ### 里程碑
@@ -136,7 +138,7 @@ LingoFuse 已经进入 **良性发展阶段**：
 - ✅ **三语言绑定竣工** —— Pascal / Python / C++
 - ✅ **代码生成器体系竣工** —— LingoFuse-Tools
 - ✅ **AI 知识库体系完善** —— AI 接管成功率接近绝对
-- 🚀 **多语言智能体集群首推** —— C++ Agent、C# Agent
+- 🟢 **多语言智能体集群首推** —— C++ Agent 已发布，C# Agent 即将到来
 - ⏳ **全面竣工** —— 预计很快到来
 
 **项目还在建设中，但已经在加速完结阶段。** 通讯底座已稳，绑定齐全，生成器体系闭环，知识库体系完善，剩下的只是把生态铺满。
@@ -209,14 +211,14 @@ LingoFuse/
 
 **老张（QQ: 600585）**
 
-看不惯跨语言调用得写一箩筐胶水代码，干脆撸了 LingoFuse。  
-现在又看不惯每种语言都得手写绑定，干脆把代码生成器也撸完了。  
-再把知识库喂给 AI，让 AI 自己把接口全部接管——**这才是智能体时代该有的样子。**  
+看不惯跨语言调用得写一箩筐胶水代码，干脆撸了 LingoFuse。
+现在又看不惯每种语言都得手写绑定，干脆把代码生成器也撸完了。
+再把知识库喂给 AI，让 AI 自己把接口全部接管——**这才是智能体时代该有的样子。**
 欢迎来撩、来喷、来 PR——**Star 是最好的催更。**
 
 ---
 
-*项目始于 2026 年，持续进化中。有问题提 Issue，急事加 Q。*  
-*"让所有编程语言平等对话" —— 不是口号，是正在发生的事。*  
-*"让 AI 接管所有语言的接口" —— 不是未来，是已经开始的现在。*  
+*项目始于 2026 年，持续进化中。有问题提 Issue，急事加 Q。*
+*"让所有编程语言平等对话" —— 不是口号，是正在发生的事。*
+*"让 AI 接管所有语言的接口" —— 不是未来，是已经开始的现在。*
 *"使用 AI 构建 LF 通讯体系的成功率接近绝对" —— 不是承诺，是知识库体系已经证明的事实。*

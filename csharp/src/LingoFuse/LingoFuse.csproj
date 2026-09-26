@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ==========================================================================
+    LingoFuse C# binding — core library.
+    ==========================================================================
+
+    Thin, dependency-free P/Invoke wrapper around the LingoFuse native
+    library (LingoFuse64.dll / LingoFuse32.dll / liblingofuse.so /
+    liblingofuse.dylib).
+
+    The native library must be placed next to the consuming executable
+    or on the OS library search path at runtime. This project does NOT
+    ship the native binary.
+
+    Compiler settings are declared locally so that the project builds
+    correctly even when it is opened without the repository-level
+    Directory.Build.props (for example, when the csharp/ subtree is
+    used as a standalone repository).
+    ==========================================================================
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LingoFuse</RootNamespace>
+    <AssemblyName>LingoFuse</AssemblyName>
+
+    <!-- Compiler settings (self-contained, no external props needed). -->
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!-- NuGet package metadata -->
+    <IsPackable>true</IsPackable>
+    <PackageId>LingoFuse</PackageId>
+    <Title>LingoFuse C# Binding</Title>
+    <PackageDescription>
+      Cross-language, cross-process, cross-machine RPC framework.
+      This package provides the managed C# binding over the native
+      LingoFuse runtime (LingoFuse64.dll / LingoFuse32.dll /
+      liblingofuse.so / liblingofuse.dylib).
+    </PackageDescription>
+
+    <!--
+      PackageReadmeFile is only declared when the README actually
+      exists. Without this guard, `dotnet pack` fails with NU5039
+      whenever the file is absent.
+    -->
+    <PackageReadmeFile Condition="Exists('$(MSBuildThisFileDirectory)..\..\README.md')">README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\README.md')">
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

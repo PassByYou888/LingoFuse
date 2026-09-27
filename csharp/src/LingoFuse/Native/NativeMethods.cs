@@ -1,48 +1,52 @@
-using System;
+﻿using System;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace LingoFuse.Native;
 
 // ============================================================================
-// LingoFuse C ABI — P/Invoke declarations
+// NativeMethods — P/Invoke declarations for the LingoFuse C ABI.
 // ============================================================================
 //
-// This class is the ONLY place in the entire binding where native code is
-// invoked. Every other layer (Core, Io, Host) goes through the managed
-// wrappers built on top of these declarations.
+// This class is the ONLY place in the entire binding where native code
+// is invoked. Every managed wrapper in the LingoFuse namespace goes
+// through these declarations.
 //
-// The 36 exported symbols below are declared in the same order as the
-// `exports` section of `LingoFuse.lpr`. The EntryPoint strings are
-// case-sensitive and match the Pascal source exactly; a single character
-// in the wrong case will produce an EntryPointNotFoundException at first
-// call.
+// The 36 exports below are declared in the same order as the exports
+// section of LingoFuse.lpr. EntryPoint strings are case-sensitive and
+// match the Pascal source exactly.
 //
-// All functions use the C calling convention (cdecl). The resolver
-// registered in the static constructor selects the correct platform
-// library at process start:
+// CALLING CONVENTION
+// ------------------
+// All functions use CallingConvention.Cdecl. The resolver registered in
+// the static constructor selects the correct platform library at first
+// use:
 //
 //     Windows 64-bit  ->  LingoFuse64.dll
 //     Windows 32-bit  ->  LingoFuse32.dll
 //     Linux / BSD     ->  liblingofuse.so
 //     macOS           ->  liblingofuse.dylib
 //
-// The library is loaded lazily, on the first call to any of the
-// declarations below. There is no separate LF_LoadLibrary step (unlike
-// the C wrapper shipped with the Pascal distribution).
+// The library is loaded lazily by the CLR, on the first call to any
+// declaration. There is no separate LF_LoadLibrary step (unlike the
+// C wrapper shipped with the Pascal distribution).
 //
-// String parameters are declared as IntPtr and must be UTF-8, NUL-
-// terminated buffers produced by Utf8Marshal.Alloc. String return values
-// are also IntPtr and must be copied immediately via Utf8Marshal.PtrToString;
-// the native side owns the underlying memory and may invalidate it at
-// any time.
+// STRING PARAMETERS
+// -----------------
+// String parameters are declared as IntPtr and must be UTF-8,
+// NUL-terminated buffers produced by Utf8Marshal.Alloc. String return
+// values are also IntPtr and must be copied immediately via
+// Utf8Marshal.PtrToString; the native side owns the underlying memory
+// and may invalidate it at any time.
+//
 // ============================================================================
 
 internal static class NativeMethods
 {
     /// <summary>
     /// Logical library name used in every DllImport attribute. The
-    /// resolver in the static constructor maps this to the actual
-    /// platform file name at load time.
+    /// resolver in the static constructor maps it to the actual
+    /// platform-specific file name at load time.
     /// </summary>
     internal const string DllName = "LingoFuse";
 
@@ -65,7 +69,7 @@ internal static class NativeMethods
     /// </summary>
     private static IntPtr ResolveLibrary(
         string libraryName,
-        System.Reflection.Assembly assembly,
+        Assembly assembly,
         DllImportSearchPath? searchPath)
     {
         if (!string.Equals(libraryName, DllName, StringComparison.Ordinal))
@@ -100,7 +104,7 @@ internal static class NativeMethods
 
     /// <summary>
     /// Creates a new data handle bound to the given API name. The handle
-    /// must be released with <see cref="LF_FreeData"/>.
+    /// must be released with LF_FreeData.
     /// </summary>
     /// <param name="methodName">UTF-8, NUL-terminated API name.</param>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
@@ -108,8 +112,8 @@ internal static class NativeMethods
     internal static extern DataHnd LF_CreateData(IntPtr methodName);
 
     /// <summary>
-    /// Releases a data handle. Passing <see cref="DataHnd.Null"/> is safe
-    /// and ignored.
+    /// Releases a data handle. Passing a null handle is safe and
+    /// ignored.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_FreeData", ExactSpelling = true)]
@@ -125,16 +129,17 @@ internal static class NativeMethods
 
     /// <summary>
     /// Writes <paramref name="size"/> bytes at the current cursor. The
-    /// buffer grows as needed and the cursor advances. Returns the number
-    /// of bytes actually written.
+    /// buffer grows as needed and the cursor advances. Returns the
+    /// number of bytes actually written.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_WriteBuffer", ExactSpelling = true)]
     internal static extern long LF_WriteBuffer(DataHnd hnd, byte[] buff, long size);
 
     /// <summary>
-    /// Reads up to <paramref name="size"/> bytes into <paramref name="buff"/>.
-    /// The cursor advances by the number of bytes actually read.
+    /// Reads up to <paramref name="size"/> bytes into
+    /// <paramref name="buff"/>. The cursor advances by the number of
+    /// bytes actually read.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_ReadBuffer", ExactSpelling = true)]
@@ -158,7 +163,9 @@ internal static class NativeMethods
         EntryPoint = "LF_GetSize", ExactSpelling = true)]
     internal static extern long LF_GetSize(DataHnd hnd);
 
-    /// <summary>Resizes the buffer. Newly added bytes are uninitialized.</summary>
+    /// <summary>
+    /// Resizes the buffer. Newly added bytes are uninitialized.
+    /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_SetSize", ExactSpelling = true)]
     internal static extern void LF_SetSize(DataHnd hnd, long size);
@@ -169,7 +176,7 @@ internal static class NativeMethods
 
     /// <summary>
     /// Creates a new application with the given name and description.
-    /// The handle must be released with <see cref="LF_FreeApp"/>.
+    /// The handle must be released with LF_FreeApp.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_CreateApp", ExactSpelling = true)]
@@ -178,8 +185,8 @@ internal static class NativeMethods
     /// <summary>
     /// Detaches the application from all clients and stops its sequenced
     /// notification threads. The underlying object remains alive in the
-    /// global pool until <see cref="LF_Shutdown"/> is called. The handle
-    /// is invalid afterwards.
+    /// global pool until LF_Shutdown is called. The handle is invalid
+    /// afterwards.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_FreeApp", ExactSpelling = true)]
@@ -190,9 +197,9 @@ internal static class NativeMethods
     /// tunnels, process name, and a timestamp.
     /// </summary>
     /// <remarks>
-    /// Must be called after <see cref="LF_PrepareDone"/> returns 1.
-    /// The returned pointer is valid for approximately 5 seconds; copy
-    /// the string immediately via <see cref="Utf8Marshal.PtrToString"/>.
+    /// Must be called after LF_PrepareDone returns 1. The returned
+    /// pointer is valid for approximately 5 seconds; copy the string
+    /// immediately via Utf8Marshal.PtrToString.
     /// </remarks>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_Generate_AppName", ExactSpelling = true)]
@@ -202,7 +209,7 @@ internal static class NativeMethods
     /// Returns the name of the given application handle.
     /// </summary>
     /// <remarks>
-    /// Same 5-second validity rule as <see cref="LF_Generate_AppName"/>.
+    /// Same 5-second validity rule as LF_Generate_AppName.
     /// </remarks>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_Get_AppName", ExactSpelling = true)]
@@ -222,8 +229,8 @@ internal static class NativeMethods
     // ====================================================================
 
     /// <summary>
-    /// Registers a Call (request-response) API. Returns 1 on success, 0
-    /// if the API name is already taken.
+    /// Registers a Call (request-response) API. Returns 1 on success,
+    /// 0 if the API name is already taken.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_RegisterCall", ExactSpelling = true)]
@@ -260,8 +267,9 @@ internal static class NativeMethods
     // ====================================================================
 
     /// <summary>
-    /// Executes a Call API locally within the same process, bypassing the
-    /// network. Returns a new result handle that the caller must free.
+    /// Executes a Call API locally within the same process, bypassing
+    /// the network. Returns a new result handle that the caller must
+    /// free.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_LocalCall", ExactSpelling = true)]
@@ -305,7 +313,7 @@ internal static class NativeMethods
     /// <summary>
     /// Starts the LingoFuse framework with all prepared services and
     /// clients. Returns 1 on success. Returns 0 on the second call in
-    /// the same process (not a failure).
+    /// the same process (which is not a failure).
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_PrepareDone", ExactSpelling = true)]
@@ -313,7 +321,7 @@ internal static class NativeMethods
 
     /// <summary>
     /// Requests the simulated main thread to exit. Does not release all
-    /// resources; call <see cref="LF_Shutdown"/> afterwards.
+    /// resources; call LF_Shutdown afterwards.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_ExitMainThread", ExactSpelling = true)]
@@ -351,14 +359,16 @@ internal static class NativeMethods
     // ====================================================================
 
     /// <summary>
-    /// Adjusts a global runtime option. Unknown option names are silently
-    /// ignored.
+    /// Adjusts a global runtime option. Unknown option names are
+    /// silently ignored.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_SetOption", ExactSpelling = true)]
     internal static extern void LF_SetOption(IntPtr option, IntPtr value);
 
-    /// <summary>Returns the number of pending log messages (max 1000).</summary>
+    /// <summary>
+    /// Returns the number of pending log messages (max 1000).
+    /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_GetStatusCount", ExactSpelling = true)]
     internal static extern int LF_GetStatusCount();
@@ -372,12 +382,16 @@ internal static class NativeMethods
         EntryPoint = "LF_GetStatus", ExactSpelling = true)]
     internal static extern IntPtr LF_GetStatus();
 
-    /// <summary>Injects a custom log message into the status queue.</summary>
+    /// <summary>
+    /// Injects a custom log message into the status queue.
+    /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_PostStatus", ExactSpelling = true)]
     internal static extern void LF_PostStatus(IntPtr status);
 
-    /// <summary>Returns 1 if the simulated main thread is running.</summary>
+    /// <summary>
+    /// Returns 1 if the simulated main thread is running.
+    /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_CheckMainThread", ExactSpelling = true)]
     internal static extern int LF_CheckMainThread();
@@ -392,8 +406,8 @@ internal static class NativeMethods
     internal static extern int LF_CheckApp(IntPtr appName);
 
     /// <summary>
-    /// Returns 1 if the named API is available for the given application.
-    /// Same cache caveat as <see cref="LF_CheckApp"/>.
+    /// Returns 1 if the named API is available for the given
+    /// application. Same cache caveat as LF_CheckApp.
     /// </summary>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_CheckApi", ExactSpelling = true)]
@@ -422,7 +436,8 @@ internal static class NativeMethods
     /// </summary>
     /// <remarks>
     /// Callbacks run on background worker threads and receive a UTF-8
-    /// endpoint string that is valid only during the callback invocation.
+    /// endpoint string that is valid only during the callback
+    /// invocation.
     /// </remarks>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_Set_Network_Event", ExactSpelling = true)]

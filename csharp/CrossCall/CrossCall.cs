@@ -4,16 +4,16 @@
 //  Concurrent client / load tester for the "ipc:cross" endpoint.
 //
 //  It connects as a pure consumer (no application attached) and spawns
-//  several worker threads. Each thread repeatedly invokes one of two remote
-//  APIs on the "demo" application at random:
+//  several worker threads. Each thread repeatedly invokes one of two
+//  remote APIs on the "demo" application at random:
 //
 //      add       (int32 a, int32 b)                       -> int32
 //      inv_seri  (uint8, uint16, uint32, uint64,
 //                 string, float)                          -> reversed types
 //
-//  The test runs for a fixed duration and then shuts down cleanly. Multiple
-//  instances of this program may be launched concurrently to drive even
-//  higher load against the mesh.
+//  The test runs for a fixed duration and then shuts down cleanly.
+//  Multiple instances of this program may be launched concurrently to
+//  drive even higher load against the mesh.
 //
 //  ---------------------------------------------------------------------------
 //  WIRE FORMAT (byte-for-byte identical to C++ / Pascal / Python)
@@ -27,22 +27,19 @@
 //  Log sampling:
 //      With WorkerThreads = 32 and PauseMs = 1, the process issues many
 //      thousands of calls per second. Printing every call would make the
-//      log I/O itself the bottleneck. Each worker therefore only logs one
-//      out of every LogEveryNthCall iterations; the aggregate counters
-//      remain exact.
+//      log I/O itself the bottleneck. Each worker therefore only logs
+//      one out of every LogEveryNthCall iterations; the aggregate
+//      counters remain exact.
 //
 //  ---------------------------------------------------------------------------
 //  CLEANUP
 //  ---------------------------------------------------------------------------
-//  The client's Dispose() only detaches the client from the framework;
-//  it does NOT stop the simulated main thread or unload the native
-//  library. To perform a full process-wide shutdown
-//  (LF_ExitMainThread -> LF_Shutdown), Main() calls client.FullCleanup()
-//  in a finally block, so the framework is released on every exit
-//  path, including early returns and exceptions.
+//  The finally block performs the LF-CLEAN-001 sequence on every exit
+//  path:
 //
-//  FullCleanup is idempotent; calling it on a disposed client is a
-//  no-op.
+//      NetworkEvents.Clear -> ExitMainThread -> Shutdown
+//
+//  All operations are idempotent.
 // =============================================================================
 
 using System;
@@ -51,8 +48,6 @@ using System.Diagnostics;
 using System.Threading;
 
 using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Host;
 
 namespace LingoFuse.Demo.CrossCall;
 
@@ -67,7 +62,7 @@ internal static class Program
 
     private const int WorkerThreads = 32;
     private const int TestSeconds = 10;
-    private const int CallTimeoutMs = 1000;
+    private const ulong CallTimeoutMs = 1000;
     private const int PauseMs = 1;
     private const long LogEveryNthCall = 5000;
 
@@ -106,12 +101,36 @@ internal static class Program
     {
         Console.WriteLine("=== Cross Call (Client) ===");
 
-        LingoFuseClient? client = null;
+        bool started = false;
 
         try
         {
-            client = new LingoFuseClient(Endpoint, CallTimeoutMs);
-            client.Connect(overlapConnection: true);
+            Framework.SetOption("Wait_Connection_ReadyOk", "True");
+            Framework.SetOption("Overlap_Connection", "True");
+            Framework.SetOption("Wait_Connection_Timeout", "10000");
+
+            Framework.ResetPrepare();
+
+            // Pure consumer: no application is exposed.
+            int clientTag = Framework.PrepareClient(Endpoint, null);
+            if (clientTag == -1)
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareClient returned -1 " +
+                    $"for {Endpoint}.");
+                return 1;
+            }
+
+            int done = Framework.PrepareDone();
+            if (done != 1 && !LingoFuseStatus.CheckMainThread())
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareDone returned {done} and " +
+                    "the main thread is not running.");
+                return 1;
+            }
+
+            started = true;
 
             Console.WriteLine(
                 $"[Call] Connected to {Endpoint}. " +
@@ -121,13 +140,13 @@ internal static class Program
             var stats = new Stats();
             var stop = new ManualResetEventSlim(false);
             var threads = new List<Thread>(WorkerThreads);
-
             var sw = Stopwatch.StartNew();
 
             for (int i = 0; i < WorkerThreads; i++)
             {
                 int index = i;
-                var t = new Thread(() => WorkerBody(index, stop, stats, client))
+                var t = new Thread(
+                    () => WorkerBody(index, stop, stats))
                 {
                     IsBackground = true,
                     Name = $"cross-call-{index}",
@@ -166,17 +185,21 @@ internal static class Program
 
             Console.WriteLine();
             Console.WriteLine("[Call] Load test summary");
-            Console.WriteLine($"         duration          : {elapsedS:F3} s");
+            Console.WriteLine(
+                $"         duration          : {elapsedS:F3} s");
             Console.WriteLine($"         total calls       : {total}");
             Console.WriteLine(
-                $"         success           : {success} ({successRate:F2} %)");
+                $"         success           : {success} " +
+                $"({successRate:F2} %)");
             Console.WriteLine($"         failed            : {failed}");
             Console.WriteLine($"         add calls         : {addCalls}");
-            Console.WriteLine($"         inv_seri calls    : {invSeriCalls}");
+            Console.WriteLine(
+                $"         inv_seri calls    : {invSeriCalls}");
             Console.WriteLine(
                 $"         throughput        : {throughput:F2} calls/s");
             Console.WriteLine(
-                $"         success throughput: {successThroughput:F2} calls/s");
+                $"         success throughput: " +
+                $"{successThroughput:F2} calls/s");
 
             Console.WriteLine("[Call] Press Enter to exit...");
             Console.ReadLine();
@@ -195,20 +218,12 @@ internal static class Program
         }
         finally
         {
-            // FullCleanup performs the LF-CLEAN-001 sequence in the
-            // required order:
-            //
-            //     LF_ExitMainThread  ->  (client detach)  ->  LF_Shutdown
-            //
-            // Dispose() alone would only detach the client; it would
-            // leave the simulated main thread running and the native
-            // library loaded. Since this demo owns the only
-            // LingoFuseClient in the process, FullCleanup is the
-            // correct exit path.
-            //
-            // FullCleanup is idempotent; calling it on a disposed
-            // client is a no-op.
-            client?.FullCleanup();
+            if (started)
+            {
+                try { NetworkEvents.Clear(); } catch { }
+                try { Framework.ExitMainThread(); } catch { }
+                try { Framework.Shutdown(); } catch { }
+            }
         }
 
         Console.WriteLine("[Call] Bye.");
@@ -222,8 +237,7 @@ internal static class Program
     private static void WorkerBody(
         int index,
         ManualResetEventSlim stop,
-        Stats stats,
-        LingoFuseClient client)
+        Stats stats)
     {
         var rng = new Random(unchecked(
             Environment.TickCount * 397 + index));
@@ -240,7 +254,7 @@ internal static class Program
                 int a = rng.Next(NumberMin, NumberMax + 1);
                 int b = rng.Next(NumberMin, NumberMax + 1);
 
-                bool ok = RemoteAdd(client, a, b, out int sum);
+                bool ok = RemoteAdd(a, b, out int sum);
 
                 lock (stats)
                 {
@@ -252,20 +266,16 @@ internal static class Program
 
                 if (doLog)
                 {
-                    if (ok)
-                    {
-                        Log($"[Call {index}] add({a}, {b}) = {sum}");
-                    }
-                    else
-                    {
-                        Log($"[Call {index}] add({a}, {b}) timed out or failed.");
-                    }
+                    Log(ok
+                        ? $"[Call {index}] add({a}, {b}) = {sum}"
+                        : $"[Call {index}] add({a}, {b}) " +
+                          "timed out or failed.");
                 }
             }
             else
             {
                 // ---- inv_seri ----
-                bool ok = RemoteInvSeri(client, out string? replyText);
+                bool ok = RemoteInvSeri(out string? replyText);
 
                 lock (stats)
                 {
@@ -277,14 +287,10 @@ internal static class Program
 
                 if (doLog)
                 {
-                    if (ok && replyText is not null)
-                    {
-                        Log($"[Call {index}] {replyText}");
-                    }
-                    else
-                    {
-                        Log($"[Call {index}] inv_seri timed out or failed.");
-                    }
+                    Log(ok && replyText is not null
+                        ? $"[Call {index}] {replyText}"
+                        : $"[Call {index}] inv_seri " +
+                          "timed out or failed.");
                 }
             }
 
@@ -303,16 +309,11 @@ internal static class Program
     /// Invoke the remote "add" API via the ABI channel.
     /// </summary>
     /// <remarks>
-    /// The request is two little-endian int32 values; the reply is one
+    /// Request is two little-endian int32 values; the reply is one
     /// little-endian int32. This is the exact byte sequence the C++
     /// CrossCall.cpp client writes and reads.
     /// </remarks>
-    /// <returns>
-    /// true on success; the sum is returned in <paramref name="sum"/>.
-    /// false on timeout, unreachable target, or an empty reply.
-    /// </returns>
-    private static bool RemoteAdd(
-        LingoFuseClient client, int a, int b, out int sum)
+    private static bool RemoteAdd(int a, int b, out int sum)
     {
         sum = 0;
         try
@@ -321,25 +322,15 @@ internal static class Program
             param.WriteInt32(a);
             param.WriteInt32(b);
 
-            if (!client.TryCallBinary(
-                    TargetApp, param, (ulong)CallTimeoutMs, out var response))
+            using var response = Framework.Call(
+                TargetApp, param, CallTimeoutMs);
+
+            if (response.Size < 4)
             {
                 return false;
             }
-
-            using (response)
-            {
-                if (response is null || response.Size < 4)
-                {
-                    return false;
-                }
-                sum = response.ReadInt32();
-                return true;
-            }
-        }
-        catch (LingoFuseCallException)
-        {
-            return false;
+            sum = response.ReadInt32();
+            return true;
         }
         catch (LingoFuseException)
         {
@@ -355,17 +346,12 @@ internal static class Program
     /// Invoke the remote "inv_seri" API via the ABI channel.
     /// </summary>
     /// <remarks>
-    /// The request is the exact byte sequence
+    /// Request is the exact byte sequence
     /// (uint8, uint16, uint32, uint64, string(NUL), float)
     /// that the C++ CrossCall.cpp client writes. The reply is the same
     /// sequence in reverse field order.
     /// </remarks>
-    /// <returns>
-    /// true on success; a human-readable description of the reply is
-    /// returned in <paramref name="replyText"/>.
-    /// </returns>
-    private static bool RemoteInvSeri(
-        LingoFuseClient client, out string? replyText)
+    private static bool RemoteInvSeri(out string? replyText)
     {
         replyText = null;
         try
@@ -386,37 +372,27 @@ internal static class Program
             param.WriteString(s);
             param.WriteSingle(f);
 
-            if (!client.TryCallBinary(
-                    TargetApp, param, (ulong)CallTimeoutMs, out var response))
+            using var response = Framework.Call(
+                TargetApp, param, CallTimeoutMs);
+
+            if (response.Size == 0)
             {
                 return false;
             }
 
-            using (response)
-            {
-                if (response is null)
-                {
-                    return false;
-                }
+            // Read the reply fields in the reverse order the node
+            // wrote them.
+            float rf = response.ReadSingle();
+            string rs = response.ReadString();
+            ulong ru64 = response.ReadUInt64();
+            uint rc = response.ReadUInt32();
+            ushort rw = response.ReadUInt16();
+            byte rb = response.ReadUInt8();
 
-                // Read the reply fields in the reverse order the node
-                // wrote them.
-                float rf = response.ReadSingle();
-                string rs = response.ReadString();
-                ulong ru64 = response.ReadUInt64();
-                uint rc = response.ReadUInt32();
-                ushort rw = response.ReadUInt16();
-                byte rb = response.ReadUInt8();
-
-                replyText =
-                    $"reply: [{rb}, {rw}, {rc}, {ru64}, \"{rs}\", {rf}]" +
-                    $"  original: [{b}, {w}, {c}, {u64}, \"{s}\", {f}]";
-                return true;
-            }
-        }
-        catch (LingoFuseCallException)
-        {
-            return false;
+            replyText =
+                $"reply: [{rb}, {rw}, {rc}, {ru64}, \"{rs}\", {rf}]" +
+                $"  original: [{b}, {w}, {c}, {u64}, \"{s}\", {f}]";
+            return true;
         }
         catch (LingoFuseException)
         {

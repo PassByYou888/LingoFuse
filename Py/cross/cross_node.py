@@ -5,8 +5,7 @@ CrossNode – Stateless Worker Node
 
 Registers application 'demo', exposes 'add' and 'inv_seri' Call APIs.
 Uses LF_SetOption("Wait_Connection_ReadyOk", "False") to enable deployment
-mode, allowing nodes to start before the service (auto‑reconnect).
-Equivalent to Pascal cross_node.
+mode, allowing nodes to start before the service (auto-reconnect).
 """
 import sys
 import os

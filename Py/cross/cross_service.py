@@ -5,7 +5,7 @@ CrossService – Service Registry (Beacon)
 
 Creates IPC endpoint ipc:cross as the control plane for the C4 service mesh.
 No business APIs are registered. Nodes and clients discover each other via
-this endpoint. Equivalent to Pascal cross_service.
+this endpoint.
 """
 import sys
 import os

@@ -172,7 +172,7 @@ def inv_seri_callback(trigger, inp, out):
         w_ret = result.read_uint16()
         b_ret = result.read_uint8()
         result.free()
-        # Build a formatted string (like the original Pascal demo)
+        # Build a formatted string describing the round-trip
         result_str = (f"Received data sequence [{b_ret}, {w_ret}, {c_ret}, {u64_ret}, \"{s_ret}\", {f_ret:.2f}] = "
                       f"Sent data sequence [{f_ret:.2f}, \"{s_ret}\", {u64_ret}, {c_ret}, {w_ret}, {b_ret}]")
         # Write JSON output (standard format)

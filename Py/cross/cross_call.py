@@ -5,7 +5,7 @@ CrossCall – Concurrent Client (Consumer)
 
 Connects to ipc:cross, alternates between 'add' and 'inv_seri' calls in
 a separate thread for 10 seconds then exits. Multiple instances can be
-run to simulate load. Equivalent to Pascal cross_call.
+run to simulate load.
 """
 import sys
 import os

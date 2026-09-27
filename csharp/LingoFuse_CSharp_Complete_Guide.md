@@ -1,2436 +1,2263 @@
-# LingoFuse C# Binding — Complete Guide
+# LingoFuse C# Interface — Complete Guide
 
-> **Purpose.** This is the single self-contained reference for the
-> `LingoFuse` .NET binding. An AI or human engineer who reads this file
-> alone must be able to write correct, production-grade LingoFuse C#
-> programs without consulting the source.
->
-> **Coverage.** This document describes every public type, method,
-> contract, wire format, exception, and lifecycle rule exposed by the
-> binding. It is written for C# and assumes prior knowledge of .NET and
-> of the LingoFuse wire protocol at the level described in Chapter 12.
->
-> **Version.** Matches the binding after the interface-reform pass
-> (nullable-aware, dual JSON / ABI paths, explicit framework lifecycle).
+**Document version**: 4.0
+**Covers**: LingoFuse native library v3.06 + the two-layer C# binding (assembly `LingoFuse`, namespace `LingoFuse`)
+**Target frameworks**: .NET 8.0+
+**Reading goal**: after reading this document alone, without opening any source file, an engineer or AI agent can write correct, production-grade LingoFuse C# programs.
 
 ---
 
 ## Table of Contents
 
-1. [Overview and Design](#1-overview-and-design)
-2. [Installation and Namespaces](#2-installation-and-namespaces)
-3. [The Load / Unload Contract](#3-the-load--unload-contract)
-4. [The Framework Lifecycle](#4-the-framework-lifecycle)
-5. [DataHandle](#5-datahandle)
-6. [AppHandle](#6-apphandle)
-7. [LingoFuseApp](#7-lingofuseapp)
-8. [Host Classes — Client, Server, Node](#8-host-classes--client-server-node)
-9. [Sync Callbacks](#9-sync-callbacks)
-10. [Network Events](#10-network-events)
-11. [Status and Diagnostics](#11-status-and-diagnostics)
-12. [Cross-Language Wire Contracts](#12-cross-language-wire-contracts)
-13. [JSON Policy](#13-json-policy)
-14. [Exception Hierarchy](#14-exception-hierarchy)
-15. [Complete Examples](#15-complete-examples)
-16. [Anti-Patterns and Pitfalls](#16-anti-patterns-and-pitfalls)
-17. [Quick Reference](#17-quick-reference)
+**Part I — Orientation**
+- [Chapter 0 — What LingoFuse Is](#chapter-0--what-lingofuse-is)
+- [Chapter 1 — Quick Start](#chapter-1--quick-start)
+
+**Part II — Contracts**
+- [Chapter 2 — The Wire Contract](#chapter-2--the-wire-contract)
+- [Chapter 3 — DataHandle](#chapter-3--datahandle)
+- [Chapter 4 — LfIo](#chapter-4--lfio)
+- [Chapter 5 — AppHandle](#chapter-5--apphandle)
+- [Chapter 6 — Framework](#chapter-6--framework)
+- [Chapter 7 — NetworkEvents](#chapter-7--networkevents)
+- [Chapter 8 — LingoFuseStatus](#chapter-8--lingofusestatus)
+- [Chapter 9 — Exception Reference](#chapter-9--exception-reference)
+
+**Part III — Interop and Patterns**
+- [Chapter 10 — Cross-Language Interoperability](#chapter-10--cross-language-interoperability)
+- [Chapter 11 — Lifecycle Patterns](#chapter-11--lifecycle-patterns)
+- [Chapter 12 — Complete Examples](#chapter-12--complete-examples)
+- [Chapter 13 — Pitfalls and Anti-Patterns](#chapter-13--pitfalls-and-anti-patterns)
+
+**Part IV — Reference**
+- [Appendix A — Public API Index](#appendix-a--public-api-index)
+- [Appendix B — Cross-Language Wire Matrix](#appendix-b--cross-language-wire-matrix)
+- [Appendix C — Glossary](#appendix-c--glossary)
+- [Appendix D — Self-Verification Checklist](#appendix-d--self-verification-checklist)
 
 ---
 
-## 1. Overview and Design
+## Chapter 0 — What LingoFuse Is
 
-### 1.1 What LingoFuse is
+### 0.1 One-sentence definition
 
-LingoFuse is a cross-language, cross-process, cross-machine RPC
-framework. A **service** endpoint (the C4 mesh beacon) registers
-applications; **clients** connect to that endpoint and expose their own
-applications or call remote ones.
+> **LingoFuse is a cross-language, cross-process, cross-machine RPC framework built on the C4 service mesh. It lets services written in Pascal, Python, C++, C#, Rust, Java, or any other language call each other with a uniform wire contract.**
 
-The wire protocol is **language-neutral**:
+The C# binding exposes LingoFuse through **11 public types** in a single namespace, split into two strictly-layered groups:
 
-- every string is **UTF-8, NUL-terminated**;
-- every integer and float is **little-endian**;
-- two payload channels are supported: **JSON** and **raw ABI**.
+| Layer | What it does | Types |
+|---|---|---|
+| **Native** (internal) | Direct P/Invoke declarations of the 36 C-ABI exports, the two opaque handle kinds, and three callback prototypes. **User code never touches this layer.** | `NativeMethods` (internal), `DataHnd` (internal), `AppHnd` (internal), `Utf8Marshal` (internal), `LfCallFunc` (internal), `LfNotifyFunc` (internal), `LfNetworkEventFunc` (internal) |
+| **Managed** (public) | RAII handle wrappers, unified JSON/string I/O, process-wide lifecycle facade, network events, status queue, exception hierarchy. | `DataHandle`, `AppHandle`, `LfIo`, `Framework`, `NetworkEvents`, `LingoFuseStatus`, `LingoFuseException`, `LingoFuseCallException`, `LingoFuseIoException`, `LingoFuseObjectDisposedException`, `LingoFuseLibraryLoadException` |
 
-The .NET binding exposes both channels as first-class, so a C# peer can
-interoperate with C++, Pascal, and Python peers regardless of which
-channel those peers use.
+### 0.2 The 8 primary concepts
 
-### 1.2 The three host types
+If you remember nothing else, remember these eight things:
 
-The binding exposes three host classes. They differ only in what they
-own; their outbound API is **identical**.
+1. **A `DataHandle` is a byte buffer with an API name.** You write request bytes into it, read response bytes from it. It is an RAII object: `using` frees the underlying native resource.
 
-| Host              | Owns a service? | Owns an App? | Purpose                                     |
-|-------------------|:---------------:|:------------:|---------------------------------------------|
-| `LingoFuseServer` | ✅               | ✅            | Coordinator: listens and exposes APIs.      |
-| `LingoFuseNode`   | ❌               | ✅            | Worker: attaches to an existing coordinator.|
-| `LingoFuseClient` | ❌               | ❌            | Pure consumer: calls remote APIs only.      |
+2. **A `AppHandle` is an application.** It groups a set of related APIs under a unique name that the mesh uses for routing.
 
-Use `LingoFuseClient` when the process only needs to make calls. Use
-`LingoFuseNode` when a coordinator already exists and this process only
-registers APIs. Use `LingoFuseServer` when this process is the
-coordinator itself.
+3. **`LfIo` is the ONE sanctioned way to move managed objects to and from a `DataHandle`.** Strings, raw bytes, JSON. There is no second path.
 
-### 1.3 The two payload channels
+4. **`Framework` is the process-wide ABI facade.** Prepare the network, send remote calls, set options, generate app names, shut everything down.
 
-Both channels use the same `DataHandle` primitive. They differ in what
-bytes are placed on the wire and who interprets them.
+5. **Callbacks run on native worker threads.** They must not block, must not touch UI, must not call any blocking LingoFuse function.
 
-| Channel | Writer API                                            | Reader API                                            |
-|---------|-------------------------------------------------------|-------------------------------------------------------|
-| JSON    | `LfIo.WriteJson` / `DataHandle.WriteJson`             | `LfIo.ReadJson<T>` / `DataHandle.ReadJson`            |
-| ABI     | `DataHandle.WriteInt32`, `WriteString`, `WriteBytes`, … | `DataHandle.ReadInt32`, `ReadString`, `ReadBytes`, … |
+6. **The JSON wire format is UTF-8 with literal non-ASCII characters.** No `\uXXXX` escapes for characters that can be emitted literally — including emoji.
 
-**Choose one channel per (app, api) pair and use it consistently across
-every language on the mesh.** JSON is convenient for structured data;
-ABI is the right choice for byte-precise interop with C++ / Pascal /
-Python peers.
+7. **Cleanup has a required order**: `NetworkEvents.Clear()` → `Framework.ExitMainThread()` → `App.Dispose()` → `Framework.Shutdown()`.
 
-### 1.4 Layer map
+8. **`Framework.PrepareDone()` returns `1` only once per process.** A second call without an intervening `Shutdown()` returns `0`, which is **not** a failure.
 
-```
-  Your application
-        │
-        ▼
-  LingoFuse.Host          LingoFuseServer / LingoFuseClient / LingoFuseNode
-  LingoFuse.Core          DataHandle / AppHandle / LingoFuseApp / LingoFuseSync
-  LingoFuse.Io            LfIo / JsonPolicy
-  LingoFuse.Diagnostics   LingoFuseStatus
-  LingoFuse.Events        NetworkEvents
-  LingoFuse.Host (runtime)LingoFuseFramework
-  LingoFuse.Native        NativeMethods (P/Invoke, internal)
-        │
-        ▼
-  LingoFuse64.dll / liblingofuse.so / liblingofuse.dylib
+### 0.3 Reading paths
+
+```mermaid
+flowchart TD
+    Start["What do you need?"] --> Q1{"First time?"}
+    Q1 -- "Yes" --> R1["Ch 0.1-0.2, Ch 1, Ch 12"]
+    Q1 -- "No" --> Q2{"Writing a service?"}
+    Q2 -- "Yes" --> R2["Ch 5, Ch 6, Ch 11"]
+    Q2 -- "No" --> Q3{"Writing a client?"}
+    Q3 -- "Yes" --> R3["Ch 3, Ch 4, Ch 6"]
+    Q3 -- "No" --> Q4{"Cross-language interop?"}
+    Q4 -- "Yes" --> R4["Ch 2, Ch 10, App B"]
+    Q4 -- "No" --> Q5{"Debugging a failure?"}
+    Q5 -- "Yes" --> R5["Ch 9, Ch 13"]
+    Q5 -- "No" --> R6["App A (API index)"]
+
+    style Start fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
+    style R1 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+    style R2 fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#FFFFFF
+    style R3 fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#FFFFFF
+    style R4 fill:#E67E22,stroke:#9C4A0C,stroke-width:3px,color:#FFFFFF
+    style R5 fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+    style R6 fill:#3498DB,stroke:#1F618D,stroke-width:3px,color:#FFFFFF
 ```
 
 ---
 
-## 2. Installation and Namespaces
+## Chapter 1 — Quick Start
 
-### 2.1 Required files
+### 1.1 Project setup
 
-The binding is a single class library. Its public types live in these
-namespaces:
+Add a project reference to the LingoFuse binding assembly:
 
-| Namespace              | Contains                                              |
-|------------------------|-------------------------------------------------------|
-| `LingoFuse`            | Exceptions (base and derived).                        |
-| `LingoFuse.Core`       | `DataHandle`, `AppHandle`, `LingoFuseSync`.           |
-| `LingoFuse.Host`       | `LingoFuseServer`, `LingoFuseClient`, `LingoFuseNode`, `LingoFuseApp`, `LingoFuseFramework`. |
-| `LingoFuse.Io`         | `LfIo`, `JsonPolicy`.                                 |
-| `LingoFuse.Diagnostics`| `LingoFuseStatus`.                                    |
-| `LingoFuse.Events`     | `NetworkEvents`.                                      |
-| `LingoFuse.Native`     | `DataHnd`, `AppHnd`, delegate types (public but only used by the binding itself). |
+```xml
+<ItemGroup>
+  <ProjectReference Include="..\src\LingoFuse\LingoFuse.csproj" />
+</ItemGroup>
+```
 
-A typical application starts with:
+Or, if the binding ships as a NuGet package, add:
+
+```xml
+<PackageReference Include="LingoFuse" Version="1.0.0" />
+```
+
+Add only one `using`:
 
 ```csharp
 using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Diagnostics;
-using LingoFuse.Events;
-using LingoFuse.Host;
-using LingoFuse.Io;
 ```
 
-### 2.2 Target frameworks
+No other namespace is public.
 
-The binding targets `net8.0` / `net9.0` and requires `x64`. Do **not**
-target `Any CPU`: the native library is a 64-bit binary on 64-bit
-platforms.
+### 1.2 Minimal service
 
-### 2.3 The nullable context
+```csharp
+using System;
+using LingoFuse;
 
-The binding is compiled with `<Nullable>enable</Nullable>`. Public
-methods use `T?` annotations where the return can be null. Note that
-**`T?` on an unconstrained generic parameter is not `Nullable<T>`** — see
-§7.6 for the consequences.
+using var app = new AppHandle("Calculator", "Demo calculator");
+
+// Register a JSON API: takes an int[] {a, b}, returns {"result": a+b}.
+app.RegisterCall("add", "Add two ints", (input, output) =>
+{
+    var args = LfIo.ReadJson<int[]>(input);
+    LfIo.WriteJson(output, new { result = args[0] + args[1] });
+});
+
+Framework.SetOption("Overlap_Connection", "True");
+Framework.ResetPrepare();
+Framework.PrepareService("ipc:calc", "ipc:calc");
+Framework.PrepareClient("ipc:calc", app);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+Console.WriteLine("Ready. Press Enter to stop.");
+Console.ReadLine();
+
+Framework.ExitMainThread();
+Framework.Shutdown();
+```
+
+### 1.3 Minimal client
+
+```csharp
+using System;
+using LingoFuse;
+
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.SetOption("Overlap_Connection", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:calc", null);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+using var request = new DataHandle("add");
+LfIo.WriteJson(request, new[] { 5, 7 });
+
+using var response = Framework.Call("Calculator", request, timeoutMs: 3000);
+if (response.Size == 0)
+{
+    Console.WriteLine("Call failed (timeout or unreachable)");
+    return;
+}
+
+var result = LfIo.ReadJson<System.Text.Json.JsonElement>(response);
+Console.WriteLine($"5 + 7 = {result.GetProperty("result").GetInt32()}");
+
+Framework.ExitMainThread();
+Framework.Shutdown();
+```
+
+### 1.4 Hello world: three terminals
+
+```
+Terminal 1:  dotnet run --project crossService
+Terminal 2:  dotnet run --project CrossNode      (after terminal 1 prints "running")
+Terminal 3:  dotnet run --project CrossCall      (after terminal 2 prints "Online")
+```
+
+The demo registers a `demo` application with two APIs (`add`, `inv_seri`), runs a 32-thread load test for 10 seconds, and prints a throughput summary.
 
 ---
 
-## 3. The Load / Unload Contract
+## Chapter 2 — The Wire Contract
 
-### 3.1 Lazy loading
+This is the single most important chapter. Every cross-language bug you will encounter traces back to violating one of these five contracts.
 
-The native library is loaded **lazily**, on the first P/Invoke into any
-`LF_*` function. There is **no** `LF_LoadLibrary` step at the .NET level
-(unlike the C wrapper shipped with the Pascal distribution). The static
-constructor of the internal `NativeMethods` class installs a
-`DllImportResolver` that maps the logical name `"LingoFuse"` to the
-platform file:
+### 2.1 Contract 1: NUL framing for strings
 
-| Platform      | File                    |
-|---------------|-------------------------|
-| Windows x64   | `LingoFuse64.dll`       |
-| Windows x86   | `LingoFuse32.dll`       |
-| Linux / BSD   | `liblingofuse.so`       |
-| macOS         | `liblingofuse.dylib`    |
+Every string on the wire is:
 
-The resolver is registered the first time any `NativeMethods` member is
-touched, which happens on the first host operation.
+```
+[UTF-8 bytes][0x00]
+```
 
-### 3.2 Load failure
+A raw binary payload is:
 
-If the resolver cannot find the file, the first `LF_*` call throws a
-`DllNotFoundException` (or `BadImageFormatException` on an architecture
-mismatch). Wrap the first host operation in a try/catch:
+```
+[arbitrary bytes][0x00]
+```
+
+The NUL is what the receiver uses to find the end.
+
+### 2.2 Contract 2: UTF-8, no escapes
+
+The only text encoding on the wire is UTF-8. Non-ASCII characters are emitted as literal UTF-8 bytes:
+
+- `"你好"` → `E4 BD A0 E5 A5 BD` (6 bytes)
+- `"🌍"` → `F0 9F 8C 8D` (4 bytes)
+
+**Never** as `\uXXXX` escapes:
+
+- ❌ `"你好"` → `\u4f60\u597d` (12 ASCII characters)
+- ❌ `"🌍"` → `\ud83c\udf0d` (12 ASCII characters)
+
+The binding's `LfIo.WriteJson` explicitly unescapes BMP characters and supplementary-plane characters (surrogate pairs) to enforce this. Both `DataHandle.WriteString` and `LfIo.WriteJson` produce literal UTF-8.
+
+### 2.3 Contract 3: Little-endian integers
+
+All integer and floating-point types are encoded little-endian:
+
+```
+int32 0x01020304  →  bytes 04 03 02 01
+uint16 0xAABB     →  bytes BB AA
+```
+
+On x86/x64/ARM64, the host byte order is already little-endian, so `DataHandle.WriteInt32(0x01020304)` produces the correct wire bytes without any conversion.
+
+### 2.4 Contract 4: Fault-tolerant read
+
+When reading a NUL-framed string, if no NUL is found before the end of the buffer, **the entire remaining buffer is consumed** and the cursor advances to `size + 1` (one byte past the end).
+
+This is what makes interop with HTTP bridges, browsers, and hand-written clients possible: they don't append a NUL, and the reader still works.
+
+Three cases for `DataHandle.ReadString()`:
+
+| Cursor position | Behavior |
+|---|---|
+| `< size`, NUL found at `e` | Returns bytes `[start, e)`. Cursor → `e + 1`. |
+| `< size`, no NUL | Returns bytes `[start, size)`. Cursor → `size + 1`. |
+| `>= size` | Returns `""`. Cursor unchanged. |
+
+### 2.5 Contract 5: JSON policy
+
+Every JSON payload produced by the binding goes through **one** serializer configuration, defined privately inside `LfIo`:
+
+| Property | Value | Reason |
+|---|---|---|
+| `WriteIndented` | `false` | Compact, no trailing newline |
+| `Encoder` | `UnsafeRelaxedJsonEscaping` | Emit BMP as literal UTF-8 |
+| `PropertyNameCaseInsensitive` | `false` | Case-sensitive matching |
+| `DefaultIgnoreCondition` | `Never` | Even null properties are serialized |
+| `NumberHandling` | `Strict` | No string-to-number coercion |
+
+Plus a post-processing step (`UnescapeSurrogatePairs`) that rewrites surrogate escape pairs (`\uD8xx\uDCxx`) back to raw chars, so supplementary-plane characters (emoji) are also emitted as literal UTF-8.
+
+**Property names**: System.Text.Json uses the C# property name verbatim. For a property named `MyValue`, the JSON key is `"MyValue"`, not `"my_value"`. To change this, annotate the property:
 
 ```csharp
-try
+public sealed class Request
 {
-    using var client = new LingoFuseClient("ipc:svc");
-    client.Connect();
-}
-catch (DllNotFoundException ex)
-{
-    Console.Error.WriteLine(
-        "Cannot load LingoFuse native library: " + ex.Message);
-    return 1;
+    [System.Text.Json.Serialization.JsonPropertyName("user_name")]
+    public string UserName { get; set; } = "";
 }
 ```
 
-### 3.3 Where to place the file
-
-Put the native library **next to the executable** (in the same folder as
-`YourApp.dll` / `YourApp.exe`), or somewhere on the OS loader path:
-
-- Windows: `PATH`
-- Linux: `LD_LIBRARY_PATH`
-- macOS: `DYLD_LIBRARY_PATH`
-
-There is no environment variable override at the .NET level.
-
-### 3.4 Unload
-
-There is **no explicit unload** at the .NET level. The native library is
-released by the OS when the process exits. Use
-`LingoFuseFramework.Shutdown()` (§4.2) to stop the framework's threads
-and release its resources **before** process exit; the file handle is
-released afterwards by the OS.
+The binding deliberately does **not** expose its `JsonSerializerOptions` publicly: a second serialization path would fragment the wire contract.
 
 ---
 
-## 4. The Framework Lifecycle
+## Chapter 3 — DataHandle
 
-The native framework is **process-wide**. It is either running (the
-simulated main thread is alive) or stopped. Every host class in the
-binding cooperates through a single internal state machine.
+### 3.1 What it is
 
-### 4.1 `LingoFuseFramework` — the public lifecycle entry point
+`DataHandle` is an RAII wrapper around a native byte buffer with an API name. It is the lowest-level primitive in the managed layer. Everything else (`LfIo`, `AppHandle` callbacks, `Framework.Call`) operates on `DataHandle` instances.
 
 ```csharp
-public static class LingoFuseFramework
-{
-    public static bool IsStarted { get; }
-
-    public static void Shutdown();
-    public static void ExitMainThread();
-    public static void ResetPrepare();
-}
-```
-
-| Member              | Effect                                                                                                 |
-|---------------------|--------------------------------------------------------------------------------------------------------|
-| `IsStarted`         | True when `LF_PrepareDone` has been called and the simulated main thread is alive.                     |
-| `Shutdown()`        | Full teardown: clears network events, `LF_ExitMainThread`, `LF_Shutdown`, resets the internal cache.    |
-| `ExitMainThread()`  | Stops the simulated main thread but keeps the native library loaded.                                    |
-| `ResetPrepare()`    | Equivalent to `LF_ResetPrepare`: discards any pending service/client preparations.                      |
-
-### 4.2 When to call `Shutdown()`
-
-**Before process exit**, so that the simulated main thread and every
-background worker thread are stopped deterministically. If you do not
-call it:
-
-- the OS will still reclaim the process's threads and memory when the
-  process exits;
-- but if the process hosts LingoFuse as a plugin inside a larger host
-  application, the host cannot unload the plugin cleanly, because the
-  framework's threads are still alive.
-
-### 4.3 `Shutdown()` is idempotent
-
-Call it as many times as you want; the second call is a no-op. All
-failures are swallowed: a shutdown path that itself throws is worse than
-a silent no-op.
-
-### 4.4 The recommended exit pattern
-
-Every application that uses LingoFuse should end with:
-
-```csharp
-LingoFuseFramework.Shutdown();
-```
-
-The three host classes provide a `FullCleanup()` convenience method
-that does exactly this (see §8.6).
-
----
-
-## 5. DataHandle
-
-`DataHandle` is the **only** primitive the binding exposes for reading
-and writing payload bytes. Every API in the binding ultimately reads
-from or writes into a `DataHandle`.
-
-### 5.1 Class shape
-
-```csharp
-namespace LingoFuse.Core;
-
 public sealed class DataHandle : IDisposable
+```
+
+### 3.2 Ownership model
+
+There are two kinds of `DataHandle`:
+
+| Kind | Created by | `Dispose()` behavior |
+|---|---|---|
+| **Owning** | `new DataHandle("api")` | Calls `LF_FreeData` on the native handle |
+| **Borrowing** | `DataHandle.FromRaw(raw, owned: false)` | **No-op** — the native layer owns the resource |
+
+Borrowed handles are used inside callbacks: the native layer hands you a raw pointer, and it will free it as soon as your callback returns. If you call `Dispose()` on a borrowed handle, nothing happens — the wrapper's state is unchanged, and you can continue to read from it for the rest of the callback.
+
+**Never construct a `DataHandle` from a raw pointer unless you are inside a callback.** Outside a callback, `FromRaw` with `owned: false` leaks the underlying resource.
+
+### 3.3 Construction
+
+```csharp
+public DataHandle(string apiName)
+```
+
+Creates a new owning data handle with the given API name. The underlying buffer starts empty.
+
+- `apiName` must not be null. An empty string is technically allowed but unusual.
+- Throws `ArgumentNullException` if `apiName` is null.
+- Throws `LingoFuseException` if the native library fails to allocate.
+
+```csharp
+public static DataHandle FromRaw(IntPtr raw, bool owned)
+```
+
+Wraps an existing raw pointer. Use `owned: false` inside a callback.
+
+### 3.4 Identity and state
+
+| Member | Type | Description |
+|---|---|---|
+| `Raw` | `IntPtr` | Raw native pointer. `IntPtr.Zero` after an owning handle is disposed. |
+| `IsValid` | `bool` | True while the handle is usable. A borrowed handle is always valid until the native layer releases it. |
+| `IsOwning` | `bool` | True when `Dispose()` will free the native handle. |
+
+### 3.5 Position and size
+
+| Member | Get | Set |
+|---|---|---|
+| `Position` | `long`, current cursor | `long`, must be non-negative; a value past the current size **implicitly grows** the buffer with uninitialized bytes |
+| `Size` | `long`, total buffer size | `long`, must be non-negative; growing leaves new bytes uninitialized |
+| `GetBufferPointer()` | `IntPtr`, native buffer pointer | — |
+
+**Pitfall**: The pointer returned by `GetBufferPointer()` is invalidated by any subsequent write, resize, or `Position` assignment past the end. Do not cache it.
+
+### 3.6 Byte I/O
+
+Two families of read operations:
+
+```csharp
+public long WriteBytes(byte[] data)
+```
+
+Appends `data` at the current cursor. Buffer grows as needed. Returns the number of bytes written (equal to `data.Length`, or `0` if `data` is empty). **Throws `LingoFuseIoException` on a short write.**
+
+```csharp
+public byte[] ReadBytes(int count)
+```
+
+Reads **up to** `count` bytes. Returns fewer if the buffer ends early. Never throws for a short read. The result is never null.
+
+```csharp
+public byte[] ReadBytesExact(int count)
+```
+
+Reads **exactly** `count` bytes. On a short read, restores the cursor to its original position and **throws `LingoFuseIoException`** with `Operation = "ReadBytesExact"`.
+
+```csharp
+public bool TryReadBytes(int count, out byte[]? value)
+```
+
+Non-throwing counterpart of `ReadBytesExact`. On a short read, restores the cursor and returns `false`.
+
+```csharp
+public byte[] ReadAllBytes()
+```
+
+Reads every remaining byte from the cursor to the end. Advances the cursor to the end.
+
+**When to use which**:
+
+- **`ReadBytes`**: you want "as much as available" — for streaming or chunked reads.
+- **`ReadBytesExact`**: you want "all or nothing" — for fixed-size fields.
+- **`TryReadBytes`**: same as above, but you want a boolean result.
+
+### 3.7 Atomic types (little-endian)
+
+| Write | Read (exact) | Read (Try) |
+|---|---|---|
+| `WriteInt8(sbyte)` | `ReadInt8() : sbyte` | `TryReadInt8(out sbyte)` |
+| `WriteUInt8(byte)` | `ReadUInt8() : byte` | `TryReadUInt8(out byte)` |
+| `WriteInt16(short)` | `ReadInt16() : short` | `TryReadInt16(out short)` |
+| `WriteUInt16(ushort)` | `ReadUInt16() : ushort` | `TryReadUInt16(out ushort)` |
+| `WriteInt32(int)` | `ReadInt32() : int` | `TryReadInt32(out int)` |
+| `WriteUInt32(uint)` | `ReadUInt32() : uint` | `TryReadUInt32(out uint)` |
+| `WriteInt64(long)` | `ReadInt64() : long` | `TryReadInt64(out long)` |
+| `WriteUInt64(ulong)` | `ReadUInt64() : ulong` | `TryReadUInt64(out ulong)` |
+| `WriteSingle(float)` | `ReadSingle() : float` | `TryReadSingle(out float)` |
+| `WriteDouble(double)` | `ReadDouble() : double` | `TryReadDouble(out double)` |
+
+All exact readers throw `LingoFuseIoException` on a short read. All `Try*` variants return `false` and leave the cursor unchanged.
+
+### 3.8 String I/O
+
+```csharp
+public void WriteString(string value)
+```
+
+Writes `value` as UTF-8 followed by a single NUL byte. An empty string writes exactly **one byte** (the NUL).
+
+```csharp
+public string ReadString()
+```
+
+Reads until the first NUL, or until the end of the buffer. Invalid UTF-8 byte sequences are decoded with the encoder's default fallback: each invalid byte becomes `U+FFFD`. This is **binary-safe** — a C# reader never throws on malformed UTF-8. If you need to detect invalid UTF-8, read the raw bytes and inspect them yourself.
+
+```csharp
+public bool TryReadString(out string? value)
+```
+
+Returns `false` only when the cursor is at or past the end of the buffer. A payload consisting of a single NUL (empty string) returns `true` with `value == ""`.
+
+### 3.9 Lifecycle
+
+```csharp
+public void Dispose()
+```
+
+- **Owning**: calls `LF_FreeData`. Idempotent. All subsequent operations throw `LingoFuseObjectDisposedException`.
+- **Borrowing**: **no-op**. The wrapper's state is unchanged, and the handle remains usable for the rest of the callback body.
+
+The `_handle` field is declared `volatile`, so a `Dispose()` on one thread is observed by an `EnsureNotDisposed()` on another without an external lock. This is sufficient for the "do not use after dispose" contract; it does not make concurrent writes safe.
+
+**Do not share an owning `DataHandle` across threads for writing.** Different instances are fully independent and can be used concurrently without restriction.
+
+### 3.10 Complete example
+
+```csharp
+using var dh = new DataHandle("demo");
+dh.WriteInt32(42);
+dh.WriteString("hello");
+dh.WriteUInt16(0xABCD);
+
+dh.Position = 0;
+int a = dh.ReadInt32();        // 42
+string s = dh.ReadString();    // "hello"
+ushort u = dh.ReadUInt16();    // 0xABCD
+// dh.Position == dh.Size
+```
+
+---
+
+## Chapter 4 — LfIo
+
+### 4.1 What it is
+
+`LfIo` is the single entry point for JSON and string I/O on a `DataHandle`. Its job is to centralize:
+
+1. The framing policy (NUL termination).
+2. The JSON serialization policy (compact, literal UTF-8, no escapes).
+3. The read tolerance (fault-tolerant NUL handling).
+
+**There is no second path.** If you find yourself tempted to write `System.Text.Json.JsonSerializer.Serialize` directly, stop — you are about to violate the wire contract.
+
+```csharp
+public static class LfIo
+```
+
+### 4.2 String I/O
+
+```csharp
+public static void WriteString(DataHandle handle, string value)
+public static string ReadString(DataHandle handle)
+```
+
+Thin wrappers around `DataHandle.WriteString` / `DataHandle.ReadString`.
+
+### 4.3 Byte-oriented I/O
+
+```csharp
+public static void WriteStringBytes(DataHandle handle, byte[] data)
+```
+
+Writes raw bytes followed by a NUL terminator. **Embedded NUL bytes are preserved.** Unlike `WriteString`, this method does not stop at embedded NULs — it writes `data.Length` bytes verbatim, then appends one NUL.
+
+Use this when you have pre-serialized UTF-8 bytes (for example from `JsonSerializer.SerializeToUtf8Bytes`) and want to avoid a `string` round-trip.
+
+```csharp
+public static byte[] ReadStringBytes(DataHandle handle)
+public static byte[] ReadAllBytes(DataHandle handle)
+```
+
+The first stops at the first NUL (fault-tolerant: reads all remaining if no NUL). The second reads everything without NUL handling.
+
+### 4.4 JSON I/O
+
+```csharp
+public static void WriteJson(DataHandle handle, object? value)
+```
+
+Serializes `value` using the canonical policy and writes it with a NUL terminator.
+
+- A `null` value produces the four-byte literal `null`.
+- Throws `LingoFuseException` on serialization failure.
+- Throws `LingoFuseIoException` on a short write.
+
+```csharp
+public static T ReadJson<T>(DataHandle handle)
+```
+
+Deserializes a NUL-framed JSON payload into `T`.
+
+- Throws `LingoFuseException` when the payload is not valid JSON, or when it cannot be materialized as `T`.
+- Throws `LingoFuseObjectDisposedException` if the handle is disposed.
+- If the payload is `null` and `T` is a reference type or `Nullable<T>`, returns `null`. If `T` is a non-nullable value type, throws `LingoFuseException`.
+
+```csharp
+public static bool TryReadJson<T>(DataHandle handle, out T? value)
+```
+
+Non-throwing counterpart. Returns `false` when:
+
+- The payload is empty.
+- The payload is not valid JSON.
+- The payload cannot be materialized as `T`.
+
+Catches both `JsonException` and `NotSupportedException` (for unsupported types like interfaces without converters).
+
+### 4.5 Example: JSON round trip
+
+```csharp
+public sealed class Person
 {
-    // Construction
-    public DataHandle(string apiName);
-    public static DataHandle FromRaw(IntPtr raw, bool owned);
-
-    // Identity and state
-    public IntPtr Raw { get; }
-    public bool IsValid { get; }
-    public bool IsOwning { get; }
-
-    // Position and size
-    public long Position { get; set; }
-    public long Size { get; set; }
-    public IntPtr GetBufferPointer();
-
-    // Byte I/O (partial-read family)
-    public long WriteBytes(byte[] data);
-    public byte[] ReadBytes(int count);
-    public byte[] ReadAllBytes();
-
-    // Byte I/O (exact-read family)
-    public byte[] ReadBytesExact(int count);
-    public bool   TryReadBytes(int count, out byte[]? value);
-
-    // Atomic write family (little-endian)
-    public void WriteInt8(sbyte value);
-    public void WriteUInt8(byte value);
-    public void WriteInt16(short value);
-    public void WriteUInt16(ushort value);
-    public void WriteInt32(int value);
-    public void WriteUInt32(uint value);
-    public void WriteInt64(long value);
-    public void WriteUInt64(ulong value);
-    public void WriteSingle(float value);
-    public void WriteDouble(double value);
-
-    // Atomic read family (exact semantics, throws on short read)
-    public sbyte   ReadInt8();
-    public byte    ReadUInt8();
-    public short   ReadInt16();
-    public ushort  ReadUInt16();
-    public int     ReadInt32();
-    public uint    ReadUInt32();
-    public long    ReadInt64();
-    public ulong   ReadUInt64();
-    public float   ReadSingle();
-    public double  ReadDouble();
-
-    // Atomic read family (non-throwing)
-    public bool TryReadInt8(out sbyte value);
-    public bool TryReadUInt8(out byte value);
-    public bool TryReadInt16(out short value);
-    public bool TryReadUInt16(out ushort value);
-    public bool TryReadInt32(out int value);
-    public bool TryReadUInt32(out uint value);
-    public bool TryReadInt64(out long value);
-    public bool TryReadUInt64(out ulong value);
-    public bool TryReadSingle(out float value);
-    public bool TryReadDouble(out double value);
-
-    // NUL-framed string I/O
-    public void   WriteString(string value);
-    public string ReadString();
-    public bool   TryReadString(out string? value);
-
-    // Lifetime
-    public void Dispose();
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
 }
+
+using var dh = new DataHandle("json_poco");
+var original = new Person { Name = "Alice", Age = 30 };
+LfIo.WriteJson(dh, original);
+
+dh.Position = 0;
+var back = LfIo.ReadJson<Person>(dh);
+// back.Name == "Alice", back.Age == 30
+```
+
+The serialized JSON is:
+
+```
+{"Name":"Alice","Age":30}\0
+```
+
+Note the property names are `"Name"` and `"Age"` (C# names verbatim), not `"name"` and `"age"`.
+
+### 4.6 Example: JSON with snake_case
+
+```csharp
+public sealed class Request
+{
+    [System.Text.Json.Serialization.JsonPropertyName("user_name")]
+    public string UserName { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonPropertyName("request_id")]
+    public int RequestId { get; set; }
+}
+```
+
+Serializes as `{"user_name":"...","request_id":...}` — matching the convention used by Python, C++, and Pascal peers.
+
+### 4.7 Example: JSON array
+
+```csharp
+using var dh = new DataHandle("json_array");
+LfIo.WriteJson(dh, new int[] { 1, 2, 3 });
+
+dh.Position = 0;
+var back = LfIo.ReadJson<int[]>(dh);   // [1, 2, 3]
+```
+
+### 4.8 Example: JSON with unicode
+
+```csharp
+using var dh = new DataHandle("json_unicode");
+LfIo.WriteJson(dh, new { message = "你好 🌍" });
+
+dh.Position = 0;
+var text = dh.ReadString();
+// text contains: {"message":"你好 🌍"}
+// NOT: {"message":"\u4f60\u597d \ud83c\udf0d"}
+```
+
+The wire bytes for `"你好 🌍"` are:
+
+```
+E4 BD A0 E5 A5 BD 20 F0 9F 8C 8D
+```
+
+All literal UTF-8. No escapes.
+
+### 4.9 Why there is no public Options
+
+`LfIo` deliberately does **not** expose its `JsonSerializerOptions`. Exposing them would allow callers to build a second serialization path — different encoder, different indentation, different null handling — defeating the entire purpose of having a single wire contract.
+
+If you need to customize the JSON shape of your payload, customize your **types**:
+
+- Use `[JsonPropertyName]` to change a key.
+- Use `[JsonIgnore]` to omit a property.
+- Use `[JsonConverter]` to control a custom type's encoding.
+
+But the outer policy — compact, literal UTF-8, no escapes — is not adjustable.
+
+---
+
+## Chapter 5 — AppHandle
+
+### 5.1 What it is
+
+`AppHandle` is an RAII wrapper around a native application. An application is a named container of related APIs.
+
+```csharp
+public sealed class AppHandle : IDisposable
 ```
 
 ### 5.2 Construction
 
-#### 5.2.1 Owning handle
-
 ```csharp
-var dh = new DataHandle("add");
+public AppHandle(string name, string description = "")
 ```
 
-Creates a native data handle bound to the API name `"add"`. The handle
-**owns** the underlying native resource; `Dispose()` will call
-`LF_FreeData`. The buffer starts empty.
+Creates a new application with the given name and description.
 
-Throws `ArgumentNullException` if `apiName` is null.
-Throws `LingoFuseException` if the native allocation fails (rare).
+- `name` must not be null. Should be unique on the mesh. Case-insensitive matching applies at lookup time.
+- `description` may be null; treated as empty.
+- Throws `LingoFuseException` if the native side fails to allocate.
 
-#### 5.2.2 Borrowing handle
+**Application name uniqueness**: if you create a new `AppHandle` with a name that is already in use, the native side will create the new application, but the old one will still be in the global pool until `LF_Shutdown`. Routing will target whichever registered first; the second may be reachable only after the mesh re-broadcasts. **Prefer distinct names.**
+
+### 5.3 Identity and state
+
+| Member | Type | Description |
+|---|---|---|
+| `Name` | `string` | The name passed to the constructor. |
+| `Raw` | `IntPtr` | Raw native pointer. `IntPtr.Zero` after `Dispose`. |
+| `IsValid` | `bool` | True while the handle is usable. |
+
+### 5.4 API registration
 
 ```csharp
-var borrowed = DataHandle.FromRaw(rawPtr, owned: false);
+public bool RegisterCall(
+    string apiName,
+    string description,
+    Action<DataHandle, DataHandle> handler)
+
+public bool RegisterNotify(
+    string apiName,
+    string description,
+    Action<DataHandle> handler)
 ```
 
-Wraps an existing native pointer **without** taking ownership.
-`Dispose()` is a **no-op**; the native layer retains the resource. This
-is the form used internally when the binding passes `input` and
-`output` handles into a callback.
+Registers a Call (request-response) or Notify (one-way) API.
 
-**Critical**: an owning handle that is disposed releases the native
-resource. A borrowing handle that is disposed does nothing — the caller
-must let the native layer release the resource at the end of the
-callback.
+- Returns `true` on success, `false` if the API name is already taken.
+- Throws `ArgumentNullException` if `apiName` or `handler` is null.
+- Throws `LingoFuseObjectDisposedException` if the handle is already disposed.
 
-### 5.3 Position and size
+**Callback signature**:
 
-| Member                       | Behaviour                                                                                             |
-|------------------------------|-------------------------------------------------------------------------------------------------------|
-| `Position` (get/set)         | Current read/write cursor in bytes. Setting past `Size` **grows** the buffer; the new bytes are zero or uninitialised (implementation-defined). |
-| `Size` (get/set)             | Total buffer size. Setting smaller truncates; setting larger grows.                                    |
-| `GetBufferPointer()`         | Returns the native pointer. **Invalidated** by any resize, including a write.                          |
+- Call: `Action<DataHandle input, DataHandle output>` — you read from `input`, write to `output`.
+- Notify: `Action<DataHandle input>` — you read from `input`, no output.
 
-Setting a negative value throws `ArgumentOutOfRangeException`.
+**Borrowed handles**: the `DataHandle` instances passed to your callback are **borrowed** from the native layer. Do **not** call `Dispose()` on them (it's a harmless no-op, but don't do it). Do **not** cache them or any pointer obtained from them beyond the callback's return.
 
-### 5.4 Byte I/O
-
-#### 5.4.1 Partial reads
+**Callback exceptions**: any exception your handler throws is caught by the wrapper and reported through `Framework.ReportCallbackError`. The native layer sees a callback that completed normally, and the caller receives an empty response. Your handler cannot crash the process with an unhandled exception.
 
 ```csharp
-long WriteBytes(byte[] data);   // appends at cursor, returns bytes written
-byte[] ReadBytes(int count);    // reads up to `count`, returns actual bytes
-byte[] ReadAllBytes();          // reads from cursor to end, advances to end
+public bool Unregister(string apiName)
 ```
 
-`ReadBytes` returns **fewer** bytes than requested when the buffer ends
-early. The returned array can be empty. **Never throws for a short
-read.**
+Removes a previously registered API. Local effect is immediate; a network broadcast propagates within a few seconds. Returns `true` if the API was found and removed.
 
-`WriteBytes` accepts an empty array (no-op, returns 0). Throws
-`ArgumentNullException` for a null array.
-
-#### 5.4.2 Exact reads
+### 5.5 Local execution
 
 ```csharp
-byte[] ReadBytesExact(int count);
-bool   TryReadBytes(int count, out byte[]? value);
+public DataHandle LocalCall(DataHandle param)
+public void LocalNotify(DataHandle param)
 ```
 
-`ReadBytesExact` requires exactly `count` bytes. On a short read:
+Execute a Call or Notify API **within the same process**, bypassing the network.
 
-- the cursor is **left unchanged** (rolled back to its pre-call value);
-- a `LingoFuseIoException` is thrown with `Operation == "ReadBytesExact"`.
+- `LocalCall` returns a new `DataHandle` owning the result. The caller must dispose it.
+- The request handle is **not** consumed by this call; the caller retains ownership.
+- Throws `LingoFuseCallException` if the native layer returns a null handle (an unexpected transport-level failure).
+- When the target API is not registered, the returned handle has `Size == 0`.
 
-`TryReadBytes` performs the same check but returns `false` on a short
-read (cursor unchanged). The `out` value is `null` on failure.
+Local execution is useful for:
 
-### 5.5 Atomic I/O — write family
+- Testing without a network.
+- Inter-module communication within the same process.
+- Performance-critical paths where the network hop is unnecessary.
 
-All writers append at the cursor and advance it by the size of the
-type. All integers and floats use **little-endian** encoding.
-
-| Method           | Size | Notes                            |
-|------------------|:----:|----------------------------------|
-| `WriteInt8`      | 1    | signed                           |
-| `WriteUInt8`     | 1    | unsigned                         |
-| `WriteInt16`     | 2    | little-endian                    |
-| `WriteUInt16`    | 2    | little-endian                    |
-| `WriteInt32`     | 4    | little-endian                    |
-| `WriteUInt32`    | 4    | little-endian                    |
-| `WriteInt64`     | 8    | little-endian                    |
-| `WriteUInt64`    | 8    | little-endian                    |
-| `WriteSingle`    | 4    | IEEE 754 single-precision, LE    |
-| `WriteDouble`    | 8    | IEEE 754 double-precision, LE    |
-
-### 5.6 Atomic I/O — exact-read family
-
-The exact-read family requires exactly the type's size in bytes. On a
-short read, the cursor is rolled back and `LingoFuseIoException` is
-thrown.
-
-| Method           | Requires | Notes                              |
-|------------------|:--------:|------------------------------------|
-| `ReadInt8`       | 1 byte   | signed                             |
-| `ReadUInt8`      | 1 byte   | unsigned                           |
-| `ReadInt16`      | 2 bytes  | little-endian                      |
-| `ReadUInt16`     | 2 bytes  | little-endian                      |
-| `ReadInt32`      | 4 bytes  | little-endian                      |
-| `ReadUInt32`     | 4 bytes  | little-endian                      |
-| `ReadInt64`      | 8 bytes  | little-endian                      |
-| `ReadUInt64`     | 8 bytes  | little-endian                      |
-| `ReadSingle`     | 4 bytes  | IEEE 754 single-precision, LE      |
-| `ReadDouble`     | 8 bytes  | IEEE 754 double-precision, LE      |
-
-### 5.7 Atomic I/O — Try-read family
-
-Each `TryReadXxx(out T value)` mirrors its throwing counterpart but
-returns `false` instead of throwing. **The cursor is left unchanged on
-failure.** On success, the value is returned via the `out` parameter.
-
-### 5.8 NUL-framed string I/O
-
-#### 5.8.1 `WriteString(string value)`
-
-Writes `value` as UTF-8 bytes, followed by **one NUL byte (`0x00`)**.
-
-- Empty string → exactly one byte: `0x00`.
-- Invalid .NET strings (unpaired surrogates) are replaced with U+FFFD
-  by the encoder's default fallback; the writer does not throw.
-- Throws `ArgumentNullException` for a null argument.
-
-#### 5.8.2 `ReadString()`
-
-Reads a UTF-8 string from the current cursor, stopping at the first NUL
-byte. The cursor advances to just **past** the NUL.
-
-**Fault-tolerant behaviour** (critical for cross-language interop):
-
-- If a NUL **is** found at offset `end`, the cursor is set to `end + 1`.
-- If **no** NUL is found before the end of the buffer, **all remaining
-  bytes are consumed**, and the cursor is set to `size + 1` — one byte
-  past the end. The underlying library implicitly grows the buffer by
-  one byte to accommodate this position.
-
-This matches the C++ `read_string` and the Pascal `LF_ReadString`
-helpers exactly. It is what makes the reader tolerant of payloads that
-arrive from an HTTP bridge or any other non-NUL-terminating producer.
-
-**Invalid UTF-8**: byte sequences that are not valid UTF-8 are decoded
-with the encoder's default fallback (each invalid byte becomes U+FFFD).
-This **matches Pascal's behaviour but differs from Python (which
-raises) and C++ (which returns raw bytes)**. See §12.6.
-
-**Cursor at or past end**: returns an empty string; cursor unchanged.
-
-#### 5.8.3 `TryReadString(out string? value)`
-
-Returns `false` if the cursor is at or past the end of the buffer (with
-`value = null`). Otherwise reads the string and returns `true`.
-Never throws for a malformed payload.
-
-### 5.9 Disposal
+### 5.6 Client binding
 
 ```csharp
-using var dh = new DataHandle("add");
-// ... use dh ...
-// Dispose at scope exit.
+public int Bind()
 ```
 
-`Dispose()` is idempotent. The **only** case in which it does something
-is when `IsOwning == true`. For a borrowed handle, `Dispose()` is a
-no-op; the wrapper state remains valid so that an accidental call inside
-a callback cannot corrupt the wrapper.
+Binds the application to all currently unbound clients. Must be called **after** `Framework.PrepareDone()` has returned `1` and the simulated main thread is running.
 
-### 5.10 Thread safety
+Returns the number of clients bound. Zero means either:
 
-The native library is thread-safe, but a single `DataHandle` **cannot
-be written from multiple threads concurrently**. Reading is safe while
-another thread reads. If multiple threads must share a handle for
-writes, the caller must serialise them with their own lock.
+- No free client was available (all clients already host an app).
+- The main thread is not active.
 
-### 5.11 Lifetime cap
+**When to use `Bind`**:
 
-The native library reclaims a data handle that has not been touched for
-**5 minutes**. Do not rely on this; always dispose handles explicitly.
+- You prepared multiple clients **without** an app, then created the app later.
+- You want to attach the app to all currently-unbound clients at once.
 
----
+**When not to use `Bind`**:
 
-## 6. AppHandle
+- You passed the app to `Framework.PrepareClient(addr, app)`. The binding happens automatically.
 
-`AppHandle` is a thin RAII wrapper around the native application handle
-(an `AppHnd`). Most applications do not use it directly — they use
-`LingoFuseApp` (§7) or the host classes (§8), both of which build on
-`AppHandle`.
+### 5.7 Threading and locking
 
-### 6.1 Class shape
+Every public method that touches the native handle or the internal registration dictionary is serialized under an internal lock. This closes the race between an in-flight `RegisterCall` and a concurrent `Dispose` — the two cannot interleave in a way that leaves `LF_RegisterCall` operating on an already-freed handle.
+
+The `_handle` field is `volatile`. A `Dispose()` on one thread is visible to a concurrent operation on another thread without an external lock.
+
+**Registration dictionaries and GC**: the wrapper stores each callback delegate in an internal dictionary (`_registrations`). This keeps the delegate alive for as long as the app is alive and the API remains registered. When the app is disposed or an API is unregistered, the delegate becomes collectable again.
+
+### 5.8 Two-phase destruction
+
+`AppHandle.Dispose()` calls `LF_FreeApp`, which is the **first stage** of a two-stage destruction:
+
+1. **Stage 1** (`Dispose`): the native object is detached from all clients and its sequenced threads are stopped. The object itself remains alive in the global `LF_App_Pool`.
+2. **Stage 2** (`Framework.Shutdown`): the pool is cleared, and every `TLF_App` object is destroyed.
+
+Why two stages? So that a broadcast that is still referencing the app's data cannot land on a dangling pointer.
+
+**Implications**:
+
+- After `Dispose`, the handle is invalid. All subsequent operations throw.
+- The underlying memory is **not** freed until `Framework.Shutdown`.
+- If you create and destroy thousands of apps, the pool grows until `Shutdown`.
+
+**Rule**: call `Framework.Shutdown()` at process exit. It is the only way to reclaim app memory.
+
+### 5.9 Complete example
 
 ```csharp
-namespace LingoFuse.Core;
+using var app = new AppHandle("Echo", "Echo service");
 
-public sealed class AppHandle : IDisposable
+app.RegisterCall("echo", "Echo a string", (input, output) =>
 {
-    public AppHandle(string name, string description = "");
-
-    public string  Name    { get; }
-    public IntPtr  Raw     { get; }
-    public bool    IsValid { get; }
-
-    // Registration — asynchronous (native worker thread)
-    public bool RegisterCall(string apiName, string description,
-                             Action<DataHandle, DataHandle> handler);
-    public bool RegisterNotify(string apiName, string description,
-                               Action<DataHandle> handler);
-
-    // Registration — synchronous (main thread)
-    public bool RegisterCallSync(string apiName, string description,
-                                 Action<DataHandle, DataHandle> handler);
-    public bool RegisterNotifySync(string apiName, string description,
-                                   Action<DataHandle> handler);
-
-    // Unregister
-    public bool Unregister(string apiName);
-
-    // Local execution
-    public DataHandle LocalCall(DataHandle param);
-    public void       LocalNotify(DataHandle param);
-
-    // Client binding
-    public int Bind();
-
-    public void Dispose();
-}
-```
-
-### 6.2 Registration
-
-#### 6.2.1 `RegisterCall(apiName, description, handler)`
-
-Registers a request-response API. The `handler` is invoked on a
-**native worker thread** with two borrowed `DataHandle` instances:
-
-```csharp
-handle.RegisterCall("add", "Add two ints", (input, output) =>
-{
-    int a = input.ReadInt32();
-    int b = input.ReadInt32();
-    output.WriteInt32(a + b);
+    var s = LfIo.ReadJson<string>(input);
+    LfIo.WriteJson(output, s);
 });
+
+// Local call — no network involved
+using var param = new DataHandle("echo");
+LfIo.WriteJson(param, "hello");
+using var result = app.LocalCall(param);
+var echoed = LfIo.ReadJson<string>(result);   // "hello"
 ```
-
-Returns `true` on success, `false` if the API name is already taken.
-
-**Handler rules:**
-
-1. Do **not** dispose `input` or `output`. `DataHandle.Dispose()` is a
-   no-op on borrowed handles, but the correct behaviour is to leave
-   them alone.
-2. Do **not** call any blocking LingoFuse function (`CallBinary`,
-   `Call`, `Notify`, `LocalCall`, `PrepareDone`, `Shutdown`) from
-   inside the handler. This will deadlock.
-3. Do **not** let an exception escape. The wrapper catches it and logs
-   via `Debug.WriteLine`; the caller sees an empty response.
-4. Do **not** touch UI controls directly. Marshal to the UI thread via
-   `LingoFuseSync` (see §9) or your framework's dispatcher.
-
-#### 6.2.2 `RegisterNotify(apiName, description, handler)`
-
-Registers a one-way API. The handler receives a single borrowed
-`DataHandle` (the input). It does not produce output.
-
-#### 6.2.3 Sync variants
-
-`RegisterCallSync` / `RegisterNotifySync` marshal the handler to the
-**main thread**. The application must drive the queue by calling
-`LingoFuseSync.ProcessSyncQueue()` periodically (§9).
-
-### 6.3 `LocalCall` and `LocalNotify`
-
-```csharp
-using var param = new DataHandle("add");
-param.WriteInt32(5);
-param.WriteInt32(7);
-
-using var result = handle.LocalCall(param);
-int sum = result.ReadInt32();   // 12
-```
-
-`LocalCall` bypasses the network entirely and invokes the registered
-handler synchronously in the calling thread. The input handle is not
-consumed. The returned `DataHandle` owns the response and must be
-disposed.
-
-When the target API is not registered, the returned handle has
-`Size == 0`. Callers must check `Size` before reading.
-
-`LocalNotify` sends a one-way notification locally.
-
-### 6.4 `Bind()`
-
-Binds the application to all currently unbound clients in the current
-process. Returns the number of clients bound. Zero means:
-
-- the simulated main thread is not active, or
-- every client already has an application attached.
 
 ---
 
-## 7. LingoFuseApp
+## Chapter 6 — Framework
 
-`LingoFuseApp` is a convenience wrapper around `AppHandle` that
-provides typed JSON and ABI registration and local execution.
+### 6.1 What it is
 
-### 7.1 Class shape
+`Framework` is the public facade over the process-wide native functions that don't fit the `DataHandle` or `AppHandle` abstractions:
+
+- Network preparation.
+- Remote invocation.
+- Runtime options.
+- Application name generation.
+- Process-wide shutdown.
 
 ```csharp
-namespace LingoFuse.Host;
+public static class Framework
+```
 
-public sealed class LingoFuseApp : IDisposable
+### 6.2 Callback error reporting
+
+```csharp
+public static Action<string, Exception>? CallbackErrorHandler { get; set; }
+```
+
+Optional handler invoked when a user callback raises an unhandled exception. The first argument is a short identifier for the callback site (for example `"AppHandle.RegisterCall[add]"`); the second is the exception.
+
+**Threading**: the handler is invoked on the native worker thread that ran the failing callback. Do not block, do not touch UI.
+
+**An exception raised by the handler itself is swallowed**, so a broken logging pipeline cannot destabilize the process.
+
+**Default behavior**: if the handler is null, swallowed exceptions are still reported through `System.Diagnostics.Trace.WriteLine`. Trace is active in Release builds, unlike Debug. So even with no handler installed, swallowed exceptions are observable via a trace listener.
+
+### 6.3 Network preparation
+
+```csharp
+public static void ResetPrepare()
+```
+
+Clears the preparation queue. Running services and clients are not affected.
+
+```csharp
+public static int PrepareService(string listeningAddr, string physicsAddr)
+```
+
+Prepares a C4 service listening on `listeningAddr` and advertised as `physicsAddr`. Returns an internal tag on success, or `-1` for a duplicate address.
+
+**Typical usage**: one service per process. The listening address is what the OS binds; the physics address is what other processes use to reach it. They are usually the same.
+
+```csharp
+public static int PrepareClient(string physicsAddr, AppHandle? app = null)
+```
+
+Prepares a C4 client connecting to `physicsAddr`, optionally exposing an application.
+
+- Pass `null` for a pure consumer.
+- Pass an `AppHandle` to expose it.
+- Returns an internal tag on success, or `-1` for a duplicate address (unless `Overlap_Connection` is enabled).
+
+**Duplicate addresses**: without `Overlap_Connection=True`, the same `physicsAddr` can only be used **once** per process. A second `PrepareClient` on the same address returns `-1` and the app is silently discarded.
+
+```csharp
+public static int PrepareDone()
+```
+
+Starts the LingoFuse framework with all prepared services and clients.
+
+- Returns `1` on success.
+- Returns `0` on a second call in the same process without an intervening `Shutdown()`. **This is not a failure.**
+- Blocks until the internal preparation is complete, subject to `Wait_Connection_ReadyOk` and `Wait_Connection_Timeout`.
+
+**Important**: `PrepareDone` returns `1` only once per process. If you are writing a test suite that starts and stops the framework repeatedly, call `Shutdown` in a finally block to reset the state.
+
+```csharp
+public static void ExitMainThread()
+```
+
+Requests the simulated main thread to exit. Does not release all resources; call `Shutdown` for a full cleanup.
+
+### 6.4 Runtime options
+
+```csharp
+public static void SetOption(string option, string value)
+```
+
+Adjusts a global runtime option. Unknown option names are **silently ignored**.
+
+Supported option keys (case-insensitive, aliases accepted):
+
+| Option | Aliases | Type | Default | Purpose |
+|---|---|---|---|---|
+| `password` | `passwd` | string | `DTC40@ZSERVER` | C4 P2PVM authentication token |
+| `Quiet` | — | bool | `False` | Suppress most logs |
+| `ShowThreadID` | `ShowThread`, `Show_Thread` | bool | `False` | Show thread IDs in logs |
+| `ConsoleOutput` | `Console_Output` | bool | auto | Console logging |
+| `Overlap_Connection` | `Overlap_Client`, `OverlapConnection`, `OverlapClient`, `OverlapConnect` | bool | `False` | Allow multiple clients per address |
+| `Wait_Connection_ReadyOk` | `Wait_API_Prepare_Done`, `API_Prepare_Done_Wait`, `WaitConnect`, `Wait_Ready`, `WaitReady` | bool | `True` | `PrepareDone` waits for all clients |
+| `Wait_Connection_Timeout` | `Wait_TimeOut`, `API_Prepare_Done_TimeOut`, `WaitTimeOut` | int (ms) | `30000` | Timeout for the above wait |
+| `Fixed_Sequenced_Time` | `Fixed_Sequenced_Life` | int (ms) | `20000` | Sequenced-Notify fallback threshold |
+
+**Boolean value format**: `"True"` / `"False"` / `"1"` / `"0"` / `"Yes"` / `"No"` (case-insensitive). `"true"` and `"false"` all-lowercase work but `"True"` is the canonical form.
+
+**Overlap_Connection**: set this to `"True"` when you need multiple clients on the same address in the same process. Without it, the second `PrepareClient` on the same address returns `-1`.
+
+**Wait_Connection_ReadyOk**: set this to `"True"` (default) when you want `PrepareDone` to block until every client is online. Set it to `"False"` in elastic-cluster scenarios where nodes start in unpredictable order.
+
+### 6.5 Application name generation
+
+```csharp
+public static string GenerateAppName()
+```
+
+Generates a globally unique application name.
+
+**Precondition**: must be called after `PrepareDone` returns `1`. Before that, the tunnel information is not available and the name may not be unique.
+
+**Return value**: a copy of the native string. The native pointer is valid for approximately 5 seconds; this method copies it immediately, so the returned `string` is safe to hold indefinitely.
+
+**Returns an empty string** when the native function returns a null pointer. Check the result.
+
+### 6.6 Remote invocation
+
+```csharp
+public static DataHandle Call(
+    string appName,
+    DataHandle param,
+    ulong timeoutMs = 5000)
+```
+
+Performs a synchronous remote call and returns the response.
+
+**Behavior**:
+
+- Returns a new `DataHandle` owning the response. The caller must dispose it.
+- On timeout or unreachable target, the native side returns a **size-0 handle**, not a null pointer. The returned handle is still valid: `response.IsValid` is `true`, `response.Size` is `0`.
+- On success, `response.Size > 0`.
+
+**Timeout**: milliseconds. Zero means "wait indefinitely". Default 5000.
+
+**Blocking**: this call blocks the calling thread until the response arrives or the timeout expires. Do not call from a LingoFuse callback — it will deadlock.
+
+```csharp
+public static void Notify(string appName, DataHandle param)
+```
+
+Sends a one-way notification. Delivery order is **not** guaranteed. Returns immediately after queueing.
+
+```csharp
+public static void SequencedNotify(string appName, DataHandle param)
+```
+
+Sends a one-way notification with **FIFO ordering** guaranteed for the same `(appName, apiName)` pair. Returns immediately after queueing.
+
+The underlying implementation uses a dedicated thread per `(app, api)` pair. If the thread is idle for more than 5 minutes, it terminates; the next notification recreates it.
+
+### 6.7 Shutdown
+
+```csharp
+public static void Shutdown()
+```
+
+Gracefully terminates the framework, releasing all resources.
+
+**What it does**:
+
+1. Clears network event callbacks (redundant if `NetworkEvents.Clear()` was called).
+2. Stops the simulated main thread.
+3. Frees all remaining data handles.
+4. Clears the global app pool.
+5. Unloads the IPC library.
+
+**After `Shutdown`**:
+
+- Every `AppHandle` still alive becomes invalid.
+- The framework may be re-initialized by calling `PrepareService`/`PrepareClient`/`PrepareDone` again.
+- The process-wide "started" flag is reset, so the next `PrepareDone` returns `1`.
+
+**Idempotent**: safe to call multiple times.
+
+### 6.8 Complete example: service + client in one process
+
+```csharp
+using System;
+using LingoFuse;
+
+// --- Setup ---
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.SetOption("Overlap_Connection", "True");
+Framework.SetOption("Wait_Connection_Timeout", "10000");
+Framework.ResetPrepare();
+
+// --- Service ---
+int serviceTag = Framework.PrepareService("ipc:demo", "ipc:demo");
+if (serviceTag == -1)
 {
-    public LingoFuseApp(string? name = null, string description = "");
-
-    public AppHandle  Handle        { get; }
-    public IntPtr     Raw           { get; }
-    public string     Name          { get; }
-    public bool       IsValid       { get; }
-    public IReadOnlyCollection<string> ExposedApis { get; }
-
-    // ABI registration
-    public bool Expose(string apiName, string description,
-                       Action<DataHandle, DataHandle> handler,
-                       bool synchronous = false);
-    public bool ExposeNotify(string apiName, string description,
-                             Action<DataHandle> handler,
-                             bool synchronous = false);
-
-    // JSON registration
-    public bool Expose<TResult>(string apiName,
-                                Func<TResult> handler,
-                                string description = "",
-                                bool synchronous = false);
-    public bool Expose<TArg, TResult>(string apiName,
-                                      Func<TArg, TResult> handler,
-                                      string description = "",
-                                      bool synchronous = false);
-    public bool Expose<T1, T2, TResult>(string apiName,
-                                        Func<T1, T2, TResult> handler,
-                                        string description = "",
-                                        bool synchronous = false);
-    public bool ExposeNotify<TArg>(string apiName,
-                                   Action<TArg> handler,
-                                   string description = "",
-                                   bool synchronous = false);
-
-    // Unregister
-    public bool Unregister(string apiName);
-
-    // Local execution — JSON
-    public T? LocalCall<T>(string apiName, object? payload = null);
-    public bool TryLocalCall<T>(string apiName, object? payload,
-                                out T? result);
-    public bool TryLocalCall<T>(string apiName, out T? result);
-    public void LocalNotify(string apiName, object? payload = null);
-
-    // Local execution — ABI
-    public DataHandle LocalCallBinary(DataHandle request);
-    public void       LocalNotifyBinary(DataHandle request);
-
-    // Client binding
-    public int Bind();
-
-    public void Dispose();
+    Console.Error.WriteLine("Service address already in use");
+    return;
 }
-```
 
-### 7.2 Construction
+// --- Application ---
+using var app = new AppHandle("Demo", "Demo service");
 
-```csharp
-var app = new LingoFuseApp("MyApp", "My description");
-```
-
-Pass a name explicitly **or** leave it null / empty to auto-generate a
-globally unique name via `LF_Generate_AppName`. Auto-generation requires
-the simulated main thread to be running; it is only safe after
-`LingoFuseFramework.IsStarted` returns `true`.
-
-### 7.3 ABI registration
-
-```csharp
-app.Expose("add", "Add two int32s", (input, output) =>
+// Register APIs BEFORE PrepareClient so the mesh registration carries them.
+app.RegisterCall("echo", "Echo a string", (input, output) =>
 {
-    int a = input.ReadInt32();
-    int b = input.ReadInt32();
-    output.WriteInt32(a + b);
+    var s = LfIo.ReadJson<string>(input);
+    LfIo.WriteJson(output, s);
 });
-```
 
-The handler receives **borrowed** `DataHandle` instances. See §6.2.1 for
-the handler rules (they are identical).
-
-### 7.4 JSON registration
-
-```csharp
-// Zero arguments
-app.Expose<int>("answer", () => 42);
-
-// One argument
-app.Expose<string, string>("echo", s => s);
-
-// Two arguments
-app.Expose<int, int, int>("add", (a, b) => a + b);
-
-// Notify (typed, one argument)
-app.ExposeNotify<int>("bump", n => Console.WriteLine(n));
-```
-
-**JSON envelope convention** (typed overloads only):
-
-| Handler arity | Expected request payload              | Response payload          |
-|---------------|---------------------------------------|---------------------------|
-| 0 arguments   | JSON `null` or no payload             | JSON serialisation of `TResult` |
-| 1 argument    | a bare JSON value, or `[value]`       | JSON serialisation of `TResult` |
-| 2 arguments   | a JSON array `[v1, v2]`               | JSON serialisation of `TResult` |
-
-A JSON `null` request payload is passed to the handler as
-`default(TArg)`. This makes it possible for a Python / C++ / Pascal peer
-to transmit a null reference argument that the C# handler receives as
-`null` (for reference types) or as `default(TArg)` (for value types).
-
-If the handler throws, the wrapper writes a JSON error envelope:
-
-```json
-{ "__error__": "...message...", "__type__": "...full.type.name..." }
-```
-
-The caller sees this as the response body. It matches the convention
-used by the Python binding.
-
-### 7.5 Local execution — JSON
-
-```csharp
-// Registered typed handler
-app.Expose<int, int, int>("add", (a, b) => a + b);
-
-// Typed local call
-int sum = app.LocalCall<int>("add", new object[] { 5, 7 });   // 12
-
-// Non-throwing variant
-if (app.TryLocalCall<int>("add", new object[] { 5, 7 }, out int sum2))
+// --- Client ---
+int clientTag = Framework.PrepareClient("ipc:demo", app);
+if (clientTag == -1)
 {
-    Console.WriteLine(sum2);   // 12
+    Console.Error.WriteLine("Client address already in use");
+    return;
 }
-```
 
-**Return value on unregistered API**: `LocalCall<T>` returns
-`default(T)`. For a value type `T` this is a value (e.g. `0`); for a
-reference type it is `null`.
-
-**`TryLocalCall<T>`** is the idiomatic way to distinguish "empty
-response" (unregistered API) from a legitimate `default(T)` return
-value:
-
-```csharp
-if (app.TryLocalCall<int>("add", payload, out int result))
+// --- Start ---
+if (Framework.PrepareDone() != 1
+    && !LingoFuseStatus.CheckMainThread())
 {
-    // API exists, result is the handler's return value.
+    Console.Error.WriteLine("Startup failed");
+    return;
 }
-else
+
+// --- Call ---
+using var param = new DataHandle("echo");
+LfIo.WriteJson(param, "hello");
+using var response = Framework.Call("Demo", param, timeoutMs: 3000);
+
+if (response.Size > 0)
 {
-    // API is not registered on this App.
+    var echoed = LfIo.ReadJson<string>(response);
+    Console.WriteLine($"Echoed: {echoed}");
 }
+
+// --- Shutdown ---
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+app.Dispose();
+Framework.Shutdown();
 ```
-
-### 7.6 The `T?` gotcha on unconstrained generics
-
-**Critical**: `T?` on an unconstrained generic parameter does not mean
-`Nullable<T>`. The compiler only produces `Nullable<T>` when `T` is
-constrained with `where T : struct`.
-
-The consequence:
-
-```csharp
-app.Expose<int, int, int>("add", (a, b) => a + b);
-
-int  v = app.LocalCall<int>("add", ...);       // v is int, not int?
-string s = app.LocalCall<string>("echo", ...); // s is string?, not string
-```
-
-For **value types**, the return type is `T`; for **reference types**, the
-return type is `T?`.
-
-**Do not write**:
-
-```csharp
-var v = app.LocalCall<int>("add", ...);
-if (v.HasValue) { ... }   // compile error: int has no HasValue
-```
-
-**Do write**:
-
-```csharp
-int v = app.LocalCall<int>("add", ...);
-if (v != 0) { ... }        // or use TryLocalCall<T>
-
-// Or, to distinguish "not registered" from "returned 0":
-if (app.TryLocalCall<int>("add", payload, out int v2)) { ... }
-```
-
-### 7.7 Local execution — ABI
-
-```csharp
-using var req = new DataHandle("add");
-req.WriteInt32(5);
-req.WriteInt32(7);
-
-using var resp = app.LocalCallBinary(req);
-int sum = resp.ReadInt32();   // 12
-```
-
-No JSON is involved. The caller owns both handles and must dispose
-them. The response handle has `Size == 0` when the API is not
-registered.
-
-### 7.8 Disposal
-
-`Dispose()` releases the underlying `AppHandle`. On the native side,
-`LF_FreeApp` is called, which detaches the application from all clients
-and stops its sequenced-notification threads. The native application
-object itself remains alive in the global pool until
-`LingoFuseFramework.Shutdown()` is called.
 
 ---
 
-## 8. Host Classes — Client, Server, Node
+## Chapter 7 — NetworkEvents
 
-### 8.1 Side-by-side shape
+### 7.1 What it is
 
-All three host classes share the same outbound API. They differ only in
-what they own and how they are started.
-
-| Member                        | Client | Server | Node |
-|-------------------------------|:------:|:------:|:----:|
-| `App` property                | ❌     | ✅     | ✅   |
-| `Endpoint` property           | ✅     | ✅     | ✅   |
-| `PublicEndpoint` property     | ❌     | ✅     | ❌   |
-| `DefaultTimeoutMs` property   | ✅     | ✅     | ✅   |
-| `IsConnected` property        | ✅     | ❌     | ✅   |
-| `IsRunning` property          | ❌     | ✅     | ❌   |
-| `IsValid` property            | ✅     | ✅     | ✅   |
-| `Connect(overlapConnection)`  | ✅     | ❌     | ✅   |
-| `Start(overlapConnection)`    | ❌     | ✅     | ❌   |
-| `Stop(fullCleanup)`           | ❌     | ✅     | ❌   |
-| `Dispose()`                   | ✅     | ✅     | ✅   |
-| `FullCleanup()`               | ✅     | ✅     | ✅   |
-| `Call<T>` / `CallRaw`         | ✅     | ✅     | ✅   |
-| `TryCall<T>` / `TryCallRaw`   | ✅     | ✅     | ✅   |
-| `Notify` / `SequencedNotify`  | ✅     | ✅     | ✅   |
-| `CallBinary` / `TryCallBinary`| ✅     | ✅     | ✅   |
-| `NotifyBinary` / `SequencedNotifyBinary` | ✅ | ✅ | ✅ |
-
-### 8.2 Construction
-
-```csharp
-var client = new LingoFuseClient("ipc:svc", defaultTimeoutMs: 5000);
-var server = new LingoFuseServer("MyApp", "ipc:my_app",
-                                 description: "demo");
-var node   = new LingoFuseNode("MyApp", "ipc:beacon",
-                               description: "worker");
-```
-
-`appName` and `endpoint` must not be null or empty
-(`ArgumentException`). `description` may be null (treated as empty).
-`publicEndpoint` (Server only) defaults to `endpoint`.
-`defaultTimeoutMs` is applied to outbound calls whose caller does not
-specify one.
-
-### 8.3 Starting a host
-
-#### 8.3.1 `Client.Connect(overlapConnection = false)`
-
-Prepares the framework if necessary and connects the client to the
-endpoint. Safe to call once per instance.
-
-- If the framework is already running in this process (started by a
-  `LingoFuseServer` or another `LingoFuseNode`), the client attaches to
-  it without re-preparing.
-- Otherwise, the client performs the full preparation sequence:
-  `LF_ResetPrepare → LF_PrepareClient → LF_PrepareDone`.
-
-#### 8.3.2 `Node.Connect(overlapConnection = false)`
-
-Same structure as `Client.Connect`, but it registers the node's own App
-with the endpoint.
-
-#### 8.3.3 `Server.Start(overlapConnection = false)`
-
-Performs the full sequence in one call:
-
-```
-LF_ResetPrepare → LF_PrepareService → LF_PrepareClient → LF_PrepareDone
-```
-
-The service endpoint is created, the server's App is attached to an
-internal client, and the simulated main thread starts.
-
-#### 8.3.4 The `overlapConnection` flag
-
-Set it to `true` when two or more hosts in the **same process** need to
-share the same endpoint. The flag enables the native
-`Overlap_Connection` option, which allows multiple client tunnels to the
-same address.
-
-Without it, the second `Connect` / `Start` on the same address fails
-with `LingoFuseStateException` (`LF_PrepareClient returned -1`).
-
-Cross-process clients are unaffected: each process has its own C4
-client pool.
-
-### 8.4 Outbound invocation
-
-Both the JSON path and the ABI path are available on all three hosts.
-
-#### 8.4.1 JSON path (throwing)
-
-```csharp
-// Typed call — returns the deserialised response
-int sum = client.Call<int>("Calc", "add", new object[] { 5, 7 }, 3000);
-
-// Raw call — returns the JSON text
-string json = client.CallRaw("Calc", "add", new object[] { 5, 7 }, 3000);
-```
-
-On failure, throws `LingoFuseCallException` (timeout, unreachable
-target, empty reply) or `LingoFuseException` (JSON deserialisation
-failure).
-
-#### 8.4.2 JSON path (non-throwing)
-
-```csharp
-if (client.TryCall<int>("Calc", "add", new object[] { 5, 7 }, 3000,
-                        out int sum))
-{
-    // sum holds the deserialised response
-}
-
-if (client.TryCallRaw("Calc", "add", payload, 3000, out string? json))
-{
-    // json holds the raw response text
-}
-```
-
-`TryCall` / `TryCallRaw` return `false` on timeout, unreachable target,
-empty reply, or (for `TryCall`) JSON deserialisation failure. They
-still throw `ArgumentNullException` and `LingoFuseObjectDisposedException`
-for caller misuse.
-
-#### 8.4.3 ABI path
-
-```csharp
-using var req = new DataHandle("add");
-req.WriteInt32(5);
-req.WriteInt32(7);
-
-using var resp = client.CallBinary("Calc", req, 3000);
-int sum = resp.ReadInt32();
-```
-
-Non-throwing variant:
-
-```csharp
-if (client.TryCallBinary("Calc", req, 3000, out var resp))
-{
-    using (resp)
-    {
-        int sum = resp!.ReadInt32();
-    }
-}
-```
-
-**Ownership**: the caller owns the request handle and is responsible for
-disposing it. The caller owns the returned response handle and must
-dispose it. On failure (`TryCallBinary` returning `false`), `resp` is
-`null`.
-
-#### 8.4.4 Notify and SequencedNotify
-
-```csharp
-client.Notify("Logger", "log", "message");
-client.SequencedNotify("Logger", "log", "message");
-```
-
-- `Notify` — one-way, best-effort. Delivery order is **not** guaranteed.
-- `SequencedNotify` — one-way, **FIFO** per `(app, api)` pair.
-
-The ABI variants are:
-
-```csharp
-using var req = new DataHandle("log");
-req.WriteString("message");
-client.NotifyBinary("Logger", req);
-client.SequencedNotifyBinary("Logger", req);
-```
-
-### 8.5 Stopping a host
-
-| Host     | Stop API                            | Effect                                                              |
-|----------|-------------------------------------|---------------------------------------------------------------------|
-| Client   | `Dispose()`                         | Detaches the client. Framework stays running.                       |
-| Client   | `FullCleanup()`                     | Detaches and shuts down the framework process-wide.                 |
-| Server   | `Stop(fullCleanup: false)`          | Stops the network loop. App handle remains valid.                   |
-| Server   | `Stop(fullCleanup: true)`           | Stops the network loop and shuts down the framework process-wide.   |
-| Server   | `FullCleanup()`                     | Equivalent to `Stop(fullCleanup: true)`.                            |
-| Node     | `Dispose()`                         | Detaches the node's App. Framework stays running.                   |
-| Node     | `FullCleanup()`                     | Detaches and shuts down the framework process-wide.                 |
-
-### 8.6 Choosing between `Dispose` and `FullCleanup`
-
-**`Dispose()`** is the right choice when the process hosts other
-LingoFuse instances that must continue to operate after this host is
-gone. It does **not** call `LF_Shutdown`; the simulated main thread
-stays alive.
-
-**`FullCleanup()`** is the right choice when this host is the last
-LingoFuse instance in the process, or when the process is about to
-exit. It performs:
-
-```
-LF_ExitMainThread  ->  (App detach)  ->  LF_Shutdown
-```
-
-which matches the Pascal `LF-CLEAN-001` cleanup order.
-
-**In every application that owns only a client or only a node**, call
-`FullCleanup()` in a `finally` block so that the framework is released
-on every exit path, including exceptions:
-
-```csharp
-LingoFuseClient? client = null;
-try
-{
-    client = new LingoFuseClient("ipc:svc");
-    client.Connect();
-    // ... use the client ...
-}
-finally
-{
-    client?.FullCleanup();
-}
-```
-
-Do **not** rely on `using` alone for a lone host: the `using` statement
-calls `Dispose()`, which does not stop the framework.
-
-### 8.7 Coexisting hosts in one process
-
-```csharp
-var server = new LingoFuseServer("Beacon", "ipc:beacon");
-server.Start();
-
-var node = new LingoFuseNode("Worker", "ipc:beacon");
-node.Connect(overlapConnection: true);
-
-var client = new LingoFuseClient("ipc:beacon");
-client.Connect(overlapConnection: true);
-
-// ... use all three ...
-
-// Detach each host without tearing down the framework.
-client.Dispose();
-node.Dispose();
-server.Stop(fullCleanup: false);
-
-// Release the framework process-wide once every host is done.
-LingoFuseFramework.Shutdown();
-```
-
-`overlapConnection: true` is required for the second and third hosts on
-the same endpoint within the same process.
-
----
-
-## 9. Sync Callbacks
-
-### 9.1 Why sync callbacks exist
-
-Registered callbacks normally run on native worker threads. Some use
-cases — notably UI updates — require the callback body to run on the
-application's **main thread**. The sync variants of the registration
-methods provide that.
-
-### 9.2 The contract
-
-When you register a callback with `synchronous: true`
-(`LingoFuseApp.Expose(..., synchronous: true)` or
-`AppHandle.RegisterCallSync` / `RegisterNotifySync`):
-
-1. The native worker thread enqueues the callback into a process-wide
-   queue and then **blocks** until the main thread executes it.
-2. The application must call `LingoFuseSync.ProcessSyncQueue()`
-   periodically from the main thread to drain the queue.
-
-**Why the worker blocks**: the input/output `DataHandle` instances
-passed to the callback are borrowed from the native layer, which
-releases them as soon as the callback returns. If the callback were
-enqueued and the worker returned immediately, the handles would be
-freed while the main thread was still waiting to run the body. Blocking
-the worker until the main thread has finished guarantees the handles
-stay valid.
-
-### 9.3 The public API
-
-```csharp
-public static class LingoFuseSync
-{
-    public static void SetMainThread();
-    public static bool IsMainThreadCurrent { get; }
-    public static int  PendingSyncCount    { get; }
-    public static long TotalSyncProcessed  { get; }
-
-    public static int ProcessSyncQueue();
-}
-```
-
-| Member                   | Effect                                                                                    |
-|--------------------------|-------------------------------------------------------------------------------------------|
-| `SetMainThread()`        | Designates the calling thread as the main thread. Call once at startup.                    |
-| `IsMainThreadCurrent`    | True when the caller is the registered main thread.                                        |
-| `PendingSyncCount`       | Number of callbacks waiting to be drained.                                                 |
-| `TotalSyncProcessed`     | Cumulative count of callbacks executed since process start.                                |
-| `ProcessSyncQueue()`     | Drains every pending callback. Returns the number executed.                                |
-
-The first call to `ProcessSyncQueue` automatically registers the caller
-as the main thread. If the very first call may come from a non-UI
-thread, call `SetMainThread()` explicitly during application startup.
-
-### 9.4 Main-loop integration
-
-**Windows Forms / WPF**:
-
-```csharp
-System.Windows.Forms.Application.Idle +=
-    (_, __) => LingoFuseSync.ProcessSyncQueue();
-```
-
-Or a timer:
-
-```csharp
-var timer = new System.Windows.Forms.Timer { Interval = 10 };
-timer.Tick += (_, __) => LingoFuseSync.ProcessSyncQueue();
-timer.Start();
-```
-
-**Console / service**:
-
-```csharp
-while (running)
-{
-    LingoFuseSync.ProcessSyncQueue();
-    Thread.Sleep(10);
-}
-```
-
-**ASP.NET Core**: run a dedicated hosted service on the main pipeline
-thread, or designate a background thread as the main thread via
-`SetMainThread()` and drain from there.
-
-### 9.5 Failure to drain
-
-If `ProcessSyncQueue` is never called:
-
-- the queued callbacks never execute;
-- the native worker threads that dispatched them block forever inside
-  the internal completion wait;
-- the framework eventually stalls.
-
-`LingoFuseSync.PendingSyncCount` is a useful diagnostic: a persistently
-non-zero value means the main loop is not draining often enough.
-
----
-
-## 10. Network Events
-
-### 10.1 Semantics
-
-The binding exposes two **process-global** event handlers:
-
-| Event        | Trigger                                                              | Frequency                                |
-|--------------|----------------------------------------------------------------------|------------------------------------------|
-| **Connect**  | First service API-info broadcast received by any client in the process. | Once per connection lifecycle, again after a successful auto-reconnect. |
-| **Disconnect**| Physical link loss.                                                 | Once per physical loss.                   |
-
-**Connect is NOT the TCP handshake.** It is the earliest point at which
-the client can route remote calls. A TCP connection that has not yet
-received the service's broadcast does not produce a Connect.
-
-### 10.2 Threading
-
-Both handlers run on a **background worker thread** owned by the native
-library. They must:
-
-- copy the endpoint string if they need to keep it (the wrapper already
-  copies it into a managed `string` before invoking the user delegate,
-  so user code never sees a dangling pointer);
-- never touch UI controls directly;
-- never call any blocking LingoFuse function;
-- never let an exception escape.
-
-The wrapper enforces the last rule: exceptions are caught and logged via
-`Debug.WriteLine`. The native layer sees a callback that returned
-normally.
-
-### 10.3 The public API
+`NetworkEvents` exposes the process-global connect and disconnect handlers.
 
 ```csharp
 public static class NetworkEvents
-{
-    public static bool IsInstalled { get; }
-
-    public static void Set(Action<string>? onConnect,
-                           Action<string>? onDisconnect);
-
-    public static void Clear();
-}
 ```
 
-### 10.4 Usage
+### 7.2 Semantics
+
+**Connect** fires the **first time** a client receives a service API-info broadcast. It is **not** the TCP handshake; it is the earliest point at which remote calls can be routed.
+
+**Disconnect** fires once per **physical link loss**. An automatic reconnect does **not** emit a Disconnect for the reconnect attempt itself; it emits a new Connect once the client is back online.
+
+**Scope**: process-global. There is no per-client registration.
+
+### 7.3 Threading contract
+
+Callbacks run on a **background worker thread** owned by the native library. They must:
+
+- Copy the endpoint string immediately if they need to retain it. The wrapper does this for you: your delegate receives a managed `string`.
+- Never touch UI controls directly.
+- Never call any blocking LingoFuse function (`Framework.Call`, `Framework.Notify`, `Framework.SequencedNotify`, `AppHandle.LocalCall`, `AppHandle.LocalNotify`, `Framework.PrepareDone`, `Framework.Shutdown`). This would deadlock.
+- Never let an exception escape into the native stack. The wrapper catches every exception and reports it through `Framework.ReportCallbackError`.
+
+### 7.4 API
 
 ```csharp
+public static bool IsInstalled { get; }
+```
+
+`true` when at least one handler is installed.
+
+```csharp
+public static void Set(Action<string>? onConnect, Action<string>? onDisconnect)
+```
+
+Installs the handlers. Passing `null` for either argument disables that event.
+
+**REPLACE operation**: calling `Set` a second time discards any previously installed handlers, **including** those whose corresponding argument is `null` in the new call. To install both handlers, pass both arguments in a single call.
+
+```csharp
+public static void Clear()
+```
+
+Removes both handlers. Safe to call multiple times.
+
+### 7.5 Example
+
+```csharp
+// Install
 NetworkEvents.Set(
-    onConnect: addr => Console.WriteLine($"[+] {addr}"),
-    onDisconnect: addr => Console.WriteLine($"[-] {addr}"));
+    onConnect: addr => Console.WriteLine($"[+] Connected: {addr}"),
+    onDisconnect: addr => Console.WriteLine($"[-] Disconnected: {addr}"));
+
+// ... run the framework ...
+
+// Uninstall
+NetworkEvents.Clear();
 ```
 
-Passing `null` for either argument disables that particular event.
+### 7.6 Automatic clearing on shutdown
 
-### 10.5 Install / clear timing
+`Framework.Shutdown` does **not** clear the managed delegate references held by `NetworkEvents`. It clears the native slot, so the callbacks will no longer fire, but the managed delegates stay alive until `NetworkEvents.Clear` is called or the process exits.
 
-Install the handlers **before** the framework starts, or at any point
-while it is running. Clear them **before** calling
-`LingoFuseFramework.Shutdown()` so that no user callback can fire during
-teardown.
-
-`LingoFuseFramework.Shutdown()` clears both handlers automatically as
-its first step, so an explicit `Clear()` is optional.
-
-### 10.6 Replace semantics
-
-`Set` is a **replace**, not a patch. Calling it twice discards the
-previous handlers, even for the side whose argument is `null` in the new
-call:
-
-```csharp
-NetworkEvents.Set(onConnect: cb1, onDisconnect: null);
-NetworkEvents.Set(onConnect: null, onDisconnect: cb2);
-// cb1 is now uninstalled; only cb2 is active.
-```
-
-To install both, pass them in a single call.
+**Best practice**: always call `NetworkEvents.Clear()` before `Framework.Shutdown()`.
 
 ---
 
-## 11. Status and Diagnostics
+## Chapter 8 — LingoFuseStatus
 
-### 11.1 Status queue
+### 8.1 What it is
 
-The native library maintains a bounded FIFO of log messages, up to
-1000 entries. Older entries are dropped when the buffer is full.
-
-**Main-thread dependency**: the status queue is processed by the
-simulated main thread. Before `LF_PrepareDone`, the queue may be empty
-or stale. Applications should not rely on status messages during
-initialization.
-
-**Static buffer hazard**: `LF_GetStatus` returns a pointer into a
-process-wide static buffer that is overwritten by the next call. The
-C# wrapper copies the string to a managed instance immediately, so
-callers never observe a dangling pointer.
-
-### 11.2 The public API
+`LingoFuseStatus` exposes the status queue and health checks.
 
 ```csharp
 public static class LingoFuseStatus
-{
-    public static int    GetStatusCount();
-    public static string GetStatus();
-    public static string[] DrainStatus(int maxMessages = 64);
-    public static void   PostStatus(string message);
-
-    public static bool CheckMainThread();
-    public static bool CheckApp(string appName);
-    public static bool CheckApi(string appName, string apiName);
-}
 ```
 
-| Method              | Effect                                                                                    |
-|---------------------|-------------------------------------------------------------------------------------------|
-| `GetStatusCount()`  | Number of pending log messages.                                                            |
-| `GetStatus()`       | Retrieves and removes the next message. Empty string when the queue is empty.              |
-| `DrainStatus(n)`    | Retrieves up to `n` messages in FIFO order. Returns an empty array when the queue is empty.|
-| `PostStatus(msg)`   | Injects a custom message into the queue.                                                   |
-| `CheckMainThread()` | True when the simulated main thread is running.                                            |
-| `CheckApp(name)`    | True when the named application is available (locally or remotely).                        |
-| `CheckApi(app, api)`| True when the named API is available on the given application.                             |
+### 8.2 Status queue
 
-### 11.3 The cache-delay caveat
+The native library maintains a bounded FIFO of log messages, up to 1000 entries. Older entries are dropped when the buffer is full.
 
-`CheckApp` and `CheckApi` use a **local cache** updated by network
-broadcasts with an approximate 3-second delay. They are suitable for
-probing and diagnostics, **not** for authoritative availability
-decisions.
-
-False negatives immediately after registration and false positives
-shortly after unregistration are both normal. For critical paths,
-issue the call and handle timeouts explicitly. A common pattern is a
-short retry loop:
+**Main-thread dependency**: the queue is processed by the native simulated main thread. Before `Framework.PrepareDone` has been called, the queue may be empty or contain stale data.
 
 ```csharp
-bool available = false;
-for (int i = 0; i < 15; i++)
+public static int GetStatusCount()
+```
+
+Returns the number of pending messages.
+
+```csharp
+public static string GetStatus()
+```
+
+Retrieves the next message. Returns an empty string when the queue is empty.
+
+The native function returns a pointer into a static buffer that is overwritten by the next call. The wrapper copies the string to managed memory immediately, so you never observe a dangling pointer.
+
+**Caveat**: an empty message and an empty queue both produce `""`. This is a native ABI limitation.
+
+```csharp
+public static string[] DrainStatus(int maxMessages = 64)
+```
+
+Drains up to `maxMessages` messages in FIFO order. Returns an empty array when the queue is empty.
+
+```csharp
+public static void PostStatus(string message)
+```
+
+Injects a custom message into the queue. Messages posted before `PrepareDone` may be discarded.
+
+### 8.3 Health checks
+
+```csharp
+public static bool CheckMainThread()
+```
+
+Returns `true` when the simulated main thread is running.
+
+```csharp
+public static bool CheckApp(string appName)
+```
+
+Probes whether an application with the given name is available.
+
+**Cache-based**: the lookup uses a local cache updated by network broadcasts with an approximate **3-second delay**. False negatives immediately after registration and false positives shortly after unregistration are both normal. Do not use this as an authoritative existence test for critical paths.
+
+```csharp
+public static bool CheckApi(string appName, string apiName)
+```
+
+Probes whether the named API is available. Same cache caveat as `CheckApp`.
+
+### 8.4 Example: waiting for an app to appear
+
+```csharp
+bool seen = false;
+for (int i = 0; i < 30; i++)
 {
-    if (LingoFuseStatus.CheckApi("MyApp", "my_api"))
-    {
-        available = true;
-        break;
-    }
+    if (LingoFuseStatus.CheckApp("RemoteApp")) { seen = true; break; }
     Thread.Sleep(200);
+}
+
+if (!seen)
+{
+    Console.Error.WriteLine("RemoteApp did not appear within 6 seconds");
 }
 ```
 
 ---
 
-## 12. Cross-Language Wire Contracts
+## Chapter 9 — Exception Reference
 
-### 12.1 UTF-8, NUL, little-endian
-
-Every string in every payload is UTF-8 and NUL-terminated. Every integer
-and float is little-endian. These rules hold for both channels (JSON
-and ABI) and for every binding (C#, C++, Pascal, Python).
-
-### 12.2 ABI wire format
-
-The ABI channel exposes the raw native types through `DataHandle`. The
-byte layout for each type is fixed and platform-independent:
-
-| Type                       | Bytes | Encoding                              |
-|----------------------------|:-----:|---------------------------------------|
-| `int8` / `uint8`           | 1     | two's complement / unsigned           |
-| `int16` / `uint16`         | 2     | little-endian                         |
-| `int32` / `uint32`         | 4     | little-endian                         |
-| `int64` / `uint64`         | 8     | little-endian                         |
-| `single` (float)           | 4     | IEEE 754 single-precision, LE         |
-| `double`                   | 8     | IEEE 754 double-precision, LE         |
-| `string`                   | var   | UTF-8 bytes + one `0x00` byte         |
-
-**NUL-framed read (fault-tolerant)**: reading a string stops at the
-first NUL byte. If no NUL is present, the entire remaining buffer is
-consumed and the cursor is advanced to `size + 1`.
-
-### 12.3 The `add` example — byte layout
-
-Request (a = 5, b = 7):
+### 9.1 The hierarchy
 
 ```
-05 00 00 00  07 00 00 00
+System.Exception
+└── LingoFuseException                     (base class)
+    ├── LingoFuseCallException             (remote call failed)
+    ├── LingoFuseIoException               (short read or write)
+    ├── LingoFuseObjectDisposedException   (use after Dispose)
+    └── LingoFuseLibraryLoadException      (native library could not be loaded)
 ```
 
-Response (sum = 12):
+### 9.2 `LingoFuseException`
 
-```
-0C 00 00 00
-```
-
-### 12.4 The `inv_seri` example — byte layout
-
-Request (b = 200, w = 0x10, c = 0x2F, u64 = 0x3F,
-s = "hello world", f = 3.14f):
-
-```
-C8                              uint8
-10 00                           uint16 LE
-2F 00 00 00                     uint32 LE
-3F 00 00 00 00 00 00 00         uint64 LE
-68 65 6C 6C 6F 20 77 6F 72 6C 64 00   "hello world" + NUL
-C3 F5 48 40                     float LE
-```
-
-Response (reverse field order):
-
-```
-C3 F5 48 40                     float LE
-68 65 6C 6C 6F 20 77 6F 72 6C 64 00
-3F 00 00 00 00 00 00 00         uint64 LE
-2F 00 00 00                     uint32 LE
-10 00                           uint16 LE
-C8                              uint8
-```
-
-### 12.5 The JSON wire format
-
-A JSON payload is the UTF-8 encoding of the JSON text, followed by one
-NUL byte. Reading is fault-tolerant as described in §5.8.2.
-
-The canonical serialisation policy is documented in §13.
-
-### 12.6 String reading across languages
-
-| Language | Invalid UTF-8 handling on read                     |
-|----------|----------------------------------------------------|
-| C#       | Each invalid byte becomes U+FFFD                   |
-| Pascal   | Each invalid byte becomes U+FFFD                   |
-| Python   | Raises `UnicodeDecodeError`                        |
-| C++      | Returns the raw bytes unchanged                    |
-
-**C# matches Pascal**, not Python or C++. The C# reader is binary-safe:
-it never fails on a malformed payload.
-
-If a C# receiver needs to detect invalid UTF-8, it must read the raw
-bytes via `ReadBytesExact` / `ReadAllBytes` and inspect them itself.
-
-### 12.7 Cross-language call patterns
-
-**C# server + C++ / Pascal / Python client (ABI channel)**:
+The base class. Catch this type for a single, catch-all handler around any LingoFuse operation.
 
 ```csharp
-// C# server
-using var server = new LingoFuseServer("Calc", "ipc:calc");
-server.App.Expose("add", "add", (input, output) =>
+try
+{
+    // ... LingoFuse operation ...
+}
+catch (LingoFuseException ex)
+{
+    Console.Error.WriteLine($"LingoFuse error: {ex.Message}");
+}
+```
+
+### 9.3 `LingoFuseCallException`
+
+Thrown when a remote Call fails: null handle from the native layer, timeout, or an unreachable target.
+
+```csharp
+public string? TargetApp { get; }
+public string? TargetApi { get; }
+```
+
+Use these to build precise diagnostics without parsing the message.
+
+### 9.4 `LingoFuseIoException`
+
+Thrown when a low-level I/O operation on a data handle fails: a short read when the caller asked for a fixed number of bytes, or a short write when the native layer accepted fewer bytes than requested.
+
+```csharp
+public string? Operation { get; }
+```
+
+The `Operation` property names the failing operation (for example `"ReadBytesExact"`).
+
+Argument validation errors use the standard .NET exceptions (`ArgumentNullException`, `ArgumentOutOfRangeException`), not `LingoFuseIoException`.
+
+### 9.5 `LingoFuseObjectDisposedException`
+
+Thrown when an operation is attempted on an object that has already been disposed.
+
+```csharp
+public string ObjectName { get; }
+```
+
+The `ObjectName` is the name of the disposed class (`"DataHandle"` or `"AppHandle"`).
+
+### 9.6 `LingoFuseLibraryLoadException`
+
+Declared for future use. **The current binding does not throw this exception.** If the native library cannot be found, `NativeLibrary.Load` throws `DllNotFoundException` (a platform exception), not this type.
+
+In a future revision, the resolver may be updated to throw `LingoFuseLibraryLoadException` on failure. For now, catch both:
+
+```csharp
+try
+{
+    // ... first LingoFuse operation ...
+}
+catch (DllNotFoundException ex)
+{
+    Console.Error.WriteLine($"LingoFuse native library not found: {ex.Message}");
+}
+```
+
+### 9.7 Try* family
+
+The following methods promise not to throw for I/O or JSON reasons. They may still throw `ArgumentNullException` or `LingoFuseObjectDisposedException` for caller misuse.
+
+| Method | Returns `false` on |
+|---|---|
+| `DataHandle.TryReadBytes` | Short read |
+| `DataHandle.TryReadInt32` etc. | Short read |
+| `DataHandle.TryReadString` | Exhausted buffer |
+| `LfIo.TryReadJson<T>` | Empty payload, invalid JSON, unsupported type |
+| `AppHandle.RegisterCall` | Duplicate API name (returns `false`) |
+| `AppHandle.RegisterNotify` | Duplicate API name (returns `false`) |
+| `AppHandle.Unregister` | API not found |
+
+---
+
+## Chapter 10 — Cross-Language Interoperability
+
+### 10.1 The universal wire format
+
+Every LingoFuse binding uses the same wire format for scalar values and JSON:
+
+| Element | Encoding |
+|---|---|
+| String framing | UTF-8 bytes + single NUL (`0x00`) |
+| Integers | Little-endian |
+| Floats | IEEE 754, little-endian |
+| JSON text | Compact, literal UTF-8, no `\uXXXX` escapes |
+| Raw bytes | Arbitrary, followed by NUL if written via `WriteStringBytes` |
+
+### 10.2 Working with a C++ / Pascal / Python peer
+
+The ABI channel is the natural interop path. Every binding can read and write scalar types in the same order.
+
+**Example: `add(int a, int b) -> int`**
+
+Request bytes (8 bytes):
+
+```
+[a: int32 little-endian][b: int32 little-endian]
+```
+
+Response bytes (4 bytes):
+
+```
+[sum: int32 little-endian]
+```
+
+C# server:
+
+```csharp
+app.RegisterCall("add", "Add two ints", (input, output) =>
 {
     int a = input.ReadInt32();
     int b = input.ReadInt32();
     output.WriteInt32(a + b);
 });
-server.Start();
 ```
+
+C++ client (from `CrossCall.cpp`):
 
 ```cpp
-// C++ client
-lingofuse::DataHandle param("add");
-param.write<int32_t>(5);
-param.write<int32_t>(7);
-auto resp = lingofuse::tryCall("Calc", param, 3000);
-int32_t sum = 0; resp->read(sum);   // 12
+DataHandle param("add");
+param.write<int32_t>(a);
+param.write<int32_t>(b);
+auto response = lingofuse::call("demo", param, 1000);
+int32_t sum = response.read<int32_t>();
 ```
 
-**C# client + C++ / Pascal / Python server (ABI channel)**:
+Same bytes on the wire.
+
+### 10.3 Working with a Python peer
+
+Python uses the same wire format for the ABI channel. For JSON payloads, both bindings emit literal UTF-8:
+
+C# server:
 
 ```csharp
-using var client = new LingoFuseClient("ipc:calc");
-client.Connect();
-
-using var req = new DataHandle("add");
-req.WriteInt32(5);
-req.WriteInt32(7);
-
-using var resp = client.CallBinary("Calc", req, 3000);
-int sum = resp.ReadInt32();   // 12
-```
-
-**JSON channel** — identical to the above, except the payload is
-serialised and deserialised through `LfIo.WriteJson` / `LfIo.ReadJson`
-or through the typed `Call<T>` / `Expose<T...>` overloads.
-
-### 12.8 Choosing a channel
-
-| Criterion              | JSON channel                                            | ABI channel                                             |
-|------------------------|---------------------------------------------------------|---------------------------------------------------------|
-| Structured data        | Convenient — typed overloads serialise automatically    | Manual field-by-field writes                            |
-| Interop with C++ / Pascal / Python | Works, but the peer must use the same JSON policy       | Works, byte-precise by construction                     |
-| Payload size           | Larger (JSON overhead)                                  | Smaller (raw binary)                                    |
-| Debuggability          | Human-readable on the wire                              | Requires a hex dump                                     |
-| Schema evolution       | Easier — new fields can be added without breaking peers | Requires coordinated field-by-field changes             |
-
-**Rule of thumb**: JSON for structured, evolving data; ABI for byte-
-precise cross-language interop or for performance-critical paths.
-
----
-
-## 13. JSON Policy
-
-### 13.1 The single source of truth
-
-`JsonPolicy` is the canonical serializer for the whole C# binding.
-Every JSON payload written by the binding passes through its options.
-
-```csharp
-public static class JsonPolicy
+app.RegisterCall("echo", "Echo", (input, output) =>
 {
-    public static readonly JsonSerializerOptions Options;
-    public static readonly JsonSerializerOptions OptionsSnakeCase;
-
-    public static string Dumps(object? value);
-    public static T      Loads<T>(string json);
-    public static bool   TryLoads<T>(string? json, out T? value);
-}
+    var s = LfIo.ReadJson<string>(input);
+    LfIo.WriteJson(output, s);
+});
 ```
 
-### 13.2 The policy
+Python client:
 
-| Property                | Value                                    |
-|-------------------------|------------------------------------------|
-| `WriteIndented`         | `false` (compact output)                 |
-| `Encoder`               | `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` (literal UTF-8, no `\uXXXX` escapes for characters that can be emitted literally) |
-| `PropertyNameCaseInsensitive` | `false`                            |
-| `DefaultIgnoreCondition`| `JsonIgnoreCondition.Never`              |
-| `NumberHandling`        | `JsonNumberHandling.Strict`              |
-| `PropertyNamingPolicy`  | `null` (C# property names used verbatim) |
-
-### 13.3 Literal UTF-8, not `\uXXXX` escapes
-
-The encoder preserves non-ASCII characters as literal UTF-8. For
-example, `{"msg": "你好"}` is written as:
-
-```
-7B 22 6D 73 67 22 3A 20 22 E4 BD A0 E5 A5 BD 22 7D 00
+```python
+result = c4.call("Echo", "hello")
 ```
 
-not as `{"msg": "\u4f60\u597d"}`. This matches every other binding in
-the toolchain.
+The Python side uses `json.dumps(obj, ensure_ascii=False)` by default; the C# side uses the canonical `LfIo` policy. Both produce the same bytes.
 
-### 13.4 Null handling
+### 10.4 Working with a C# peer
 
-A null value is written as the four-byte JSON literal `null`. A null
-reference argument sent by a peer is passed to a typed handler as
-`default(TArg)`.
+Two C# processes connected over the mesh work identically to any other pair. The wire format is not special-cased.
 
-### 13.5 Cross-language naming
+### 10.5 Complete interop matrix
 
-`System.Text.Json` uses the C# property name verbatim. For a C# `record`
-named `Person(Name, Age)`, the JSON keys will be `"Name"` and `"Age"`,
-not `"name"` and `"age"`.
+See [Appendix B](#appendix-b--cross-language-wire-matrix) for the full matrix of (server language) × (client language) × (transport) × (envelope).
 
-**If a peer (Python / C++ / Pascal) expects snake_case keys**, mark each
-property with `[JsonPropertyName]`:
+### 10.6 The ABI-vs-JSON choice
 
-```csharp
-public sealed record Person(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("age")]  int    Age);
-```
+For each `(app, api)` pair, you choose **either** the ABI channel **or** the JSON channel. The two are not interchangeable on the same API:
 
-Alternatively, use `OptionsSnakeCase`, which applies the snake_case
-naming policy globally. This is not the default because a global policy
-would silently rename every C# payload.
+| Channel | Handler | Wire format | When to use |
+|---|---|---|---|
+| ABI | `app.RegisterCall(name, desc, Action<DataHandle, DataHandle>)` | Caller-defined scalar sequence | Cross-language binary RPC; performance-critical; fixed schema |
+| JSON | `app.RegisterCall(name, desc, (input, output) => { LfIo.WriteJson(...); })` | JSON text + NUL | Structured data; evolving schema; human-readable debugging |
 
-### 13.6 Number formatting caveat
-
-`System.Text.Json` emits the shortest round-trippable representation of
-a floating-point number:
-
-| Value | C# output | Python output | C++ output |
-|-------|-----------|---------------|------------|
-| 1.0   | `1`       | `1.0`         | `1.0`      |
-| 1e-7  | `1E-07`   | `1e-07`       | `1e-7`     |
-
-Every parser reads these as the same numeric value. The only case where
-the byte difference matters is a golden-file comparison of raw JSON
-text; cross-language tests should compare numeric values after parsing,
-not bytes before parsing.
-
-### 13.7 Public helpers
-
-```csharp
-string json    = JsonPolicy.Dumps(new { a = 1, b = "x" });
-// json == "{\"a\":1,\"b\":\"x\"}"
-
-var obj        = JsonPolicy.Loads<MyType>(json);
-bool ok        = JsonPolicy.TryLoads<MyType>(json, out var parsed);
-```
-
-`Loads<T>` throws `LingoFuseException` on malformed input.
-`TryLoads<T>` returns `false` on malformed input (and for a null or
-empty string).
+Both channels use the same `AppHandle.RegisterCall` method — the difference is what the handler does with the `input` and `output` handles.
 
 ---
 
-## 14. Exception Hierarchy
+## Chapter 11 — Lifecycle Patterns
 
-### 14.1 The tree
+### 11.1 The standard service pattern
 
+```mermaid
+sequenceDiagram
+    participant Main as Main thread
+    participant FW as Framework
+    participant App as AppHandle
+    participant Mesh as C4 mesh
+
+    Main->>FW: SetOption (Overlap, WaitReady)
+    Main->>FW: ResetPrepare
+    Main->>FW: PrepareService(endpoint)
+    Main->>App: new AppHandle(name)
+    Main->>App: RegisterCall / RegisterNotify
+    Note over App: APIs registered BEFORE binding
+    Main->>FW: PrepareClient(endpoint, app)
+    Main->>FW: PrepareDone
+    FW->>Mesh: Client online, broadcast Init_App_Info
+    Note over FW: Returns 1
+    loop Until shutdown
+        Main->>Main: Process work
+    end
+    Main->>FW: ExitMainThread
+    Main->>App: Dispose
+    Main->>FW: Shutdown
 ```
-LingoFuseException                      (base)
-├── LingoFuseLibraryLoadException       native library cannot be loaded
-├── LingoFuseCallException              remote call failed
-├── LingoFuseRegistrationException      API registration failed
-├── LingoFuseObjectDisposedException    use after Dispose
-├── LingoFuseStateException             invalid object state
-└── LingoFuseIoException                I/O on a DataHandle failed
-```
 
-Plus the standard .NET exceptions that the binding also throws:
-`ArgumentNullException`, `ArgumentOutOfRangeException`,
-`ArgumentException`.
+**Rule**: `RegisterCall` **before** `PrepareClient`. If you register after, the mesh broadcast carries an empty API list, and the first call against the newly-registered app can time out.
 
-### 14.2 When each is thrown
-
-| Exception                          | Trigger                                                         |
-|------------------------------------|-----------------------------------------------------------------|
-| `LingoFuseLibraryLoadException`    | Reserved; the binding currently surfaces load failures as `DllNotFoundException`. |
-| `LingoFuseCallException`           | A throwing remote-call method (`Call<T>`, `CallRaw`, `CallBinary`) failed. Carries `TargetApp` / `TargetApi` when known. |
-| `LingoFuseRegistrationException`   | Reserved for future use; the current registration methods return `false` on failure instead of throwing. |
-| `LingoFuseObjectDisposedException` | A method was called on a disposed object.                       |
-| `LingoFuseStateException`          | The object is in the wrong state (not connected, already running, etc.). |
-| `LingoFuseIoException`             | An exact read or write on a `DataHandle` failed. Carries `Operation` (e.g. `"ReadBytesExact"`). |
-
-### 14.3 Non-throwing counterparts
-
-Every throwing remote-call method has a `Try*` counterpart that
-returns a boolean instead:
-
-| Throwing                    | Non-throwing                  |
-|-----------------------------|-------------------------------|
-| `Call<T>`                   | `TryCall<T>`                  |
-| `CallRaw`                   | `TryCallRaw`                  |
-| `CallBinary`                | `TryCallBinary`               |
-| `LocalCall<T>`              | `TryLocalCall<T>`             |
-
-The `Try*` methods still throw `ArgumentNullException` and
-`LingoFuseObjectDisposedException` for caller misuse. They only catch
-"the peer did not respond" conditions (timeout, unreachable target,
-empty reply, JSON deserialisation failure).
-
-### 14.4 Recommended catch pattern
+### 11.2 The pure consumer pattern
 
 ```csharp
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:service", null);   // null = no app
+Framework.PrepareDone();
+
+// Now you can call any app on the mesh.
+using var param = new DataHandle("some_api");
+LfIo.WriteJson(param, payload);
+using var response = Framework.Call("RemoteApp", param, 3000);
+```
+
+### 11.3 The worker node pattern
+
+A worker node is a service that does **not** host the beacon; it attaches to an existing beacon.
+
+```csharp
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.ResetPrepare();
+
+using var app = new AppHandle("Worker", "Compute worker");
+app.RegisterCall("compute", "Compute", (input, output) =>
+{
+    // ... your work ...
+});
+
+Framework.PrepareClient("ipc:beacon", app);
+Framework.PrepareDone();
+```
+
+Note: no `PrepareService`. The beacon is hosted elsewhere.
+
+### 11.4 The combined service + client pattern
+
+A single process can host the beacon, expose an app, and act as a client to other apps.
+
+```csharp
+Framework.ResetPrepare();
+Framework.PrepareService("ipc:my_node", "ipc:my_node");
+
+using var app = new AppHandle("MyNode", "Combined");
+app.RegisterCall("local", "...", ...);
+
+Framework.PrepareClient("ipc:my_node", app);
+Framework.PrepareDone();
+
+// Now call a remote app
+using var param = new DataHandle("remote_api");
+using var response = Framework.Call("RemoteApp", param, 3000);
+```
+
+### 11.5 The re-initialization pattern
+
+You can start and stop the framework multiple times within the same process.
+
+```csharp
+// First cycle
+Framework.PrepareService("ipc:ep1", "ipc:ep1");
+Framework.PrepareDone();
+// ... use ...
+Framework.ExitMainThread();
+Framework.Shutdown();
+
+// Second cycle (fresh state)
+Framework.ResetPrepare();
+Framework.PrepareService("ipc:ep2", "ipc:ep2");
+Framework.PrepareDone();   // returns 1 again
+```
+
+**Important**: `Shutdown` **must** be called between cycles. Without it, `PrepareDone` returns `0` on the second attempt, and no new service is created.
+
+### 11.6 Cleanup sequence
+
+The correct shutdown order is:
+
+```mermaid
+flowchart LR
+    A["1. NetworkEvents.Clear()"] --> B["2. Framework.ExitMainThread()"]
+    B --> C["3. app.Dispose()"]
+    C --> D["4. Framework.Shutdown()"]
+
+    style A fill:#FFF7E6,stroke:#B7791F,stroke-width:2px,color:#7E5109
+    style D fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+```
+
+| Step | Why |
+|---|---|
+| 1 | Prevents a user callback from firing during the shutdown transition |
+| 2 | Stops the native main thread, so no further callback can fire |
+| 3 | Detaches the app from the mesh and stops its sequenced threads |
+| 4 | Frees every remaining native resource, including the app pool |
+
+Wrap it in a `finally` block to guarantee it runs on every exit path:
+
+```csharp
+AppHandle? app = null;
+bool started = false;
+
 try
 {
-    using var client = new LingoFuseClient("ipc:svc");
-    client.Connect();
-    // ...
-}
-catch (LingoFuseCallException ex)
-{
-    // Remote call failed; ex.TargetApp / ex.TargetApi are populated.
-}
-catch (LingoFuseStateException ex)
-{
-    // Object not in the right state.
-}
-catch (LingoFuseObjectDisposedException ex)
-{
-    // Use-after-dispose bug in the caller.
-}
-catch (LingoFuseIoException ex)
-{
-    // Byte-level I/O failure on a DataHandle.
+    app = new AppHandle("MyApp", "");
+    // ... setup ...
+    started = true;
+    // ... run ...
 }
 catch (LingoFuseException ex)
 {
-    // Any other LingoFuse-specific failure.
-}
-catch (DllNotFoundException ex)
-{
-    // Native library not found.
-}
-```
-
----
-
-## 15. Complete Examples
-
-### 15.1 Minimal calculator server
-
-```csharp
-using System;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class CalculatorServer
-{
-    static int Main()
-    {
-        LingoFuseServer? server = null;
-        try
-        {
-            server = new LingoFuseServer("Calc", "ipc:calc");
-
-            server.App.Expose("add", "Add two int32s", (input, output) =>
-            {
-                int a = input.ReadInt32();
-                int b = input.ReadInt32();
-                output.WriteInt32(a + b);
-            });
-
-            server.App.Expose<string, string>("echo", s => s);
-
-            server.Start();
-
-            Console.WriteLine("Calculator running. Press Enter to stop.");
-            Console.ReadLine();
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[FATAL] {ex.Message}");
-            return 1;
-        }
-        finally
-        {
-            server?.FullCleanup();
-        }
-        return 0;
-    }
-}
-```
-
-### 15.2 Calculator client
-
-```csharp
-using System;
-using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class CalculatorClient
-{
-    static int Main()
-    {
-        LingoFuseClient? client = null;
-        try
-        {
-            client = new LingoFuseClient("ipc:calc");
-            client.Connect();
-
-            using var req = new DataHandle("add");
-            req.WriteInt32(5);
-            req.WriteInt32(7);
-
-            using var resp = client.CallBinary("Calc", req, 3000);
-            Console.WriteLine($"5 + 7 = {resp.ReadInt32()}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[FATAL] {ex.Message}");
-            return 1;
-        }
-        finally
-        {
-            client?.FullCleanup();
-        }
-        return 0;
-    }
-}
-```
-
-### 15.3 Worker node (attaches to an existing coordinator)
-
-```csharp
-using System;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class Worker
-{
-    static int Main()
-    {
-        LingoFuseNode? node = null;
-        try
-        {
-            node = new LingoFuseNode("Compute", "ipc:beacon");
-
-            node.App.Expose<int, int, int>("double", n => n * 2);
-
-            node.Connect(overlapConnection: true);
-
-            Console.WriteLine("Worker online. Press Enter to stop.");
-            Console.ReadLine();
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[FATAL] {ex.Message}");
-            return 1;
-        }
-        finally
-        {
-            node?.FullCleanup();
-        }
-        return 0;
-    }
-}
-```
-
-### 15.4 Coordinator + worker + caller in one process
-
-```csharp
-using System;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class AllInOne
-{
-    static int Main()
-    {
-        var server = new LingoFuseServer("Beacon", "ipc:beacon");
-        server.Start();
-
-        using var node = new LingoFuseNode("Worker", "ipc:beacon");
-        node.App.Expose<int, int, int>("add", (a, b) => a + b);
-        node.Connect(overlapConnection: true);
-
-        using var client = new LingoFuseClient("ipc:beacon");
-        client.Connect(overlapConnection: true);
-
-        int sum = client.Call<int>("Worker", "add",
-                                   new object[] { 20, 22 }, 3000);
-        Console.WriteLine($"20 + 22 = {sum}");
-
-        client.Dispose();
-        node.Dispose();
-        server.Stop(fullCleanup: false);
-
-        LingoFuseFramework.Shutdown();
-        return 0;
-    }
-}
-```
-
-### 15.5 Concurrency
-
-```csharp
-using System;
-using System.Collections.Generic;
-using System.Threading;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class ConcurrentClient
-{
-    static int Main()
-    {
-        LingoFuseClient? client = null;
-        try
-        {
-            client = new LingoFuseClient("ipc:calc");
-            client.Connect();
-
-            int total = 0;
-            var threads = new List<Thread>();
-            for (int t = 0; t < 10; t++)
-            {
-                var thread = new Thread(() =>
-                {
-                    for (int i = 0; i < 100; i++)
-                    {
-                        using var req = new DataHandle("add");
-                        req.WriteInt32(i);
-                        req.WriteInt32(i);
-
-                        using var resp = client.CallBinary(
-                            "Calc", req, 3000);
-                        Interlocked.Add(ref total, resp.ReadInt32());
-                    }
-                });
-                threads.Add(thread);
-            }
-
-            foreach (var t in threads) t.Start();
-            foreach (var t in threads) t.Join();
-
-            Console.WriteLine($"Total: {total}");
-        }
-        finally
-        {
-            client?.FullCleanup();
-        }
-        return 0;
-    }
-}
-```
-
-### 15.6 Sync callback with a UI main loop
-
-```csharp
-using System;
-using System.Windows.Forms;
-using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Host;
-
-class UiServer : Form
-{
-    [STAThread]
-    static void Main()
-    {
-        LingoFuseSync.SetMainThread();
-
-        var server = new LingoFuseServer("UiApp", "ipc:ui");
-
-        server.App.Expose<int, int, int>(
-            "add",
-            (a, b) =>
-            {
-                // Runs on the UI thread because synchronous: true.
-                MessageBox.Show($"{a} + {b}");
-                return a + b;
-            },
-            synchronous: true);
-
-        server.Start();
-
-        var timer = new Timer { Interval = 10 };
-        timer.Tick += (_, __) => LingoFuseSync.ProcessSyncQueue();
-        timer.Start();
-
-        Application.Run(new UiServer());
-        server.FullCleanup();
-    }
-}
-```
-
-### 15.7 Network event listener
-
-```csharp
-using System;
-using LingoFuse.Core;
-using LingoFuse.Events;
-using LingoFuse.Host;
-
-class EventListener
-{
-    static int Main()
-    {
-        NetworkEvents.Set(
-            onConnect:    addr => Console.WriteLine($"[+] {addr}"),
-            onDisconnect: addr => Console.WriteLine($"[-] {addr}"));
-
-        LingoFuseClient? client = null;
-        try
-        {
-            client = new LingoFuseClient("ipc:svc");
-            client.Connect();
-
-            Console.WriteLine("Press Enter to exit.");
-            Console.ReadLine();
-        }
-        finally
-        {
-            client?.FullCleanup();
-        }
-        return 0;
-    }
-}
-```
-
----
-
-## 16. Anti-Patterns and Pitfalls
-
-### 16.1 Using `using` alone for a lone host
-
-```csharp
-// ❌ WRONG: Dispose() only detaches. The framework stays running.
-using var client = new LingoFuseClient("ipc:svc");
-client.Connect();
-// Process exits with the simulated main thread still alive.
-```
-
-```csharp
-// ✅ CORRECT: FullCleanup() in a finally block.
-LingoFuseClient? client = null;
-try
-{
-    client = new LingoFuseClient("ipc:svc");
-    client.Connect();
-    // ...
+    Console.Error.WriteLine(ex.Message);
+    return 1;
 }
 finally
 {
-    client?.FullCleanup();
-}
-```
-
-### 16.2 Calling `LF_Call` from inside a callback
-
-```csharp
-// ❌ WRONG: deadlocks the worker thread.
-app.Expose("outer", "outer", (input, output) =>
-{
-    using var req = new DataHandle("inner");
-    using var resp = client.CallBinary("OtherApp", req, 3000);   // deadlock
-});
-```
-
-```csharp
-// ✅ CORRECT: offload to a separate thread and return immediately.
-app.Expose("outer", "outer", (input, output) =>
-{
-    var captured = input.ReadAllBytes();
-    Task.Run(() =>
+    if (started)
     {
-        using var req = new DataHandle("inner");
-        req.WriteBytes(captured);
-        using var resp = client.CallBinary("OtherApp", req, 3000);
-        // process resp ...
-    });
-});
-```
-
-### 16.3 Disposing a borrowed handle inside a callback
-
-```csharp
-// ❌ WRONG (but harmless in this binding):
-app.Expose("api", "desc", (input, output) =>
-{
-    input.Dispose();                 // no-op for a borrowed handle
-    var s = input.ReadString();      // still works
-});
-```
-
-The binding treats `Dispose()` on a borrowed handle as a no-op, so the
-code above is not a bug — but it is misleading. Do not dispose borrowed
-handles.
-
-### 16.4 Using `HasValue` on an unconstrained generic return
-
-```csharp
-// ❌ WRONG: int has no HasValue.
-var v = app.LocalCall<int>("answer");
-if (v.HasValue) { ... }
-```
-
-```csharp
-// ✅ CORRECT: int is the return type.
-int v = app.LocalCall<int>("answer");
-if (app.TryLocalCall<int>("answer", null, out int v2)) { ... }
-```
-
-### 16.5 Expecting `LocalCall<T>` to signal an unregistered API
-
-```csharp
-// ❌ MISLEADING: this returns default(int) == 0; it does not throw.
-int v = app.LocalCall<int>("not_registered");
-```
-
-```csharp
-// ✅ CORRECT: use TryLocalCall<T>.
-if (app.TryLocalCall<int>("not_registered", null, out int v))
-{
-    // API is registered; v is the handler's return value.
-}
-else
-{
-    // API is not registered.
-}
-```
-
-### 16.6 Sharing a `DataHandle` across threads for writes
-
-```csharp
-// ❌ WRONG: concurrent writes corrupt the cursor.
-Parallel.For(0, 100, i => { dh.WriteInt32(i); });
-```
-
-```csharp
-// ✅ CORRECT: one handle per thread, or a lock around the handle.
-Parallel.For(0, 100, i =>
-{
-    using var dh = new DataHandle("api");
-    dh.WriteInt32(i);
-    // ...
-});
-```
-
-### 16.7 Reading past the end of a buffer
-
-```csharp
-// ❌ WRONG: throws LingoFuseIoException when the buffer is too short.
-using var dh = new DataHandle("api");
-dh.WriteInt32(42);
-dh.Position = 0;
-long a = dh.ReadInt64();   // throws
-```
-
-```csharp
-// ✅ CORRECT: check the size first, or use TryReadInt64.
-using var dh = new DataHandle("api");
-dh.WriteInt32(42);
-dh.Position = 0;
-if (dh.TryReadInt64(out long a)) { ... }
-```
-
-### 16.8 Forgetting that `TryCall` can fail for multiple reasons
-
-```csharp
-// A false return can mean any of:
-//   - timeout
-//   - unreachable target
-//   - empty reply
-//   - JSON deserialisation failure (for TryCall<T>)
-if (!client.TryCall<int>("Calc", "add", payload, 3000, out var sum))
-{
-    // You cannot tell which. Use TryCallRaw + your own JSON parse
-    // if you need to distinguish.
-}
-```
-
-### 16.9 Installing overlapping network events
-
-```csharp
-// ❌ WRONG: the second call replaces the first.
-NetworkEvents.Set(onConnect: cb1, onDisconnect: null);
-NetworkEvents.Set(onConnect: null, onDisconnect: cb2);
-// cb1 is no longer installed.
-```
-
-```csharp
-// ✅ CORRECT: install both in one call.
-NetworkEvents.Set(onConnect: cb1, onDisconnect: cb2);
-```
-
-### 16.10 Forgetting `overlapConnection: true` for multiple hosts
-
-```csharp
-// ❌ WRONG: the second Connect throws LingoFuseStateException.
-var n1 = new LingoFuseNode("Worker1", "ipc:beacon");
-n1.Connect();
-var n2 = new LingoFuseNode("Worker2", "ipc:beacon");
-n2.Connect();       // throws
-```
-
-```csharp
-// ✅ CORRECT:
-n1.Connect(overlapConnection: true);
-n2.Connect(overlapConnection: true);
-```
-
-### 16.11 Calling `CheckApi` as an authoritative gate
-
-```csharp
-// ❌ FRAGILE: the cache can lag by ~3 s.
-if (!LingoFuseStatus.CheckApi("Calc", "add")) return;
-
-using var req = new DataHandle("add");
-// ... call may still fail if the cache is stale ...
-```
-
-```csharp
-// ✅ ROBUST: retry loop.
-bool ready = false;
-for (int i = 0; i < 15; i++)
-{
-    if (LingoFuseStatus.CheckApi("Calc", "add"))
-    {
-        ready = true;
-        break;
+        try { NetworkEvents.Clear(); } catch { }
+        try { Framework.ExitMainThread(); } catch { }
+        try { app?.Dispose(); } catch { }
+        try { Framework.Shutdown(); } catch { }
     }
+    else
+    {
+        try { app?.Dispose(); } catch { }
+    }
+}
+```
+
+---
+
+## Chapter 12 — Complete Examples
+
+### 12.1 Calculator service
+
+```csharp
+using System;
+using LingoFuse;
+
+using var app = new AppHandle("Calculator", "Simple calculator");
+
+app.RegisterCall("add", "Add two ints", (input, output) =>
+{
+    var args = LfIo.ReadJson<int[]>(input);
+    LfIo.WriteJson(output, new { result = args[0] + args[1] });
+});
+
+app.RegisterCall("multiply", "Multiply two ints", (input, output) =>
+{
+    var args = LfIo.ReadJson<int[]>(input);
+    LfIo.WriteJson(output, new { result = args[0] * args[1] });
+});
+
+app.RegisterNotify("log", "Log a message", input =>
+{
+    var msg = LfIo.ReadJson<string>(input);
+    Console.WriteLine($"[Calculator] {msg}");
+});
+
+Framework.SetOption("Overlap_Connection", "True");
+Framework.ResetPrepare();
+Framework.PrepareService("ipc:calc", "ipc:calc");
+Framework.PrepareClient("ipc:calc", app);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+Console.WriteLine("Calculator ready. Press Enter to stop.");
+Console.ReadLine();
+
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+app.Dispose();
+Framework.Shutdown();
+```
+
+### 12.2 Calculator client
+
+```csharp
+using System;
+using System.Text.Json;
+using LingoFuse;
+
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:calc", null);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+// Wait for the app to appear
+bool seen = false;
+for (int i = 0; i < 30; i++)
+{
+    if (LingoFuseStatus.CheckApp("Calculator")) { seen = true; break; }
+    System.Threading.Thread.Sleep(200);
+}
+if (!seen) { Console.Error.WriteLine("Calculator not found"); return; }
+
+// Call add
+using (var param = new DataHandle("add"))
+{
+    LfIo.WriteJson(param, new[] { 5, 7 });
+    using var response = Framework.Call("Calculator", param, 3000);
+    if (response.Size > 0)
+    {
+        var result = LfIo.ReadJson<JsonElement>(response);
+        Console.WriteLine($"5 + 7 = {result.GetProperty("result").GetInt32()}");
+    }
+}
+
+// Send a notification
+using (var param = new DataHandle("log"))
+{
+    LfIo.WriteJson(param, "Client says hello");
+    Framework.Notify("Calculator", param);
+}
+
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+Framework.Shutdown();
+```
+
+### 12.3 ABI cross-language server
+
+```csharp
+using System;
+using LingoFuse;
+
+using var app = new AppHandle("demo", "ABI worker");
+
+// add(int a, int b) -> int
+app.RegisterCall("add", "Add two ints", (input, output) =>
+{
+    int a = input.ReadInt32();
+    int b = input.ReadInt32();
+    output.WriteInt32(a + b);
+});
+
+// inv_seri() -> reversed typed sequence
+app.RegisterCall("inv_seri", "Reversed typed sequence", (input, output) =>
+{
+    byte   b   = input.ReadUInt8();
+    ushort w   = input.ReadUInt16();
+    uint   c   = input.ReadUInt32();
+    ulong  u64 = input.ReadUInt64();
+    string s   = input.ReadString();
+    float  f   = input.ReadSingle();
+
+    output.WriteSingle(f);
+    output.WriteString(s);
+    output.WriteUInt64(u64);
+    output.WriteUInt32(c);
+    output.WriteUInt16(w);
+    output.WriteUInt8(b);
+});
+
+Framework.SetOption("Overlap_Connection", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:cross", app);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+Console.WriteLine("ABI worker online. Press Enter to stop.");
+Console.ReadLine();
+
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+app.Dispose();
+Framework.Shutdown();
+```
+
+### 12.4 ABI client
+
+```csharp
+using System;
+using LingoFuse;
+
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:cross", null);
+
+if (Framework.PrepareDone() != 1)
+{
+    Console.Error.WriteLine("Startup failed");
+    return;
+}
+
+// Call add
+using (var param = new DataHandle("add"))
+{
+    param.WriteInt32(15);
+    param.WriteInt32(27);
+    using var response = Framework.Call("demo", param, 3000);
+    if (response.Size >= 4)
+    {
+        Console.WriteLine($"15 + 27 = {response.ReadInt32()}");
+    }
+}
+
+// Call inv_seri
+using (var param = new DataHandle("inv_seri"))
+{
+    param.WriteUInt8(200);
+    param.WriteUInt16(0x10);
+    param.WriteUInt32(0x2F);
+    param.WriteUInt64(0x3F);
+    param.WriteString("hello world");
+    param.WriteSingle(3.14f);
+
+    using var response = Framework.Call("demo", param, 3000);
+
+    float  rf   = response.ReadSingle();
+    string rs   = response.ReadString();
+    ulong  ru64 = response.ReadUInt64();
+    uint   rc   = response.ReadUInt32();
+    ushort rw   = response.ReadUInt16();
+    byte   rb   = response.ReadUInt8();
+
+    Console.WriteLine($"Reversed: [{rb}, {rw}, {rc}, {ru64}, \"{rs}\", {rf}]");
+}
+
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+Framework.Shutdown();
+```
+
+### 12.5 Load-test client
+
+```csharp
+using System;
+using System.Threading;
+using LingoFuse;
+
+Framework.SetOption("Wait_Connection_ReadyOk", "True");
+Framework.ResetPrepare();
+Framework.PrepareClient("ipc:cross", null);
+
+if (Framework.PrepareDone() != 1) return;
+
+const int kThreads = 32;
+long success = 0;
+long failed = 0;
+var stop = new ManualResetEventSlim(false);
+var threads = new Thread[kThreads];
+
+for (int i = 0; i < kThreads; i++)
+{
+    threads[i] = new Thread(() =>
+    {
+        var rng = new Random();
+        while (!stop.IsSet)
+        {
+            int a = rng.Next(1, 1000);
+            int b = rng.Next(1, 1000);
+            try
+            {
+                using var param = new DataHandle("add");
+                param.WriteInt32(a);
+                param.WriteInt32(b);
+                using var response = Framework.Call("demo", param, 1000);
+                if (response.Size >= 4) Interlocked.Increment(ref success);
+                else Interlocked.Increment(ref failed);
+            }
+            catch { Interlocked.Increment(ref failed); }
+        }
+    }) { IsBackground = true };
+    threads[i].Start();
+}
+
+Thread.Sleep(TimeSpan.FromSeconds(10));
+stop.Set();
+foreach (var t in threads) t.Join();
+
+Console.WriteLine($"Success: {success}, Failed: {failed}");
+
+NetworkEvents.Clear();
+Framework.ExitMainThread();
+Framework.Shutdown();
+```
+
+---
+
+## Chapter 13 — Pitfalls and Anti-Patterns
+
+### 13.1 LF-CB-001: Callback missing `cdecl`
+
+**Not applicable to C#.** The delegate prototypes are declared with `[UnmanagedFunctionPointer(CallingConvention.Cdecl)]` in the internal layer. You don't need to worry about calling conventions.
+
+### 13.2 LF-CB-002: Blocking call inside a callback
+
+**Symptom**: the entire process freezes; the callback thread is stuck.
+
+**Root cause**: LingoFuse callbacks run on native worker threads. `Framework.Call` and friends need the main thread to dispatch the response. If a callback blocks the worker waiting for the main thread, and the main thread is waiting on the same worker, you get a self-deadlock.
+
+**Fix**: never call `Framework.Call`, `Framework.Notify`, `Framework.SequencedNotify`, `AppHandle.LocalCall`, `AppHandle.LocalNotify`, `Framework.PrepareDone`, or `Framework.Shutdown` inside a callback. Offload the work to another thread:
+
+```csharp
+app.RegisterCall("api", "desc", (input, output) =>
+{
+    // Do NOT do: Framework.Call("OtherApp", input, 5000);
+    var payload = LfIo.ReadJson<MyType>(input);
+    _ = Task.Run(() => { /* heavy work here */ });
+    // return immediately
+});
+```
+
+### 13.3 LF-DATA-004: Reading a payload without a NUL
+
+**Symptom**: reading a string from a payload that has trailing data consumes everything.
+
+**Root cause**: `ReadString` is fault-tolerant: if no NUL is found, it reads to the end of the buffer.
+
+**Fix**: ensure the writer always appends a NUL. If you write via `DataHandle.WriteBytes`, you must append the NUL yourself, or use `LfIo.WriteStringBytes` which does it for you.
+
+### 13.4 LF-DATA-005: `WriteBytes` does not append a NUL
+
+**Symptom**: a string appears to have trailing garbage when read by the peer.
+
+**Root cause**: `WriteBytes` writes exactly the bytes you give it, with no terminator. Only `WriteString` and `LfIo.WriteStringBytes` append a NUL.
+
+**Fix**: use `WriteString` (for UTF-8 text) or `LfIo.WriteStringBytes` (for pre-serialized bytes) when you need NUL termination. Use `WriteBytes` only for raw byte streams where you control the framing yourself.
+
+### 13.5 LF-NET-001: Duplicate client address
+
+**Symptom**: `Framework.PrepareClient` returns `-1`.
+
+**Root cause**: the same physical address can host at most one client per process, unless `Overlap_Connection` is enabled.
+
+**Fix**:
+
+```csharp
+Framework.SetOption("Overlap_Connection", "True");
+Framework.PrepareClient(endpoint, app1);
+Framework.PrepareClient(endpoint, app2);   // Both succeed
+```
+
+Or use distinct addresses.
+
+### 13.6 LF-NET-003: `PrepareDone` returns 1 only once
+
+**Symptom**: the second `PrepareDone` returns `0` and you treat it as a failure.
+
+**Root cause**: the native main thread has already started. The flag persists until `Framework.Shutdown`.
+
+**Fix**: call `Framework.Shutdown` between cycles. Or check `LingoFuseStatus.CheckMainThread()` after a `0` return — if the main thread is running, the framework is already up and you can proceed.
+
+### 13.7 LF-NET-004: Deployment mode and the first call
+
+**Symptom**: the first remote call after `PrepareDone` times out.
+
+**Root cause**: `Wait_Connection_ReadyOk=False` lets `PrepareDone` return before the client is fully online. The first call races with the handshake.
+
+**Fix A**: use `Wait_Connection_ReadyOk=True` (the default). `PrepareDone` will block until the client is online.
+
+**Fix B**: if you need deployment mode, add a retry loop:
+
+```csharp
+for (int i = 0; i < 30; i++)
+{
+    if (LingoFuseStatus.CheckApi("RemoteApp", "remote_api")) break;
     Thread.Sleep(200);
 }
-
-// Or just call and handle the failure.
 ```
 
-### 16.12 Mixing JSON and ABI on the same (app, api)
+### 13.8 LF-CALL-001: `Call` timeout returns a size-0 handle, not null
+
+**Symptom**: your code checks `if (response == null)` and never triggers.
+
+**Root cause**: `Framework.Call` **always** returns a valid `DataHandle`. On timeout or unreachable target, the handle has `Size == 0`.
+
+**Fix**: check `response.Size > 0` instead of null.
 
 ```csharp
-// ❌ WRONG: the server writes ABI bytes; the client reads JSON.
-server.App.Expose("api", "desc", (input, output) =>
-    output.WriteInt32(42));
-
-// Client side:
-int v = client.Call<int>("App", "api");   // ❌ JSON decoder sees raw bytes
-```
-
-```csharp
-// ✅ CORRECT: pick one channel and use it consistently.
-// ABI server:
-server.App.Expose("api", "desc", (input, output) =>
-    output.WriteInt32(42));
-
-// ABI client:
-using var req = new DataHandle("api");
-using var resp = client.CallBinary("App", req, 3000);
-int v = resp.ReadInt32();
-```
-
-### 16.13 Disposing the response handle before reading
-
-```csharp
-// ❌ WRONG:
-var resp = client.CallBinary("App", req, 3000);
-resp.Dispose();
-int v = resp.ReadInt32();   // throws LingoFuseObjectDisposedException
-```
-
-```csharp
-// ✅ CORRECT:
-using var resp = client.CallBinary("App", req, 3000);
-int v = resp.ReadInt32();
-```
-
-### 16.14 Ignoring `PendingSyncCount`
-
-```csharp
-// ❌ Potential silent stall if ProcessSyncQueue is too slow.
-while (running) { Thread.Sleep(1000); }
-```
-
-```csharp
-// ✅ Monitor and drain promptly.
-while (running)
+using var response = Framework.Call("Target", param, 3000);
+if (response.Size == 0)
 {
-    LingoFuseSync.ProcessSyncQueue();
-    if (LingoFuseSync.PendingSyncCount > 100)
-        Console.Error.WriteLine("Sync queue backing up");
-    Thread.Sleep(10);
+    // Timeout or unreachable target
 }
 ```
 
----
+### 13.9 LF-CHK-001: `CheckApp` / `CheckApi` are cached
 
-## 17. Quick Reference
+**Symptom**: `CheckApp` returns `false` immediately after starting a new service.
 
-### 17.1 Public classes
+**Root cause**: the mesh broadcasts have a ~3-second delay.
 
-| Type                  | Namespace              | Purpose                              |
-|-----------------------|------------------------|--------------------------------------|
-| `LingoFuseFramework`  | `LingoFuse.Host`       | Process-wide lifecycle control.      |
-| `LingoFuseServer`     | `LingoFuse.Host`       | Coordinator host.                    |
-| `LingoFuseNode`       | `LingoFuse.Host`       | Worker host.                         |
-| `LingoFuseClient`     | `LingoFuse.Host`       | Pure consumer host.                  |
-| `LingoFuseApp`        | `LingoFuse.Host`       | Application container (used by hosts).|
-| `AppHandle`           | `LingoFuse.Core`       | Low-level native app wrapper.        |
-| `DataHandle`          | `LingoFuse.Core`       | Payload buffer.                      |
-| `LingoFuseSync`       | `LingoFuse.Core`       | Sync-callback main-thread queue.     |
-| `LfIo`                | `LingoFuse.Io`         | NUL-framed string / JSON I/O.        |
-| `JsonPolicy`          | `LingoFuse.Io`         | Canonical JSON serialisation policy. |
-| `LingoFuseStatus`     | `LingoFuse.Diagnostics`| Status queue and health checks.      |
-| `NetworkEvents`       | `LingoFuse.Events`     | Process-global connect/disconnect.   |
+**Fix**: retry with a delay (see §13.7 Fix B).
 
-### 17.2 `DataHandle` atomic types
+### 13.10 LF-APP-002: `Dispose` does not free the app
 
-| Write                | Exact read            | Try read                                 |
-|----------------------|-----------------------|------------------------------------------|
-| `WriteInt8`          | `ReadInt8`            | `TryReadInt8(out sbyte value)`           |
-| `WriteUInt8`         | `ReadUInt8`           | `TryReadUInt8(out byte value)`           |
-| `WriteInt16`         | `ReadInt16`           | `TryReadInt16(out short value)`          |
-| `WriteUInt16`        | `ReadUInt16`          | `TryReadUInt16(out ushort value)`        |
-| `WriteInt32`         | `ReadInt32`           | `TryReadInt32(out int value)`            |
-| `WriteUInt32`        | `ReadUInt32`          | `TryReadUInt32(out uint value)`          |
-| `WriteInt64`         | `ReadInt64`           | `TryReadInt64(out long value)`           |
-| `WriteUInt64`        | `ReadUInt64`          | `TryReadUInt64(out ulong value)`         |
-| `WriteSingle`        | `ReadSingle`          | `TryReadSingle(out float value)`         |
-| `WriteDouble`        | `ReadDouble`          | `TryReadDouble(out double value)`        |
-| `WriteString`        | `ReadString`          | `TryReadString(out string? value)`       |
-| `WriteBytes`         | `ReadBytes` / `ReadBytesExact` | `TryReadBytes(n, out byte[]? value)` |
+**Symptom**: memory keeps growing even though you dispose every app.
 
-### 17.3 Host API
+**Root cause**: `AppHandle.Dispose` performs only the first stage of a two-stage destruction. The app object stays in the global pool until `Framework.Shutdown`.
 
-| Method                          | Client | Server | Node |
-|---------------------------------|:------:|:------:|:----:|
-| `Connect(overlapConnection)`    | ✅     | ❌     | ✅   |
-| `Start(overlapConnection)`      | ❌     | ✅     | ❌   |
-| `Stop(fullCleanup)`             | ❌     | ✅     | ❌   |
-| `Dispose()`                     | ✅     | ✅     | ✅   |
-| `FullCleanup()`                 | ✅     | ✅     | ✅   |
-| `Call<T>` / `CallRaw`           | ✅     | ✅     | ✅   |
-| `TryCall<T>` / `TryCallRaw`     | ✅     | ✅     | ✅   |
-| `Notify` / `SequencedNotify`    | ✅     | ✅     | ✅   |
-| `CallBinary` / `TryCallBinary`  | ✅     | ✅     | ✅   |
-| `NotifyBinary` / `SequencedNotifyBinary` | ✅ | ✅ | ✅ |
-| `App` property                  | ❌     | ✅     | ✅   |
+**Fix**:
 
-### 17.4 `LingoFuseFramework` lifecycle
+- For long-running services that create many short-lived apps, call `Framework.Shutdown` periodically and re-initialize.
+- For normal usage, call `Framework.Shutdown` at process exit.
 
-| Member              | Effect                                                         |
-|---------------------|----------------------------------------------------------------|
-| `IsStarted`         | True when the simulated main thread is alive.                  |
-| `Shutdown()`        | Full teardown: clear events, exit, `LF_Shutdown`, reset.       |
-| `ExitMainThread()`  | Stop the simulated main thread; library stays loaded.          |
-| `ResetPrepare()`    | `LF_ResetPrepare`.                                             |
+### 13.11 LF-CLEAN-001: Wrong cleanup order
 
-### 17.5 `LingoFuseSync`
+**Symptom**: crash or hang during shutdown.
 
-| Member                    | Effect                                                       |
-|---------------------------|--------------------------------------------------------------|
-| `SetMainThread()`         | Designate the calling thread as the main thread.             |
-| `IsMainThreadCurrent`     | True when the caller is the main thread.                     |
-| `PendingSyncCount`        | Pending sync callbacks.                                      |
-| `TotalSyncProcessed`      | Cumulative count of sync callbacks executed.                 |
-| `ProcessSyncQueue()`      | Drain the queue; returns the number executed.                |
+**Root cause**: calling `Framework.Shutdown` before `Framework.ExitMainThread` can leave the main thread operating on a freed state. Calling `AppHandle.Dispose` after `Shutdown` is a use-after-free.
 
-### 17.6 `NetworkEvents`
+**Fix**: use the strict order:
 
-| Member                        | Effect                                                     |
-|-------------------------------|------------------------------------------------------------|
-| `IsInstalled`                 | True when at least one handler is installed.               |
-| `Set(onConnect, onDisconnect)`| Replace both handlers; `null` disables one side.           |
-| `Clear()`                     | Remove both handlers.                                      |
+```
+NetworkEvents.Clear()
+Framework.ExitMainThread()
+app.Dispose()
+Framework.Shutdown()
+```
 
-### 17.7 `LingoFuseStatus`
+### 13.12 Pitfall: registering APIs after `PrepareClient`
 
-| Member                        | Effect                                                     |
-|-------------------------------|------------------------------------------------------------|
-| `GetStatusCount()`            | Number of pending log messages.                            |
-| `GetStatus()`                 | Dequeue the next log message.                              |
-| `DrainStatus(maxMessages)`    | Dequeue up to N messages.                                  |
-| `PostStatus(message)`         | Inject a message.                                          |
-| `CheckMainThread()`           | True when the simulated main thread is running.            |
-| `CheckApp(name)`              | True when the named app is available (cache-based).        |
-| `CheckApi(app, api)`          | True when the named API is available (cache-based).        |
+**Symptom**: the first call to a newly-registered app times out.
 
-### 17.8 Types
+**Root cause**: the mesh registration (`Init_App_Info`) is broadcast at `PrepareClient` time. If you register APIs after, the broadcast carries an empty API list.
 
-| Name                       | Size on wire (ABI) | Encoding                    |
-|----------------------------|:------------------:|-----------------------------|
-| `int8` / `uint8`           | 1                  | two's complement / unsigned |
-| `int16` / `uint16`         | 2                  | little-endian               |
-| `int32` / `uint32`         | 4                  | little-endian               |
-| `int64` / `uint64`         | 8                  | little-endian               |
-| `single`                   | 4                  | IEEE 754 LE                 |
-| `double`                   | 8                  | IEEE 754 LE                 |
-| `string`                   | variable           | UTF-8 + NUL                 |
+**Fix**: always register APIs **before** `PrepareClient`:
 
-### 17.9 The seven iron rules
+```csharp
+using var app = new AppHandle("MyApp", "");
 
-1. **Call `FullCleanup()` on the last host in the process** — otherwise
-   the simulated main thread never stops.
-2. **Never call a blocking LingoFuse function inside a callback** — it
-   deadlocks.
-3. **Never dispose a borrowed `DataHandle`** — `Dispose()` is a no-op,
-   but the correct behaviour is to leave it alone.
-4. **Drive `LingoFuseSync.ProcessSyncQueue()` from the main thread** if
-   you registered any sync callback.
-5. **Use `TryLocalCall<T>` / `TryCall<T>` to detect unregistered APIs**;
-   `LocalCall<T>` / `Call<T>` return `default(T)`, which is
-   indistinguishable from a legitimate default value.
-6. **Choose one payload channel (JSON or ABI) per (app, api) and stick
-   with it across every language.**
-7. **Set `overlapConnection: true` when two or more hosts share the same
-   endpoint within one process.**
+app.RegisterCall("api1", "...", ...);   // ← BEFORE
+app.RegisterCall("api2", "...", ...);   // ← BEFORE
+
+Framework.PrepareClient(endpoint, app);
+```
+
+### 13.13 Pitfall: creating a `DataHandle` from a raw pointer outside a callback
+
+**Symptom**: crash, double-free, or memory corruption.
+
+**Root cause**: `DataHandle.FromRaw(raw, owned: false)` wraps a pointer the native layer owns. Outside a callback, nobody owns the pointer, so it leaks.
+
+**Fix**: use the public constructor `new DataHandle("api")` which creates a fresh owning handle.
+
+### 13.14 Pitfall: expecting `DataHandle.Raw` to remain valid after resize
+
+**Symptom**: reading stale data or a segmentation fault.
+
+**Root cause**: `Raw` returns the current buffer pointer. Any write, resize, or `Position` assignment past the end can reallocate the buffer, invalidating the pointer.
+
+**Fix**: do not cache `Raw`. If you need a pointer for a long-lived purpose, copy the bytes.
+
+### 13.15 Pitfall: `TryReadJson` succeeds with `null` value
+
+**Symptom**: `TryReadJson<T>(h, out var v)` returns `true` but `v` is null.
+
+**Root cause**: the JSON payload was the literal `null`, and `T` is a reference type or `Nullable<T>`. `null` is a valid value.
+
+**Fix**: `TryReadJson` returning `true` means "I parsed the payload". It does not mean "the value is non-null". Check both:
+
+```csharp
+if (LfIo.TryReadJson<MyType>(h, out var v) && v is not null)
+{
+    // v is non-null and parsed successfully
+}
+```
+
+### 13.16 Pitfall: mutating `JsonSerializerOptions` at runtime
+
+**Not possible.** The options instance is private and read-only. This is by design.
+
+### 13.17 Pitfall: sharing an `AppHandle` across threads for `RegisterCall`
+
+**Safe.** `AppHandle.RegisterCall` is serialized under an internal lock. Different threads can register different APIs concurrently.
+
+### 13.18 Pitfall: calling `Framework.PrepareService` twice
+
+**Symptom**: the second call returns `-1`.
+
+**Root cause**: the same listening address is already bound.
+
+**Fix**: `Framework.ResetPrepare()` clears the preparation queue, but does not unbind an active service. To host multiple services in one process, use distinct addresses.
+
+### 13.19 Pitfall: `NetworkEvents.Set` REPLACE semantics
+
+**Symptom**: your first `NetworkEvents.Set(onConnect)` handler stops firing after a second `NetworkEvents.Set(onDisconnect)` call.
+
+**Root cause**: `Set` is a REPLACE operation. The second call discards the first handler entirely.
+
+**Fix**: pass both handlers in one call:
+
+```csharp
+NetworkEvents.Set(onConnect, onDisconnect);
+```
+
+### 13.20 Pitfall: `LingoFuseStatus.DrainStatus` cannot distinguish empty message from empty queue
+
+**Symptom**: you call `GetStatus()` and get `""`, unsure whether the queue is empty or the message is empty.
+
+**Root cause**: a native ABI limitation — both cases produce an empty string.
+
+**Fix**: check `GetStatusCount()` first.
 
 ---
 
-## 18. Self-Audit
+## Appendix A — Public API Index
 
-This section verifies that the document is self-sufficient. The
-checklist below enumerates every question a reader might ask and points
-to the section that answers it.
+### DataHandle
 
-| Question                                                     | Section  |
-|--------------------------------------------------------------|----------|
-| How do I load the native library?                            | §3.1     |
-| How do I unload it?                                          | §3.4, §4 |
-| What does `LingoFuseFramework.Shutdown()` do?                | §4.1–§4.3|
-| When should I call it?                                       | §4.2, §8.6 |
-| How do I create a `DataHandle`?                              | §5.2     |
-| What does `ReadString` do when there is no NUL?              | §5.8.2   |
-| What does `ReadBytesExact` throw?                            | §5.4.2   |
-| How do I write two int32s?                                   | §5.5     |
-| What happens when a callback is called after Dispose?        | §5.9     |
-| How do I register a Call API?                                | §6.2, §7.3, §7.4 |
-| How do I register a Notify API?                              | §6.2.2, §7.4 |
-| What runs on the native worker thread?                       | §6.2.1, §6.2.2, §9.1 |
-| How do I run a callback on the UI thread?                    | §9       |
-| How do I invoke an API locally?                              | §6.3, §7.5, §7.7 |
-| How do I bind an App to an existing client?                  | §6.4, §7.7, §8.1 |
-| What is the difference between `Client`, `Server`, `Node`?   | §1.2, §8.1 |
-| How do I start a server?                                     | §8.3.3   |
-| How do I connect a client?                                   | §8.3.1   |
-| How do I stop a host?                                        | §8.5     |
-| What does `overlapConnection` do?                            | §8.3.4   |
-| How do I make a JSON call?                                   | §8.4.1   |
-| How do I make an ABI call?                                   | §8.4.3   |
-| How do I make a non-throwing call?                           | §8.4.2   |
-| How do I know if a call timed out?                           | §8.4.2, §14.2 |
-| How do I get the remote response bytes?                      | §8.4.3   |
-| How do I know when a peer connects?                          | §10      |
-| How do I access the status log?                              | §11      |
-| How do I know if an App is available?                        | §11.2, §11.3 |
-| What is the byte layout of an int32?                         | §12.2    |
-| What is the byte layout of a string?                         | §12.2    |
-| How do I write a payload that a C++ peer can read?           | §12.7    |
-| How do I read invalid UTF-8?                                 | §5.8.2, §12.6 |
-| How is JSON serialised?                                      | §13.2    |
-| How do I make a JSON key snake_case?                         | §13.5    |
-| Why are floating-point numbers formatted differently?        | §13.6    |
-| What exceptions can be thrown?                               | §14      |
-| What are the most common mistakes?                           | §16      |
-| What are the essential rules?                                | §17.9    |
+| Member | Signature |
+|---|---|
+| Constructor | `DataHandle(string apiName)` |
+| Factory | `static DataHandle FromRaw(IntPtr raw, bool owned)` |
+| `Raw` | `IntPtr` |
+| `IsValid` | `bool` |
+| `IsOwning` | `bool` |
+| `Position` | `long` (get/set) |
+| `Size` | `long` (get/set) |
+| `GetBufferPointer()` | `IntPtr` |
+| `WriteBytes(byte[])` | `long` |
+| `ReadBytes(int)` | `byte[]` |
+| `ReadBytesExact(int)` | `byte[]` |
+| `TryReadBytes(int, out byte[]?)` | `bool` |
+| `ReadAllBytes()` | `byte[]` |
+| `WriteInt8` / `WriteUInt8` | `void` |
+| `WriteInt16` / `WriteUInt16` | `void` |
+| `WriteInt32` / `WriteUInt32` | `void` |
+| `WriteInt64` / `WriteUInt64` | `void` |
+| `WriteSingle` / `WriteDouble` | `void` |
+| `ReadInt8` : `sbyte` / `ReadUInt8` : `byte` | — |
+| `ReadInt16` : `short` / `ReadUInt16` : `ushort` | — |
+| `ReadInt32` : `int` / `ReadUInt32` : `uint` | — |
+| `ReadInt64` : `long` / `ReadUInt64` : `ulong` | — |
+| `ReadSingle` : `float` / `ReadDouble` : `double` | — |
+| `TryReadInt8` ... `TryReadDouble` | `bool` with `out` parameter |
+| `WriteString(string)` | `void` |
+| `ReadString()` | `string` |
+| `TryReadString(out string?)` | `bool` |
+| `Dispose()` | `void` |
 
-**Self-audit result**: every question above can be answered from this
-document alone. A reader who has studied §1–§17 is expected to write
-correct C# LingoFuse programs without consulting the source. If any
-question arises that this table does not cover, please consult the
-source; the document is intended to be exhaustive, and any gap is a
-defect worth reporting.
+### LfIo
+
+| Member | Signature |
+|---|---|
+| `WriteString` | `static void WriteString(DataHandle, string)` |
+| `ReadString` | `static string ReadString(DataHandle)` |
+| `WriteStringBytes` | `static void WriteStringBytes(DataHandle, byte[])` |
+| `ReadStringBytes` | `static byte[] ReadStringBytes(DataHandle)` |
+| `ReadAllBytes` | `static byte[] ReadAllBytes(DataHandle)` |
+| `WriteJson` | `static void WriteJson(DataHandle, object?)` |
+| `ReadJson<T>` | `static T ReadJson<T>(DataHandle)` |
+| `TryReadJson<T>` | `static bool TryReadJson<T>(DataHandle, out T?)` |
+
+### AppHandle
+
+| Member | Signature |
+|---|---|
+| Constructor | `AppHandle(string name, string description = "")` |
+| `Name` | `string` |
+| `Raw` | `IntPtr` |
+| `IsValid` | `bool` |
+| `RegisterCall` | `bool RegisterCall(string, string, Action<DataHandle, DataHandle>)` |
+| `RegisterNotify` | `bool RegisterNotify(string, string, Action<DataHandle>)` |
+| `Unregister` | `bool Unregister(string)` |
+| `LocalCall` | `DataHandle LocalCall(DataHandle)` |
+| `LocalNotify` | `void LocalNotify(DataHandle)` |
+| `Bind` | `int Bind()` |
+| `Dispose()` | `void` |
+
+### Framework
+
+| Member | Signature |
+|---|---|
+| `CallbackErrorHandler` | `static Action<string, Exception>?` (get/set) |
+| `ResetPrepare` | `static void ResetPrepare()` |
+| `PrepareService` | `static int PrepareService(string, string)` |
+| `PrepareClient` | `static int PrepareClient(string, AppHandle? = null)` |
+| `PrepareDone` | `static int PrepareDone()` |
+| `ExitMainThread` | `static void ExitMainThread()` |
+| `SetOption` | `static void SetOption(string, string)` |
+| `GenerateAppName` | `static string GenerateAppName()` |
+| `Call` | `static DataHandle Call(string, DataHandle, ulong = 5000)` |
+| `Notify` | `static void Notify(string, DataHandle)` |
+| `SequencedNotify` | `static void SequencedNotify(string, DataHandle)` |
+| `Shutdown` | `static void Shutdown()` |
+
+### NetworkEvents
+
+| Member | Signature |
+|---|---|
+| `IsInstalled` | `static bool IsInstalled` |
+| `Set` | `static void Set(Action<string>?, Action<string>?)` |
+| `Clear` | `static void Clear()` |
+
+### LingoFuseStatus
+
+| Member | Signature |
+|---|---|
+| `GetStatusCount` | `static int GetStatusCount()` |
+| `GetStatus` | `static string GetStatus()` |
+| `DrainStatus` | `static string[] DrainStatus(int = 64)` |
+| `PostStatus` | `static void PostStatus(string)` |
+| `CheckMainThread` | `static bool CheckMainThread()` |
+| `CheckApp` | `static bool CheckApp(string)` |
+| `CheckApi` | `static bool CheckApi(string, string)` |
+
+### Exceptions
+
+| Type | Base | Notable members |
+|---|---|---|
+| `LingoFuseException` | `Exception` | — |
+| `LingoFuseCallException` | `LingoFuseException` | `TargetApp`, `TargetApi` |
+| `LingoFuseIoException` | `LingoFuseException` | `Operation` |
+| `LingoFuseObjectDisposedException` | `LingoFuseException` | `ObjectName` |
+| `LingoFuseLibraryLoadException` | `LingoFuseException` | `LibraryName` |
 
 ---
 
-*End of document.*
+## Appendix B — Cross-Language Wire Matrix
+
+### B.1 Scalar encodings
+
+| Type | C# | Bytes (little-endian) |
+|---|---|---|
+| Signed 8-bit | `sbyte` | `[v]` |
+| Unsigned 8-bit | `byte` | `[v]` |
+| Signed 16-bit | `short` | `[v & 0xFF, (v >> 8) & 0xFF]` |
+| Unsigned 16-bit | `ushort` | `[v & 0xFF, (v >> 8) & 0xFF]` |
+| Signed 32-bit | `int` | 4 bytes LE |
+| Unsigned 32-bit | `uint` | 4 bytes LE |
+| Signed 64-bit | `long` | 8 bytes LE |
+| Unsigned 64-bit | `ulong` | 8 bytes LE |
+| Single | `float` | 4 bytes IEEE 754 LE |
+| Double | `double` | 8 bytes IEEE 754 LE |
+| String | `string` | UTF-8 bytes + `0x00` |
+
+### B.2 JSON wire format
+
+| Aspect | Value |
+|---|---|
+| Encoding | UTF-8 |
+| Non-ASCII characters | Literal UTF-8 (no `\uXXXX`) |
+| Supplementary plane (emoji) | Literal 4-byte UTF-8 (no surrogate escapes) |
+| Compact | No indentation, no trailing newline |
+| Null | `null` (4 bytes) |
+| Number | Shortest round-trippable representation |
+| Property names | C# property name verbatim; use `[JsonPropertyName]` to change |
+
+### B.3 Interop matrix (all combinations)
+
+| Server | Client | Transport | Envelope | Supported |
+|---|---|---|---|---|
+| C# | C# | IPC | JSON | ✅ |
+| C# | C# | IPC | ABI | ✅ |
+| C# | C# | TCP | JSON | ✅ |
+| C# | C# | TCP | ABI | ✅ |
+| C# | Pascal | IPC | JSON | ✅ |
+| C# | Pascal | IPC | ABI | ✅ |
+| Pascal | C# | IPC | JSON | ✅ |
+| Pascal | C# | IPC | ABI | ✅ |
+| C# | Python | IPC | JSON | ✅ |
+| C# | Python | IPC | ABI | ✅ |
+| Python | C# | IPC | JSON | ✅ |
+| Python | C# | IPC | ABI | ✅ |
+| C# | C++ | IPC | JSON | ✅ |
+| C# | C++ | IPC | ABI | ✅ |
+| C++ | C# | IPC | JSON | ✅ |
+| C++ | C# | IPC | ABI | ✅ |
+| C# | HTTP bridge | IPC | JSON | ✅ (via `bridge.py`) |
+| HTTP | C# | HTTP→bridge→LF | JSON | ✅ (via `bridge.py`) |
+
+**All rows use the same wire contract.** The only difference is which envelope (JSON text vs raw scalars) the application layer uses.
+
+---
+
+## Appendix C — Glossary
+
+| Term | Definition |
+|---|---|
+| **App** | A named container of related APIs, identified by a unique string |
+| **ABI channel** | The raw-bytes path: the handler reads and writes scalars directly |
+| **Beacon** | A service that hosts the registry; acts as the discovery anchor |
+| **Borrowed handle** | A `DataHandle` whose `Dispose` is a no-op; the native layer owns the resource |
+| **C4** | The underlying service mesh that handles discovery, routing, and load balancing |
+| **Call** | Request-response API mode |
+| **Callback** | User-supplied delegate invoked by the framework |
+| **FIFO** | First-In-First-Out ordering |
+| **JSON channel** | The JSON-text path: the handler uses `LfIo.WriteJson` / `LfIo.ReadJson` |
+| **Main thread** | The simulated event loop started by `Framework.PrepareDone` |
+| **Mesh** | See C4 |
+| **NUL** | Byte `0x00` |
+| **Notify** | One-way API mode |
+| **Owning handle** | A `DataHandle` created via `new DataHandle(...)` |
+| **Raw pointer** | The native `IntPtr` hidden behind a `DataHandle` or `AppHandle` |
+| **Sequenced Notify** | One-way notification with FIFO guarantee per `(app, api)` |
+| **Worker thread** | Any thread other than the main thread; callbacks run here |
+
+---
+
+## Appendix D — Self-Verification Checklist
+
+After reading this document, you should be able to answer every question below **without opening any source file**.
+
+### D.1 Basic concepts
+
+- [ ] What are the 11 public types of the LingoFuse C# binding?
+- [ ] What is the difference between `DataHandle` and `AppHandle`?
+- [ ] Why is `LfIo` the only sanctioned JSON path?
+- [ ] What is the difference between the ABI channel and the JSON channel?
+
+### D.2 Wire format
+
+- [ ] How are strings framed on the wire?
+- [ ] What is the byte sequence for `"你好"` in the JSON channel?
+- [ ] What is the byte sequence for the int32 `0x01020304`?
+- [ ] What happens when `ReadString` encounters no NUL?
+
+### D.3 Lifecycle
+
+- [ ] What are the 4 steps of a service startup?
+- [ ] In what order must APIs be registered relative to `PrepareClient`?
+- [ ] What is the correct cleanup order?
+- [ ] Why does `PrepareDone` return `1` only once?
+
+### D.4 Callbacks
+
+- [ ] On what thread do callbacks run?
+- [ ] What functions must not be called from a callback?
+- [ ] What happens when a callback throws?
+- [ ] How do you install a global error handler for swallowed callback exceptions?
+
+### D.5 Remote calls
+
+- [ ] What does `Framework.Call` return on timeout?
+- [ ] How do you detect a timeout?
+- [ ] What is the difference between `Framework.Notify` and `Framework.SequencedNotify`?
+
+### D.6 JSON
+
+- [ ] How do you change the JSON key of a property?
+- [ ] How are emoji emitted on the wire?
+- [ ] What does `TryReadJson<T>` return `false` for?
+- [ ] Why is there no public `JsonSerializerOptions`?
+
+### D.7 Cross-language
+
+- [ ] What is the byte sequence for `add(int, int) -> int`?
+- [ ] What byte order are integers?
+- [ ] What NUL framing rule applies to strings?
+- [ ] Can a C# server be called by a Python client? A C++ client? A Pascal client?
+
+### D.8 Debugging
+
+- [ ] What does `LingoFuseCallException.TargetApp` tell you?
+- [ ] What does `LingoFuseIoException.Operation` tell you?
+- [ ] Why might `CheckApp` return `false` immediately after registering?
+- [ ] Why might the first call to a newly-registered app time out?
+
+If you can answer every question above, you have mastered the LingoFuse C# interface.
+
+---
+
+**Document version**: 4.0
+**Covers**: LingoFuse native v3.06, C# binding (two-layer design)
+**Last updated**: 2026-09-27
+**Maintenance rule**: any change to the public API of the C# binding must update this document in the same commit. The self-verification checklist in Appendix D defines the minimum contract of "sufficient documentation".

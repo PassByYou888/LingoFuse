@@ -22,7 +22,6 @@
 //  WIRE FORMAT (byte-for-byte identical to C++ / Pascal / Python)
 //  ---------------------------------------------------------------------------
 //  Both APIs use the raw ABI channel. No JSON is involved at any point.
-//  The wire format matches the C++ CrossNode.cpp exactly:
 //
 //    add:
 //        input  : int32 (little-endian) + int32 (little-endian)
@@ -41,30 +40,25 @@
 //  STARTUP ORDER
 //  ---------------------------------------------------------------------------
 //  Start CrossService first. The node expects the coordinator endpoint
-//  to already exist when Connect() is called.
+//  to already exist when PrepareClient is called.
+//
+//  The two APIs MUST be registered before PrepareClient so that the
+//  Init_App_Info broadcast carries the complete API list.
 //
 //  ---------------------------------------------------------------------------
 //  CLEANUP
 //  ---------------------------------------------------------------------------
-//  The node's Dispose() only detaches the App from the framework; it
-//  does NOT stop the simulated main thread or unload the native
-//  library. To perform a full process-wide shutdown
-//  (LF_ExitMainThread -> LF_Shutdown), Main() calls node.FullCleanup()
-//  in a finally block, so the framework is released on every exit
-//  path, including early returns and exceptions.
+//  The finally block performs the LF-CLEAN-001 sequence on every exit
+//  path:
 //
-//  Output interleaving:
-//      Callbacks are invoked on the library's background worker threads.
-//      All callback output is routed through Log() / LogError(), which
-//      format the whole line and emit it under a process-wide lock. This
-//      keeps each line intact; the order between lines is still arbitrary.
+//      NetworkEvents.Clear -> ExitMainThread -> App.Dispose -> Shutdown
+//
+//  All operations are idempotent.
 // =============================================================================
 
 using System;
 
 using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Host;
 
 namespace LingoFuse.Demo.CrossNode;
 
@@ -84,26 +78,27 @@ internal static class Program
     {
         Console.WriteLine("=== Cross Node (Worker) ===");
 
-        LingoFuseNode? node = null;
+        AppHandle? app = null;
+        bool started = false;
 
         try
         {
-            node = new LingoFuseNode(
-                appName: AppName,
-                endpoint: Endpoint,
-                description: "C# worker node (ABI wire format)");
+            Framework.SetOption("Wait_Connection_ReadyOk", "True");
+            Framework.SetOption("Overlap_Connection", "True");
+            Framework.SetOption("Wait_Connection_Timeout", "10000");
 
-            // ------------------------------------------------------------------
+            Framework.ResetPrepare();
+
+            app = new AppHandle(
+                AppName, "C# worker node (ABI wire format)");
+
+            // ---------------------------------------------------------------
             // Register "add": (int32, int32) -> int32
-            //
-            // The ABI overload accepts a raw DataHandle handler. The handler
-            // reads two int32 values from the input and writes one int32 to
-            // the output. No JSON serialization is performed.
-            // ------------------------------------------------------------------
-            if (!node.App.Expose(
+            // ---------------------------------------------------------------
+            if (!app.RegisterCall(
                 "add",
                 "add(int a, int b) -> int",
-                (DataHandle input, DataHandle output) =>
+                (input, output) =>
                 {
                     int a = input.ReadInt32();
                     int b = input.ReadInt32();
@@ -114,23 +109,20 @@ internal static class Program
                     output.WriteInt32(c);
                 }))
             {
-                Console.Error.WriteLine("[FATAL] Failed to register API 'add'.");
+                Console.Error.WriteLine(
+                    "[FATAL] Failed to register API 'add'.");
                 return 1;
             }
 
-            // ------------------------------------------------------------------
+            // ---------------------------------------------------------------
             // Register "inv_seri": (uint8, uint16, uint32, uint64,
             //                       string, float)
             //                      -> reversed sequence
-            //
-            // The reply is emitted in the reverse field order, using the
-            // exact same scalar types. The string is written with a NUL
-            // terminator via WriteString.
-            // ------------------------------------------------------------------
-            if (!node.App.Expose(
+            // ---------------------------------------------------------------
+            if (!app.RegisterCall(
                 "inv_seri",
                 "inv_seri() -> reversed typed sequence",
-                (DataHandle input, DataHandle output) =>
+                (input, output) =>
                 {
                     // Read in the C++ order.
                     byte b = input.ReadUInt8();
@@ -160,19 +152,35 @@ internal static class Program
                 return 1;
             }
 
+            // ---------------------------------------------------------------
+            // Connect the node to the mesh.
+            //
+            // Registration is complete at this point: the Init_App_Info
+            // broadcast will carry both "add" and "inv_seri".
+            // ---------------------------------------------------------------
+            int clientTag = Framework.PrepareClient(Endpoint, app);
+            if (clientTag == -1)
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareClient returned -1 " +
+                    $"for {Endpoint}.");
+                return 1;
+            }
+
+            int done = Framework.PrepareDone();
+            if (done != 1 && !LingoFuseStatus.CheckMainThread())
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareDone returned {done} and " +
+                    "the main thread is not running.");
+                return 1;
+            }
+
+            started = true;
+
             Console.WriteLine(
                 "[Node] Registered APIs 'add' and 'inv_seri' " +
                 $"under application '{AppName}'.");
-
-            // ------------------------------------------------------------------
-            // Connect the node to the mesh.
-            //
-            // overlapConnection: true allows the same process to host more
-            // than one client on the same endpoint, and matches the C++
-            // demo's tolerance for repeated runs inside the same process.
-            // ------------------------------------------------------------------
-            node.Connect(overlapConnection: true);
-
             Console.WriteLine("[Node] Online. Press Enter to exit...");
             Console.ReadLine();
 
@@ -192,19 +200,21 @@ internal static class Program
         }
         finally
         {
-            // FullCleanup performs the LF-CLEAN-001 sequence in the
-            // required order:
-            //
-            //     LF_ExitMainThread  ->  (App detach)  ->  LF_Shutdown
-            //
-            // Dispose() alone would only detach the App; it would leave
-            // the simulated main thread running and the native library
-            // loaded. Since this demo owns the only LingoFuseNode in
-            // the process, FullCleanup is the correct exit path.
-            //
-            // FullCleanup is idempotent; calling it on a disposed node
-            // is a no-op.
-            node?.FullCleanup();
+            // LF-CLEAN-001 sequence on every exit path.
+            if (started)
+            {
+                try { NetworkEvents.Clear(); } catch { }
+                try { Framework.ExitMainThread(); } catch { }
+                try { app?.Dispose(); } catch { }
+                try { Framework.Shutdown(); } catch { }
+            }
+            else
+            {
+                // Startup failed partway through: release whatever
+                // managed resources exist, but do not touch the
+                // process-wide framework.
+                try { app?.Dispose(); } catch { }
+            }
         }
 
         Console.WriteLine("[Node] Bye.");

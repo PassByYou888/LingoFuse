@@ -1,101 +1,71 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 
 namespace LingoFuse.Native;
 
 // ============================================================================
-// Opaque handle types and callback delegates for the LingoFuse C ABI.
+// NativeTypes — opaque handles and callback prototypes for the C ABI.
 // ============================================================================
 //
-// This file declares the managed representation of the two opaque handle
-// kinds exposed by the native library and the three callback delegate
-// prototypes that the C ABI expects.
+// This file declares the managed representation of:
 //
-// ----------------------------------------------------------------------------
+//   - the two opaque handle kinds exposed by the native library;
+//   - the three callback delegate prototypes the C ABI expects.
+//
+// All five types are declared internal. User code never sees them:
+// DataHandle and AppHandle wrap the raw pointer, and the callbacks are
+// registered through the managed signatures on AppHandle and
+// NetworkEvents. Exposing these types publicly would invite user code
+// to hand-roll P/Invoke calls, which is exactly what the layer-1
+// boundary exists to prevent.
+//
 // HANDLE TYPES
-// ----------------------------------------------------------------------------
+// ------------
 // Both DataHnd and AppHnd wrap a single IntPtr. The wrapper exists for
-// three reasons:
+// type safety and null semantics. The wrapped pointer must NEVER be
+// dereferenced directly; all access goes through the exported functions
+// in NativeMethods.
 //
-//   1. Type safety. DataHnd and AppHnd are distinct types, so the
-//      compiler rejects a mix-up at a call site.
+// CALLBACK TYPES
+// --------------
+// All three delegates are declared with CallingConvention.Cdecl. The
+// managed default conventions (fastcall on x64, stdcall on x86) would
+// misalign the stack on Windows and crash the process.
 //
-//   2. Null semantics. Each type exposes a static Null field whose
-//      handle is IntPtr.Zero and an IsValid property for readability.
+// All three delegates execute on a native worker thread. Their bodies
+// must never call any blocking LingoFuse function (LF_Call,
+// LF_LocalCall, LF_PrepareDone, LF_Shutdown); doing so deadlocks.
 //
-//   3. Value semantics. Each type implements IEquatable<T> and
-//      overrides GetHashCode, so instances behave correctly in
-//      dictionaries, comparisons and pattern matching.
-//
-// The wrapped pointer must NEVER be dereferenced directly. All access
-// goes through the exported functions in NativeMethods or through the
-// managed wrappers in LingoFuse.Core.
-//
-// ----------------------------------------------------------------------------
-// CALLBACK DELEGATE TYPES
-// ----------------------------------------------------------------------------
-// All three delegates are declared with the C calling convention
-// (UnmanagedFunctionPointer(CallingConvention.Cdecl)). The managed
-// default conventions (fastcall on x64, stdcall on x86) would misalign
-// the stack and crash the process.
-//
-// All three delegates are executed on a native worker thread. Their
-// bodies must:
-//
-//   - never call any blocking LingoFuse function (LF_Call, LF_LocalCall,
-//     LF_PrepareDone, LF_Shutdown); this would deadlock;
-//   - never touch UI controls without marshalling to the UI thread;
-//   - never let an exception escape into the native stack.
-//
-// The managed wrappers in LingoFuse.Core and LingoFuse.Events enforce
-// the last two rules by catching every user exception and logging it
-// via Debug.WriteLine.
-//
-// ----------------------------------------------------------------------------
-// EXCEPTION POLICY
-// ----------------------------------------------------------------------------
-// This file contains no executable code that can throw. The only
-// exception-relevant behaviour is in the delegate prototypes, which
-// never throw on their own; the callee is responsible for its own
-// exception isolation.
-// ============================================================================
-
-// ============================================================================
-// Opaque handle types
 // ============================================================================
 
 /// <summary>
 /// Opaque handle to a LingoFuse data buffer (TDataHnd).
 /// </summary>
 /// <remarks>
-/// Created by <c>LF_CreateData</c> and released by <c>LF_FreeData</c>.
-/// The underlying pointer must never be dereferenced directly; all
-/// access must go through the exported functions.
+/// Created by LF_CreateData and released by LF_FreeData. The wrapped
+/// pointer must never be dereferenced directly.
 /// </remarks>
 [StructLayout(LayoutKind.Sequential)]
-public struct DataHnd : IEquatable<DataHnd>
+internal struct DataHnd : IEquatable<DataHnd>
 {
     /// <summary>
-    /// Raw native pointer. <see cref="IntPtr.Zero"/> means "no handle".
+    /// Raw pointer. <see cref="IntPtr.Zero"/> means "no handle".
     /// </summary>
     public IntPtr Handle;
 
     /// <summary>
-    /// True when <see cref="Handle"/> is not <see cref="IntPtr.Zero"/>.
+    /// True when the wrapped pointer is not <see cref="IntPtr.Zero"/>.
     /// </summary>
     public readonly bool IsValid => Handle != IntPtr.Zero;
 
     /// <summary>
-    /// An empty handle (equivalent to a zero pointer). Safe to pass to
-    /// <c>LF_FreeData</c>; the native layer ignores it.
+    /// An empty handle. Safe to pass to LF_FreeData; the native layer
+    /// ignores it.
     /// </summary>
     public static readonly DataHnd Null = new DataHnd { Handle = IntPtr.Zero };
 
-    /// <summary>
-    /// Value equality on the wrapped pointer.
-    /// </summary>
-    public readonly bool Equals(DataHnd other) =>
-        Handle == other.Handle;
+    /// <inheritdoc/>
+    public readonly bool Equals(DataHnd other) => Handle == other.Handle;
 
     /// <inheritdoc/>
     public readonly override bool Equals(object? obj) =>
@@ -117,37 +87,33 @@ public struct DataHnd : IEquatable<DataHnd>
 /// Opaque handle to a LingoFuse application (TAppHnd).
 /// </summary>
 /// <remarks>
-/// Created by <c>LF_CreateApp</c> and released by <c>LF_FreeApp</c>.
-/// <c>LF_FreeApp</c> performs only the first stage of a two-stage
-/// destruction: the object remains alive in the global application pool
-/// until <c>LF_Shutdown</c> is called.
+/// Created by LF_CreateApp and released by LF_FreeApp. LF_FreeApp
+/// performs only the first stage of a two-stage destruction: the
+/// underlying object remains alive in the global pool until
+/// LF_Shutdown is called.
 /// </remarks>
 [StructLayout(LayoutKind.Sequential)]
-public struct AppHnd : IEquatable<AppHnd>
+internal struct AppHnd : IEquatable<AppHnd>
 {
     /// <summary>
-    /// Raw native pointer. <see cref="IntPtr.Zero"/> means "no handle".
+    /// Raw pointer. <see cref="IntPtr.Zero"/> means "no handle".
     /// </summary>
     public IntPtr Handle;
 
     /// <summary>
-    /// True when <see cref="Handle"/> is not <see cref="IntPtr.Zero"/>.
+    /// True when the wrapped pointer is not <see cref="IntPtr.Zero"/>.
     /// </summary>
     public readonly bool IsValid => Handle != IntPtr.Zero;
 
     /// <summary>
-    /// An empty handle (equivalent to a zero pointer). Safe to pass to
-    /// <c>LF_FreeApp</c>; the native layer ignores it. Also the
-    /// expected argument for <c>LF_PrepareClient</c> when the client is
-    /// a pure consumer that does not expose an application.
+    /// An empty handle. Safe to pass to LF_FreeApp. Also the expected
+    /// argument for LF_PrepareClient when the client is a pure consumer
+    /// that does not expose an application.
     /// </summary>
     public static readonly AppHnd Null = new AppHnd { Handle = IntPtr.Zero };
 
-    /// <summary>
-    /// Value equality on the wrapped pointer.
-    /// </summary>
-    public readonly bool Equals(AppHnd other) =>
-        Handle == other.Handle;
+    /// <inheritdoc/>
+    public readonly bool Equals(AppHnd other) => Handle == other.Handle;
 
     /// <inheritdoc/>
     public readonly override bool Equals(object? obj) =>
@@ -165,16 +131,11 @@ public struct AppHnd : IEquatable<AppHnd>
         !left.Equals(right);
 }
 
-// ============================================================================
-// Callback delegate types
-// ============================================================================
-
 /// <summary>
 /// Callback prototype for Call-mode (request-response) APIs.
 /// </summary>
 /// <param name="trigger">
-/// User-supplied pointer passed at registration time. The managed
-/// wrappers always pass <see cref="IntPtr.Zero"/>.
+/// User-supplied pointer passed at registration time.
 /// </param>
 /// <param name="input">
 /// Read-only input data handle. Valid only during the callback
@@ -187,14 +148,13 @@ public struct AppHnd : IEquatable<AppHnd>
 /// returns.
 /// </param>
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void LfCallFunc(IntPtr trigger, IntPtr input, IntPtr output);
+internal delegate void LfCallFunc(IntPtr trigger, IntPtr input, IntPtr output);
 
 /// <summary>
 /// Callback prototype for Notify-mode (one-way) APIs.
 /// </summary>
 /// <param name="trigger">
-/// User-supplied pointer passed at registration time. The managed
-/// wrappers always pass <see cref="IntPtr.Zero"/>.
+/// User-supplied pointer passed at registration time.
 /// </param>
 /// <param name="input">
 /// Read-only input data handle. Valid only during the callback
@@ -202,16 +162,15 @@ public delegate void LfCallFunc(IntPtr trigger, IntPtr input, IntPtr output);
 /// returns.
 /// </param>
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void LfNotifyFunc(IntPtr trigger, IntPtr input);
+internal delegate void LfNotifyFunc(IntPtr trigger, IntPtr input);
 
 /// <summary>
 /// Callback prototype for network connect / disconnect events.
 /// </summary>
 /// <param name="addr">
 /// UTF-8 encoded endpoint string. The buffer is valid ONLY during the
-/// callback invocation; the managed wrapper in LingoFuse.Events copies
-/// it immediately, so the user delegate receives a managed string and
-/// never sees a dangling pointer.
+/// callback invocation. The wrapper in LingoFuse.NetworkEvents copies
+/// it to managed memory immediately.
 /// </param>
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-public delegate void LfNetworkEventFunc(IntPtr addr);
+internal delegate void LfNetworkEventFunc(IntPtr addr);

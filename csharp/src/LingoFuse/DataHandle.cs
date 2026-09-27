@@ -1,160 +1,100 @@
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
 
 using LingoFuse.Native;
 
-namespace LingoFuse.Core;
+namespace LingoFuse;
 
 // ============================================================================
 // DataHandle — RAII wrapper around a native TDataHnd.
 // ============================================================================
 //
-// Responsibility
+// RESPONSIBILITY
 // --------------
-// Owns a native data handle and releases it deterministically when the
-// object is disposed. Provides byte-level, atomic-type, and NUL-framed
-// string I/O on top of the underlying buffer.
+// Owns a native data handle and releases it deterministically on
+// Dispose. Provides byte-level, atomic-type, and NUL-framed string I/O
+// on top of the underlying buffer.
 //
-// ----------------------------------------------------------------------------
-// LAYERING
-// ----------------------------------------------------------------------------
-// DataHandle is the LOW-LEVEL primitive layer. It exposes exactly three
-// families of operation:
+// This is the LOW-LEVEL primitive layer. JSON serialization and
+// NUL-framed byte sequences are provided by the higher-level LfIo
+// class, which is built on top of DataHandle.
 //
-//     Raw byte I/O         WriteBytes / ReadBytes / ReadBytesExact
-//     Atomic-type I/O      WriteInt8..WriteDouble / ReadInt8..ReadDouble
-//     NUL-framed strings   WriteString / ReadString
-//
-// For higher-level, protocol-aware I/O, use LingoFuse.Io.LfIo:
-//
-//     WriteStringBytes / ReadStringBytes    raw bytes + NUL framing
-//     WriteJson / ReadJson / TryReadJson    JSON + NUL framing
-//
-// The two layers do not overlap: LfIo is built on top of DataHandle and
-// adds only the framing / serialization policy.
-//
-// ----------------------------------------------------------------------------
 // OWNERSHIP
-// ----------------------------------------------------------------------------
+// ---------
 // A DataHandle is either "owning" or "borrowing":
 //
-//     Owning    — created by the public constructor. Dispose() calls
-//                 LF_FreeData on the native handle.
-//     Borrowing — created by FromRaw(handle, owned: false). Dispose()
-//                 is a no-op; the native layer owns the underlying
-//                 resource and releases it when the callback returns.
+//   Owning    — created by the public constructor. Dispose calls
+//               LF_FreeData on the native handle.
+//   Borrowing — created by FromRaw(raw, owned: false). Dispose is a
+//               no-op; the native layer owns the underlying resource
+//               and releases it when the callback returns.
 //
-// Borrowing is used for the input/output handles passed into a callback.
-// Freeing them from managed code would be a double-free.
+// Borrowing is used for the input/output handles passed into a
+// callback. Freeing them from managed code would be a double-free.
 //
-// {!!!!!  BORROWED HANDLE DISPOSE IS A NO-OP  !!!!!}
-// For a borrowed handle, Dispose() deliberately does NOT change the
-// wrapper state. This is a defensive design:
+// BORROWED HANDLE DISPOSE IS A NO-OP
+// ----------------------------------
+// For a borrowed handle, Dispose deliberately does NOT change the
+// wrapper state. A callback body that accidentally calls Dispose on
+// its input or output handle must not corrupt the wrapper state for
+// the rest of the callback body. The wrapper's _disposed flag stays
+// false, so IsValid, Raw, and all read methods remain usable until
+// the callback returns.
 //
-//   - A callback body that mistakenly calls Dispose() on its input or
-//     output handle must NOT corrupt the wrapper state for the rest of
-//     the callback body. The user may still need to read from the
-//     input after the accidental Dispose call.
-//
-//   - The wrapper's _disposed flag stays false, so IsValid, Raw and
-//     all read methods remain usable until the callback returns and
-//     the native layer releases the underlying resource.
-//
-// The result: an accidental Dispose inside a callback is harmless.
-// Outside a callback, calling Dispose on a borrowed handle is a
-// programming error (the handle is not yours to own) but is also
-// harmless.
-//
-// ----------------------------------------------------------------------------
 // STRING CONTRACT
-// ----------------------------------------------------------------------------
-// LingoFuse frames strings with a single trailing NUL (0x00) byte on the
-// wire. WriteString always appends the terminator. ReadString is
+// ---------------
+// LingoFuse frames strings with a single trailing NUL (0x00) byte on
+// the wire. WriteString always appends the terminator. ReadString is
 // fault-tolerant: it reads until the first NUL, or all remaining bytes
-// if no NUL is present. This matches the behaviour of the Pascal
-// LF_ReadString and the C++ / Python lf_io.read_string helpers, and keeps
-// interop with non-Pascal producers (HTTP bridges, browsers) working.
+// if no NUL is present. This matches the behaviour of every other
+// LingoFuse binding and keeps interop with non-Pascal producers
+// (HTTP bridges, browsers) working.
 //
-// ----------------------------------------------------------------------------
-// {!!!!!  CROSS-LANGUAGE UTF-8 POLICY  !!!!!}
-// ----------------------------------------------------------------------------
-// The four LingoFuse bindings differ in how they handle invalid UTF-8
-// byte sequences during a string read:
+// Invalid UTF-8 byte sequences encountered during a read are decoded
+// with the encoder's default fallback: each invalid byte becomes
+// U+FFFD. This keeps the reader binary-safe. Callers that need to
+// detect invalid UTF-8 must read the raw bytes via ReadBytesExact /
+// ReadAllBytes and inspect them directly.
 //
-//     C#        replaces each invalid byte with U+FFFD
-//     Pascal    replaces each invalid byte with U+FFFD
-//     Python    raises UnicodeDecodeError
-//     C++       returns the raw bytes unchanged
-//
-// C# matches Pascal. When interoperating with Python or C++ peers, be
-// aware that:
-//
-//   - A C# sender writing a .NET string never produces invalid UTF-8
-//     (the encoder replaces unpaired surrogates with U+FFFD on the way
-//     out), so a Python receiver will never see a decode error from a
-//     C# peer.
-//
-//   - A C# receiver of a Python-produced payload that contains invalid
-//     UTF-8 will silently see U+FFFD where Python would have thrown.
-//     If a C# caller needs to detect invalid UTF-8, it must read the
-//     raw bytes via ReadBytesExact / ReadAllBytes and inspect them
-//     itself.
-//
-// This policy is a hard C# design decision, not a bug. It keeps the
-// reader binary-safe and matches the Pascal binding.
-//
-// ----------------------------------------------------------------------------
 // I/O FAILURE SEMANTICS
-// ----------------------------------------------------------------------------
-// Two symmetric families of read/write operations are offered so that
+// ---------------------
+// Two symmetric families of read operations are offered so that
 // callers can choose their failure semantics explicitly:
 //
 //   Partial   ReadBytes(n)
-//             Returns up to n bytes, possibly fewer if the buffer ends
-//             early. Never throws for a short read. The returned array
-//             may be empty.
+//             Returns up to n bytes. Never throws for a short read.
 //
 //   Exact     ReadBytesExact(n)  /  ReadInt8() .. ReadDouble()
-//             Requires exactly n bytes. Throws LingoFuseIoException if
-//             the buffer does not contain enough data.
+//             Requires exactly n bytes. Throws LingoFuseIoException
+//             on a short read.
 //
-// The atomic-type readers (ReadInt8 .. ReadDouble) are Exact by default,
-// because a partially read integer is never useful.
+// The atomic-type readers are Exact by default, because a partially
+// read integer is never useful. Each Exact reader has a Try*
+// counterpart that returns false instead of throwing.
 //
-// Every Exact reader has a non-throwing Try* counterpart that returns
-// false instead of throwing:
+// WRITE FAILURE SEMANTICS
+// -----------------------
+// WriteBytes requires the native layer to accept every byte. A short
+// write means the handle is corrupt or the process is out of memory;
+// there is no useful recovery path, and silently continuing would
+// produce a truncated payload on the wire. WriteBytes therefore
+// throws LingoFuseIoException on a short write, symmetrically with
+// ReadBytesExact.
 //
-//     TryReadBytes(n, out byte[]? value)
-//     TryReadInt8(out sbyte value)
-//     TryReadInt16(out short value)
-//     TryReadInt32(out int value)
-//     TryReadInt64(out long value)
-//     TryReadSingle(out float value)
-//     TryReadDouble(out double value)
-//     TryReadString(out string? value)
-//
-// ----------------------------------------------------------------------------
 // THREAD SAFETY
-// ----------------------------------------------------------------------------
-// The native library is thread-safe, but a single data handle cannot be
-// written concurrently. Read access is safe while another thread reads.
-// Callers that share a handle across threads must serialise writes
-// themselves.
+// -------------
+// The native library is thread-safe, but a single data handle cannot
+// be written concurrently. Read access is safe while another thread
+// reads. Callers that share a handle across threads must serialise
+// writes themselves.
 //
-// ----------------------------------------------------------------------------
-// EXCEPTION POLICY
-// ----------------------------------------------------------------------------
-//     ArgumentNullException              a reference argument is null
-//     ArgumentOutOfRangeException        a numeric argument is negative
-//                                        or outside its supported range
-//     LingoFuseObjectDisposedException   the handle has been disposed
-//     LingoFuseIoException               an exact read or a write failed
+// The _handle field is declared volatile so that a Dispose on one
+// thread is observed by an EnsureNotDisposed on another thread without
+// requiring an external lock. This is sufficient for the "do not use
+// after dispose" contract; it does not make concurrent writes safe.
 //
-// The Try* variants never throw for I/O reasons; they may still throw
-// ArgumentNullException or LingoFuseObjectDisposedException for caller
-// misuse.
 // ============================================================================
 
 /// <summary>
@@ -169,14 +109,37 @@ public sealed class DataHandle : IDisposable
     /// <summary>
     /// UTF-8 encoding used for the NUL-framed string contract. No byte
     /// order mark is emitted; invalid byte sequences are replaced with
-    /// U+FFFD by the encoder's default fallback, matching the Pascal
-    /// binding's behaviour.
+    /// U+FFFD by the encoder's default fallback.
     /// </summary>
     private static readonly Encoding Utf8 =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
-    private IntPtr _handle;
+    /// <summary>
+    /// The trailing NUL byte written by WriteString and by LfIo's
+    /// byte-oriented writers. Held as a static field to avoid a heap
+    /// allocation per empty-string write.
+    /// </summary>
+    private static readonly byte[] NullByte = new byte[1];
+
+    /// <summary>
+    /// The native handle. Declared volatile so that a Dispose on one
+    /// thread becomes visible to a concurrent EnsureNotDisposed on
+    /// another thread without an external lock.
+    /// </summary>
+    private volatile IntPtr _handle;
+
+    /// <summary>
+    /// True when Dispose will call LF_FreeData. A borrowed handle has
+    /// this set to false and Dispose is a no-op.
+    /// </summary>
     private readonly bool _owned;
+
+    /// <summary>
+    /// True after an owning handle has been disposed. Not volatile:
+    /// the disposed flag is only ever transitioned from false to true
+    /// under the protective visibility of the volatile _handle read,
+    /// which is always checked first by EnsureNotDisposed.
+    /// </summary>
     private bool _disposed;
 
     // --------------------------------------------------------------------
@@ -227,14 +190,12 @@ public sealed class DataHandle : IDisposable
     /// </summary>
     /// <param name="raw">Raw pointer to wrap.</param>
     /// <param name="owned">
-    /// When <c>true</c>, <see cref="Dispose"/> will call <c>LF_FreeData</c>.
-    /// When <c>false</c>, <see cref="Dispose"/> is a no-op and the native
-    /// layer retains ownership.
+    /// When <c>true</c>, <see cref="Dispose"/> will call LF_FreeData.
+    /// When <c>false</c>, <see cref="Dispose"/> is a no-op and the
+    /// native layer retains ownership.
     /// </param>
     public static DataHandle FromRaw(IntPtr raw, bool owned)
-    {
-        return new DataHandle(raw, owned);
-    }
+        => new DataHandle(raw, owned);
 
     private DataHandle(IntPtr raw, bool owned)
     {
@@ -262,7 +223,7 @@ public sealed class DataHandle : IDisposable
 
     /// <summary>
     /// True when this instance owns the native handle (that is,
-    /// <see cref="Dispose"/> will call <c>LF_FreeData</c>).
+    /// <see cref="Dispose"/> will call LF_FreeData).
     /// </summary>
     public bool IsOwning => _owned;
 
@@ -274,22 +235,16 @@ public sealed class DataHandle : IDisposable
     /// Releases the native handle when ownership applies.
     /// </summary>
     /// <remarks>
-    /// {!!!!!  BORROWED HANDLE SEMANTICS  !!!!!}
+    /// For an OWNING handle: calls LF_FreeData, sets the disposed flag
+    /// (subsequent operations throw
+    /// <see cref="LingoFuseObjectDisposedException"/>), and is
+    /// idempotent.
     ///
-    /// For an OWNING handle:
-    ///   - Calls LF_FreeData on the underlying resource.
-    ///   - Sets the wrapper's disposed flag; subsequent operations
-    ///     throw LingoFuseObjectDisposedException.
-    ///   - Idempotent: subsequent Dispose calls are no-ops.
-    ///
-    /// For a BORROWED handle (owned == false, used inside a callback):
-    ///   - This method is a NO-OP. The native layer owns the underlying
-    ///     resource and releases it when the callback returns.
-    ///   - The wrapper's state is unchanged. IsValid stays true; all
-    ///     read methods remain usable until the callback returns.
-    ///   - This tolerance protects against an accidental Dispose call
-    ///     inside a callback body: the user may still need to read
-    ///     from the input after the accidental call.
+    /// For a BORROWED handle: this method is a NO-OP. The native layer
+    /// owns the underlying resource and releases it when the callback
+    /// returns. The wrapper's state is unchanged so that a callback
+    /// body that accidentally calls Dispose can still read from the
+    /// input handle for the rest of its execution.
     /// </remarks>
     public void Dispose()
     {
@@ -300,21 +255,25 @@ public sealed class DataHandle : IDisposable
 
         if (!_owned)
         {
-            // Borrowed handle: the native layer owns the underlying
-            // resource. Dispose() is deliberately a no-op so that an
-            // accidental call inside a callback cannot corrupt the
-            // wrapper state for the rest of the callback body.
+            // Borrowed handle: the native layer owns the resource.
+            // Dispose is deliberately a no-op.
             return;
         }
 
         _disposed = true;
 
-        if (_handle != IntPtr.Zero)
+        // Snapshot the handle into a local, then clear the field.
+        // Publishing IntPtr.Zero through the volatile field makes the
+        // disposal visible to a concurrent EnsureNotDisposed on
+        // another thread.
+        IntPtr handle = _handle;
+        _handle = IntPtr.Zero;
+
+        if (handle != IntPtr.Zero)
         {
-            var hnd = new DataHnd { Handle = _handle };
+            var hnd = new DataHnd { Handle = handle };
             NativeMethods.LF_FreeData(hnd);
         }
-        _handle = IntPtr.Zero;
     }
 
     // --------------------------------------------------------------------
@@ -357,7 +316,7 @@ public sealed class DataHandle : IDisposable
     /// Total buffer size, in bytes.
     /// </summary>
     /// <remarks>
-    /// Setting a size larger than the current one grows the buffer. The
+    /// Setting a size larger than the current one grows the buffer; the
     /// new bytes are uninitialised. Setting a smaller size shrinks the
     /// buffer and discards the trailing bytes.
     /// </remarks>
@@ -407,25 +366,29 @@ public sealed class DataHandle : IDisposable
     // ====================================================================
     // Byte I/O — partial-read family
     // ====================================================================
-    //
-    // The partial-read family never throws for a short read. It returns
-    // as many bytes as are actually available, which may be fewer than
-    // requested, or none at all at end-of-buffer.
 
     /// <summary>
-    /// Appends <paramref name="data"/> at the current cursor. The buffer
-    /// grows as needed; the cursor advances by the number of bytes
-    /// written.
+    /// Appends <paramref name="data"/> at the current cursor. The
+    /// buffer grows as needed; the cursor advances by the number of
+    /// bytes written.
     /// </summary>
     /// <param name="data">
     /// Bytes to append. Must not be null. An empty array is a no-op.
     /// </param>
-    /// <returns>Number of bytes actually written.</returns>
+    /// <returns>
+    /// Number of bytes actually written (equal to <c>data.Length</c>).
+    /// </returns>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="data"/> is null.
     /// </exception>
     /// <exception cref="LingoFuseObjectDisposedException">
     /// Thrown when the handle has been disposed.
+    /// </exception>
+    /// <exception cref="LingoFuseIoException">
+    /// Thrown when the native layer writes fewer bytes than requested.
+    /// A short write means the handle is corrupt or the process is out
+    /// of memory; there is no useful recovery path, and silently
+    /// continuing would produce a truncated payload on the wire.
     /// </exception>
     public long WriteBytes(byte[] data)
     {
@@ -436,7 +399,17 @@ public sealed class DataHandle : IDisposable
         {
             return 0;
         }
-        return NativeMethods.LF_WriteBuffer(CurrentHnd, data, data.Length);
+
+        long written = NativeMethods.LF_WriteBuffer(
+            CurrentHnd, data, data.Length);
+        if (written != data.Length)
+        {
+            throw new LingoFuseIoException(
+                $"WriteBytes requested {data.Length} bytes but only " +
+                $"{written} were written.",
+                operation: "WriteBytes");
+        }
+        return written;
     }
 
     /// <summary>
@@ -488,19 +461,12 @@ public sealed class DataHandle : IDisposable
     // ====================================================================
     // Byte I/O — exact-read family
     // ====================================================================
-    //
-    // The exact-read family requires exactly the requested number of
-    // bytes. A short read raises LingoFuseIoException, and a Try* variant
-    // is provided for callers that prefer a boolean result.
 
     /// <summary>
-    /// Reads exactly <paramref name="count"/> bytes. Throws when the
-    /// buffer does not contain enough data. The cursor advances by
-    /// exactly <paramref name="count"/> bytes on success and is left
-    /// unchanged on failure.
+    /// Reads exactly <paramref name="count"/> bytes. Throws on a short
+    /// read. The cursor advances by exactly <paramref name="count"/>
+    /// bytes on success and is left unchanged on failure.
     /// </summary>
-    /// <param name="count">Number of bytes to read. Must be non-negative.</param>
-    /// <returns>The bytes read. Never null; length equals <paramref name="count"/>.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="count"/> is negative.
     /// </exception>
@@ -509,8 +475,7 @@ public sealed class DataHandle : IDisposable
     /// </exception>
     /// <exception cref="LingoFuseIoException">
     /// Thrown when fewer than <paramref name="count"/> bytes are
-    /// available. The exception's <c>Operation</c> property is set to
-    /// "ReadBytesExact".
+    /// available.
     /// </exception>
     public byte[] ReadBytesExact(int count)
     {
@@ -547,11 +512,6 @@ public sealed class DataHandle : IDisposable
     /// The cursor advances by <paramref name="count"/> bytes on success
     /// and is left unchanged on failure.
     /// </summary>
-    /// <param name="count">Number of bytes to read. Must be non-negative.</param>
-    /// <param name="value">
-    /// On success, receives the bytes read. On failure, receives null.
-    /// </param>
-    /// <returns>true on success, false on a short read.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="count"/> is negative.
     /// </exception>
@@ -587,8 +547,7 @@ public sealed class DataHandle : IDisposable
 
     /// <summary>
     /// Reads every remaining byte from the current cursor to the end of
-    /// the buffer and advances the cursor to the end. Returns an empty
-    /// array when the cursor is already at the end.
+    /// the buffer and advances the cursor to the end.
     /// </summary>
     /// <exception cref="LingoFuseObjectDisposedException">
     /// Thrown when the handle has been disposed.
@@ -683,14 +642,8 @@ public sealed class DataHandle : IDisposable
     // ====================================================================
     // Atomic read helpers (little-endian) — exact semantics
     // ====================================================================
-    //
-    // Each reader requires exactly its own size in bytes and raises
-    // LingoFuseIoException on a short read. A Try* counterpart is
-    // provided below for callers that prefer a boolean result.
 
-    /// <summary>
-    /// Reads an 8-bit signed integer. Requires 1 byte.
-    /// </summary>
+    /// <summary>Reads an 8-bit signed integer. Requires 1 byte.</summary>
     /// <exception cref="LingoFuseIoException">
     /// Thrown when fewer than 1 byte is available.
     /// </exception>
@@ -700,9 +653,7 @@ public sealed class DataHandle : IDisposable
         return unchecked((sbyte)b[0]);
     }
 
-    /// <summary>
-    /// Reads an 8-bit unsigned integer. Requires 1 byte.
-    /// </summary>
+    /// <summary>Reads an 8-bit unsigned integer. Requires 1 byte.</summary>
     /// <exception cref="LingoFuseIoException">
     /// Thrown when fewer than 1 byte is available.
     /// </exception>
@@ -767,14 +718,8 @@ public sealed class DataHandle : IDisposable
     // ====================================================================
     // Atomic read helpers — Try* variants
     // ====================================================================
-    //
-    // Each Try* reader performs the same check as its throwing counterpart
-    // but returns false instead of raising LingoFuseIoException. The
-    // cursor is left unchanged when the read fails.
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadInt8"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadInt8"/>.</summary>
     public bool TryReadInt8(out sbyte value)
     {
         if (TryReadBytes(1, out var bytes))
@@ -786,9 +731,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadUInt8"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadUInt8"/>.</summary>
     public bool TryReadUInt8(out byte value)
     {
         if (TryReadBytes(1, out var bytes))
@@ -800,9 +743,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadInt16"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadInt16"/>.</summary>
     public bool TryReadInt16(out short value)
     {
         if (TryReadBytes(2, out var bytes))
@@ -814,9 +755,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadUInt16"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadUInt16"/>.</summary>
     public bool TryReadUInt16(out ushort value)
     {
         if (TryReadBytes(2, out var bytes))
@@ -828,9 +767,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadInt32"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadInt32"/>.</summary>
     public bool TryReadInt32(out int value)
     {
         if (TryReadBytes(4, out var bytes))
@@ -842,9 +779,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadUInt32"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadUInt32"/>.</summary>
     public bool TryReadUInt32(out uint value)
     {
         if (TryReadBytes(4, out var bytes))
@@ -856,9 +791,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadInt64"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadInt64"/>.</summary>
     public bool TryReadInt64(out long value)
     {
         if (TryReadBytes(8, out var bytes))
@@ -870,9 +803,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadUInt64"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadUInt64"/>.</summary>
     public bool TryReadUInt64(out ulong value)
     {
         if (TryReadBytes(8, out var bytes))
@@ -884,9 +815,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadSingle"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadSingle"/>.</summary>
     public bool TryReadSingle(out float value)
     {
         if (TryReadBytes(4, out var bytes))
@@ -898,9 +827,7 @@ public sealed class DataHandle : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ReadDouble"/>.
-    /// </summary>
+    /// <summary>Non-throwing counterpart of <see cref="ReadDouble"/>.</summary>
     public bool TryReadDouble(out double value)
     {
         if (TryReadBytes(8, out var bytes))
@@ -927,6 +854,9 @@ public sealed class DataHandle : IDisposable
     /// <exception cref="LingoFuseObjectDisposedException">
     /// Thrown when the handle has been disposed.
     /// </exception>
+    /// <exception cref="LingoFuseIoException">
+    /// Thrown when the native layer writes fewer bytes than requested.
+    /// </exception>
     public void WriteString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -937,24 +867,19 @@ public sealed class DataHandle : IDisposable
         {
             WriteBytes(payload);
         }
-        WriteBytes(new byte[1]);
+        WriteBytes(NullByte);
     }
 
     /// <summary>
     /// Reads a UTF-8 string from the current cursor, stopping at the
     /// first NUL byte. When no NUL is found before the end of the
-    /// buffer, all remaining bytes are consumed and returned. Returns
-    /// an empty string when the cursor is already at the end, or when
-    /// the first byte is the terminator.
+    /// buffer, all remaining bytes are consumed and returned.
     /// </summary>
     /// <remarks>
     /// Invalid UTF-8 byte sequences are decoded with the encoder's
-    /// default fallback (each invalid byte becomes U+FFFD). This
-    /// matches the behaviour of the Pascal binding's
-    /// <c>TEncoding.utf8.GetString</c> and keeps the reader binary-safe.
-    ///
-    /// Callers that need to detect invalid UTF-8 must read the raw
-    /// bytes via <see cref="ReadBytesExact(int)"/> or
+    /// default fallback (each invalid byte becomes U+FFFD). Callers
+    /// that need to detect invalid UTF-8 must read the raw bytes via
+    /// <see cref="ReadBytesExact(int)"/> or
     /// <see cref="ReadAllBytes"/> and inspect them directly.
     /// </remarks>
     /// <exception cref="LingoFuseObjectDisposedException">
@@ -1002,16 +927,9 @@ public sealed class DataHandle : IDisposable
 
     /// <summary>
     /// Non-throwing counterpart of <see cref="ReadString"/>. The only
-    /// recoverable failure mode is a disposed handle, which still
-    /// throws; the method never throws for a malformed UTF-8 payload.
+    /// recoverable failure mode is an exhausted buffer; a disposed
+    /// handle still throws.
     /// </summary>
-    /// <param name="value">
-    /// On success, receives the decoded string. On failure, receives null.
-    /// </param>
-    /// <returns>
-    /// true when the read produced a string (possibly empty), false when
-    /// the handle was at end-of-buffer and nothing could be read.
-    /// </returns>
     /// <exception cref="LingoFuseObjectDisposedException">
     /// Thrown when the handle has been disposed.
     /// </exception>
@@ -1039,7 +957,11 @@ public sealed class DataHandle : IDisposable
 
     private void EnsureNotDisposed()
     {
-        if (_disposed || _handle == IntPtr.Zero)
+        // The volatile read of _handle makes a concurrent Dispose
+        // visible to this thread. The _disposed flag is checked after
+        // the handle so that a borrowed-handle instance, whose
+        // _disposed is never set, is not falsely reported as disposed.
+        if (_handle == IntPtr.Zero || _disposed)
         {
             throw new LingoFuseObjectDisposedException(nameof(DataHandle));
         }

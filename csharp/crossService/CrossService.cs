@@ -5,9 +5,10 @@
 //
 //  This program:
 //    1. Creates the IPC service endpoint "ipc:cross".
-//    2. Starts the framework (LF_PrepareDone).
+//    2. Starts the framework (Framework.PrepareDone).
 //    3. Waits for the user to press Enter.
-//    4. Performs a clean shutdown (LF_ExitMainThread -> LF_Shutdown).
+//    4. Performs a clean shutdown in the LF-CLEAN-001 order:
+//           NetworkEvents.Clear -> ExitMainThread -> Shutdown
 //
 //  It does NOT register any API and does NOT act as a caller. Its sole
 //  purpose is to act as the discovery/anchor endpoint that worker nodes
@@ -17,33 +18,26 @@
 //  DIFFERENCE FROM THE C++ COUNTERPART
 //  ---------------------------------------------------------------------------
 //  The C++ CrossService.cpp uses LibraryLoader + ShutdownGuard + the raw
-//  prepareService / prepareDone / exitMainThread sequence. The C# managed
-//  binding does not expose a "pure service, no client, no App" mode: the
-//  public LingoFuseServer always performs ResetPrepare -> PrepareService
-//  -> PrepareClient -> PrepareDone in one call.
+//  prepareService / prepareDone / exitMainThread sequence.
 //
-//  We therefore use LingoFuseServer with a placeholder application name.
-//  The placeholder is never called by any peer; it exists only to satisfy
-//  the container's constructor contract. The observable behaviour for
-//  peers is identical: the "ipc:cross" endpoint is announced on the mesh.
+//  The C# two-layer binding exposes those same primitives directly on
+//  the Framework facade. This program therefore uses Framework.* only;
+//  no AppHandle is created, no API is registered.
 //
-//  Note: the coordinator's internal client does not occupy a slot that
-//  other processes could use. C4 mesh clients are process-scoped; the
-//  Overlap_Connection option only affects multiple clients within the
-//  same process.
+//  A client is prepared against the local endpoint so that the C4 mesh
+//  has at least one physical tunnel to anchor the broadcast loop. The
+//  client carries no application.
 //
 //  Cleanup order (matching Pascal LF-CLEAN-001):
-//      LF_ExitMainThread  ->  (App detach)  ->  LF_Shutdown
+//      NetworkEvents.Clear -> ExitMainThread -> Shutdown
 //
-//  LingoFuseServer.Stop(fullCleanup: true) performs all three steps in the
-//  required order. The using-statement guarantees it runs on every exit
-//  path, including early returns and exceptions.
+//  The finally block guarantees the sequence runs on every exit path,
+//  including early returns and exceptions.
 // =============================================================================
 
 using System;
 
 using LingoFuse;
-using LingoFuse.Host;
 
 namespace LingoFuse.Demo.CrossService;
 
@@ -51,25 +45,58 @@ internal static class Program
 {
     private const string Endpoint = "ipc:cross";
 
-    /// <summary>
-    /// Placeholder application name. The coordinator exposes no API and
-    /// is never the target of a call; this name exists only because the
-    /// LingoFuseServer container requires one.
-    /// </summary>
-    private const string CoordinatorAppName = "__cross_coordinator__";
-
     public static int Main()
     {
         Console.WriteLine("=== Cross Service (Coordinator) ===");
 
+        bool started = false;
+
         try
         {
-            using var server = new LingoFuseServer(
-                appName: CoordinatorAppName,
-                endpoint: Endpoint,
-                description: "Coordinator endpoint for the C# cross demo");
+            // ---------------------------------------------------------------
+            // Deployment mode options.
+            //
+            // Wait_Connection_ReadyOk is True so that PrepareDone blocks
+            // until the internal client is actually online. The default
+            // of 30 seconds is used, capped here at 10 seconds to keep
+            // the demo responsive if something is genuinely wrong.
+            // ---------------------------------------------------------------
+            Framework.SetOption("Wait_Connection_ReadyOk", "True");
+            Framework.SetOption("Overlap_Connection", "True");
+            Framework.SetOption("Wait_Connection_Timeout", "10000");
 
-            server.Start();
+            Framework.ResetPrepare();
+
+            int serviceTag = Framework.PrepareService(Endpoint, Endpoint);
+            if (serviceTag == -1)
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareService returned -1 " +
+                    $"for {Endpoint}.");
+                return 1;
+            }
+
+            // Prepare a client with no application. This gives the mesh
+            // at least one physical tunnel at the coordinator itself.
+            int clientTag = Framework.PrepareClient(Endpoint, null);
+            if (clientTag == -1)
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareClient returned -1 " +
+                    $"for {Endpoint}.");
+                return 1;
+            }
+
+            int done = Framework.PrepareDone();
+            if (done != 1 && !LingoFuseStatus.CheckMainThread())
+            {
+                Console.Error.WriteLine(
+                    $"[FATAL] Framework.PrepareDone returned {done} and " +
+                    "the main thread is not running.");
+                return 1;
+            }
+
+            started = true;
 
             Console.WriteLine(
                 $"IPC service '{Endpoint}' is running. " +
@@ -77,7 +104,6 @@ internal static class Program
             Console.ReadLine();
 
             Console.WriteLine("Shutting down...");
-            server.Stop(fullCleanup: true);
         }
         catch (LingoFuseException ex)
         {
@@ -90,6 +116,18 @@ internal static class Program
             Console.Error.WriteLine(
                 $"[FATAL] {ex.GetType().Name}: {ex.Message}");
             return 1;
+        }
+        finally
+        {
+            // Full shutdown on every exit path. All three operations are
+            // idempotent, so calling them here is safe even when the
+            // startup sequence failed partway through.
+            if (started)
+            {
+                try { NetworkEvents.Clear(); } catch { }
+                try { Framework.ExitMainThread(); } catch { }
+                try { Framework.Shutdown(); } catch { }
+            }
         }
 
         Console.WriteLine("Bye.");

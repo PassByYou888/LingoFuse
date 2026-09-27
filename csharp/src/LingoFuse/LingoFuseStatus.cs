@@ -1,50 +1,43 @@
-using System;
+﻿using System;
 
 using LingoFuse.Native;
 
-namespace LingoFuse.Diagnostics;
+namespace LingoFuse;
 
 // ============================================================================
-// LingoFuseStatus — status queue, health checks, and diagnostics.
+// LingoFuseStatus — status queue and health checks.
 // ============================================================================
 //
-// Status queue
+// STATUS QUEUE
 // ------------
 // The native library maintains a bounded FIFO of log messages, up to
 // 1000 entries. Older entries are dropped when the buffer is full.
 // Messages are surfaced through GetStatusCount and GetStatus, and can
 // be injected by the application through PostStatus.
 //
-// Main-thread dependency
+// MAIN-THREAD DEPENDENCY
 // ----------------------
 // The status queue is processed by the native simulated main thread.
 // Before LF_PrepareDone has been called, the queue may be empty or
 // contain stale data. Applications should not rely on status messages
 // during initialization.
 //
-// Static buffer hazard
+// STATIC BUFFER HAZARD
 // --------------------
-// LF_GetStatus returns a pointer into a process-wide static buffer that
-// is overwritten by the next call. This wrapper copies the string to a
-// managed instance immediately, so callers never observe a dangling
-// pointer.
+// LF_GetStatus returns a pointer into a process-wide static buffer
+// that is overwritten by the next call. This wrapper copies the string
+// to a managed instance immediately, so callers never observe a
+// dangling pointer.
 //
-// Health checks
+// HEALTH CHECKS
 // -------------
-// CheckMainThread reports whether the simulated main thread is running.
-// CheckApp and CheckApi perform cache-based lookups that are updated by
-// network broadcasts with an approximate 3-second delay. They are
-// suitable for probing and diagnostics, not for authoritative
-// availability decisions. For critical paths, issue the call and handle
-// timeouts explicitly.
+// CheckMainThread reports whether the simulated main thread is
+// running. CheckApp and CheckApi perform cache-based lookups that are
+// updated by network broadcasts with an approximate 3-second delay.
+// They are suitable for probing and diagnostics, not for authoritative
+// availability decisions. For critical paths, issue the call and
+// handle timeouts explicitly.
 //
-// ----------------------------------------------------------------------------
-// EXCEPTION POLICY
-// ----------------------------------------------------------------------------
-//     ArgumentNullException   a reference argument is null
-//
-// This class has no state and no disposal semantics; it is a pure
-// façade over the native status functions.
 // ============================================================================
 
 /// <summary>
@@ -60,9 +53,7 @@ public static class LingoFuseStatus
     /// Returns the number of pending log messages in the status queue.
     /// </summary>
     public static int GetStatusCount()
-    {
-        return NativeMethods.LF_GetStatusCount();
-    }
+        => NativeMethods.LF_GetStatusCount();
 
     /// <summary>
     /// Retrieves the next log message from the status queue. Returns an
@@ -174,9 +165,7 @@ public static class LingoFuseStatus
     /// Returns true when the simulated main thread is currently running.
     /// </summary>
     public static bool CheckMainThread()
-    {
-        return NativeMethods.LF_CheckMainThread() != 0;
-    }
+        => NativeMethods.LF_CheckMainThread() != 0;
 
     /// <summary>
     /// Probes whether an application with the given name is available.

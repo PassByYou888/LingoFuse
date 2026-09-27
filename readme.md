@@ -50,12 +50,14 @@
 | **Pascal** | 🟢 生产就绪 | 原生 FFI，完整绑定 |
 | **Python** | 🟢 生产就绪 | `pip install -e .` 即用 |
 | **C++** | 🟢 生产就绪 | 原生 C ABI，零开销 |
+| **C# / .NET** | 🟢 生产就绪 | 完整 .NET 绑定，服务端/调用端全支持 |
 | **Node.js / PHP / 浏览器** | 🌉 HTTP 桥接 | `bridge.py` 网关 |
-| **C# / .NET** | 🚀 即将首推 | 见 [LingoFuse-csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
-| **Rust / Go / Java 等** | ⏳ 计划中 | 欢迎贡献绑定 |
+| **Rust / Go / Java 等** | ⏳ 接入中 | 欢迎贡献绑定 |
 | **aarch64 / loongarch64 / RISC-V** | 📱 边缘设备计划 | 持续移植中 |
 
 > 🎯 **目标：让地球上 30+ 种编程语言，用同一个函数调用约定互相说话。**
+>
+> **C# 已完成全面支持**——服务端、调用端、测试程序、配套 README 全部打通。更多语言的接入工作正在加速推进中。
 
 ---
 
@@ -69,9 +71,9 @@
 
 | 工具 | 生成目标 | 协议 | 目标语言 |
 |------|----------|------|----------|
-| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ |
-| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / JavaScript |
-| **code_decl_to_mcp** | MCP 工具提供者 | Model Context Protocol | Pascal / Python / C++ |
+| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / **C#** |
+| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / **C#** / JavaScript |
+| **code_decl_to_mcp** | MCP 工具提供者 | Model Context Protocol | Pascal / Python / C++ / **C#** |
 
 ### 每个工具都是三入口
 
@@ -107,7 +109,7 @@ LingoFuse 不只是 RPC，它是 **AI Agent 调用任意语言函数的底座**�
 | [pasAgent v2](https://github.com/PassByYou888/LingoFuse-pasAgent) | Pascal | 🟢 已发布（纯文本智能体） |
 | [pasAgent v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | 🟢 已发布（多模态智能体） |
 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🟢 已发布 |
-| [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🚀 即将首推 |
+| [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🟢 **已发布** |
 
 **主仓库专注通讯底座，分支专注各自生态。** 未来会有更多语言的智能体分支接入。
 
@@ -125,23 +127,25 @@ LingoFuse 已经进入 **良性发展阶段**：
 | **Pascal 绑定** | ✅ 生产就绪 | 完整 FFI + 助手层 + 示例 |
 | **Python 绑定** | ✅ 生产就绪 | `pip install -e .` 即用 |
 | **C++ 绑定** | ✅ 生产就绪 | 原生 C ABI + CMake 工程 |
+| **C# / .NET 绑定** | ✅ **生产就绪** | 完整绑定 + 测试程序 + README |
 | **HTTP 桥接** | ✅ 生产就绪 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ **已完结** | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ **已完善** | 覆盖所有接口，AI 接管成功率接近绝对 |
 | **C++ 智能体** | 🟢 已发布 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) |
-| **C# 智能体** | 🚀 即将首推 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
-| **更多语言绑定** | ⏳ 建设中 | Rust / Go / Java / … |
+| **C# 智能体** | 🟢 **已发布** | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
+| **更多语言绑定** | ⏳ 接入中 | Rust / Go / Java / … |
 
 ### 里程碑
 
 - ✅ **通讯底座竣工** —— C4、软同步、线程池、信标
-- ✅ **三语言绑定竣工** —— Pascal / Python / C++
+- ✅ **四语言绑定竣工** —— Pascal / Python / C++ / C#
 - ✅ **代码生成器体系竣工** —— LingoFuse-Tools
 - ✅ **AI 知识库体系完善** —— AI 接管成功率接近绝对
-- 🟢 **多语言智能体集群首推** —— C++ Agent 已发布，C# Agent 即将到来
+- 🟢 **多语言智能体集群首推** —— C++ Agent、C# Agent 均已发布
+- ⏳ **更多语言接入** —— Rust / Go / Java / … 持续推进中
 - ⏳ **全面竣工** —— 预计很快到来
 
-**项目还在建设中，但已经在加速完结阶段。** 通讯底座已稳，绑定齐全，生成器体系闭环，知识库体系完善，剩下的只是把生态铺满。
+**项目还在建设中，但已经在加速完结阶段。** 通讯底座已稳，四语言绑定齐全，生成器体系闭环，知识库体系完善，C# 全面支持已落地——剩下的只是把生态铺满。
 
 ---
 
@@ -186,6 +190,7 @@ Windows 下还需安装 **VC++ Redistributable**（`vc_redist.x64.exe` / `vc_red
 LingoFuse/
 ├── Binary/              # 预编译动态库（Win32 / Win64）
 ├── cpp/                 # C++ 绑定、示例、跨语言 Demo
+├── csharp/              # C# / .NET 绑定、示例
 ├── pascal/              # Pascal 绑定、示例、基准测试、桥接
 │   ├── bridge/          # HTTP 桥接相关
 │   ├── Compute_Grid_Demo/
@@ -214,6 +219,7 @@ LingoFuse/
 看不惯跨语言调用得写一箩筐胶水代码，干脆撸了 LingoFuse。
 现在又看不惯每种语言都得手写绑定，干脆把代码生成器也撸完了。
 再把知识库喂给 AI，让 AI 自己把接口全部接管——**这才是智能体时代该有的样子。**
+C# 已经全面打通，更多语言正在路上。
 欢迎来撩、来喷、来 PR——**Star 是最好的催更。**
 
 ---

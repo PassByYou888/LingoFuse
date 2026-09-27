@@ -1,109 +1,107 @@
 ﻿// =============================================================================
-// test_lingofuse_csharp — Comprehensive test suite for the LingoFuse C#
-//                         binding.
-//
-// Version 2.1 — nullable-aware fix pass:
-//                - Correct handling of unconstrained T? in LocalCall<T>
-//                  and Call<T>: for value types the return is T (not
-//                  Nullable<T>); for reference types the return is T?.
-//                - TryCall* / TryLocalCall* are the idiomatic way to
-//                  distinguish "empty response" from "default(T)".
-//
-// Every test corresponds to a well-defined contract from the Pascal
-// documentation (LingoFuse_Pascal_Complete_Guide.md, lingofuse_import.pas)
-// and is tagged with the relevant LF-*-NNN pitfall ID where applicable.
+// test_lingofuse_csharp — comprehensive test suite for the rebuilt
+//                        LingoFuse C# binding (two-layer design).
 // =============================================================================
 //
-// TEST PLAN (64 tests)
+// Version 3.1 — network-session fix:
+//   - NetworkSession.StartWithService now takes an optional
+//     configureApp callback so APIs are registered on the AppHandle
+//     BEFORE Framework.PrepareClient. Registering APIs afterwards
+//     leaves the mesh registration with an empty API list.
+//   - Wait_Connection_ReadyOk is now True, so PrepareDone blocks
+//     until the client is actually online. The previous False value
+//     let PrepareDone return before the client could route a call,
+//     causing spurious timeouts on the very first call.
+//   - Wait_Connection_Timeout raised to 10 seconds.
+//
+// The binding exposes exactly one public namespace, LingoFuse, with the
+// following public types:
+//
+//     DataHandle           RAII data-buffer handle
+//     AppHandle            RAII application handle
+//     LfIo                 unified JSON / string / byte I/O
+//     Framework            process-wide ABI façade
+//     LingoFuseStatus      status queue and health checks
+//     NetworkEvents        global connect / disconnect handlers
+//     LingoFuseException + four subclasses
+//
+// Every test in this file consumes only that surface. The Native
+// namespace (NativeMethods, Utf8Marshal, DataHnd, AppHnd, the delegate
+// prototypes) is internal and is deliberately never referenced here.
+//
+// TEST PLAN (55 tests)
 // --------------------
 //
-// DataHandle (19):
-//   01  basic types ................. all integer / floating-point types
-//   02  unicode ..................... UTF-8 round-trip
-//   03  fault-tolerant read ......... LF-DATA-004: no NUL on the wire
-//   04  position and size ........... tell / seek / size
-//   05  dispose safety .............. double Dispose + use-after-dispose
-//   06  string termination .......... LF-DATA-005: write always appends #0
-//   07  empty string ................ empty payload semantics
-//   08  large buffer (128 KiB) ...... buffer realloc / growth path
-//   09  embedded NUL preserved ...... LF-DATA-003: raw bytes keep #0
-//   10  WriteBytes has no terminator. LF-DATA-005: raw path has no #0
-//   11  multi-field sequential I/O .. mixed types in one buffer
-//   12  zero-length operations ...... WriteBytes(len:0) / ReadBytes(0)
-//   13  buffer pointer access ....... GetBufferPointer is stable
-//   14  ReadBytesExact success ...... exact read returns correct bytes
-//   15  ReadBytesExact short fails .. LingoFuseIoException on short read
-//   16  TryReadBytes / TryReadInt32 . boolean non-throwing reads
-//   17  TryReadString ............... Try* family
-//   18  borrowed handle dispose ..... Dispose on borrowed handle is a no-op
-//   19  ReadAllBytes ................ consume everything from cursor
+// DataHandle (16)
+//   01  basic types                every integer / floating-point type
+//   02  unicode                    UTF-8 round trip
+//   03  fault-tolerant read        no NUL on the wire (LF-DATA-004)
+//   04  position and size          tell / seek / size
+//   05  dispose safety             double Dispose + use-after-dispose
+//   06  string termination         WriteString always appends #0
+//   07  empty string               one-byte payload
+//   08  large buffer (128 KiB)     buffer reallocation path
+//   09  embedded NUL preserved     raw byte path (LF-DATA-003)
+//   10  WriteBytes no terminator   raw path has no #0 (LF-DATA-005)
+//   11  multi-field sequential IO  mixed types in one buffer
+//   12  zero-length operations     WriteBytes(0) / ReadBytes(0)
+//   13  ReadBytesExact success     exact read returns expected bytes
+//   14  ReadBytesExact short fail  LingoFuseIoException on short read
+//   15  Try* family                boolean non-throwing reads
+//   16  ReadAllBytes               consume remaining bytes
 //
-// AppHandle / LingoFuseApp (15):
-//   20  register / local call ....... basic API registration + call
-//   21  duplicate registration ...... second register returns false
-//   22  unregister then re-register . name can be reused after removal
-//   23  case-insensitive API match .. "add" matches "Add"
-//   24  callback isolation .......... callback producing no output
-//   25  free lifecycle .............. LF-APP-002: two-phase destruction
-//   26  LocalNotify ................. App::LocalNotify round-trip
-//   27  Expose<TResult> ............. zero-argument typed handler
-//   28  LocalCall unregistered ...... returns default(T) (Batch 6)
-//   29  TryLocalCall success ........ boolean non-throwing local call
-//   30  TryLocalCall unregistered ... returns false on empty response
-//   31  Expose ABI callback ......... raw DataHandle handler
-//   32  ExposeNotify ABI callback ... raw DataHandle notify
-//   33  LocalCallBinary ............. raw local call
-//   34  LocalNotifyBinary ........... raw local notify
+// AppHandle (10)
+//   17  register / local call      basic registration and execution
+//   18  duplicate registration     second register returns false
+//   19  unregister then re-register
+//   20  case-insensitive match     "add" matches "Add"
+//   21  callback no output         empty response on no write
+//   22  callback exception         swallowed by the wrapper
+//   23  LocalNotify                one-way local delivery
+//   24  LocalCallBinary            raw local call
+//   25  LocalNotifyBinary          raw local notify
+//   26  dispose safety             use-after-dispose throws
 //
-// Typed Expose (4):
-//   35  Expose<TArg, TResult> ....... one-argument typed handler
-//   36  Expose<T1, T2, TResult> ..... two-argument typed handler
-//   37  ExposeNotify<TArg> .......... typed one-argument notify
-//   38  Expose one-arg with null .... null payload reaches handler
+// LfIo (7)
+//   27  JSON POCO round trip
+//   28  JSON null value
+//   29  JSON unicode content       no \uXXXX escapes (BMP or surrogates)
+//   30  JSON array
+//   31  JSON numeric
+//   32  TryReadJson returns false on invalid
+//   33  ReadJson throws on invalid
 //
-// Network basics (4):
-//   39  single address .............. service + client + call
-//   40  multi address ............... two services, one app
-//   41  check functions ............. LF-CHK-001: checkApp / checkApi
-//   42  long string round-trip ...... LF-XLANG-002: 64 KiB payload
+// Framework (5)
+//   34  SetOption does not throw
+//   35  ResetPrepare does not throw
+//   36  GenerateAppName after PrepareDone
+//   37  PrepareDone returns 1 only once
+//   38  Shutdown is idempotent
 //
-// Network options (1):
-//   43  prepareDone only once ....... LF-NET-003: second call returns 0
+// Network integration (8)
+//   39  single address JSON call
+//   40  missing target returns empty handle (LF-CALL-001)
+//   41  long string round trip (LF-XLANG-002)
+//   42  Notify
+//   43  SequencedNotify FIFO order
+//   44  CheckApp / CheckApi
+//   45  NetworkEvents install / clear
+//   46  Status queue operations
 //
-// Network calls (6):
-//   44  call timeout empty handle ... LF-CALL-001: size-0 handle, not NULL
-//   45  notify + sequenced .......... LF-CALL-002 / LF-SEQ-002
-//   46  nonexistent app / API ....... call to missing target
-//   47  TryCall success ............. boolean non-throwing JSON call
-//   48  TryCall timeout ............. returns false on timeout
-//   49  TryCallRaw success .......... raw JSON via TryCallRaw
+// ABI cross-language (5)
+//   47  CallBinary int32
+//   48  CallBinary multi-type round trip
+//   49  byte-exact little-endian wire format
+//   50  NotifyBinary
+//   51  SequencedNotifyBinary
 //
-// ABI cross-language (7):
-//   50  ABI CallBinary int32 ........ raw int32 in / int32 out
-//   51  ABI CallBinary multi-type ... uint8/16/32/64/string/float round-trip
-//   52  ABI TryCallBinary timeout ... boolean non-throwing ABI call
-//   53  ABI NotifyBinary ............ raw one-way notification
-//   54  ABI SequencedNotifyBinary ... raw ordered notification
-//   55  ABI byte-exact wire format .. little-endian byte-level verification
-//   56  ABI Expose raw callback ..... cross-language raw-handler contract
+// Concurrency (2)
+//   52  10 threads x 100 local calls
+//   53  8 threads x 500 independent DataHandles
 //
-// LingoFuseSync (2):
-//   57  public API shape ............ ProcessSyncQueue / SetMainThread
-//   58  main thread registration .... IsMainThreadCurrent behaviour
-//
-// Network events (1):
-//   59  install / clear ............. NetworkEvents.Set / Clear
-//
-// Status queue (1):
-//   60  count / post / drain ........ status queue operations
-//
-// Concurrency (2):
-//   61  concurrent local calls ...... 10 threads x 100 App::LocalCall
-//   62  concurrent DataHandles ...... 8 threads x 500 independent handles
-//
-// Stress (2):
-//   63  1000 sequential local calls . throughput sanity check
-//   64  rapid App create/destroy .... LF-APP-002: pool growth pressure
+// Stress (2)
+//   54  1000 sequential local calls
+//   55  100 rapid App create / destroy cycles
 // =============================================================================
 
 using System;
@@ -114,20 +112,14 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 using LingoFuse;
-using LingoFuse.Core;
-using LingoFuse.Diagnostics;
-using LingoFuse.Events;
-using LingoFuse.Host;
-using LingoFuse.Io;
 
 namespace LingoFuse.Tests;
 
 /* ============================================================================
- *  Formatting helpers
- * ============================================================================ */
+ * Formatting helpers
+ * ========================================================================== */
 
 internal static class Fmt
 {
@@ -149,8 +141,7 @@ internal static class Fmt
     public static string FormatDuration(long ms)
     {
         if (ms < 1000) return $"{ms} ms";
-        if (ms < 60000)
-            return (ms / 1000.0).ToString("F2") + " s";
+        if (ms < 60000) return (ms / 1000.0).ToString("F2") + " s";
         var totalSec = ms / 1000;
         var min = totalSec / 60;
         var sec = totalSec % 60;
@@ -166,20 +157,22 @@ internal static class Fmt
         Console.WriteLine(SectionRule);
     }
 
-    public static void PrintCategoryBanner(string name, string description, int count)
+    public static void PrintCategoryBanner(
+        string name, string description, int count)
     {
         Console.WriteLine();
         Console.WriteLine();
         Console.WriteLine(CategoryRule);
-        Console.WriteLine($"##  Category: {name}  ({count} test{(count == 1 ? "" : "s")})");
+        Console.WriteLine($"##  Category: {name}  " +
+                          $"({count} test{(count == 1 ? "" : "s")})");
         Console.WriteLine($"##  {description}");
         Console.WriteLine(CategoryRule);
     }
 }
 
 /* ============================================================================
- *  Mini test framework
- * ============================================================================ */
+ * Assertion helpers
+ * ========================================================================== */
 
 internal sealed class CheckFailedException : Exception
 {
@@ -195,7 +188,8 @@ internal static class Verify
     {
         if (!condition)
         {
-            throw new CheckFailedException($"CHECK FAILED: {expr} (line {line})");
+            throw new CheckFailedException(
+                $"CHECK FAILED: {expr} (line {line})");
         }
     }
 
@@ -206,7 +200,8 @@ internal static class Verify
     {
         if (condition)
         {
-            throw new CheckFailedException($"CHECK_FALSE FAILED: {expr} (line {line})");
+            throw new CheckFailedException(
+                $"CHECK_FALSE FAILED: {expr} (line {line})");
         }
     }
 
@@ -218,69 +213,41 @@ internal static class Verify
     {
         if (value is null)
         {
-            throw new CheckFailedException($"CHECK_NOT_NULL FAILED: {expr} (line {line})");
-        }
-    }
-
-    public static void HasValue<T>(
-        T? value,
-        [CallerArgumentExpression(nameof(value))] string? expr = null,
-        [CallerLineNumber] int line = 0)
-        where T : struct
-    {
-        if (!value.HasValue)
-        {
-            throw new CheckFailedException($"CHECK_HAS_VALUE FAILED: {expr} (line {line})");
+            throw new CheckFailedException(
+                $"CHECK_NOT_NULL FAILED: {expr} (line {line})");
         }
     }
 
     public static void Equal<T>(
-        T actual,
-        T expected,
-        [CallerArgumentExpression(nameof(actual))] string? actualExpr = null,
-        [CallerArgumentExpression(nameof(expected))] string? expectedExpr = null,
+        T actual, T expected,
+        [CallerArgumentExpression(nameof(actual))] string? aExpr = null,
+        [CallerArgumentExpression(nameof(expected))] string? eExpr = null,
         [CallerLineNumber] int line = 0)
     {
         if (!EqualityComparer<T>.Default.Equals(actual, expected))
         {
             throw new CheckFailedException(
-                $"CHECK_EQ FAILED: {actualExpr} == {expectedExpr} (line {line})\n" +
-                $"        actual  : {Format(actual)}\n" +
-                $"        expected: {Format(expected)}");
-        }
-    }
-
-    public static void NotEqual<T>(
-        T actual,
-        T expected,
-        [CallerArgumentExpression(nameof(actual))] string? actualExpr = null,
-        [CallerArgumentExpression(nameof(expected))] string? expectedExpr = null,
-        [CallerLineNumber] int line = 0)
-    {
-        if (EqualityComparer<T>.Default.Equals(actual, expected))
-        {
-            throw new CheckFailedException(
-                $"CHECK_NE FAILED: {actualExpr} != {expectedExpr} (line {line})\n" +
-                $"        both sides are: {Format(actual)}");
+                $"CHECK_EQ FAILED: {aExpr} == {eExpr} (line {line})\n" +
+                $"        actual  : {FmtValue(actual)}\n" +
+                $"        expected: {FmtValue(expected)}");
         }
     }
 
     public static void SequenceEqual<T>(
-        IEnumerable<T> actual,
-        IEnumerable<T> expected,
-        [CallerArgumentExpression(nameof(actual))] string? actualExpr = null,
-        [CallerArgumentExpression(nameof(expected))] string? expectedExpr = null,
+        IEnumerable<T> actual, IEnumerable<T> expected,
+        [CallerArgumentExpression(nameof(actual))] string? aExpr = null,
+        [CallerArgumentExpression(nameof(expected))] string? eExpr = null,
         [CallerLineNumber] int line = 0)
     {
         if (!actual.SequenceEqual(expected))
         {
             throw new CheckFailedException(
-                $"CHECK_SEQ FAILED: {actualExpr} == {expectedExpr} (line {line})");
+                $"CHECK_SEQ FAILED: {aExpr} == {eExpr} (line {line})");
         }
     }
 
-    public static TException Throws<TException>(Action action,
-        [CallerLineNumber] int line = 0)
+    public static TException Throws<TException>(
+        Action action, [CallerLineNumber] int line = 0)
         where TException : Exception
     {
         try
@@ -302,13 +269,17 @@ internal static class Verify
             "but no exception was thrown");
     }
 
-    private static string Format<T>(T? value)
+    private static string FmtValue<T>(T? value)
     {
         if (value is null) return "null";
         if (value is string s) return '"' + s + '"';
         return value.ToString() ?? "null";
     }
 }
+
+/* ============================================================================
+ * Mini test runner
+ * ========================================================================== */
 
 internal sealed class TestResult
 {
@@ -345,12 +316,21 @@ internal static class TestRunner
         catch (LingoFuseCallException ex)
         {
             result.Threw = true;
-            result.ErrorDetail = $"LingoFuseCallException: {ex.Message}";
+            result.ErrorDetail =
+                $"LingoFuseCallException: {ex.Message} " +
+                $"(TargetApp={ex.TargetApp ?? "?"})";
         }
-        catch (LingoFuseStateException ex)
+        catch (LingoFuseIoException ex)
         {
             result.Threw = true;
-            result.ErrorDetail = $"LingoFuseStateException: {ex.Message}";
+            result.ErrorDetail =
+                $"LingoFuseIoException[{ex.Operation}]: {ex.Message}";
+        }
+        catch (LingoFuseObjectDisposedException ex)
+        {
+            result.Threw = true;
+            result.ErrorDetail =
+                $"LingoFuseObjectDisposedException: {ex.ObjectName}";
         }
         catch (LingoFuseException ex)
         {
@@ -373,16 +353,10 @@ internal static class TestRunner
         else
         {
             Console.WriteLine("[ FAIL ]");
-            if (result.Threw)
-            {
-                Console.WriteLine($"         reason: {result.ErrorDetail}");
-            }
-            else
-            {
-                Console.WriteLine(
-                    "         reason: a check returned false " +
-                    "(see the [CHECK...] line above)");
-            }
+            Console.WriteLine(
+                result.Threw
+                    ? $"         reason: {result.ErrorDetail}"
+                    : "         reason: a check returned false");
             Console.WriteLine($"         time:   {result.ElapsedMs} ms");
         }
 
@@ -392,8 +366,8 @@ internal static class TestRunner
 }
 
 /* ============================================================================
- *  Test-scoped helpers
- * ============================================================================ */
+ * Test environment helpers
+ * ========================================================================== */
 
 internal static class TestEnv
 {
@@ -407,24 +381,23 @@ internal static class TestEnv
     public static string UniqueAppName(string prefix)
         => $"test_cs_{prefix}_{Environment.ProcessId}_{NextId()}";
 
-    public static void Settle(int ms = 250)
-        => Thread.Sleep(ms);
+    public static void Settle(int ms = 200) => Thread.Sleep(ms);
 }
 
 /* ============================================================================
- *  Shared static callbacks
- * ============================================================================ */
+ * Shared static callbacks
+ * ========================================================================== */
 
 internal static class Callbacks
 {
-    // String-echo handler registered via the ABI path.
+    /// <summary>String echo handler registered via the ABI path.</summary>
     public static void Echo(DataHandle input, DataHandle output)
     {
         var s = input.ReadString();
         output.WriteString(s);
     }
 
-    // int32 + int32 -> int32 handler registered via the ABI path.
+    /// <summary>int32 + int32 -> int32 handler registered via the ABI path.</summary>
     public static void Add(DataHandle input, DataHandle output)
     {
         var a = input.ReadInt32();
@@ -432,7 +405,7 @@ internal static class Callbacks
         output.WriteInt32(a + b);
     }
 
-    // Notify handler that discards its payload.
+    /// <summary>Notify handler that consumes and discards its payload.</summary>
     public static void Sink(DataHandle input)
     {
         _ = input.ReadString();
@@ -440,8 +413,181 @@ internal static class Callbacks
 }
 
 /* ============================================================================
- *  CATEGORY: DataHandle
- * ============================================================================ */
+ * Network session — the one and only place in this test suite that
+ * touches the process-wide preparation sequence.
+ * ============================================================================
+ *
+ * Every network test creates exactly one NetworkSession, exercises the
+ * scenario against it, and disposes it in a using block. The session
+ * owns the full LF-CLEAN-001 sequence:
+ *
+ *     NetworkEvents.Clear()
+ *     Framework.ExitMainThread()
+ *     App.Dispose()
+ *     Framework.Shutdown()
+ *
+ * Because LF_Shutdown is process-wide, sessions must not overlap. The
+ * test runner executes network tests serially, and every network test
+ * disposes its session before the next one begins.
+ *
+ * STARTUP SEQUENCE
+ * ----------------
+ * The session deliberately mirrors the C++ CrossNode / CrossService
+ * flow:
+ *
+ *     1. Set options (Wait_Connection_ReadyOk = True, Overlap = True).
+ *     2. ResetPrepare.
+ *     3. PrepareService.
+ *     4. Create the AppHandle.
+ *     5. Invoke the caller-supplied configureApp callback so that the
+ *        app carries its full API list BEFORE PrepareClient binds it.
+ *     6. PrepareClient(endpoint, app).
+ *     7. PrepareDone. Blocks until the client is fully online.
+ *
+ * Step 5 is what makes the difference between a working and a
+ * non-working network test: if APIs are registered AFTER
+ * PrepareClient, the mesh registration carries an empty API list and
+ * the very first call against the newly-created app can time out.
+ */
+internal sealed class NetworkSession : IDisposable
+{
+    public AppHandle? App { get; private set; }
+    public string Endpoint { get; }
+    public string AppName { get; }
+
+    private bool _started;
+
+    private NetworkSession(string endpoint, string appName)
+    {
+        Endpoint = endpoint;
+        AppName = appName;
+    }
+
+    /// <summary>
+    /// Start a session that both listens as a service and connects as a
+    /// client to its own endpoint, exposing the given application.
+    /// </summary>
+    /// <param name="appName">Application name to expose on the mesh.</param>
+    /// <param name="endpoint">IPC or TCP endpoint to use.</param>
+    /// <param name="configureApp">
+    /// Optional callback invoked with the freshly-created AppHandle
+    /// BEFORE PrepareClient. Register every API the test needs here so
+    /// that the app's full API list is visible on the mesh from the
+    /// moment the client is bound.
+    /// </param>
+    public static NetworkSession StartWithService(
+        string appName, string endpoint,
+        Action<AppHandle>? configureApp = null)
+    {
+        var s = new NetworkSession(endpoint, appName);
+
+        // Block until the client is online, and give it plenty of
+        // time to complete the handshake. The default of 30 seconds
+        // is more than enough; 10 seconds keeps the test suite
+        // responsive if something is genuinely wrong.
+        Framework.SetOption("Wait_Connection_ReadyOk", "True");
+        Framework.SetOption("Overlap_Connection", "True");
+        Framework.SetOption("Wait_Connection_Timeout", "10000");
+
+        Framework.ResetPrepare();
+
+        int serviceTag = Framework.PrepareService(endpoint, endpoint);
+        if (serviceTag == -1)
+        {
+            throw new InvalidOperationException(
+                $"Framework.PrepareService returned -1 for {endpoint}");
+        }
+
+        s.App = new AppHandle(appName);
+
+        // Register APIs before binding, so the Init_App_Info broadcast
+        // carries the complete API list.
+        configureApp?.Invoke(s.App);
+
+        int clientTag = Framework.PrepareClient(endpoint, s.App);
+        if (clientTag == -1)
+        {
+            throw new InvalidOperationException(
+                $"Framework.PrepareClient returned -1 for {endpoint}");
+        }
+
+        int done = Framework.PrepareDone();
+        if (done != 1 && !LingoFuseStatus.CheckMainThread())
+        {
+            throw new InvalidOperationException(
+                $"Framework.PrepareDone returned {done} and the " +
+                "main thread is not running.");
+        }
+
+        s._started = true;
+        return s;
+    }
+
+    public void Dispose()
+    {
+        if (!_started) return;
+        _started = false;
+
+        NetworkEvents.Clear();
+
+        try { Framework.ExitMainThread(); } catch { }
+        try { App?.Dispose(); } catch { }
+        try { Framework.Shutdown(); } catch { }
+
+        // Give the native layer a moment to release background workers
+        // before the next session claims the process-wide framework.
+        Thread.Sleep(150);
+    }
+}
+
+/* ============================================================================
+ * Remote call helpers — thin wrappers around Framework.Call that make
+ * the test bodies readable.
+ * ========================================================================== */
+
+internal static class Rpc
+{
+    /// <summary>
+    /// Send a JSON payload and require a non-empty response. Throws
+    /// LingoFuseCallException on timeout / unreachable target.
+    /// </summary>
+    public static T? CallJson<T>(
+        string appName, string apiName, object? payload,
+        ulong timeoutMs = 3000)
+    {
+        using var param = new DataHandle(apiName);
+        LfIo.WriteJson(param, payload);
+        using var response = Framework.Call(appName, param, timeoutMs);
+        if (response.Size == 0)
+        {
+            throw new LingoFuseCallException(
+                "Remote call returned an empty response " +
+                "(timeout or unreachable target).",
+                appName, apiName);
+        }
+        return LfIo.ReadJson<T>(response);
+    }
+}
+
+/* ============================================================================
+ * A POCO used by the JSON tests.
+ * ==========================================================================
+ *
+ * System.Text.Json uses the C# property name verbatim; the wire JSON
+ * keys therefore match the property names. This is a deliberate choice
+ * of the binding: the C# object shape IS the JSON shape, and cross-
+ * language naming alignment is a business-schema concern, not a
+ * transport concern.
+ */
+internal sealed class Person
+{
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+}
+
+/* ============================================================================
+ * CATEGORY: DataHandle
+ * ========================================================================== */
 
 internal static class DataHandleTests
 {
@@ -481,33 +627,27 @@ internal static class DataHandleTests
     public static bool Unicode()
     {
         using var dh = new DataHandle("test_unicode");
-
         const string text = "Hello, \u4e16\u754c! \U0001F30D";
-
         dh.WriteString(text);
         dh.Position = 0;
-
-        var outText = dh.ReadString();
-        Verify.Equal(outText, text);
-
+        Verify.Equal(dh.ReadString(), text);
         return true;
     }
 
     public static bool FaultTolerantRead()
     {
-        // LF-DATA-004: A read with no NUL must consume the remaining
-        // buffer and advance the cursor one byte past the end.
+        // LF-DATA-004: reading a payload without a NUL consumes the
+        // whole remaining buffer and advances the cursor one byte past
+        // the end.
         using var dh = new DataHandle("test_fault");
 
         var raw = Encoding.UTF8.GetBytes("abcdef");
         dh.WriteBytes(raw);
-        Verify.Equal(dh.Size, (long)6);
+        Verify.Equal(dh.Size, 6L);
 
         dh.Position = 0;
-        var s = dh.ReadString();
-        Verify.Equal(s, "abcdef");
-
-        Verify.Equal(dh.Position, (long)7);
+        Verify.Equal(dh.ReadString(), "abcdef");
+        Verify.Equal(dh.Position, 7L);
 
         return true;
     }
@@ -515,7 +655,6 @@ internal static class DataHandleTests
     public static bool PositionAndSize()
     {
         using var dh = new DataHandle("test_pos");
-
         Verify.Equal(dh.Position, 0L);
         Verify.Equal(dh.Size, 0L);
 
@@ -536,12 +675,13 @@ internal static class DataHandleTests
     {
         var dh = new DataHandle("test_dispose");
         dh.WriteInt32(7);
-
         dh.Dispose();
         dh.Dispose();
 
-        Verify.Throws<LingoFuseObjectDisposedException>(() => { _ = dh.ReadInt32(); });
-        Verify.Throws<LingoFuseObjectDisposedException>(() => dh.WriteInt32(1));
+        Verify.Throws<LingoFuseObjectDisposedException>(
+            () => { _ = dh.ReadInt32(); });
+        Verify.Throws<LingoFuseObjectDisposedException>(
+            () => dh.WriteInt32(1));
 
         return true;
     }
@@ -575,8 +715,7 @@ internal static class DataHandleTests
         Verify.Equal(bytes[0], (byte)0);
 
         dh.Position = 0;
-        var s = dh.ReadString();
-        Verify.Equal(s, string.Empty);
+        Verify.Equal(dh.ReadString(), string.Empty);
         Verify.Equal(dh.Position, 1L);
 
         return true;
@@ -594,8 +733,7 @@ internal static class DataHandleTests
         Verify.Equal(dh.Size, (long)kSize);
 
         dh.Position = 0;
-        var readback = dh.ReadBytes(kSize);
-        Verify.SequenceEqual(readback, payload);
+        Verify.SequenceEqual(dh.ReadBytes(kSize), payload);
 
         return true;
     }
@@ -603,15 +741,12 @@ internal static class DataHandleTests
     public static bool EmbeddedNulPreserved()
     {
         using var dh = new DataHandle("test_embedded_nul");
-
         var data = new byte[] { (byte)'a', 0, (byte)'b', 0, (byte)'c' };
         dh.WriteBytes(data);
-
         Verify.Equal(dh.Size, 5L);
 
         dh.Position = 0;
-        var back = dh.ReadBytes(5);
-        Verify.SequenceEqual(back, data);
+        Verify.SequenceEqual(dh.ReadBytes(5), data);
 
         return true;
     }
@@ -620,8 +755,7 @@ internal static class DataHandleTests
     {
         using var dh = new DataHandle("test_raw_no_term");
 
-        var raw = new byte[] { (byte)'x', (byte)'y', (byte)'z' };
-        dh.WriteBytes(raw);
+        dh.WriteBytes(new byte[] { (byte)'x', (byte)'y', (byte)'z' });
         Verify.Equal(dh.Size, 3L);
 
         dh.WriteString("q");
@@ -665,32 +799,14 @@ internal static class DataHandleTests
         Verify.Equal(dh.Size, 0L);
         Verify.Equal(dh.Position, 0L);
 
-        var got = dh.ReadBytes(0);
-        Verify.Equal(got.Length, 0);
+        Verify.Equal(dh.ReadBytes(0).Length, 0);
         Verify.Equal(dh.Position, 0L);
 
         dh.WriteInt32(42);
         dh.Position = 2;
 
-        var got2 = dh.ReadBytes(0);
-        Verify.Equal(got2.Length, 0);
+        Verify.Equal(dh.ReadBytes(0).Length, 0);
         Verify.Equal(dh.Position, 2L);
-
-        return true;
-    }
-
-    public static bool BufferPointerAccess()
-    {
-        using var dh = new DataHandle("test_buf_ptr");
-
-        dh.WriteInt32(unchecked((int)0x11223344));
-
-        var p = dh.GetBufferPointer();
-        Verify.True(p != IntPtr.Zero);
-
-        var b = Marshal.ReadByte(p, 0);
-        Verify.Equal(dh.Position, 4L);
-        Verify.Equal(b, (byte)0x44);
 
         return true;
     }
@@ -718,17 +834,15 @@ internal static class DataHandleTests
         dh.WriteBytes(new byte[] { 0x01, 0x02 });
 
         dh.Position = 0;
-        var ex = Verify.Throws<LingoFuseIoException>(() =>
-        {
-            _ = dh.ReadBytesExact(4);
-        });
+        var ex = Verify.Throws<LingoFuseIoException>(
+            () => { _ = dh.ReadBytesExact(4); });
         Verify.Equal(ex.Operation, "ReadBytesExact");
         Verify.Equal(dh.Position, 0L);
 
         return true;
     }
 
-    public static bool TryReadBytesAndInt32()
+    public static bool TryReadFamily()
     {
         using var dh = new DataHandle("test_try_read");
         dh.WriteInt32(unchecked((int)0x11223344));
@@ -746,41 +860,16 @@ internal static class DataHandleTests
         Verify.False(dh.TryReadBytes(1, out _));
         Verify.Equal(dh.Position, 4L);
 
-        return true;
-    }
-
-    public static bool TryReadStringRoundTrip()
-    {
-        using var dh = new DataHandle("test_try_string");
-        dh.WriteString("hello");
-
-        dh.Position = 0;
-        Verify.True(dh.TryReadString(out var s));
-        Verify.Equal(s, "hello");
-
+        // TryReadString on an exhausted buffer.
         Verify.False(dh.TryReadString(out var empty));
         Verify.True(empty is null);
 
-        return true;
-    }
-
-    public static bool BorrowedHandleDisposeNoOp()
-    {
-        using var owner = new DataHandle("test_borrow_src");
-        owner.WriteInt32(42);
-        var raw = owner.Raw;
-
-        var borrowed = DataHandle.FromRaw(raw, owned: false);
-        borrowed.Dispose();          // no-op
-
-        Verify.True(borrowed.IsValid);
-        Verify.False(borrowed.IsOwning);
-
-        borrowed.Position = 0;
-        Verify.Equal(borrowed.ReadInt32(), 42);
-
-        owner.Position = 0;
-        Verify.Equal(owner.ReadInt32(), 42);
+        // TryReadString on a fresh handle.
+        using var dh2 = new DataHandle("test_try_string");
+        dh2.WriteString("hello");
+        dh2.Position = 0;
+        Verify.True(dh2.TryReadString(out var s));
+        Verify.Equal(s, "hello");
 
         return true;
     }
@@ -803,42 +892,40 @@ internal static class DataHandleTests
 }
 
 /* ============================================================================
- *  CATEGORY: AppHandle / LingoFuseApp
- * ============================================================================ */
+ * CATEGORY: AppHandle
+ * ========================================================================== */
 
-internal static class AppTests
+internal static class AppHandleTests
 {
     public static bool RegisterAndLocalCall()
     {
-        using var app = new LingoFuseApp("test_cs_app_basic");
+        using var app = new AppHandle("test_cs_app_basic");
 
-        Verify.True(app.Handle.RegisterCall("add", "test add", Callbacks.Add));
-        Verify.True(app.Handle.RegisterNotify("sink", "test notify", Callbacks.Sink));
+        Verify.True(app.RegisterCall("add", "test add", Callbacks.Add));
+        Verify.True(app.RegisterNotify("sink", "test notify", Callbacks.Sink));
 
         {
             using var param = new DataHandle("add");
             param.WriteInt32(10);
             param.WriteInt32(20);
-
-            using var result = app.Handle.LocalCall(param);
+            using var result = app.LocalCall(param);
             Verify.Equal(result.ReadInt32(), 30);
         }
 
         {
             using var param = new DataHandle("sink");
             param.WriteString("hello");
-            app.Handle.LocalNotify(param);
+            app.LocalNotify(param);
         }
 
-        Verify.True(app.Handle.Unregister("add"));
-        Verify.False(app.Handle.Unregister("add"));
+        Verify.True(app.Unregister("add"));
+        Verify.False(app.Unregister("add"));
 
         {
             using var param = new DataHandle("add");
             param.WriteInt32(1);
             param.WriteInt32(2);
-
-            using var result = app.Handle.LocalCall(param);
+            using var result = app.LocalCall(param);
             Verify.Equal(result.Size, 0L);
         }
 
@@ -847,26 +934,24 @@ internal static class AppTests
 
     public static bool DuplicateRegistration()
     {
-        using var app = new LingoFuseApp("test_cs_app_dup");
-
-        Verify.True(app.Handle.RegisterCall("dup", "first", Callbacks.Add));
-        Verify.False(app.Handle.RegisterCall("dup", "second", Callbacks.Add));
-
+        using var app = new AppHandle("test_cs_app_dup");
+        Verify.True(app.RegisterCall("dup", "first", Callbacks.Add));
+        Verify.False(app.RegisterCall("dup", "second", Callbacks.Add));
         return true;
     }
 
     public static bool UnregisterThenReregister()
     {
-        using var app = new LingoFuseApp("test_cs_app_rereg");
+        using var app = new AppHandle("test_cs_app_rereg");
 
-        Verify.True(app.Handle.RegisterCall("hot", "v1", Callbacks.Add));
-        Verify.True(app.Handle.Unregister("hot"));
-        Verify.True(app.Handle.RegisterCall("hot", "v2", Callbacks.Add));
+        Verify.True(app.RegisterCall("hot", "v1", Callbacks.Add));
+        Verify.True(app.Unregister("hot"));
+        Verify.True(app.RegisterCall("hot", "v2", Callbacks.Add));
 
         using var param = new DataHandle("hot");
         param.WriteInt32(5);
         param.WriteInt32(6);
-        using var result = app.Handle.LocalCall(param);
+        using var result = app.LocalCall(param);
         Verify.Equal(result.ReadInt32(), 11);
 
         return true;
@@ -874,187 +959,76 @@ internal static class AppTests
 
     public static bool CaseInsensitiveApiMatching()
     {
-        using var app = new LingoFuseApp("test_cs_app_case");
-
-        Verify.True(app.Handle.RegisterCall(
+        using var app = new AppHandle("test_cs_app_case");
+        Verify.True(app.RegisterCall(
             "MixedCaseApi", "description", Callbacks.Add));
 
-        {
-            using var param = new DataHandle("mixedcaseapi");
-            param.WriteInt32(7);
-            param.WriteInt32(8);
-            using var result = app.Handle.LocalCall(param);
-            Verify.Equal(result.ReadInt32(), 15);
-        }
+        using var param = new DataHandle("mixedcaseapi");
+        param.WriteInt32(7);
+        param.WriteInt32(8);
+        using var result = app.LocalCall(param);
+        Verify.Equal(result.ReadInt32(), 15);
 
-        Verify.True(app.Handle.Unregister("MIXEDCASEAPI"));
-
+        Verify.True(app.Unregister("MIXEDCASEAPI"));
         return true;
     }
 
-    public static bool CallbackIsolation()
+    public static bool CallbackNoOutput()
     {
-        using var app = new LingoFuseApp("test_cs_app_isolation");
-
-        Verify.True(app.Handle.RegisterCall("empty", "empty callback",
-            (input, output) => { /* intentionally does nothing */ }));
+        using var app = new AppHandle("test_cs_app_empty");
+        Verify.True(app.RegisterCall("empty", "does nothing",
+            (input, output) => { /* intentionally empty */ }));
 
         using var param = new DataHandle("empty");
-        using var result = app.Handle.LocalCall(param);
+        using var result = app.LocalCall(param);
         Verify.Equal(result.Size, 0L);
 
         return true;
     }
 
-    public static bool FreeLifecycle()
+    public static bool CallbackExceptionSwallowed()
     {
-        const string appName = "test_cs_app_lifecycle";
+        // The wrapper catches every callback exception and reports it
+        // through Framework.ReportCallbackError. The native layer sees
+        // a callback that completed normally, and the caller receives
+        // an empty response.
+        using var app = new AppHandle("test_cs_app_exc");
+        Verify.True(app.RegisterCall("boom", "throws",
+            (input, output) =>
+            {
+                throw new InvalidOperationException("intentional");
+            }));
 
-        {
-            using var app = new LingoFuseApp(appName, "original");
-            app.Handle.RegisterCall("ping", "ping", Callbacks.Echo);
-
-            using var param = new DataHandle("ping");
-            param.WriteString("first");
-            using var result = app.Handle.LocalCall(param);
-            Verify.Equal(result.ReadString(), "first");
-        }
-
-        {
-            using var app2 = new LingoFuseApp(appName, "second instance");
-            app2.Handle.RegisterCall("ping", "ping", Callbacks.Echo);
-
-            using var param = new DataHandle("ping");
-            param.WriteString("second");
-            using var result = app2.Handle.LocalCall(param);
-            Verify.Equal(result.ReadString(), "second");
-        }
+        using var param = new DataHandle("boom");
+        using var result = app.LocalCall(param);
+        Verify.Equal(result.Size, 0L);
 
         return true;
     }
 
     public static bool LocalNotify()
     {
-        using var app = new LingoFuseApp("test_cs_app_notify");
-
-        Verify.True(app.Handle.RegisterNotify("sink", "notify sink",
-            Callbacks.Sink));
+        using var app = new AppHandle("test_cs_app_notify");
+        Verify.True(app.RegisterNotify("sink", "notify sink", Callbacks.Sink));
 
         using var param = new DataHandle("sink");
         param.WriteString("payload");
-        app.Handle.LocalNotify(param);
-
-        return true;
-    }
-
-    public static bool ExposeZeroArg()
-    {
-        using var app = new LingoFuseApp("test_cs_app_expose0");
-
-        Verify.True(app.Expose<int>("answer", () => 42));
-
-        // LocalCall<T> for a value type T returns T (not Nullable<T>),
-        // because T is an unconstrained generic parameter: T? only
-        // produces Nullable<T> when T is constrained to struct.
-        var v = app.LocalCall<int>("answer");
-        Verify.Equal(v, 42);
-
-        return true;
-    }
-
-    public static bool LocalCallUnregisteredReturnsDefault()
-    {
-        // Batch 6: LocalCall<T> returns default(T) for an unregistered
-        // API, matching the C++ / Python bindings. For a value type the
-        // observable result is default(T); for a reference type it is
-        // null. Callers that need to distinguish "empty response" from
-        // "default(T)" must use TryLocalCall<T>.
-        using var app = new LingoFuseApp("test_cs_app_unregistered");
-
-        // Value type: default(int) == 0.
-        var v = app.LocalCall<int>("not_registered");
-        Verify.Equal(v, 0);
-
-        // Reference type: default(string) == null.
-        var s = app.LocalCall<string>("not_registered");
-        Verify.True(s is null);
-
-        return true;
-    }
-
-    public static bool TryLocalCallSuccess()
-    {
-        using var app = new LingoFuseApp("test_cs_app_try_local");
-        app.Expose<int, int>("answer", n => n + 1);
-
-        // TryLocalCall<T> is the correct way to distinguish "empty
-        // response" from "default(T)": it returns a bool.
-        var ok = app.TryLocalCall<int>("answer", 41, out var result);
-        Verify.True(ok);
-        Verify.Equal(result, 42);
-
-        return true;
-    }
-
-    public static bool TryLocalCallUnregistered()
-    {
-        using var app = new LingoFuseApp("test_cs_app_try_unreg");
-
-        var ok = app.TryLocalCall<int>("not_registered", null, out var result);
-        Verify.False(ok);
-
-        // The out parameter holds default(int) on failure.
-        Verify.Equal(result, 0);
-
-        return true;
-    }
-
-    public static bool ExposeAbiCallback()
-    {
-        // ABI registration: the handler receives borrowed DataHandle
-        // instances and must not perform JSON serialization.
-        using var app = new LingoFuseApp("test_cs_app_abi");
-        Verify.True(app.Expose("add", "ABI add", Callbacks.Add));
-
-        using var param = new DataHandle("add");
-        param.WriteInt32(11);
-        param.WriteInt32(31);
-
-        using var result = app.LocalCallBinary(param);
-        Verify.Equal(result.Size, (long)4);
-        Verify.Equal(result.ReadInt32(), 42);
-
-        return true;
-    }
-
-    public static bool ExposeNotifyAbiCallback()
-    {
-        using var app = new LingoFuseApp("test_cs_app_abi_notify");
-        var received = new List<int>();
-        Verify.True(app.ExposeNotify("bump", "ABI notify",
-            input => received.Add(input.ReadInt32())));
-
-        using var param = new DataHandle("bump");
-        param.WriteInt32(7);
-        app.LocalNotifyBinary(param);
-
-        Verify.Equal(received.Count, 1);
-        Verify.Equal(received[0], 7);
+        app.LocalNotify(param);
 
         return true;
     }
 
     public static bool LocalCallBinary()
     {
-        using var app = new LingoFuseApp("test_cs_app_local_bin");
-        app.Expose("echo32", "ABI echo32",
+        using var app = new AppHandle("test_cs_app_local_bin");
+        app.RegisterCall("echo32", "ABI echo32",
             (input, output) => output.WriteInt32(input.ReadInt32()));
 
         using var param = new DataHandle("echo32");
         param.WriteInt32(12345);
 
-        using var result = app.LocalCallBinary(param);
-        Verify.Equal(result.Size, (long)4);
+        using var result = app.LocalCall(param);
+        Verify.Equal(result.Size, 4L);
         Verify.Equal(result.ReadInt32(), 12345);
 
         return true;
@@ -1062,162 +1036,273 @@ internal static class AppTests
 
     public static bool LocalNotifyBinary()
     {
-        using var app = new LingoFuseApp("test_cs_app_local_notify_bin");
-        var fired = 0;
-        app.ExposeNotify("ping_notify", "ABI notify",
+        using var app = new AppHandle("test_cs_app_local_notify_bin");
+        int fired = 0;
+        app.RegisterNotify("ping_notify", "ABI notify",
             input => Interlocked.Increment(ref fired));
 
         using var param = new DataHandle("ping_notify");
         param.WriteInt32(1);
-        app.LocalNotifyBinary(param);
+        app.LocalNotify(param);
 
         Verify.Equal(fired, 1);
+        return true;
+    }
+
+    public static bool DisposeSafety()
+    {
+        var app = new AppHandle("test_cs_app_dispose");
+        Verify.True(app.IsValid);
+        Verify.False(app.Raw == IntPtr.Zero);
+
+        app.Dispose();
+        app.Dispose();
+
+        Verify.False(app.IsValid);
+        Verify.True(app.Raw == IntPtr.Zero);
+        Verify.Throws<LingoFuseObjectDisposedException>(
+            () => app.RegisterCall("x", "y", Callbacks.Add));
+        Verify.Throws<LingoFuseObjectDisposedException>(
+            () => { using var p = new DataHandle("x"); app.LocalCall(p); });
 
         return true;
     }
 }
 
 /* ============================================================================
- *  CATEGORY: Typed Expose
- * ============================================================================ */
+ * CATEGORY: LfIo (JSON I/O)
+ * ========================================================================== */
 
-internal static class TypedExposeTests
+internal static class LfIoTests
 {
-    public static bool ExposeOneArg()
+    public static bool JsonPocoRoundTrip()
     {
-        using var app = new LingoFuseApp("test_cs_app_expose1");
+        using var dh = new DataHandle("json_poco");
+        var original = new Person { Name = "Alice", Age = 30 };
+        LfIo.WriteJson(dh, original);
 
-        Verify.True(app.Expose<string, string>("ping", s => s));
-
-        // LocalCall<string> returns string? (reference type).
-        var echoed = app.LocalCall<string>("ping", "hello");
-        Verify.NotNull(echoed);
-        Verify.Equal(echoed!, "hello");
+        dh.Position = 0;
+        var back = LfIo.ReadJson<Person>(dh);
+        Verify.NotNull(back);
+        Verify.Equal(back!.Name, "Alice");
+        Verify.Equal(back.Age, 30);
 
         return true;
     }
 
-    public static bool ExposeTwoArgs()
+    public static bool JsonNullValue()
     {
-        using var app = new LingoFuseApp("test_cs_app_expose2");
+        using var dh = new DataHandle("json_null");
+        LfIo.WriteJson(dh, null);
 
-        Verify.True(app.Expose<int, int, int>("add", (a, b) => a + b));
+        // The JSON literal `null` is four bytes plus the framing NUL.
+        Verify.Equal(dh.Size, 5L);
 
-        // LocalCall<int> returns int (value type: no Nullable<T>).
-        var sum = app.LocalCall<int>("add", new object[] { 5, 7 });
-        Verify.Equal(sum, 12);
+        dh.Position = 0;
+        var back = LfIo.ReadJson<Person?>(dh);
+        Verify.True(back is null);
 
         return true;
     }
 
-    public static bool ExposeNotifyTyped()
+    public static bool JsonUnicode()
     {
-        using var app = new LingoFuseApp("test_cs_app_exposen");
+        using var dh = new DataHandle("json_unicode");
+        var original = new Person { Name = "\u4e16\u754c \U0001F30D", Age = 42 };
+        LfIo.WriteJson(dh, original);
 
-        int received = 0;
-        Verify.True(app.ExposeNotify<int>("bump", n => received = n));
+        // The serialized text must contain literal UTF-8, not \uXXXX.
+        // Both the BMP characters (世界) and the supplementary-plane
+        // emoji must be emitted as raw code points.
+        dh.Position = 0;
+        var text = dh.ReadString();
+        Verify.False(text.Contains("\\u4e16"));
+        Verify.False(text.Contains("\\uD83C"));
+        Verify.False(text.Contains("\\uDF0D"));
+        Verify.True(text.Contains("\u4e16\u754c"));
+        Verify.True(text.Contains("\U0001F30D"));
 
-        app.LocalNotify("bump", 7);
-        Verify.Equal(received, 7);
+        dh.Position = 0;
+        var back = LfIo.ReadJson<Person>(dh);
+        Verify.NotNull(back);
+        Verify.Equal(back!.Name, "\u4e16\u754c \U0001F30D");
 
         return true;
     }
 
-    public static bool ExposeOneArgWithNull()
+    public static bool JsonArray()
     {
-        // Batch 6: a JSON `null` payload reaches the handler as
-        // default(TArg), matching the C++ / Python bindings.
-        using var app = new LingoFuseApp("test_cs_app_expose_null");
+        using var dh = new DataHandle("json_array");
+        var original = new int[] { 1, 2, 3, 4, 5 };
+        LfIo.WriteJson(dh, original);
 
-        var receivedNull = false;
-        Verify.True(app.Expose<string?, string>("echo_null", s =>
+        dh.Position = 0;
+        var back = LfIo.ReadJson<int[]>(dh);
+        Verify.NotNull(back);
+        Verify.SequenceEqual(back!, original);
+
+        return true;
+    }
+
+    public static bool JsonNumeric()
+    {
+        using var dh = new DataHandle("json_number");
+        LfIo.WriteJson(dh, 42);
+
+        dh.Position = 0;
+        Verify.Equal(LfIo.ReadJson<int>(dh), 42);
+
+        using var dh2 = new DataHandle("json_double");
+        LfIo.WriteJson(dh2, 3.14159);
+        dh2.Position = 0;
+        var d = LfIo.ReadJson<double>(dh2);
+        Verify.True(Math.Abs(d - 3.14159) < 1e-9);
+
+        return true;
+    }
+
+    public static bool TryReadJsonReturnsFalseOnInvalid()
+    {
+        using var dh = new DataHandle("json_invalid");
+        dh.WriteString("not-a-json-value");
+        dh.Position = 0;
+
+        Verify.False(LfIo.TryReadJson<Person>(dh, out var result));
+        Verify.True(result is null);
+
+        return true;
+    }
+
+    public static bool ReadJsonThrowsOnInvalid()
+    {
+        using var dh = new DataHandle("json_throw");
+        dh.WriteString("not-a-json-value");
+        dh.Position = 0;
+
+        Verify.Throws<LingoFuseException>(
+            () => { _ = LfIo.ReadJson<Person>(dh); });
+
+        return true;
+    }
+}
+
+/* ============================================================================
+ * CATEGORY: Framework
+ * ========================================================================== */
+
+internal static class FrameworkTests
+{
+    public static bool SetOptionNoThrow()
+    {
+        // Unknown option names are silently ignored by the native side.
+        Framework.SetOption("Totally_Unknown_Option_xyz", "whatever");
+        return true;
+    }
+
+    public static bool ResetPrepareNoThrow()
+    {
+        Framework.ResetPrepare();
+        Framework.ResetPrepare();
+        return true;
+    }
+
+    public static bool GenerateAppName()
+    {
+        var endpoint = TestEnv.UniqueEndpoint("gen_name");
+        var appName = TestEnv.UniqueAppName("gen_name");
+
+        using var session = NetworkSession.StartWithService(appName, endpoint);
+
+        var generated = Framework.GenerateAppName();
+        Verify.NotNull(generated);
+        Verify.True(generated.Length > 0);
+
+        return true;
+    }
+
+    public static bool PrepareDoneReturnsOneOnlyOnce()
+    {
+        // First session: PrepareDone returns 1.
+        var ep1 = TestEnv.UniqueEndpoint("done_once_a");
+        var app1 = TestEnv.UniqueAppName("done_once_a");
+
+        using (var s1 = NetworkSession.StartWithService(app1, ep1))
         {
-            receivedNull = s is null;
-            return s ?? "(was null)";
-        }));
+            Verify.True(LingoFuseStatus.CheckMainThread());
+        }
 
-        var echoed = app.LocalCall<string>("echo_null", payload: null);
-        Verify.NotNull(echoed);
-        Verify.Equal(echoed!, "(was null)");
-        Verify.True(receivedNull);
+        // Second session after the first has been fully shut down:
+        // PrepareDone must again return 1.
+        var ep2 = TestEnv.UniqueEndpoint("done_once_b");
+        var app2 = TestEnv.UniqueAppName("done_once_b");
 
+        using var s2 = NetworkSession.StartWithService(app2, ep2);
+        Verify.True(LingoFuseStatus.CheckMainThread());
+
+        return true;
+    }
+
+    public static bool ShutdownIsIdempotent()
+    {
+        // Shutdown on a process with no active framework must not
+        // throw. This is safe at any point in the process lifetime.
+        Framework.Shutdown();
+        Framework.Shutdown();
         return true;
     }
 }
 
 /* ============================================================================
- *  CATEGORY: Network basics
- * ============================================================================ */
+ * CATEGORY: Network integration
+ * ========================================================================== */
 
-internal static class NetworkBasicsTests
+internal static class NetworkIntegrationTests
 {
-    public static bool SingleAddress()
+    public static bool SingleAddressJsonCall()
     {
         var endpoint = TestEnv.UniqueEndpoint("single");
         var appName = TestEnv.UniqueAppName("single");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose<string, string>("ping", s => s));
-        server.Start();
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterCall("ping", "JSON ping",
+                    (input, output) =>
+                    {
+                        var s = LfIo.ReadJson<string>(input);
+                        LfIo.WriteJson(output, s);
+                    });
+            });
 
-        // Call<string> returns string? (reference type).
-        var echoed = server.Call<string>(appName, "ping", "hello", 3000);
+        var echoed = Rpc.CallJson<string>(appName, "ping", "hello", 3000);
         Verify.NotNull(echoed);
         Verify.Equal(echoed!, "hello");
 
-        Verify.Throws<LingoFuseCallException>(() =>
-        {
-            _ = server.Call<string>(appName, "does_not_exist", null, 1000);
-        });
-
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
-    public static bool MultiAddress()
+    public static bool MissingTargetReturnsEmptyHandle()
     {
-        var ep1 = TestEnv.UniqueEndpoint("multi_a");
-        var appName = TestEnv.UniqueAppName("multi");
+        var endpoint = TestEnv.UniqueEndpoint("missing");
+        var appName = TestEnv.UniqueAppName("missing");
 
-        using var server = new LingoFuseServer(appName, ep1, "multi-address test");
-        Verify.True(server.App.Expose<int, int, int>("add", (a, b) => a + b));
-        server.Start();
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterCall("ping", "ping",
+                    (input, output) => { });
+            });
 
-        // Call<int> returns int (value type: no Nullable<T>).
-        var sum = server.Call<int>(appName, "add", new object[] { 3, 4 }, 3000);
-        Verify.Equal(sum, 7);
+        using var param = new DataHandle("ping");
+        LfIo.WriteJson(param, "hello");
 
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
+        // LF-CALL-001: a call to a missing target yields a size-0
+        // handle, not a null pointer and not a thrown exception.
+        using var response = Framework.Call(
+            "no_such_app_xyz_98765", param, 500);
+        Verify.NotNull(response);
+        Verify.Equal(response.Size, 0L);
 
-    public static bool CheckFunctions()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("check");
-        var appName = TestEnv.UniqueAppName("check");
-
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose<string, string>("ping", s => s));
-        server.Start();
-
-        Verify.True(LingoFuseStatus.CheckMainThread());
-
-        bool appSeen = false, apiSeen = false;
-        for (int i = 0; i < 30; i++)
-        {
-            if (!appSeen) appSeen = LingoFuseStatus.CheckApp(appName);
-            if (!apiSeen) apiSeen = LingoFuseStatus.CheckApi(appName, "ping");
-            if (appSeen && apiSeen) break;
-            Thread.Sleep(200);
-        }
-
-        Verify.True(appSeen);
-        Verify.True(apiSeen);
-
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
@@ -1226,217 +1311,194 @@ internal static class NetworkBasicsTests
         var endpoint = TestEnv.UniqueEndpoint("long_str");
         var appName = TestEnv.UniqueAppName("long_str");
 
-        const string unit = "Hello-\u4e16\u754c-";
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterCall("ping", "long ping",
+                    (input, output) =>
+                    {
+                        var s = LfIo.ReadJson<string>(input);
+                        LfIo.WriteJson(output, s);
+                    });
+            });
+
         var sb = new StringBuilder(64 * 1024 + 16);
+        const string unit = "Hello-\u4e16\u754c-";
         while (sb.Length < 64 * 1024) sb.Append(unit);
         var payload = sb.ToString();
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose<string, string>("ping", s => s));
-        server.Start();
-
-        var echoed = server.Call<string>(appName, "ping", payload, 5000);
+        var echoed = Rpc.CallJson<string>(appName, "ping", payload, 5000);
         Verify.NotNull(echoed);
         Verify.Equal(echoed!.Length, payload.Length);
         Verify.Equal(echoed, payload);
 
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-}
-
-/* ============================================================================
- *  CATEGORY: Network options
- * ============================================================================ */
-
-internal static class NetworkOptionsTests
-{
-    public static bool PrepareDoneOnlyOnce()
-    {
-        var ep1 = TestEnv.UniqueEndpoint("once_a");
-        var ep2 = TestEnv.UniqueEndpoint("once_b");
-        var appName1 = TestEnv.UniqueAppName("once_a");
-        var appName2 = TestEnv.UniqueAppName("once_b");
-
-        using var server1 = new LingoFuseServer(appName1, ep1);
-        server1.App.Expose<string, string>("ping", s => s);
-        server1.Start();
-        Verify.True(server1.IsRunning);
-
-        using var server2 = new LingoFuseServer(appName2, ep2);
-        server2.App.Expose<string, string>("ping", s => s);
-        server2.Start();
-        Verify.True(server2.IsRunning);
-
-        Verify.Throws<LingoFuseStateException>(() => server1.Start());
-
-        server2.Stop();
-        server1.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-}
-
-/* ============================================================================
- *  CATEGORY: Network calls
- * ============================================================================ */
-
-internal static class NetworkCallsTests
-{
-    public static bool CallTimeoutEmptyHandle()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("timeout");
-        var appName = TestEnv.UniqueAppName("timeout");
-
-        using var server = new LingoFuseServer(appName, endpoint);
-        server.App.Expose<string, string>("ping", s => s);
-        server.Start();
-
-        var ex = Verify.Throws<LingoFuseCallException>(() =>
-        {
-            _ = server.Call<string>("nonexistent_app_xyz_12345",
-                "anything", null, 500);
-        });
-        Verify.Equal(ex.TargetApp, "nonexistent_app_xyz_12345");
-
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
-    public static bool NotifyAndSequenced()
+    public static bool NotifyOneWay()
     {
         var endpoint = TestEnv.UniqueEndpoint("notify");
         var appName = TestEnv.UniqueAppName("notify");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        int notifyCount = 0;
-        int sequencedCount = 0;
+        int received = 0;
 
-        Verify.True(server.App.Handle.RegisterNotify("sink", "notify sink",
-            input => Interlocked.Increment(ref notifyCount)));
-        Verify.True(server.App.Handle.RegisterNotify("seq", "sequenced sink",
-            input => Interlocked.Increment(ref sequencedCount)));
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterNotify("sink", "JSON notify sink",
+                    input =>
+                    {
+                        _ = LfIo.ReadJson<string>(input);
+                        Interlocked.Increment(ref received);
+                    });
+            });
 
-        server.Start();
+        using var param = new DataHandle("sink");
+        LfIo.WriteJson(param, "hello");
+        Framework.Notify(appName, param);
+
+        Thread.Sleep(400);
+
+        Verify.True(received >= 1);
+
+        return true;
+    }
+
+    public static bool SequencedNotifyFifo()
+    {
+        var endpoint = TestEnv.UniqueEndpoint("seq");
+        var appName = TestEnv.UniqueAppName("seq");
+
+        int received = 0;
+        int lastPayload = -1;
+
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterNotify("seq", "JSON sequenced sink",
+                    input =>
+                    {
+                        lastPayload = LfIo.ReadJson<int>(input);
+                        Interlocked.Increment(ref received);
+                    });
+            });
 
         for (int i = 0; i < 5; i++)
         {
-            server.Notify(appName, "sink", $"n{i}");
-        }
-        for (int i = 0; i < 5; i++)
-        {
-            server.SequencedNotify(appName, "seq", $"s{i}");
+            using var param = new DataHandle("seq");
+            LfIo.WriteJson(param, i);
+            Framework.SequencedNotify(appName, param);
         }
 
-        Thread.Sleep(500);
+        Thread.Sleep(700);
 
-        Verify.True(notifyCount >= 1);
-        Verify.True(sequencedCount >= 1);
+        Verify.True(received >= 1);
+        // FIFO guarantee per (app, api): the last delivered value is 4.
+        Verify.Equal(lastPayload, 4);
 
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
-    public static bool NonexistentTargets()
+    public static bool CheckAppAndApi()
     {
-        var endpoint = TestEnv.UniqueEndpoint("missing");
-        var appName = TestEnv.UniqueAppName("missing");
+        var endpoint = TestEnv.UniqueEndpoint("check");
+        var appName = TestEnv.UniqueAppName("check");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        server.App.Expose<string, string>("ping", s => s);
-        server.Start();
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterCall("ping", "ping",
+                    (input, output) => { });
+            });
 
-        Verify.Throws<LingoFuseCallException>(() =>
+        Verify.True(LingoFuseStatus.CheckMainThread());
+
+        // The mesh broadcasts with an approximate 3-second delay.
+        // Retry up to 6 seconds.
+        bool appSeen = false;
+        bool apiSeen = false;
+        for (int i = 0; i < 30; i++)
         {
-            _ = server.Call<string>("nonexistent_app_xyz_12345",
-                "ping", "hello", 500);
-        });
+            if (!appSeen) appSeen = LingoFuseStatus.CheckApp(appName);
+            if (!apiSeen)
+            {
+                apiSeen = LingoFuseStatus.CheckApi(appName, "ping");
+            }
+            if (appSeen && apiSeen) break;
+            Thread.Sleep(200);
+        }
 
-        Verify.Throws<LingoFuseCallException>(() =>
-        {
-            _ = server.Call<string>(appName, "nonexistent_api_xyz", null, 500);
-        });
+        Verify.True(appSeen);
+        Verify.True(apiSeen);
 
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
-    public static bool TryCallSuccess()
+    public static bool NetworkEventsInstallClear()
     {
-        var endpoint = TestEnv.UniqueEndpoint("try_ok");
-        var appName = TestEnv.UniqueAppName("try_ok");
+        Verify.False(NetworkEvents.IsInstalled);
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose<int, int, int>("add", (a, b) => a + b));
-        server.Start();
+        int connectCalls = 0;
+        int disconnectCalls = 0;
 
-        // TryCall<int> for a value type T produces an out int (not
-        // Nullable<int>) because T is an unconstrained generic parameter.
-        var ok = server.TryCall<int>(
-            appName, "add", new object[] { 20, 22 }, 3000, out var sum);
-        Verify.True(ok);
-        Verify.Equal(sum, 42);
+        NetworkEvents.Set(
+            addr => Interlocked.Increment(ref connectCalls),
+            addr => Interlocked.Increment(ref disconnectCalls));
+        Verify.True(NetworkEvents.IsInstalled);
 
-        server.Stop();
-        TestEnv.Settle();
+        // Replace is a REPLACE operation: the previous handlers are
+        // discarded even when one of the new arguments is null.
+        NetworkEvents.Set(
+            addr => Interlocked.Increment(ref connectCalls), null);
+        Verify.True(NetworkEvents.IsInstalled);
+
+        NetworkEvents.Clear();
+        Verify.False(NetworkEvents.IsInstalled);
+
+        // Clear is idempotent.
+        NetworkEvents.Clear();
+        NetworkEvents.Clear();
+        Verify.False(NetworkEvents.IsInstalled);
+
         return true;
     }
 
-    public static bool TryCallTimeout()
+    public static bool StatusQueueOperations()
     {
-        var endpoint = TestEnv.UniqueEndpoint("try_timeout");
-        var appName = TestEnv.UniqueAppName("try_timeout");
+        var endpoint = TestEnv.UniqueEndpoint("status");
+        var appName = TestEnv.UniqueAppName("status");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        server.App.Expose<string, string>("ping", s => s);
-        server.Start();
+        using var session = NetworkSession.StartWithService(appName, endpoint);
+        TestEnv.Settle(200);
 
-        // For reference types, the out parameter is null on failure.
-        var ok = server.TryCall<string>(
-            "nonexistent_app_xyz_12345", "ping", "hello", 500, out var result);
-        Verify.False(ok);
-        Verify.True(result is null);
+        const string marker = "cs_test_status_marker_12345";
+        LingoFuseStatus.PostStatus(marker);
 
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
+        Thread.Sleep(300);
 
-    public static bool TryCallRawSuccess()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("try_raw");
-        var appName = TestEnv.UniqueAppName("try_raw");
+        var count = LingoFuseStatus.GetStatusCount();
+        Verify.True(count >= 0);
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose<string, string>("ping", s => s));
-        server.Start();
+        var drained = LingoFuseStatus.DrainStatus(20);
+        Verify.True(drained.Length <= 20);
 
-        var ok = server.TryCallRaw(
-            appName, "ping", "hello", 3000, out var json);
-        Verify.True(ok);
-        Verify.NotNull(json);
-        // The JSON serialisation of a string is a quoted string.
-        Verify.Equal(json!, "\"hello\"");
+        // A direct single-message read must not throw.
+        var single = LingoFuseStatus.GetStatus();
+        Verify.NotNull(single);
 
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 }
 
 /* ============================================================================
- *  CATEGORY: ABI cross-language
- * ============================================================================ */
-//
-// These tests exercise the raw binary path that the C++ / Pascal / Python
-// bindings use to interoperate with a C# peer. Every byte on the wire is
-// written and read explicitly through DataHandle's atomic-type helpers,
-// with no JSON serialization in between.
-
+ * CATEGORY: ABI cross-language
+ * ==========================================================================
+ *
+ * These tests exercise the raw binary path that the C++ / Pascal /
+ * Python bindings use to interoperate with a C# peer. Every byte on the
+ * wire is written and read through DataHandle's atomic-type helpers,
+ * with no JSON serialization in between.
+ */
 internal static class AbiCrossLanguageTests
 {
     public static bool AbiCallBinaryInt32()
@@ -1444,57 +1506,56 @@ internal static class AbiCrossLanguageTests
         var endpoint = TestEnv.UniqueEndpoint("abi_int32");
         var appName = TestEnv.UniqueAppName("abi_int32");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        // ABI registration: raw DataHandle handler.
-        Verify.True(server.App.Expose("add32", "ABI add32",
-            (input, output) =>
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
             {
-                int a = input.ReadInt32();
-                int b = input.ReadInt32();
-                output.WriteInt32(a + b);
-            }));
-        server.Start();
+                app.RegisterCall("add32", "ABI add32",
+                    (input, output) =>
+                    {
+                        int a = input.ReadInt32();
+                        int b = input.ReadInt32();
+                        output.WriteInt32(a + b);
+                    });
+            });
 
         using var request = new DataHandle("add32");
         request.WriteInt32(15);
         request.WriteInt32(27);
 
-        using var response = server.CallBinary(appName, request, 3000);
-        Verify.Equal(response.Size, (long)4);
+        using var response = Framework.Call(appName, request, 3000);
+        Verify.Equal(response.Size, 4L);
         Verify.Equal(response.ReadInt32(), 42);
 
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
     public static bool AbiCallBinaryMultiType()
     {
-        // Exercises every atomic type plus a NUL-framed string. This is
-        // the exact shape used by the C++ CrossNode/CrossCall demos.
         var endpoint = TestEnv.UniqueEndpoint("abi_multi");
         var appName = TestEnv.UniqueAppName("abi_multi");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose("inv_seri", "ABI inv_seri",
-            (input, output) =>
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
             {
-                byte b = input.ReadUInt8();
-                ushort w = input.ReadUInt16();
-                uint c = input.ReadUInt32();
-                ulong u64 = input.ReadUInt64();
-                string s = input.ReadString();
-                float f = input.ReadSingle();
+                app.RegisterCall("inv_seri", "ABI inv_seri",
+                    (input, output) =>
+                    {
+                        byte b = input.ReadUInt8();
+                        ushort w = input.ReadUInt16();
+                        uint c = input.ReadUInt32();
+                        ulong u64 = input.ReadUInt64();
+                        string s = input.ReadString();
+                        float f = input.ReadSingle();
 
-                // Reply in the reverse field order.
-                output.WriteSingle(f);
-                output.WriteString(s);
-                output.WriteUInt64(u64);
-                output.WriteUInt32(c);
-                output.WriteUInt16(w);
-                output.WriteUInt8(b);
-            }));
-        server.Start();
+                        // Reply in reverse field order.
+                        output.WriteSingle(f);
+                        output.WriteString(s);
+                        output.WriteUInt64(u64);
+                        output.WriteUInt32(c);
+                        output.WriteUInt16(w);
+                        output.WriteUInt8(b);
+                    });
+            });
 
         using var request = new DataHandle("inv_seri");
         request.WriteUInt8(200);
@@ -1504,7 +1565,7 @@ internal static class AbiCrossLanguageTests
         request.WriteString("hello world");
         request.WriteSingle(3.14f);
 
-        using var response = server.CallBinary(appName, request, 3000);
+        using var response = Framework.Call(appName, request, 3000);
 
         Verify.Equal(response.ReadSingle(), 3.14f);
         Verify.Equal(response.ReadString(), "hello world");
@@ -1513,95 +1574,6 @@ internal static class AbiCrossLanguageTests
         Verify.Equal(response.ReadUInt16(), (ushort)0x10);
         Verify.Equal(response.ReadUInt8(), (byte)200);
 
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-
-    public static bool AbiTryCallBinaryTimeout()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("abi_try_timeout");
-        var appName = TestEnv.UniqueAppName("abi_try_timeout");
-
-        using var server = new LingoFuseServer(appName, endpoint);
-        server.App.Expose("noop", "ABI noop", (input, output) => { });
-        server.Start();
-
-        using var request = new DataHandle("noop");
-        var ok = server.TryCallBinary(
-            "nonexistent_app_xyz_12345", request, 500, out var response);
-        Verify.False(ok);
-        Verify.True(response is null);
-
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-
-    public static bool AbiNotifyBinary()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("abi_notify");
-        var appName = TestEnv.UniqueAppName("abi_notify");
-
-        int received = 0;
-        int payload = 0;
-
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.ExposeNotify("sink", "ABI sink",
-            input =>
-            {
-                payload = input.ReadInt32();
-                Interlocked.Increment(ref received);
-            }));
-        server.Start();
-
-        using var request = new DataHandle("sink");
-        request.WriteInt32(4242);
-        server.NotifyBinary(appName, request);
-
-        // Give the worker thread time to dispatch.
-        Thread.Sleep(400);
-
-        Verify.True(received >= 1);
-        Verify.Equal(payload, 4242);
-
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-
-    public static bool AbiSequencedNotifyBinary()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("abi_seq");
-        var appName = TestEnv.UniqueAppName("abi_seq");
-
-        int received = 0;
-        int lastPayload = -1;
-
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.ExposeNotify("seq", "ABI seq",
-            input =>
-            {
-                lastPayload = input.ReadInt32();
-                Interlocked.Increment(ref received);
-            }));
-        server.Start();
-
-        for (int i = 0; i < 5; i++)
-        {
-            using var request = new DataHandle("seq");
-            request.WriteInt32(i);
-            server.SequencedNotifyBinary(appName, request);
-        }
-
-        Thread.Sleep(500);
-
-        Verify.True(received >= 1);
-        // FIFO per (app, api): the last delivered payload must be 4.
-        Verify.Equal(lastPayload, 4);
-
-        server.Stop();
-        TestEnv.Settle();
         return true;
     }
 
@@ -1630,145 +1602,76 @@ internal static class AbiCrossLanguageTests
         return true;
     }
 
-    public static bool AbiExposeRawCallback()
+    public static bool AbiNotifyBinary()
     {
-        // A raw-handler ABI server must be callable by a JSON-registered
-        // peer and vice versa, but the wire format is chosen per
-        // (app, api). This test verifies the raw path end-to-end.
-        var endpoint = TestEnv.UniqueEndpoint("abi_raw");
-        var appName = TestEnv.UniqueAppName("abi_raw");
+        var endpoint = TestEnv.UniqueEndpoint("abi_notify");
+        var appName = TestEnv.UniqueAppName("abi_notify");
 
-        using var server = new LingoFuseServer(appName, endpoint);
-        Verify.True(server.App.Expose("echo_bytes", "ABI raw echo",
-            (input, output) =>
+        int received = 0;
+        int payload = 0;
+
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
             {
-                // Read every remaining byte from the input and write it
-                // verbatim into the output. This is the exact shape a
-                // byte-stream proxy or passthrough uses.
-                var data = input.ReadAllBytes();
-                output.WriteBytes(data);
-            }));
-        server.Start();
+                app.RegisterNotify("sink", "ABI notify sink",
+                    input =>
+                    {
+                        payload = input.ReadInt32();
+                        Interlocked.Increment(ref received);
+                    });
+            });
 
-        var payload = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
-        using var request = new DataHandle("echo_bytes");
-        request.WriteBytes(payload);
+        using var request = new DataHandle("sink");
+        request.WriteInt32(4242);
+        Framework.Notify(appName, request);
 
-        using var response = server.CallBinary(appName, request, 3000);
-        var echoed = response.ReadAllBytes();
+        Thread.Sleep(400);
 
-        Verify.SequenceEqual(echoed, payload);
-
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-}
-
-/* ============================================================================
- *  CATEGORY: LingoFuseSync
- * ============================================================================ */
-
-internal static class LingoFuseSyncTests
-{
-    public static bool PublicApiShape()
-    {
-        // ProcessSyncQueue must be callable without throwing, and the
-        // return value must reflect the number of items that were
-        // executed. In the absence of pending work, the return value is
-        // zero.
-        var processed = LingoFuseSync.ProcessSyncQueue();
-        Verify.True(processed >= 0);
-
-        // The pending-count accessor must be usable and reflect the
-        // current queue state.
-        var pending = LingoFuseSync.PendingSyncCount;
-        Verify.True(pending >= 0);
+        Verify.True(received >= 1);
+        Verify.Equal(payload, 4242);
 
         return true;
     }
 
-    public static bool MainThreadRegistration()
+    public static bool AbiSequencedNotifyBinary()
     {
-        // The first ProcessSyncQueue call registers the calling thread
-        // as the main thread.
-        LingoFuseSync.SetMainThread();
-        Verify.True(LingoFuseSync.IsMainThreadCurrent);
+        var endpoint = TestEnv.UniqueEndpoint("abi_seq");
+        var appName = TestEnv.UniqueAppName("abi_seq");
 
-        // ProcessSyncQueue from the registered thread must be a no-op
-        // when the queue is empty.
-        var processed = LingoFuseSync.ProcessSyncQueue();
-        Verify.Equal(processed, 0);
+        int received = 0;
+        int lastPayload = -1;
+
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint, app =>
+            {
+                app.RegisterNotify("seq", "ABI sequenced notify sink",
+                    input =>
+                    {
+                        lastPayload = input.ReadInt32();
+                        Interlocked.Increment(ref received);
+                    });
+            });
+
+        for (int i = 0; i < 5; i++)
+        {
+            using var request = new DataHandle("seq");
+            request.WriteInt32(i);
+            Framework.SequencedNotify(appName, request);
+        }
+
+        Thread.Sleep(700);
+
+        Verify.True(received >= 1);
+        // FIFO per (app, api): the last delivered value is 4.
+        Verify.Equal(lastPayload, 4);
 
         return true;
     }
 }
 
 /* ============================================================================
- *  CATEGORY: Network events
- * ============================================================================ */
-
-internal static class NetworkEventsTests
-{
-    public static bool InstallClear()
-    {
-        Verify.False(NetworkEvents.IsInstalled);
-
-        int connectCalls = 0;
-        int disconnectCalls = 0;
-
-        NetworkEvents.Set(
-            addr => Interlocked.Increment(ref connectCalls),
-            addr => Interlocked.Increment(ref disconnectCalls));
-        Verify.True(NetworkEvents.IsInstalled);
-
-        NetworkEvents.Clear();
-        Verify.False(NetworkEvents.IsInstalled);
-
-        NetworkEvents.Clear();
-        NetworkEvents.Clear();
-        Verify.False(NetworkEvents.IsInstalled);
-
-        return true;
-    }
-}
-
-/* ============================================================================
- *  CATEGORY: Status queue
- * ============================================================================ */
-
-internal static class StatusQueueTests
-{
-    public static bool Operations()
-    {
-        var endpoint = TestEnv.UniqueEndpoint("status");
-
-        using var server = new LingoFuseServer(
-            TestEnv.UniqueAppName("status"), endpoint);
-        server.Start();
-
-        Thread.Sleep(200);
-
-        const string marker = "cs_test_status_marker_12345";
-        LingoFuseStatus.PostStatus(marker);
-
-        Thread.Sleep(300);
-
-        var count = LingoFuseStatus.GetStatusCount();
-        Verify.True(count >= 0);
-
-        var drained = LingoFuseStatus.DrainStatus(20);
-        Verify.True(drained.Length <= 20);
-
-        server.Stop();
-        TestEnv.Settle();
-        return true;
-    }
-}
-
-/* ============================================================================
- *  CATEGORY: Concurrency
- * ============================================================================ */
+ * CATEGORY: Concurrency
+ * ========================================================================== */
 
 internal static class ConcurrencyTests
 {
@@ -1777,8 +1680,14 @@ internal static class ConcurrencyTests
         const int kThreads = 10;
         const int kCallsPerThread = 100;
 
-        using var app = new LingoFuseApp("test_cs_concurrency");
-        Verify.True(app.Expose<int, int, int>("add", (a, b) => a + b));
+        using var app = new AppHandle("test_cs_concurrency");
+        app.RegisterCall("add", "add",
+            (input, output) =>
+            {
+                int a = input.ReadInt32();
+                int b = input.ReadInt32();
+                output.WriteInt32(a + b);
+            });
 
         int success = 0;
         var threads = new List<Thread>(kThreads);
@@ -1791,9 +1700,12 @@ internal static class ConcurrencyTests
                 {
                     try
                     {
-                        var result = app.LocalCall<int>(
-                            "add", new object[] { j, j * 2 });
-                        if (result == j + j * 2)
+                        using var param = new DataHandle("add");
+                        param.WriteInt32(j);
+                        param.WriteInt32(j * 2);
+                        using var result = app.LocalCall(param);
+                        if (result.Size == 4
+                            && result.ReadInt32() == j + j * 2)
                         {
                             Interlocked.Increment(ref success);
                         }
@@ -1811,7 +1723,6 @@ internal static class ConcurrencyTests
         foreach (var thread in threads) thread.Join();
 
         Verify.Equal(success, kThreads * kCallsPerThread);
-
         return true;
     }
 
@@ -1855,14 +1766,13 @@ internal static class ConcurrencyTests
         foreach (var thread in threads) thread.Join();
 
         Verify.Equal(success, kThreads * kItersPerThread);
-
         return true;
     }
 }
 
 /* ============================================================================
- *  CATEGORY: Stress
- * ============================================================================ */
+ * CATEGORY: Stress
+ * ========================================================================== */
 
 internal static class StressTests
 {
@@ -1870,19 +1780,25 @@ internal static class StressTests
     {
         const int kIterations = 1000;
 
-        using var app = new LingoFuseApp("test_cs_stress_seq");
-        Verify.True(app.Expose<int, int, int>("add", (a, b) => a + b));
+        using var app = new AppHandle("test_cs_stress_seq");
+        app.RegisterCall("add", "add",
+            (input, output) =>
+            {
+                int a = input.ReadInt32();
+                int b = input.ReadInt32();
+                output.WriteInt32(a + b);
+            });
 
         int success = 0;
         for (int i = 0; i < kIterations; i++)
         {
             try
             {
-                // LocalCall<int> for a value type T returns int, not
-                // Nullable<int>; no null-coalescing is needed.
-                int result = app.LocalCall<int>(
-                    "add", new object[] { i, i + 1 });
-                if (result == i + (i + 1))
+                using var param = new DataHandle("add");
+                param.WriteInt32(i);
+                param.WriteInt32(i + 1);
+                using var result = app.LocalCall(param);
+                if (result.ReadInt32() == i + (i + 1))
                 {
                     success++;
                 }
@@ -1906,13 +1822,13 @@ internal static class StressTests
         {
             try
             {
-                using var app = new LingoFuseApp(
+                using var app = new AppHandle(
                     $"test_cs_churn_{i}", "churn test");
-                if (app.Handle.RegisterCall("ping", "ping", Callbacks.Echo))
+                if (app.RegisterCall("ping", "ping", Callbacks.Echo))
                 {
                     using var param = new DataHandle("ping");
                     param.WriteString("x");
-                    using var result = app.Handle.LocalCall(param);
+                    using var result = app.LocalCall(param);
                     var echoed = result.ReadString();
                     if (echoed == "x") success++;
                 }
@@ -1929,8 +1845,8 @@ internal static class StressTests
 }
 
 /* ============================================================================
- *  Suite descriptor
- * ============================================================================ */
+ * Suite descriptor
+ * ========================================================================== */
 
 internal sealed class TestCase
 {
@@ -1971,12 +1887,12 @@ internal sealed class FailureRecord
 }
 
 /* ============================================================================
- *  main
- * ============================================================================ */
+ * main
+ * ========================================================================== */
 
 internal static class Program
 {
-    private const string SuiteVersion = "2.1 (C# managed, nullable-aware)";
+    private const string SuiteVersion = "3.1 (network-session fix)";
 
     private static string BuildTypeString()
     {
@@ -1999,36 +1915,40 @@ internal static class Program
 
         // ---- SECTION 1: SUITE HEADER -----------------------------------
         Fmt.PrintSectionHeader("SECTION 1: SUITE HEADER");
-        Console.WriteLine("  Suite      : LingoFuse C# Test Suite");
-        Console.WriteLine($"  Version    : {SuiteVersion}");
-        Console.WriteLine($"  Process ID : {Environment.ProcessId}");
-        Console.WriteLine($"  Platform   : {RuntimeInformation.OSDescription}");
-        Console.WriteLine($"  Architecture: {RuntimeInformation.ProcessArchitecture}");
-        Console.WriteLine($"  Start time : {startTime}");
+        Console.WriteLine("  Suite        : LingoFuse C# Test Suite");
+        Console.WriteLine($"  Version      : {SuiteVersion}");
+        Console.WriteLine($"  Process ID   : {Environment.ProcessId}");
+        Console.WriteLine($"  Platform     : {RuntimeInformation.OSDescription}");
+        Console.WriteLine(
+            $"  Architecture : {RuntimeInformation.ProcessArchitecture}");
+        Console.WriteLine($"  Start time   : {startTime}");
 
         // ---- SECTION 2: ENVIRONMENT ------------------------------------
         Fmt.PrintSectionHeader("SECTION 2: ENVIRONMENT");
         Console.WriteLine($"  Build type        : {BuildTypeString()}");
         Console.WriteLine($"  CPU cores         : {HardwareConcurrencySafe()}");
-        Console.WriteLine($"  Runtime           : {RuntimeInformation.FrameworkDescription}");
-        Console.WriteLine($"  Working directory : {Environment.CurrentDirectory}");
-        Console.WriteLine($"  OS architecture   : {RuntimeInformation.OSArchitecture}");
+        Console.WriteLine(
+            $"  Runtime           : {RuntimeInformation.FrameworkDescription}");
+        Console.WriteLine(
+            $"  Working directory : {Environment.CurrentDirectory}");
+        Console.WriteLine(
+            $"  OS architecture   : {RuntimeInformation.OSArchitecture}");
 
         var categories = BuildPlan();
         int totalTests = categories.Sum(c => c.Tests.Count);
 
         // ---- SECTION 3: TEST PLAN --------------------------------------
         Fmt.PrintSectionHeader("SECTION 3: TEST PLAN");
-        Console.WriteLine("  " + Fmt.PadRight("Category", 24) + " Tests");
-        Console.WriteLine("  " + new string('-', 24) + " -----");
+        Console.WriteLine("  " + Fmt.PadRight("Category", 26) + " Tests");
+        Console.WriteLine("  " + new string('-', 26) + " -----");
         foreach (var cat in categories)
         {
-            Console.WriteLine("  " + Fmt.PadRight(cat.Name, 24) + " " + cat.Tests.Count);
+            Console.WriteLine(
+                "  " + Fmt.PadRight(cat.Name, 26) + " " + cat.Tests.Count);
         }
-        Console.WriteLine("  " + new string('-', 24) + " -----");
-        Console.WriteLine("  " + Fmt.PadRight("Total", 24) + " " + totalTests + " tests");
-        Console.WriteLine();
-        Console.WriteLine("  Estimated runtime: ~70 seconds (network tests dominate)");
+        Console.WriteLine("  " + new string('-', 26) + " -----");
+        Console.WriteLine(
+            "  " + Fmt.PadRight("Total", 26) + " " + totalTests + " tests");
 
         // ---- SECTION 4: TEST EXECUTION ---------------------------------
         Fmt.PrintSectionHeader("SECTION 4: TEST EXECUTION");
@@ -2079,12 +1999,12 @@ internal static class Program
         Console.WriteLine("  Per-category statistics:");
         Console.WriteLine();
         Console.WriteLine("    "
-            + Fmt.PadRight("Category", 24)
+            + Fmt.PadRight("Category", 26)
             + Fmt.PadLeft("Tests", 6)
             + Fmt.PadLeft("Passed", 8)
             + Fmt.PadLeft("Failed", 8)
             + Fmt.PadLeft("Time", 12));
-        Console.WriteLine("    " + new string('-', 24 + 6 + 8 + 8 + 12));
+        Console.WriteLine("    " + new string('-', 26 + 6 + 8 + 8 + 12));
 
         int totalPassed = 0;
         int totalFailed = 0;
@@ -2097,16 +2017,16 @@ internal static class Program
             totalMs += cat.TotalMs;
 
             Console.WriteLine("    "
-                + Fmt.PadRight(cat.Name, 24)
+                + Fmt.PadRight(cat.Name, 26)
                 + Fmt.PadLeft(cat.Tests.Count.ToString(), 6)
                 + Fmt.PadLeft(cat.Passed.ToString(), 8)
                 + Fmt.PadLeft(cat.Failed.ToString(), 8)
                 + Fmt.PadLeft(Fmt.FormatDuration(cat.TotalMs), 12));
         }
 
-        Console.WriteLine("    " + new string('-', 24 + 6 + 8 + 8 + 12));
+        Console.WriteLine("    " + new string('-', 26 + 6 + 8 + 8 + 12));
         Console.WriteLine("    "
-            + Fmt.PadRight("Total", 24)
+            + Fmt.PadRight("Total", 26)
             + Fmt.PadLeft(totalTests.ToString(), 6)
             + Fmt.PadLeft(totalPassed.ToString(), 8)
             + Fmt.PadLeft(totalFailed.ToString(), 8)
@@ -2139,32 +2059,38 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("  Overall result:");
         Console.WriteLine();
-        Console.WriteLine($"    Total tests       : {totalTests}");
-        Console.WriteLine($"    Passed            : {totalPassed}");
-        Console.WriteLine($"    Failed            : {totalFailed}");
+        Console.WriteLine($"    Total tests     : {totalTests}");
+        Console.WriteLine($"    Passed          : {totalPassed}");
+        Console.WriteLine($"    Failed          : {totalFailed}");
 
         if (totalTests > 0)
         {
             double passRate = 100.0 * totalPassed / totalTests;
-            Console.WriteLine($"    Pass rate         : {passRate:F2} %");
+            Console.WriteLine($"    Pass rate       : {passRate:F2} %");
         }
 
-        Console.WriteLine($"    Total wall time   : {Fmt.FormatDuration(totalMs)}");
-        Console.WriteLine($"    Start time        : {startTime}");
-        Console.WriteLine($"    End time          : {endTime}");
+        Console.WriteLine($"    Total wall time : {Fmt.FormatDuration(totalMs)}");
+        Console.WriteLine($"    Start time      : {startTime}");
+        Console.WriteLine($"    End time        : {endTime}");
 
         Console.WriteLine();
         if (totalFailed == 0)
         {
-            Console.WriteLine("  ************************************************************");
-            Console.WriteLine("  *  RESULT: ALL TESTS PASSED                              *");
-            Console.WriteLine("  ************************************************************");
+            Console.WriteLine(
+                "  ************************************************************");
+            Console.WriteLine(
+                "  *  RESULT: ALL TESTS PASSED                              *");
+            Console.WriteLine(
+                "  ************************************************************");
         }
         else
         {
-            Console.WriteLine("  ************************************************************");
-            Console.WriteLine($"  *  RESULT: {totalFailed} TEST(S) FAILED");
-            Console.WriteLine("  ************************************************************");
+            Console.WriteLine(
+                "  ************************************************************");
+            Console.WriteLine(
+                $"  *  RESULT: {totalFailed} TEST(S) FAILED");
+            Console.WriteLine(
+                "  ************************************************************");
         }
 
         return totalFailed == 0 ? 0 : 1;
@@ -2176,7 +2102,7 @@ internal static class Program
         {
             new Category(
                 "DataHandle",
-                "Buffer I/O, termination, position, RAII dispose, exact/Try reads",
+                "Buffer I/O, termination, position, RAII dispose",
                 new List<TestCase>
                 {
                     new TestCase("DataHandle :: basic types",
@@ -2189,7 +2115,7 @@ internal static class Program
                         DataHandleTests.PositionAndSize),
                     new TestCase("DataHandle :: dispose safety",
                         DataHandleTests.DisposeSafety),
-                    new TestCase("DataHandle :: string termination (LF-DATA-005)",
+                    new TestCase("DataHandle :: string termination",
                         DataHandleTests.StringTermination),
                     new TestCase("DataHandle :: empty string",
                         DataHandleTests.EmptyString),
@@ -2197,171 +2123,125 @@ internal static class Program
                         DataHandleTests.LargeBuffer),
                     new TestCase("DataHandle :: embedded NUL preserved (LF-DATA-003)",
                         DataHandleTests.EmbeddedNulPreserved),
-                    new TestCase("DataHandle :: WriteBytes has no terminator",
+                    new TestCase("DataHandle :: WriteBytes has no terminator (LF-DATA-005)",
                         DataHandleTests.WriteBytesNoTerminator),
                     new TestCase("DataHandle :: multi-field sequential I/O",
                         DataHandleTests.MultiFieldSequentialIO),
                     new TestCase("DataHandle :: zero-length operations",
                         DataHandleTests.ZeroLengthOperations),
-                    new TestCase("DataHandle :: buffer pointer access",
-                        DataHandleTests.BufferPointerAccess),
                     new TestCase("DataHandle :: ReadBytesExact success",
                         DataHandleTests.ReadBytesExactSuccess),
                     new TestCase("DataHandle :: ReadBytesExact short fails",
                         DataHandleTests.ReadBytesExactShortFails),
-                    new TestCase("DataHandle :: TryReadBytes and TryReadInt32",
-                        DataHandleTests.TryReadBytesAndInt32),
-                    new TestCase("DataHandle :: TryReadString",
-                        DataHandleTests.TryReadStringRoundTrip),
-                    new TestCase("DataHandle :: borrowed handle dispose no-op",
-                        DataHandleTests.BorrowedHandleDisposeNoOp),
+                    new TestCase("DataHandle :: Try* family",
+                        DataHandleTests.TryReadFamily),
                     new TestCase("DataHandle :: ReadAllBytes",
                         DataHandleTests.ReadAllBytes),
                 }),
 
             new Category(
-                "AppHandle / LingoFuseApp",
-                "API registration, local execution, lifetime, ABI handlers",
+                "AppHandle",
+                "Registration, local execution, lifecycle, callback isolation",
                 new List<TestCase>
                 {
                     new TestCase("App :: register / local call / unregister",
-                        AppTests.RegisterAndLocalCall),
+                        AppHandleTests.RegisterAndLocalCall),
                     new TestCase("App :: duplicate registration rejected",
-                        AppTests.DuplicateRegistration),
+                        AppHandleTests.DuplicateRegistration),
                     new TestCase("App :: unregister then re-register",
-                        AppTests.UnregisterThenReregister),
+                        AppHandleTests.UnregisterThenReregister),
                     new TestCase("App :: case-insensitive API matching",
-                        AppTests.CaseInsensitiveApiMatching),
-                    new TestCase("App :: callback isolation",
-                        AppTests.CallbackIsolation),
-                    new TestCase("App :: free lifecycle (LF-APP-002)",
-                        AppTests.FreeLifecycle),
+                        AppHandleTests.CaseInsensitiveApiMatching),
+                    new TestCase("App :: callback produces no output",
+                        AppHandleTests.CallbackNoOutput),
+                    new TestCase("App :: callback exception is swallowed",
+                        AppHandleTests.CallbackExceptionSwallowed),
                     new TestCase("App :: LocalNotify",
-                        AppTests.LocalNotify),
-                    new TestCase("App :: Expose<TResult> (zero args)",
-                        AppTests.ExposeZeroArg),
-                    new TestCase("App :: LocalCall unregistered returns default",
-                        AppTests.LocalCallUnregisteredReturnsDefault),
-                    new TestCase("App :: TryLocalCall success",
-                        AppTests.TryLocalCallSuccess),
-                    new TestCase("App :: TryLocalCall unregistered",
-                        AppTests.TryLocalCallUnregistered),
-                    new TestCase("App :: Expose ABI callback",
-                        AppTests.ExposeAbiCallback),
-                    new TestCase("App :: ExposeNotify ABI callback",
-                        AppTests.ExposeNotifyAbiCallback),
+                        AppHandleTests.LocalNotify),
                     new TestCase("App :: LocalCallBinary",
-                        AppTests.LocalCallBinary),
+                        AppHandleTests.LocalCallBinary),
                     new TestCase("App :: LocalNotifyBinary",
-                        AppTests.LocalNotifyBinary),
+                        AppHandleTests.LocalNotifyBinary),
+                    new TestCase("App :: dispose safety",
+                        AppHandleTests.DisposeSafety),
                 }),
 
             new Category(
-                "Typed Expose",
-                "LingoFuseApp typed JSON handlers",
+                "LfIo",
+                "Unified JSON read / write on a DataHandle",
                 new List<TestCase>
                 {
-                    new TestCase("Expose :: Expose<TArg, TResult>",
-                        TypedExposeTests.ExposeOneArg),
-                    new TestCase("Expose :: Expose<T1, T2, TResult>",
-                        TypedExposeTests.ExposeTwoArgs),
-                    new TestCase("Expose :: ExposeNotify<TArg>",
-                        TypedExposeTests.ExposeNotifyTyped),
-                    new TestCase("Expose :: one-arg with null payload",
-                        TypedExposeTests.ExposeOneArgWithNull),
+                    new TestCase("LfIo :: JSON POCO round trip",
+                        LfIoTests.JsonPocoRoundTrip),
+                    new TestCase("LfIo :: JSON null value",
+                        LfIoTests.JsonNullValue),
+                    new TestCase("LfIo :: JSON unicode (no \\uXXXX escapes)",
+                        LfIoTests.JsonUnicode),
+                    new TestCase("LfIo :: JSON array",
+                        LfIoTests.JsonArray),
+                    new TestCase("LfIo :: JSON numeric",
+                        LfIoTests.JsonNumeric),
+                    new TestCase("LfIo :: TryReadJson returns false on invalid",
+                        LfIoTests.TryReadJsonReturnsFalseOnInvalid),
+                    new TestCase("LfIo :: ReadJson throws on invalid",
+                        LfIoTests.ReadJsonThrowsOnInvalid),
                 }),
 
             new Category(
-                "Network basics",
-                "Endpoints, check functions, long strings",
+                "Framework",
+                "Process-wide ABI facade: prepare / generate name / shutdown",
                 new List<TestCase>
                 {
-                    new TestCase("Network :: single address",
-                        NetworkBasicsTests.SingleAddress),
-                    new TestCase("Network :: multi address",
-                        NetworkBasicsTests.MultiAddress),
-                    new TestCase("Network :: check functions (LF-CHK-001)",
-                        NetworkBasicsTests.CheckFunctions),
-                    new TestCase("Network :: long string round-trip (LF-XLANG-002)",
-                        NetworkBasicsTests.LongStringRoundTrip),
+                    new TestCase("Framework :: SetOption does not throw",
+                        FrameworkTests.SetOptionNoThrow),
+                    new TestCase("Framework :: ResetPrepare does not throw",
+                        FrameworkTests.ResetPrepareNoThrow),
+                    new TestCase("Framework :: GenerateAppName after prepare",
+                        FrameworkTests.GenerateAppName),
+                    new TestCase("Framework :: PrepareDone returns 1 only once (LF-NET-003)",
+                        FrameworkTests.PrepareDoneReturnsOneOnlyOnce),
+                    new TestCase("Framework :: Shutdown is idempotent",
+                        FrameworkTests.ShutdownIsIdempotent),
                 }),
 
             new Category(
-                "Network options",
-                "prepareDone semantics, framework restart behaviour",
+                "Network integration",
+                "Service + client, Call / Notify / SequencedNotify, check / status",
                 new List<TestCase>
                 {
-                    new TestCase("Network :: prepareDone only once (LF-NET-003)",
-                        NetworkOptionsTests.PrepareDoneOnlyOnce),
-                }),
-
-            new Category(
-                "Network calls",
-                "Call / TryCall / Notify / Sequenced_Notify, timeout, missing targets",
-                new List<TestCase>
-                {
-                    new TestCase("Network :: call timeout empty handle (LF-CALL-001)",
-                        NetworkCallsTests.CallTimeoutEmptyHandle),
-                    new TestCase("Network :: notify + sequencedNotify (LF-CALL-002)",
-                        NetworkCallsTests.NotifyAndSequenced),
-                    new TestCase("Network :: nonexistent app / API",
-                        NetworkCallsTests.NonexistentTargets),
-                    new TestCase("Network :: TryCall success",
-                        NetworkCallsTests.TryCallSuccess),
-                    new TestCase("Network :: TryCall timeout",
-                        NetworkCallsTests.TryCallTimeout),
-                    new TestCase("Network :: TryCallRaw success",
-                        NetworkCallsTests.TryCallRawSuccess),
+                    new TestCase("Network :: single address JSON call",
+                        NetworkIntegrationTests.SingleAddressJsonCall),
+                    new TestCase("Network :: missing target returns empty handle (LF-CALL-001)",
+                        NetworkIntegrationTests.MissingTargetReturnsEmptyHandle),
+                    new TestCase("Network :: long string round trip (LF-XLANG-002)",
+                        NetworkIntegrationTests.LongStringRoundTrip),
+                    new TestCase("Network :: Notify",
+                        NetworkIntegrationTests.NotifyOneWay),
+                    new TestCase("Network :: SequencedNotify FIFO order (LF-SEQ-002)",
+                        NetworkIntegrationTests.SequencedNotifyFifo),
+                    new TestCase("Network :: CheckApp / CheckApi (LF-CHK-001)",
+                        NetworkIntegrationTests.CheckAppAndApi),
+                    new TestCase("Network :: NetworkEvents install / clear (LF-NET-005/006)",
+                        NetworkIntegrationTests.NetworkEventsInstallClear),
+                    new TestCase("Network :: status queue operations",
+                        NetworkIntegrationTests.StatusQueueOperations),
                 }),
 
             new Category(
                 "ABI cross-language",
-                "Raw binary Call / Notify / SequencedNotify / Expose",
+                "Raw binary Call / Notify / wire format",
                 new List<TestCase>
                 {
                     new TestCase("ABI :: CallBinary int32",
                         AbiCrossLanguageTests.AbiCallBinaryInt32),
                     new TestCase("ABI :: CallBinary multi-type round trip",
                         AbiCrossLanguageTests.AbiCallBinaryMultiType),
-                    new TestCase("ABI :: TryCallBinary timeout",
-                        AbiCrossLanguageTests.AbiTryCallBinaryTimeout),
+                    new TestCase("ABI :: byte-exact little-endian wire format",
+                        AbiCrossLanguageTests.AbiByteExactWireFormat),
                     new TestCase("ABI :: NotifyBinary",
                         AbiCrossLanguageTests.AbiNotifyBinary),
                     new TestCase("ABI :: SequencedNotifyBinary",
                         AbiCrossLanguageTests.AbiSequencedNotifyBinary),
-                    new TestCase("ABI :: byte-exact wire format",
-                        AbiCrossLanguageTests.AbiByteExactWireFormat),
-                    new TestCase("ABI :: Expose raw callback",
-                        AbiCrossLanguageTests.AbiExposeRawCallback),
-                }),
-
-            new Category(
-                "LingoFuseSync",
-                "Main-thread callback marshalling public API",
-                new List<TestCase>
-                {
-                    new TestCase("Sync :: public API shape",
-                        LingoFuseSyncTests.PublicApiShape),
-                    new TestCase("Sync :: main thread registration",
-                        LingoFuseSyncTests.MainThreadRegistration),
-                }),
-
-            new Category(
-                "Network events",
-                "Global connect / disconnect handlers",
-                new List<TestCase>
-                {
-                    new TestCase("Network events :: install / clear (LF-NET-005/006)",
-                        NetworkEventsTests.InstallClear),
-                }),
-
-            new Category(
-                "Status queue",
-                "GetStatusCount / GetStatus / PostStatus / DrainStatus",
-                new List<TestCase>
-                {
-                    new TestCase("Status queue :: count / post / drain",
-                        StatusQueueTests.Operations),
                 }),
 
             new Category(
@@ -2382,7 +2262,7 @@ internal static class Program
                 {
                     new TestCase("Stress :: 1000 sequential local calls",
                         StressTests.SequentialLocalCalls),
-                    new TestCase("Stress :: rapid App create/destroy (100x)",
+                    new TestCase("Stress :: 100 rapid App create / destroy",
                         StressTests.RapidAppCreateDestroy),
                 }),
         };

@@ -1,0 +1,50 @@
+{
+  "name": "lingofuse-ts",
+  "version": "1.0.0",
+  "description": "TypeScript binding for the LingoFuse distributed RPC framework. Runs on Node.js, Deno (2.x), and Bun.",
+  "type": "commonjs",
+  "keywords": [
+    "lingofuse",
+    "rpc",
+    "ipc",
+    "distributed",
+    "koffi",
+    "ffi",
+    "typescript",
+    "deno",
+    "bun"
+  ],
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "koffi": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

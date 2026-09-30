@@ -1,0 +1,74 @@
+{
+  "name": "lingofuse-js",
+  "version": "1.0.0",
+  "description": "JavaScript binding for the LingoFuse distributed RPC framework. Runs on Node.js, Deno (2.x), and Bun.",
+  "type": "commonjs",
+  "keywords": [
+    "lingofuse",
+    "rpc",
+    "ipc",
+    "distributed",
+    "koffi",
+    "ffi",
+    "deno",
+    "bun"
+  ],
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "require": "./index.js",
+      "import": "./index.mjs",
+      "default": "./index.js"
+    },
+    "./binding": "./binding.js",
+    "./errors": "./errors.js",
+    "./data-handle": "./data-handle.js",
+    "./app-handle": "./app-handle.js",
+    "./lf-io": "./lf-io.js",
+    "./framework": "./framework.js",
+    "./network-events": "./network-events.js",
+    "./status": "./status.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.mjs",
+    "binding.js",
+    "errors.js",
+    "data-handle.js",
+    "app-handle.js",
+    "lf-io.js",
+    "framework.js",
+    "network-events.js",
+    "status.js",
+    "check-env.js",
+    "PORTABILITY.md",
+    "cross",
+    "test"
+  ],
+  "scripts": {
+    "test": "node test/test.js",
+    "test:bun": "bun test/test.js",
+    "test:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/test.js",
+    "demo": "node test/lf_js_helloworld.js",
+    "demo:bun": "bun test/lf_js_helloworld.js",
+    "demo:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/lf_js_helloworld.js",
+    "check": "node check-env.js",
+    "cross:service": "node cross/cross-service.js",
+    "cross:node": "node cross/cross-node.js",
+    "cross:call": "node cross/cross-call.js",
+    "cross:service:bun": "bun cross/cross-service.js",
+    "cross:node:bun": "bun cross/cross-node.js",
+    "cross:call:bun": "bun cross/cross-call.js",
+    "cross:service:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys cross/cross-service.js",
+    "cross:node:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys cross/cross-node.js",
+    "cross:call:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys cross/cross-call.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "koffi": "^3.3.2"
+  }
+}

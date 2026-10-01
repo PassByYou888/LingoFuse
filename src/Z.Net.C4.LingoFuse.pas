@@ -113,7 +113,7 @@
   *
   * For more details, see the unit-level documentation and the comments for
   * each class and method.
-  *)
+*)
 unit Z.Net.C4.LingoFuse;
 
 {$DEFINE FPC_DELPHI_MODE}
@@ -142,7 +142,7 @@ uses
 type
   (*
     * Forward declaration: the TC40_LF_Service class is defined later.
-    *)
+  *)
   TC40_LF_Service = class;
 
   (*
@@ -157,7 +157,7 @@ type
     *   - Client side: used for local load balancing with the same logic.
     *
     * Key format: 'AppName.ApiName'.
-    *)
+  *)
   TFixed_Sequenced_Notify_Pool = class(TString_Big_Hash_Pair_Pool<TTimeTick>);
 
   (*
@@ -166,7 +166,7 @@ type
     * Alias: an Int64 that represents a "cycle anchor", i.e., a selection
     * timestamp. Used to fairly rotate among multiple clients hosting the
     * same application.
-    *)
+  *)
   TC40_LF_Cycle_Anchor_64 = Int64;
 
   (*
@@ -196,7 +196,7 @@ type
     *   - Wait_Reponse_Thread_Num: Number of threads waiting for remote
     *     responses (for load balancing).
     *   - Is_Local: True if the client is connected via IPC or local network.
-    *)
+  *)
   TC40_LF_RecvTunnel = class(TService_RecvTunnel_UserDefine_NoAuth)
   private
     (* Timestamp when this tunnel was last selected for routing. *)
@@ -231,7 +231,7 @@ type
     * ----------------------
     * List container of TC40_LF_RecvTunnel, used for temporary collection
     * and sorting.
-    *)
+  *)
   TC40_LF_RecvTunnelList = class(TBigList<TC40_LF_RecvTunnel>)
   end;
 
@@ -251,7 +251,7 @@ type
     *   6. Wait_Reponse_Thread_Num
     *   7. Is_Local
     * Finally, the TDFE is encoded to the target stream via FastEncodeTo.
-    *)
+  *)
   TLF_ServiceInfo = class
   public
     APP_Name: TLF_String;
@@ -281,7 +281,7 @@ type
     *     so applications with no API are excluded from the broadcast pool.
     *   - SaveToStream returns immediately on an empty pool.
     *   - Find_API / Find_APP use app_Name__.Same, which is case-insensitive.
-    *)
+  *)
   TLF_ServiceInfoPool = class(TBig_Object_List<TLF_ServiceInfo>)
   public
     constructor Create;
@@ -298,7 +298,7 @@ type
     * ------------------
     * Per-connection user-defined object attached to the send tunnel on the
     * service side. Holds a back-reference to the owning service.
-    *)
+  *)
   TC40_LF_SendTunnel = class(TService_SendTunnel_UserDefine_NoAuth)
   public
     LF_Service: TC40_LF_Service;
@@ -345,7 +345,7 @@ type
     *   receive tunnel for the given app and API.
     * Find_Fixed_Sequenced_API: same as Find_API but uses the
     *   least-recently-used timestamp to choose among multiple clients.
-    *)
+  *)
   TC40_LF_Service = class(TC40_Base_NoAuth_Service)
   private
     (* Earliest allowed time for the next broadcast (coalescing window). *)
@@ -443,7 +443,7 @@ type
     * Wait_Execute_Call: performs a synchronous call, waits for result.
     * APP: the local application.
     * LF_AppIsOnline: indicates successful registration.
-    *)
+  *)
   TC40_LF_Client = class(TC40_Base_NoAuth_Client)
   private
     (* Timestamp of the last selection. *)
@@ -459,6 +459,7 @@ type
     FHost_Running_Thread_Num: TAtomInt32;
     (* Number of threads waiting for remote responses. *)
     FWait_Reponse_Thread_Num: TAtomInt32;
+    FSended_no_reponse_cmd_num: TAtomInt32;
     (* Last time thread states were sent to the service. *)
     FLast_Update_Thread_State_TimeTick: TTimeTick;
     (* The local application instance. *)
@@ -467,6 +468,7 @@ type
     FAPI_APP_Is_Online: Boolean;
     (* True once the service info has been received. *)
     FService_Info_Is_Onlne: Boolean;
+
     (* Called when the double-tunnel link is established; auto-registers APP. *)
     procedure Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender: TDT_P2PVM_NoAuth_Custom_Client); override;
     (* Receive the service's broadcast of service info. *)
@@ -526,7 +528,7 @@ type
     * ------------------
     * List container of TC40_LF_Client, used for temporary collection and
     * sorting.
-    *)
+  *)
   TC40_LF_ClientList = TBigList<TC40_LF_Client>;
 
   (*
@@ -535,7 +537,7 @@ type
     * Internal helper used by Wait_Execute_Call to capture the asynchronous
     * result of a call. It holds an output TMem64 and a flag indicating
     * whether the call is still pending.
-    *)
+  *)
   TLF_CallBridge = class
   private
     Cli: TC40_LF_Client;
@@ -548,9 +550,9 @@ type
     destructor Destroy; override;
   end;
 
-(*
-  * Get the cached LingoFuse process name (format 'ProcessName:PID').
-  * Generated on first call; subsequent calls return the cached value.
+  (*
+    * Get the cached LingoFuse process name (format 'ProcessName:PID').
+    * Generated on first call; subsequent calls return the cached value.
   *)
 function Make_LingoFuse_Process_Name: TLF_String;
 
@@ -558,7 +560,7 @@ function Make_LingoFuse_Process_Name: TLF_String;
   * Get the global cycle anchor (atomic increment).
   * Used for load balancing: a monotonically increasing value is taken as
   * a timestamp each time a client is selected.
-  *)
+*)
 function Get_Cycle_Anchor: TC40_LF_Cycle_Anchor_64;
 
 (*
@@ -573,7 +575,7 @@ function Get_Cycle_Anchor: TC40_LF_Cycle_Anchor_64;
   *     found client to the current tick, used for load balancing.
   *
   * Returns: The matching client, or nil if none found.
-  *)
+*)
 function Find_Local_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 function Find_Remote_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 
@@ -611,7 +613,7 @@ function Find_Fixed_Sequenced_Remote_API(app_Name__, api_Name__: TLF_String): TC
   * @see Do_LF_Network_Disconnect (implementation) for the full contract
   * @see LF_Set_Network_Event     in Z.LingoFuse_Export.pas for the C ABI
   *                               installation API
-  *)
+*)
 procedure Do_LF_Network_Connect(addr_: TLF_String);
 procedure Do_LF_Network_Disconnect(addr_: TLF_String);
 
@@ -621,21 +623,68 @@ var
     * If the oldest candidate is older than this, fall back to the newest
     * client to prevent starvation and ensure fair distribution.
     * Defaults to 20 seconds, set in the initialization section.
-    *)
+  *)
   Fixed_Sequenced_Time: TTimeTick;
 
   (*
     * Cached LingoFuse process name. Generated on first call by
     * Make_LingoFuse_Process_Name.
-    *)
+  *)
   LingoFuse_Process_Name: TLF_String;
+
+  (* Critical section for lookups (protects reads on C40_ClientPool). *)
+  Find_Safe_Critical, Sort_Safe_Critical: TCritical;
+
+  (* Global cycle anchor counter. *)
+  Cycle_Anchor_Seed: TAtomInt64;
+
+  (*
+    * No_Reponse_Cmd_NULL_Flush_Threshold
+    * -----------------------------------
+    * Controls the "batch flush" behaviour of the send tunnel for
+    * no-reply commands (Notify / Sequenced_Notify / Call with a
+    * payload smaller than the large-packet threshold).
+    *
+    * Semantics:
+    *   <= 0 : DISABLED. No count-based flush is performed; the send
+    *          buffer is flushed only by the large-packet rule, by an
+    *          explicit SendNULL from the caller, or by the transport's
+    *          own idle timer. Use this when you trust the transport's
+    *          natural flushing and want to minimise syscalls.
+    *
+    *   >  0 : ENABLED. Once the number of pending no-reply commands
+    *          reaches this value, the client issues one SendNULL to
+    *          force the transport to flush its send buffer, then
+    *          resets the counter to zero. A value of 1000 therefore
+    *          means "flush roughly once every 1000 small commands".
+    *
+    * Background:
+    *   - Small-payload commands are accumulated on the send tunnel to
+    *     reduce syscall overhead. Without a cap, a slow trickle of
+    *     notifications could sit in the buffer indefinitely and add
+    *     receiver-side latency.
+    *   - This threshold bounds that accumulation, trading a small
+    *     increase in syscall count for a bounded delivery latency.
+    *
+    * Companion rule (independent of this value):
+    *   - Any single command whose payload exceeds 10 KB flushes
+    *     immediately and is not counted toward this threshold.
+    *
+    * Default: 1000.
+    *
+    * Tuning guide:
+    *   - Lower value : lower latency, more syscalls.
+    *   - Higher value: fewer syscalls, higher latency under a slow drip.
+    *   - <= 0        : disabled; rely on the transport's own flush.
+  *)
+  No_Reponse_Cmd_NULL_Flush_Threshold: Integer;
 
 const
   (*
     * Prefix for auto-generated application names.
     * Applications with this prefix trigger an immediate broadcast on
     * registration (no coalescing window).
-    *)
+  *)
   C_Generate_Prefix = '@__generate__@';
 
 implementation
@@ -644,11 +693,6 @@ uses Z.LingoFuse_Export;
 
 {$I Z.LingoFuse_System_ProcessID.inc}
 
-var
-  (* Critical section for lookups (protects reads on C40_ClientPool). *)
-  Find_Safe_Critical, Sort_Safe_Critical: TCritical;
-  (* Global cycle anchor counter. *)
-  Cycle_Anchor_Seed: TAtomInt64;
 
 (*
   * Get_Cycle_Anchor
@@ -656,7 +700,7 @@ var
   * Atomically increments the global counter and returns its previous value.
   * Used to generate monotonically increasing selection timestamps for
   * load balancing.
-  *)
+*)
 function Get_Cycle_Anchor: TC40_LF_Cycle_Anchor_64;
 begin
   Cycle_Anchor_Seed.Lock;
@@ -670,7 +714,7 @@ end;
   * -------------------------
   * Comparison function: ascending by TC40_LF_Client.Cycle_Int64_Anchor.
   * Used for load balancing: selects the least-recently-used client.
-  *)
+*)
 function Do_Cmp_Cycle_Int64_Anchor(var L, R: TC40_LF_Client): Integer;
 begin
   Result := CompareInt64(L.Cycle_Int64_Anchor, R.Cycle_Int64_Anchor);
@@ -689,7 +733,7 @@ end;
   *     Cycle_Int64_Anchor to the current timestamp.
   *
   * Returns: The matching client, or nil.
-  *)
+*)
 function Find_Local_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -737,7 +781,7 @@ end;
   * Searches remote clients (via the service info cache) for an application
   * matching the given name. Returns the client with the oldest
   * Cycle_Int64_Anchor among matches.
-  *)
+*)
 function Find_Remote_APP(app_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -782,7 +826,7 @@ end;
   * Searches the local process for a client that hosts an application matching
   * the given name AND exports the specified API. Returns the client with the
   * oldest Cycle_Int64_Anchor.
-  *)
+*)
 function Find_Local_API(app_Name__, api_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -830,7 +874,7 @@ end;
   * Searches remote clients for an application matching the given name AND
   * exporting the specified API. Returns the client with the oldest
   * Cycle_Int64_Anchor.
-  *)
+*)
 function Find_Remote_API(app_Name__, api_Name__: TLF_String; Update_Selected_Time: Boolean): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -874,7 +918,7 @@ end;
   * --------------------------------
   * Comparison function: descending by TC40_LF_Client.Fixed_Sequenced_Temp_Time.
   * Used for sequenced notifications: the smallest value (oldest) comes first.
-  *)
+*)
 function Do_Cmp_Fixed_Sequenced_Temp_Time(var L, R: TC40_LF_Client): Integer;
 begin
   Result := CompareUInt64(R.Fixed_Sequenced_Temp_Time, L.Fixed_Sequenced_Temp_Time);
@@ -893,7 +937,7 @@ end;
   * If a client's timestamp is older than Fixed_Sequenced_Time (default 20
   * seconds), the function falls back to the last client (newest) to avoid
   * starvation.
-  *)
+*)
 function Find_Fixed_Sequenced_Local_API(app_Name__, api_Name__: TLF_String): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -934,8 +978,8 @@ begin
       begin
         Result := L.First^.Data;
         (* If the oldest timestamp is more than Fixed_Sequenced_Time old,
-           fall back to the newest (last) to avoid always using the same
-           client. *)
+          fall back to the newest (last) to avoid always using the same
+          client. *)
         if GetTimeTick() - Result.Fixed_Sequenced_Temp_Time > Fixed_Sequenced_Time then
             Result := L.Last^.Data;
         Result.Fixed_Sequenced_Notify_Pool.Set_Key_Value(n, GetTimeTick());
@@ -952,7 +996,7 @@ end;
   * -------------------------------
   * Same as Find_Fixed_Sequenced_Local_API but searches remote clients
   * (using the service info cache).
-  *)
+*)
 function Find_Fixed_Sequenced_Remote_API(app_Name__, api_Name__: TLF_String): TC40_LF_Client;
 var
   arry: TC40_Custom_Client_Array;
@@ -990,8 +1034,8 @@ begin
       begin
         Result := L.First^.Data;
         (* If the oldest timestamp is more than Fixed_Sequenced_Time old,
-           fall back to the newest (last) to avoid always using the same
-           client. *)
+          fall back to the newest (last) to avoid always using the same
+          client. *)
         if GetTimeTick() - Result.Fixed_Sequenced_Temp_Time > Fixed_Sequenced_Time then
             Result := L.Last^.Data;
         Result.Fixed_Sequenced_Notify_Pool.Set_Key_Value(n, GetTimeTick());
@@ -1028,7 +1072,7 @@ end;
   *     -> FreeUTF8AnsiChar(addr)            // release UTF-8 buffer
   *
   * Same shape for Disconnect.
-  *)
+*)
 
 (*
   * Do_LF_Network_Connect_Th___
@@ -1046,7 +1090,7 @@ end;
   *     BuildUTF8AnsiChar in Do_LF_Network_Connect. It is freed here, AFTER
   *     the callback returns. A callback that stores the pointer without
   *     copying will retain a dangling reference.
-  *)
+*)
 procedure Do_LF_Network_Connect_Th___(thSender: TCompute);
 begin
   try
@@ -1083,7 +1127,7 @@ end;
   * @see LF_Set_Network_Event  in Z.LingoFuse_Export.pas for the C ABI
   *                            installation API and the full callback
   *                            contract.
-  *)
+*)
 procedure Do_LF_Network_Connect(addr_: TLF_String);
 begin
   if Assigned(Z.LingoFuse_Export.On_Network_Connect_Event) then
@@ -1101,7 +1145,7 @@ end;
   *   - thSender.UserData is the UTF-8 PAnsiChar buffer; it is freed here
   *     after the callback returns. Callbacks must copy the string if they
   *     need it beyond the call.
-  *)
+*)
 procedure Do_LF_Network_Disconnect_Th___(thSender: TCompute);
 begin
   try
@@ -1140,7 +1184,7 @@ end;
   * @see LF_Set_Network_Event  in Z.LingoFuse_Export.pas for the C ABI
   *                            installation API and the full callback
   *                            contract.
-  *)
+*)
 procedure Do_LF_Network_Disconnect(addr_: TLF_String);
 begin
   if Assigned(Z.LingoFuse_Export.On_Network_Disconnect_Event) then
@@ -1152,7 +1196,7 @@ end;
   * -------------------------
   * Initializes the tunnel user object. Creates the fixed sequenced notify
   * pool and the API info hash list.
-  *)
+*)
 constructor TC40_LF_RecvTunnel.Create(Owner_: TPeerIO);
 begin
   inherited Create(Owner_);
@@ -1174,7 +1218,7 @@ end;
   * TC40_LF_RecvTunnel.Destroy
   * --------------------------
   * Frees the API info hash list and the sequenced notify pool.
-  *)
+*)
 destructor TC40_LF_RecvTunnel.Destroy;
 begin
   DisposeObject(api_info_data);
@@ -1186,7 +1230,7 @@ end;
   * TLF_ServiceInfo.Create
   * ----------------------
   * Creates an empty service info record.
-  *)
+*)
 constructor TLF_ServiceInfo.Create;
 begin
   inherited Create;
@@ -1203,7 +1247,7 @@ end;
   * TLF_ServiceInfo.Destroy
   * -----------------------
   * Frees the API info hash list.
-  *)
+*)
 destructor TLF_ServiceInfo.Destroy;
 begin
   DisposeObject(api_info_data);
@@ -1214,7 +1258,7 @@ end;
   * TLF_ServiceInfo.Assign
   * ----------------------
   * Copies the registration data from a receive-tunnel user object.
-  *)
+*)
 procedure TLF_ServiceInfo.Assign(source: TC40_LF_RecvTunnel);
 begin
   APP_Name := source.APP_Name;
@@ -1239,7 +1283,7 @@ end;
   *   5. Host_Running_Thread_Num
   *   6. Wait_Reponse_Thread_Num
   *   7. Is_Local
-  *)
+*)
 procedure TLF_ServiceInfo.SaveToStream(stream: TCore_Stream);
 var
   d: TDFE;
@@ -1265,7 +1309,7 @@ end;
   * ------------------------------
   * Deserializes service info from a stream. The order must match
   * SaveToStream exactly.
-  *)
+*)
 procedure TLF_ServiceInfo.LoadFromStream(stream: TCore_Stream);
 var
   d: TDFE;
@@ -1293,7 +1337,7 @@ end;
   * TLF_ServiceInfoPool.Create
   * --------------------------
   * Creates the pool with auto-free enabled (True).
-  *)
+*)
 constructor TLF_ServiceInfoPool.Create;
 begin
   inherited Create(True);
@@ -1303,7 +1347,7 @@ end;
   * TLF_ServiceInfoPool.Destroy
   * ---------------------------
   * Inherited, frees all objects.
-  *)
+*)
 destructor TLF_ServiceInfoPool.Destroy;
 begin
   inherited Destroy;
@@ -1314,7 +1358,7 @@ end;
   * -----------------------------------
   * Builds a snapshot entry from a client's registration data.
   * Only adds the entry if the client has at least one registered API.
-  *)
+*)
 procedure TLF_ServiceInfoPool.Build_Info_Form(Inst: TC40_LF_RecvTunnel);
 var
   tmp: TLF_ServiceInfo;
@@ -1332,7 +1376,7 @@ end;
   * --------------------------------
   * Saves the entire pool to a DFE stream, serializing each item.
   * Returns immediately on an empty pool.
-  *)
+*)
 procedure TLF_ServiceInfoPool.SaveToStream(d: TDFE);
 var
   m64: TMS64;
@@ -1352,7 +1396,7 @@ end;
   * TLF_ServiceInfoPool.LoadFromStream
   * ----------------------------------
   * Loads the pool from a DFE stream, creating TLF_ServiceInfo objects.
-  *)
+*)
 procedure TLF_ServiceInfoPool.LoadFromStream(d: TDFE);
 var
   m64: TMS64;
@@ -1376,7 +1420,7 @@ end;
   * TLF_ServiceInfoPool.Find_API
   * ----------------------------
   * Checks if any entry has the given appName and exports the given API.
-  *)
+*)
 function TLF_ServiceInfoPool.Find_API(app_Name__, api_Name__: TLF_String): Boolean;
 begin
   Result := False;
@@ -1395,7 +1439,7 @@ end;
   * TLF_ServiceInfoPool.Find_APP
   * ----------------------------
   * Checks if any entry has the given appName (regardless of APIs).
-  *)
+*)
 function TLF_ServiceInfoPool.Find_APP(app_Name__: TLF_String): Boolean;
 begin
   Result := False;
@@ -1414,7 +1458,7 @@ end;
   * TC40_LF_SendTunnel.Create
   * -------------------------
   * Initializes the send tunnel user object with a nil service reference.
-  *)
+*)
 constructor TC40_LF_SendTunnel.Create(Owner_: TPeerIO);
 begin
   inherited Create(Owner_);
@@ -1425,7 +1469,7 @@ end;
   * TC40_LF_SendTunnel.Destroy
   * --------------------------
   * Inherited.
-  *)
+*)
 destructor TC40_LF_SendTunnel.Destroy;
 begin
   inherited Destroy;
@@ -1436,7 +1480,7 @@ end;
   * -------------------------------------------
   * Schedules a broadcast of API info after a 2-second delay.
   * This coalesces multiple registration changes into a single broadcast.
-  *)
+*)
 procedure TC40_LF_Service.Do_Delay_Broadcast_API_Info;
 begin
   FDelay_Broadcast_API_Info_Time := GetTimeTick() + 2000;
@@ -1447,7 +1491,7 @@ end;
   * TC40_LF_Service.DoLinkSuccess_Event
   * -----------------------------------
   * Sets back-references in the receive and send tunnel user objects.
-  *)
+*)
 procedure TC40_LF_Service.DoLinkSuccess_Event(Sender: TDTService_NoAuth; UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1464,7 +1508,7 @@ end;
   * Overridden; no extra logic needed because the user object will be freed
   * automatically when the connection drops. But if the user had an app or
   * API info, schedule a broadcast update.
-  *)
+*)
 procedure TC40_LF_Service.DoUserOut_Event(Sender: TDTService_NoAuth; UserDefineIO: TService_RecvTunnel_UserDefine_NoAuth);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1488,7 +1532,7 @@ end;
   *   InData: DFE containing: appName, appDesc, processInfo, a
   *     Pascal-string list of API names, and a boolean Is_Local flag.
   *   OutData: Unused.
-  *)
+*)
 procedure TC40_LF_Service.cmd_Init_APP_Info(Sender: TCommandCompleteBuffer_NoWait_Bridge; InData, OutData: TDFE);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1510,7 +1554,7 @@ begin
   user_io.Is_Local := InData.R.ReadBool;
 
   (* Auto-generated applications (with C_Generate_Prefix) trigger an
-     immediate broadcast; others go through the coalescing window. *)
+    immediate broadcast; others go through the coalescing window. *)
   if user_io.APP_Name.StrExists(C_Generate_Prefix) then
     begin
       Broadcast_API_Info;
@@ -1524,7 +1568,7 @@ end;
   * -------------------------------
   * Handles a client that has no application to register (or an empty app).
   * Clears the registration data and schedules a broadcast.
-  *)
+*)
 procedure TC40_LF_Service.cmd_No_App_Info(Sender: TPeerIO; InData: SystemString);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1547,7 +1591,7 @@ end;
   * --------------------------------
   * Receives runtime thread-count updates from a client and stores them in
   * the user object for load-aware routing.
-  *)
+*)
 procedure TC40_LF_Service.cmd_Thread_State(Sender: TPeerIO; InData: TDFE);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1565,7 +1609,7 @@ end;
   * Background thread worker for executing a local notification.
   * Uses the TC40_LF_Client stored in thSender.UserObject.
   * Increments/decrements Host_Running_Thread_Num around the call.
-  *)
+*)
 procedure TC40_LF_Service.Do_Run_Notify_Th(thSender: THPC_StreamNotify; ThInData: TDFE);
 var
   tmp_cli__: TC40_LF_Client;
@@ -1595,7 +1639,7 @@ end;
   * 2) If not found, forwards to other service instances (IPC first, then
   *    remote).
   * 3) Logs an error if no matching destination is found.
-  *)
+*)
 procedure TC40_LF_Service.cmd_Notify(Sender: TPeerIO; InData: TDFE);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1608,7 +1652,7 @@ var
   (*
     * Iterate through the service instance array, find the first instance
     * that exports the target API and forward the notification to it.
-    *)
+  *)
   function Search_API_And_Send(): Boolean;
   var
     i: Integer;
@@ -1668,7 +1712,7 @@ end;
   * least-recently-used timestamp for the (app, api) pair. If found locally,
   * it posts to the global sequenced thread pool; otherwise forwards to
   * another service instance.
-  *)
+*)
 procedure TC40_LF_Service.cmd_Sequenced_Notify(Sender: TPeerIO; InData: TDFE);
 var
   user_io: TC40_LF_RecvTunnel;
@@ -1681,7 +1725,7 @@ var
   (*
     * Iterate through the service instance array, find the first instance
     * that can host the sequenced notification and forward to it.
-    *)
+  *)
   function Search_API_And_Send(): Boolean;
   var
     i: Integer;
@@ -1738,7 +1782,7 @@ end;
   * Background thread worker for executing a local synchronous call.
   * Uses the TC40_LF_Client stored in thSender.UserObject.
   * Increments/decrements Host_Running_Thread_Num around the call.
-  *)
+*)
 procedure TC40_LF_Service.Do_Run_Call_Th(thSender: THPC_CompleteBuffer_Stream; ThInData, ThOutData: TDFE);
 var
   tmp_cli__: TC40_LF_Client;
@@ -1767,7 +1811,7 @@ end;
   * ------------------------
   * Routes an incoming synchronous call. Tries local execution first, then
   * forwards to other service instances.
-  *)
+*)
 procedure TC40_LF_Service.cmd_Call(Sender: TCommandCompleteBuffer_NoWait_Bridge; InData, OutData: TDFE);
 var
   app_Name__: TLF_String;
@@ -1779,7 +1823,7 @@ var
   (*
     * Iterate through the service instance array, find the first instance
     * that can host the call and forward to it.
-    *)
+  *)
   function Search_API_And_Send(): Boolean;
   var
     i: Integer;
@@ -1837,7 +1881,7 @@ end;
   * Constructor: sets up the service with custom user-defined classes,
   * configures buffer sizes, and registers the command handlers.
   * Temporarily disables per-service directories to avoid clutter.
-  *)
+*)
 constructor TC40_LF_Service.Create(PhysicsService_: TC40_PhysicsService; ServiceTyp, Param_: U_String);
 var
   bak_: Boolean;
@@ -1887,7 +1931,7 @@ end;
   * TC40_LF_Service.Destroy
   * -----------------------
   * Inherited.
-  *)
+*)
 destructor TC40_LF_Service.Destroy;
 begin
   inherited Destroy;
@@ -1897,7 +1941,7 @@ end;
   * TC40_LF_Service.SafeCheck
   * -------------------------
   * Inherited.
-  *)
+*)
 procedure TC40_LF_Service.SafeCheck;
 begin
   inherited SafeCheck;
@@ -1908,7 +1952,7 @@ end;
   * ------------------------
   * Main progress method. Drives the network and triggers a broadcast when
   * the scheduled broadcast time is reached.
-  *)
+*)
 procedure TC40_LF_Service.Progress;
 begin
   inherited Progress;
@@ -1930,7 +1974,7 @@ end;
   *
   * Note: final_data is cloned for each receiver (NewClone) because
   * SendCompleteBuffer takes ownership and does not copy the data.
-  *)
+*)
 procedure TC40_LF_Service.Broadcast_API_Info();
 var
   info_pool: TLF_ServiceInfoPool;
@@ -1980,7 +2024,7 @@ end;
   * -------------------------------------------
   * Comparison function: ascending by Cycle_Int64_Anchor, used to sort
   * connected clients for load balancing (pick the least recently used).
-  *)
+*)
 function TC40_LF_Service.Do_Cmp_Last_Selected_Time__(var L, R: TC40_LF_RecvTunnel): Integer;
 begin
   Result := CompareInt64(L.Cycle_Int64_Anchor, R.Cycle_Int64_Anchor);
@@ -1993,7 +2037,7 @@ end;
   * of the first one that matches the given application name (wildcard)
   * and exposes the specified API. If multiple clients match, the one with
   * the lowest Cycle_Int64_Anchor is returned (load balancing).
-  *)
+*)
 function TC40_LF_Service.Find_API(app_Name__, api_Name__: TLF_String): TC40_LF_RecvTunnel;
 var
   arry: TIO_Array;
@@ -2029,7 +2073,7 @@ end;
   * TC40_LF_Service.Do_Inv_Cmp_Temp_Sequence_Value__
   * -------------------------------------------------
   * Comparison function: descending by Fixed_Sequenced_Temp_Time.
-  *)
+*)
 function TC40_LF_Service.Do_Inv_Cmp_Temp_Sequence_Value__(var L, R: TC40_LF_RecvTunnel): Integer;
 begin
   Result := CompareUInt64(R.Fixed_Sequenced_Temp_Time, L.Fixed_Sequenced_Temp_Time);
@@ -2044,7 +2088,7 @@ end;
   * sorts in descending order (oldest first). The client with the oldest
   * timestamp (or the last if older than 5 minutes) is selected, and its
   * timestamp is updated.
-  *)
+*)
 function TC40_LF_Service.Find_Fixed_Sequenced_API(app_Name__, api_Name__: TLF_String): TC40_LF_RecvTunnel;
 var
   arry: TIO_Array;
@@ -2095,11 +2139,12 @@ end;
   * ----------------------------------------------------------
   * Called when the double-tunnel link is established. If an APP is set,
   * automatically registers it with the service.
-  *)
+*)
 procedure TC40_LF_Client.Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender: TDT_P2PVM_NoAuth_Custom_Client);
 begin
   inherited Do_DT_P2PVM_NoAuth_Custom_Client_TunnelLink(Sender);
   Init_App_Info;
+  FSended_no_reponse_cmd_num.V := 0;
 end;
 
 (*
@@ -2108,7 +2153,7 @@ end;
   * Receives the service's broadcast of available applications and updates
   * the local FService_Info cache. The data is DFE-encoded. The first time
   * this fires, it triggers the network connect event.
-  *)
+*)
 procedure TC40_LF_Client.cmd_update_service_api_info(Sender: TPeerIO; InData: PByte; DataSize: NativeInt);
 var
   m64: TMS64;
@@ -2129,7 +2174,7 @@ begin
   DisposeObject(d);
 
   (* Trigger the network connect event on the first broadcast (not on the
-     TCP handshake). *)
+    TCP handshake). *)
   if not FService_Info_Is_Onlne then
     begin
       if C40PhysicsTunnel.IPC_Mode then
@@ -2147,7 +2192,7 @@ end;
   * Background thread worker for executing a local notification.
   * Maps the raw input buffer to a TMem64 and invokes Execute_Notify on the
   * local APP. Increments/decrements Host_Running_Thread_Num.
-  *)
+*)
 procedure TC40_LF_Client.Do_Notify(thSender: THPC_CompleteBuffer; ThInData: PByte; ThDataSize: NativeInt);
 var
   m64: TMem64;
@@ -2170,7 +2215,7 @@ end;
   * -------------------------
   * Handles incoming 'Notify' commands by offloading processing to a
   * background thread using RunHPC_CompleteBufferM.
-  *)
+*)
 procedure TC40_LF_Client.cmd_Notify(Sender: TPeerIO; InData: PByte; DataSize: NativeInt);
 begin
   if FAPP = nil then
@@ -2184,7 +2229,7 @@ end;
   * Handles incoming 'Sequenced_Notify' commands. Extracts the API name,
   * creates a TMem64, and posts it to the global sequenced notification pool
   * for the current APP.
-  *)
+*)
 procedure TC40_LF_Client.cmd_Sequenced_Notify(Sender: TPeerIO; InData: PByte; DataSize: NativeInt);
 var
   m64: TMem64;
@@ -2205,7 +2250,7 @@ end;
   * Handles incoming 'Call' commands synchronously. Decodes the request,
   * executes the API call locally, and writes the result back.
   * This runs in the main thread (not background).
-  *)
+*)
 procedure TC40_LF_Client.cmd_Call(Sender: TPeerIO; InData, OutData: TDFE);
 var
   app_Name__: TLF_String;
@@ -2232,7 +2277,7 @@ end;
   * ----------------------------
   * Called when the APP's API list changes. Re-registers the app with the
   * service.
-  *)
+*)
 procedure TC40_LF_Client.Do_APP_Update(Sender: TLF_App);
 begin
   Init_App_Info;
@@ -2244,13 +2289,14 @@ end;
   * Constructor: initializes the client, creates the service info pool,
   * atomic counters, and fixed sequenced pool, and registers command
   * handlers.
-  *)
+*)
 constructor TC40_LF_Client.Create(PhysicsTunnel_: TC40_PhysicsTunnel; source_: TC40_Info; Param_: U_String);
 begin
   inherited Create(PhysicsTunnel_, source_, Param_);
   FService_Info := TLF_ServiceInfoPool.Create;
   FHost_Running_Thread_Num := TAtomInt32.Create(0);
   FWait_Reponse_Thread_Num := TAtomInt32.Create(0);
+  FSended_no_reponse_cmd_num := TAtomInt32.Create(0);
   FLast_Update_Thread_State_TimeTick := 0;
   FAPP := nil;
   FAPI_APP_Is_Online := False;
@@ -2289,7 +2335,7 @@ end;
   * ----------------------
   * Destructor: removes the APP update subscription, waits for background
   * threads to finish (with a 2-second timeout), and frees resources.
-  *)
+*)
 destructor TC40_LF_Client.Destroy;
 var
   tk: TTimeTick;
@@ -2301,6 +2347,7 @@ begin
       TCompute.Sleep(10);
   DisposeObjectAndNil(FHost_Running_Thread_Num);
   DisposeObjectAndNil(FWait_Reponse_Thread_Num);
+  DisposeObjectAndNil(FSended_no_reponse_cmd_num);
   DisposeObjectAndNil(FService_Info);
   DisposeObjectAndNil(Fixed_Sequenced_Notify_Pool);
   inherited Destroy;
@@ -2310,7 +2357,7 @@ end;
   * TC40_LF_Client.SafeCheck
   * ------------------------
   * Inherited.
-  *)
+*)
 procedure TC40_LF_Client.SafeCheck;
 begin
   inherited SafeCheck;
@@ -2321,7 +2368,7 @@ end;
   * -----------------------
   * Main progress method. If the client is online, sends thread-state updates
   * to the service every second (throttled to a 100 ms check interval).
-  *)
+*)
 procedure TC40_LF_Client.Progress;
 var
   tk: TTimeTick;
@@ -2343,7 +2390,7 @@ end;
   * TC40_LF_Client.DoNetworkOnline
   * ------------------------------
   * Inherited.
-  *)
+*)
 procedure TC40_LF_Client.DoNetworkOnline;
 begin
   inherited DoNetworkOnline;
@@ -2354,7 +2401,7 @@ end;
   * -------------------------------
   * Called when the client disconnects; resets the online flag and triggers
   * the network disconnect event.
-  *)
+*)
 procedure TC40_LF_Client.DoNetworkOffline;
 var
   addr_: TLF_String;
@@ -2376,7 +2423,7 @@ end;
   * Sends the current thread-count statistics to the service using the
   * 'Thread_State' command. This allows the service to perform load-aware
   * routing.
-  *)
+*)
 procedure TC40_LF_Client.Update_LocalThread_State_To_Service;
 begin
   if not LF_AppIsOnline then
@@ -2391,7 +2438,7 @@ end;
   * Callback for the 'Init_APP_Info' command's response. Sets the online
   * flag to True, indicating registration was successful, and subscribes to
   * APP updates.
-  *)
+*)
 procedure TC40_LF_Client.Do_Init_App_Info_Result(Sender: TPeerIO; Result_: TDFE);
 begin
   FAPI_APP_Is_Online := True;
@@ -2405,7 +2452,7 @@ end;
   * registration to the service using the 'Init_APP_Info' command.
   * If APP is nil or has no name, sends a 'No_App_Info' notification
   * instead.
-  *)
+*)
 procedure TC40_LF_Client.Init_App_Info;
 var
   api_info_data: TPascalStringList;
@@ -2441,7 +2488,7 @@ end;
   * --------------------------
   * Binds a new TLF_App to the client. If the client is already connected,
   * immediately registers the new app with the service.
-  *)
+*)
 procedure TC40_LF_Client.Set_API_APP(const Value: TLF_App);
 begin
   if FAPP <> nil then
@@ -2458,7 +2505,7 @@ end;
   * to the service. The payload is wrapped in a DFE and sent via the send
   * tunnel. If the payload is large (> 100 KB), sends a NULL packet to
   * flush the buffer.
-  *)
+*)
 procedure TC40_LF_Client.Send_Execute_Notify___(const app_Name__: TLF_String; Param: TMem64);
 begin
   DTNoAuth.SendTunnel.SendCompleteBuffer_StreamNotify('Notify',
@@ -2467,8 +2514,26 @@ begin
       .WriteMem64(Param)
       .DelayFree
     );
-  if Param.Size > 100 * 1024 then
+
+  if Param.Size > 10 * 1024 then
+    begin
       DTNoAuth.SendTunnel.SendNULL;
+      FSended_no_reponse_cmd_num.V := 0;
+    end
+  else if No_Reponse_Cmd_NULL_Flush_Threshold > 0 then
+    begin
+      FSended_no_reponse_cmd_num.Lock;
+      try
+        inc(FSended_no_reponse_cmd_num.P^);
+        if FSended_no_reponse_cmd_num.P^ > No_Reponse_Cmd_NULL_Flush_Threshold then
+          begin
+            DTNoAuth.SendTunnel.SendNULL;
+            FSended_no_reponse_cmd_num.P^ := 0;
+          end;
+      finally
+          FSended_no_reponse_cmd_num.UnLock;
+      end;
+    end;
 end;
 
 (*
@@ -2477,7 +2542,7 @@ end;
   * Sends a non-sequenced notification to the target application. Performs
   * local execution if the target matches a local client; otherwise forwards
   * to the service.
-  *)
+*)
 procedure TC40_LF_Client.Send_Execute_Notify(const app_Name__: TLF_String; Param: TMem64);
 var
   api_Name__: TLF_String;
@@ -2509,7 +2574,7 @@ end;
   * Internal method that sends a sequenced notification by forwarding to the
   * service. Similar to Send_Execute_Notify___ but uses the
   * 'Sequenced_Notify' command.
-  *)
+*)
 procedure TC40_LF_Client.Send_Sequenced_Notify___(const app_Name__: TLF_String; Param: TMem64);
 begin
   DTNoAuth.SendTunnel.SendCompleteBuffer_StreamNotify('Sequenced_Notify',
@@ -2518,8 +2583,26 @@ begin
       .WriteMem64(Param)
       .DelayFree
     );
-  if Param.Size > 100 * 1024 then
+
+  if Param.Size > 10 * 1024 then
+    begin
       DTNoAuth.SendTunnel.SendNULL;
+      FSended_no_reponse_cmd_num.V := 0;
+    end
+  else if No_Reponse_Cmd_NULL_Flush_Threshold > 0 then
+    begin
+      FSended_no_reponse_cmd_num.Lock;
+      try
+        inc(FSended_no_reponse_cmd_num.P^);
+        if FSended_no_reponse_cmd_num.P^ > No_Reponse_Cmd_NULL_Flush_Threshold then
+          begin
+            DTNoAuth.SendTunnel.SendNULL;
+            FSended_no_reponse_cmd_num.P^ := 0;
+          end;
+      finally
+          FSended_no_reponse_cmd_num.UnLock;
+      end;
+    end;
 end;
 
 (*
@@ -2528,7 +2611,7 @@ end;
   * Sends a sequenced notification. Uses Find_Fixed_Sequenced_Local_API or
   * Find_Fixed_Sequenced_Remote_API to choose the correct client (locally
   * or remotely) and posts to the appropriate sequenced thread.
-  *)
+*)
 procedure TC40_LF_Client.Send_Sequenced_Notify(const app_Name__: TLF_String; Param: TMem64);
 var
   api_Name__: TLF_String;
@@ -2555,7 +2638,7 @@ end;
   * Internal method that performs a synchronous call by forwarding to the
   * service. Blocks until the response arrives or the timeout expires.
   * Uses TLF_CallBridge to capture the asynchronous result.
-  *)
+*)
 function TC40_LF_Client.Wait_Execute_Call___(const app_Name__: TLF_String; Param: TMem64; TimeOut__: TTimeTick): TMem64;
 var
   api_Name__: TLF_String;
@@ -2569,7 +2652,27 @@ begin
   tmp.Cli := Self;
   tmp.IsRunning := True;
   DTNoAuth.SendTunnel.SendCompleteBuffer_NoWait_StreamM('Call', TDFE.Create.WriteString(app_Name__).WriteMem64(Param).DelayFree, tmp.Do_Result);
-  if Param.Size > 100 * 1024 then DTNoAuth.SendTunnel.SendNULL;
+
+  if Param.Size > 10 * 1024 then
+    begin
+      DTNoAuth.SendTunnel.SendNULL;
+      FSended_no_reponse_cmd_num.V := 0;
+    end
+  else if No_Reponse_Cmd_NULL_Flush_Threshold > 0 then
+    begin
+      FSended_no_reponse_cmd_num.Lock;
+      try
+        inc(FSended_no_reponse_cmd_num.P^);
+        if FSended_no_reponse_cmd_num.P^ > No_Reponse_Cmd_NULL_Flush_Threshold then
+          begin
+            DTNoAuth.SendTunnel.SendNULL;
+            FSended_no_reponse_cmd_num.P^ := 0;
+          end;
+      finally
+          FSended_no_reponse_cmd_num.UnLock;
+      end;
+    end;
+
   tk := GetTimeTick + TimeOut__;
   while tmp.IsRunning do
     begin
@@ -2591,7 +2694,7 @@ end;
   * --------------------------------
   * Performs a synchronous call to the target application. First tries local
   * execution (same process), then remote execution via the service.
-  *)
+*)
 function TC40_LF_Client.Wait_Execute_Call(const app_Name__: TLF_String; Param: TMem64; TimeOut__: TTimeTick): TMem64;
 var
   api_Name__: TLF_String;
@@ -2621,7 +2724,7 @@ end;
   * TLF_CallBridge.Create
   * ---------------------
   * Initializes the bridge with an empty output and sets IsRunning to False.
-  *)
+*)
 constructor TLF_CallBridge.Create;
 begin
   inherited Create;
@@ -2635,7 +2738,7 @@ end;
   * TLF_CallBridge.Destroy
   * ----------------------
   * Frees the output memory.
-  *)
+*)
 destructor TLF_CallBridge.Destroy;
 begin
   DisposeObjectAndNil(Output);
@@ -2648,7 +2751,7 @@ end;
   * Called when the asynchronous response for a call arrives. Reads the
   * result TMem64 from the DFE and signals completion by setting IsRunning
   * to False.
-  *)
+*)
 procedure TLF_CallBridge.Do_Result(Sender: TPeerIO; Result_: TDFE);
 begin
   Error_ := Result_.Count <= 0;
@@ -2663,14 +2766,14 @@ initialization
   * Register the 'LingoFuse' service type in the global C4 registry.
   * Afterwards, calling BuildDependNetwork('LingoFuse') creates the
   * service.
-  *)
+*)
 RegisterC40('LingoFuse', TC40_LF_Service, TC40_LF_Client);
 
 (* Sequenced notification fallback threshold: 20 seconds. *)
 Fixed_Sequenced_Time := Z.Core.C_Tick_Second * 20;
 
 (* Process name cache is cleared first; generated on first call to
-   Make_LingoFuse_Process_Name. *)
+  Make_LingoFuse_Process_Name. *)
 LingoFuse_Process_Name := '';
 
 (* Critical sections for lookups and sorting. *)
@@ -2679,6 +2782,11 @@ Sort_Safe_Critical := TCritical.Create('Sort_Safe_Critical');
 
 (* Global cycle anchor seed. *)
 Cycle_Anchor_Seed := TAtomInt64.Create(0);
+
+(* Send-buffer flush threshold for no-reply commands.
+  > 0 : flush once every N pending commands (default: 1000).
+  <= 0 : disabled; rely on the transport's own flush policy. *)
+No_Reponse_Cmd_NULL_Flush_Threshold := 1000;
 
 finalization
 

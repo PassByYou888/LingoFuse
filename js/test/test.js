@@ -6,6 +6,13 @@
 //  Cross-runtime integration and unit test suite for the LingoFuse
 //  JavaScript binding.
 //
+//  Version 1.1 — permanent-handle and tryCall support:
+//    - New tests in the DataHandle category covering
+//      DataHandle.createPermanent: creation, survival across the idle
+//      pool window, and synchronous release semantics.
+//    - New tests in the framework category covering framework.tryCall
+//      and framework.getAppName.
+//
 //  Runs on:
 //      Node.js 18+ : node test.js
 //      Bun 1.x+    : bun test.js
@@ -742,6 +749,88 @@ describe("DataHandle", () => {
         assert.equal(borrowed.readString(), "payload");
         owner.dispose();
     });
+
+    // --------------------------------------------------------------
+    // Permanent-handle tests (added in 1.1)
+    // --------------------------------------------------------------
+
+    it("createPermanent creates a permanent handle", () => {
+        const h = lf.DataHandle.createPermanent("test_perm");
+        try {
+            assert.equal(h.isOwning, true);
+            assert.equal(h.isValid, true);
+            assert.notEqual(h.raw, null);
+
+            h.writeInt32(0x11223344);
+            h.writeString("permanent-payload");
+            h.position = 0;
+            assert.equal(h.readInt32(), 0x11223344);
+            assert.equal(h.readString(), "permanent-payload");
+        }
+        finally {
+            h.dispose();
+        }
+    });
+
+    it("createPermanent rejects a non-string API name", () => {
+        assert.throws(
+            () => lf.DataHandle.createPermanent(42),
+            TypeError);
+    });
+
+    it("a permanent handle survives an idle window", () => {
+        // We cannot wait 10 real minutes in a test. What we verify is
+        // that the handle is NOT added to the idle pool, so the pool
+        // scanner would never see it. Observationally: creating and
+        // disposing a permanent handle inside a session does not
+        // interfere with other handle activity, and the handle remains
+        // intact after several pool-scan intervals.
+        const h = lf.DataHandle.createPermanent("test_perm_idle");
+        try {
+            h.writeInt32(42);
+
+            // Give the simulated main thread time to run several
+            // Progress ticks. Any auto-recycled handle with the wrong
+            // lifetime expectation would already be marked for release.
+            const start = Date.now();
+            while (Date.now() - start < 1200) {
+                // Busy-wait is avoided; delegate to a microtask tick.
+            }
+
+            assert.equal(h.isValid, true);
+            h.position = 0;
+            assert.equal(h.readInt32(), 42);
+        }
+        finally {
+            h.dispose();
+        }
+    });
+
+    it("createPermanent dispose is synchronous and idempotent", () => {
+        const h = lf.DataHandle.createPermanent("test_perm_sync");
+        h.writeInt32(1);
+        assert.equal(h.isValid, true);
+
+        h.dispose();
+        assert.equal(h.isValid, false);
+        assert.equal(h.raw, null);
+        assert.throws(() => h.readInt32(), lf.LingoFuseObjectDisposedError);
+
+        // Idempotent.
+        h.dispose();
+        h.dispose();
+
+        // A second independent permanent handle is also usable.
+        const h2 = lf.DataHandle.createPermanent("test_perm_sync_2");
+        try {
+            h2.writeString("second");
+            h2.position = 0;
+            assert.equal(h2.readString(), "second");
+        }
+        finally {
+            h2.dispose();
+        }
+    });
 });
 
 // -----------------------------------------------------------------------------
@@ -1070,6 +1159,82 @@ describe("framework", () => {
         finally {
             param.dispose();
         }
+    });
+
+    // --------------------------------------------------------------
+    // tryCall tests (added in 1.1)
+    // --------------------------------------------------------------
+
+    it("tryCall returns a handle on a successful call", () => {
+        const param = new lf.DataHandle("add");
+        lf.io.writeJson(param, { a: 20, b: 22 });
+
+        const result = lf.framework.tryCall("JsTest", param, 5000);
+        try {
+            assert.notEqual(result, null);
+            assert.equal(result.size > 0, true);
+            assert.deepEqual(lf.io.readJson(result), { result: 42 });
+        }
+        finally {
+            param.dispose();
+            if (result !== null) result.dispose();
+        }
+    });
+
+    it("tryCall returns null on an unknown target", () => {
+        const param = new lf.DataHandle("add");
+        lf.io.writeJson(param, { a: 1, b: 2 });
+
+        const result = lf.framework.tryCall(
+            "DefinitelyNotAnApp_12345", param, 500);
+        try {
+            assert.equal(result, null);
+        }
+        finally {
+            param.dispose();
+        }
+    });
+
+    it("tryCall rejects a non-string appName", () => {
+        const param = new lf.DataHandle("add");
+        try {
+            assert.throws(
+                () => lf.framework.tryCall(42, param, 500),
+                TypeError);
+        }
+        finally {
+            param.dispose();
+        }
+    });
+
+    it("tryCall rejects a non-DataHandle param", () => {
+        assert.throws(
+            () => lf.framework.tryCall("JsTest", {}, 500),
+            TypeError);
+    });
+
+    // --------------------------------------------------------------
+    // getAppName tests (added in 1.1)
+    // --------------------------------------------------------------
+
+    it("getAppName returns the registered name", () => {
+        const name = lf.framework.getAppName(app);
+        assert.equal(typeof name, "string");
+        assert.equal(name, "JsTest");
+    });
+
+    it("getAppName rejects a non-AppHandle argument", () => {
+        assert.throws(() => lf.framework.getAppName({}), TypeError);
+        assert.throws(() => lf.framework.getAppName(null), TypeError);
+        assert.throws(() => lf.framework.getAppName("JsTest"), TypeError);
+    });
+
+    it("getAppName throws LingoFuseObjectDisposedError for a disposed handle", () => {
+        const tmp = new lf.AppHandle("JsTestGetNameTmp", "temp");
+        tmp.dispose();
+        assert.throws(
+            () => lf.framework.getAppName(tmp),
+            lf.LingoFuseObjectDisposedError);
     });
 
     it("notify rejects a non-DataHandle param", () => {

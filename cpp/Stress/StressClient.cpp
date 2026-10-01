@@ -1,73 +1,62 @@
 // =============================================================================
 //  StressClient.cpp
 // -----------------------------------------------------------------------------
-//  Multi-threaded caller for the LingoFuse stress and stability test.
+//  Multi-threaded caller for the LingoFuse stress test.
 //
-//  Behaviour:
-//      - Connects to "ipc:stress" as a pure consumer.
-//      - Spawns N worker threads that loop forever, calling a randomly
-//        chosen API on "StressSvc".
-//      - A reporter thread sends a status record to "StressMon" once per
-//        second via LF_Notify.
+//  Per worker, per iteration:
+//      --notify-per-loop  x notify_demo   (default 20)
+//      --call-per-loop    x random Call   (default 1)
 //
 //  =============================================================================
-//  HANDLE USAGE RULES (applied throughout this file)
+//  CALL vs NOTIFY PARALLELISM
 //  =============================================================================
 //
-//    R1. A handle may be used ONLY BEFORE and DURING the call.
-//        (Write payload / read position / pass to LF_Call / etc.)
+//  Call is SYNCHRONOUS. A thread that has issued a Call cannot do
+//  anything else until the response returns. Call throughput scales with
+//  thread count, up to the server's saturation point:
 //
-//    R2. After the call returns, the handle MUST be destroyed.
-//        In this file that is done either by ~DataHandle RAII (normal
-//        path) or by an explicit in.reset() (defensive form).
+//      StressClient --ci --duration 30 --threads 512 --notify-per-loop 0
 //
-//    R3. If the handle is NOT destroyed (deliberate leak), it MUST NOT
-//        be used again in any way. "Used" means any accessor:
-//        LF_GetSize / LF_GetPos / LF_GetBuffer / LF_WriteBuffer /
-//        LF_ReadBuffer / LF_SetPos / LF_SetSize / LF_FreeData / ...
+//  Notify is FIRE-AND-FORGET. One thread can dispatch many messages
+//  back-to-back without waiting. Notify throughput scales with dispatch
+//  rate, not thread count.
 //
-//  The purpose of these rules is to keep every handle's state
-//  unambiguous: either it is owned and alive (before / during the
-//  call), or it is gone (after the call). No in-between.
+//  The two loads are independent:
+//
+//      Pure Call      : --notify-per-loop 0
+//      Pure Notify    : --call-per-loop 0
+//      Mixed          : --threads 64 (default 20:1)
 //
 //  =============================================================================
-//  HANDLE LIFECYCLE (v3)
-//  -----------------------------------------------------------------------------
-//  This client deliberately does NOT reuse DataHandle instances across
-//  iterations.
+//  THROUGHPUT NOTE
+//  =============================================================================
 //
-//    * Normal path:
-//        - the input handle is created inside its own scope;
-//        - LF_Call / tryCall is invoked;
-//        - the scope closes -> ~DataHandle -> LF_FreeData, immediately.
-//        - the result handle is used, then destroyed by RAII.
+//  When --pause is 0 (the default), the worker loop does NOT sleep
+//  between iterations. Rate limiting is opt-in via --pause N.
 //
-//    * Leak path (every kLeakEveryN-th iteration):
-//        - the input handle is detached via DataHandle::release() and
-//          is then NEVER touched again;
-//        - the result handle from LF_Call is NOT wrapped and NEVER
-//          touched after the single size-check;
-//        - the whole purpose is to let the library's idle reclaimer
-//          (TLF_DataPool.Progress) pick them up after the timeout.
+//  =============================================================================
+//  DELIBERATE HANDLE LEAK POLICY
+//  =============================================================================
 //
-//  The number of leaked calls and leaked handles is included in every
-//  report sent to the monitor, so the operator can watch the pool grow
-//  and then shrink back as the reclaimer catches up.
+//  1 in 100 DataHandles is intentionally abandoned, to exercise the
+//  auto-reclaimer under load. Do not copy this behaviour into
+//  production code.
 //
-//  Usage:
-//      StressClient [threads] [pause_ms]
-//      Defaults: threads = 100, pause_ms = 0
+//  Cleanup order (Pascal LF-CLEAN-001):
+//      LF_ExitMainThread -> LF_Shutdown -> LF_FreeLibrary
 // =============================================================================
+
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#  define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include "LingoFuse.hpp"
 #include "StressCommon.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <exception>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -80,20 +69,25 @@
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#else
+#  include <csignal>
+#  include <unistd.h>
 #endif
 
 namespace {
 
-    constexpr int  kDefaultThreads = 100;
-    constexpr int  kDefaultPauseMs = 0;
-    constexpr int  kCallTimeoutMs = 60000;
-    constexpr int  kStatusIntervalMs = 1000;
+    constexpr int kCallTimeoutMs = 30000;
+    constexpr int kStatusIntervalMs = 1000;
+    constexpr int kMaxConsecutiveErrors = 100;
+    constexpr int kLeakEveryN = 100;
 
-    // Every N-th worker iteration deliberately leaks its handles.
-    constexpr std::uint64_t kLeakEveryN = 100;
+    constexpr int kNumberMin = 1;
+    constexpr int kNumberMax = 10000;
 
-    std::atomic<int>  g_pause_ms{ kDefaultPauseMs };
+    std::atomic<int>  g_pause_ms{ 0 };
     std::atomic<bool> g_stop_flag{ false };
+
+    bool g_ci_mode = false;
 
 #if defined(_WIN32)
     BOOL WINAPI console_ctrl_handler(DWORD type) {
@@ -110,7 +104,7 @@ namespace {
         }
     }
 #else
-    extern "C" void posix_signal_handler(int) {
+    extern "C" void posix_stop_handler(int) {
         g_stop_flag.store(true);
     }
 #endif
@@ -126,342 +120,7 @@ namespace {
         (void)((oss << std::forward<Args>(args)), ...);
         std::lock_guard<std::mutex> lock(log_mutex());
         std::cout << oss.str() << '\n';
-    }
-
-    struct Stats {
-        std::atomic<std::uint64_t> total{ 0 };
-        std::atomic<std::uint64_t> success{ 0 };
-        std::atomic<std::uint64_t> failure{ 0 };
-        std::atomic<std::uint64_t> echo_calls{ 0 };
-        std::atomic<std::uint64_t> add_calls{ 0 };
-        std::atomic<std::uint64_t> hash_calls{ 0 };
-        std::atomic<std::uint64_t> leaked_calls{ 0 };
-        std::atomic<std::uint64_t> leaked_handles{ 0 };
-
-        Stats() = default;
-        Stats(const Stats&) = delete;
-        Stats& operator=(const Stats&) = delete;
-    };
-
-    // -------------------------------------------------------------------------
-    //  Worker thread body
-    //
-    //  Each iteration allocates fresh DataHandle instances.
-    //
-    //  Normal path:
-    //     { DataHandle in(...); ...; resp = tryCall(..., in, ...); }
-    //     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    //     The inner scope closes immediately after tryCall returns, so
-    //     `in` is destroyed at exactly the moment the call completes.
-    //
-    //  Leak path:
-    //     The handle is used strictly before the call. After the call
-    //     returns, `in.release()` detaches it from RAII and it is
-    //     NEVER touched again. `raw_result` is size-checked once and
-    //     then also never touched.
-    // -------------------------------------------------------------------------
-    void worker(int index, Stats& stats) {
-        std::mt19937 rng(
-            static_cast<std::uint32_t>(index) ^
-            static_cast<std::uint32_t>(stress::now_ms()));
-
-        std::uniform_int_distribution<int> which(0, 2);
-        std::uniform_int_distribution<int> num(1, 10000);
-
-        std::uint64_t iter = 0;
-
-        while (!g_stop_flag.load(std::memory_order_relaxed)) {
-            ++iter;
-
-            // Every kLeakEveryN-th iteration deliberately leaks.
-            const bool leak_this_call = (iter % kLeakEveryN == 0);
-
-            const int choice = which(rng);
-            bool ok = false;
-
-            if (leak_this_call) {
-                // ============================================================
-                //  DELIBERATE LEAK PATH
-                //
-                //  Rule R1: `in` is used ONLY before and during the call.
-                //  Rule R2: we choose NOT to destroy it (deliberate leak).
-                //  Rule R3: after the call, `in` and `raw_result` are
-                //           NEVER touched again.
-                // ============================================================
-                try {
-                    const char* api_name = (choice == 0) ? "echo"
-                        : (choice == 1) ? "add"
-                        : "hash";
-
-                    // --- Phase A: create and fill the input handle ---
-                    //     (allowed: before the call)
-                    lingofuse::DataHandle in(api_name);
-
-                    switch (choice) {
-                    case 0: {
-                        const std::string payload =
-                            "leak_echo_" + std::to_string(num(rng));
-                        in.write(payload);
-                        break;
-                    }
-                    case 1: {
-                        const std::int32_t a =
-                            static_cast<std::int32_t>(num(rng));
-                        const std::int32_t b =
-                            static_cast<std::int32_t>(num(rng));
-                        in.write(a);
-                        in.write(b);
-                        break;
-                    }
-                    case 2: {
-                        const std::string payload =
-                            "leak_hash_" + std::to_string(num(rng));
-                        in.write(payload);
-                        break;
-                    }
-                    default:
-                        break;
-                    }
-
-                    // --- Phase B: the call ---
-                    //     (allowed: during the call)
-                    //
-                    //     `in.get()` hands the raw handle to LF_Call.
-                    //     From the moment LF_Call returns, `in` must not
-                    //     be used again (see Phase C below).
-                    TDataHnd raw_result =
-                        LF_Call(stress::kServiceApp, in.get(), kCallTimeoutMs);
-
-                    // --- Phase C: post-call handling ---
-                    //
-                    //  Rule R3: after the call, `in` is treated as dead.
-                    //  Detach it from RAII so ~DataHandle will NOT call
-                    //  LF_FreeData. This is the deliberate leak.
-                    //
-                    //  IMPORTANT: after this line, `in` MUST NOT appear
-                    //  in any expression, even inside a debug log.
-                    (void)in.release();
-
-                    //  `raw_result` is a *fresh* handle returned by
-                    //  LF_Call. We may inspect it ONCE (a size check)
-                    //  and then it too is left to the reclaimer.
-                    //
-                    //  After the following `if`, `raw_result` MUST NOT
-                    //  appear in any expression.
-                    if (raw_result != nullptr && LF_GetSize(raw_result) > 0) {
-                        ok = true;
-                    }
-
-                    // --- Phase D: bookkeeping only, no handle touches ---
-                    stats.leaked_calls.fetch_add(
-                        1, std::memory_order_relaxed);
-                    stats.leaked_handles.fetch_add(
-                        (raw_result != nullptr) ? 2 : 1,
-                        std::memory_order_relaxed);
-
-                }
-                catch (const std::exception& e) {
-                    log_line("[Worker ", index,
-                        "] LEAK-PATH EXCEPTION: ", e.what());
-                    ok = false;
-                }
-                catch (...) {
-                    log_line("[Worker ", index,
-                        "] LEAK-PATH EXCEPTION: unknown");
-                    ok = false;
-                }
-
-            }
-            else {
-                // ============================================================
-                //  NORMAL PATH
-                //
-                //  Rule R2: after the call returns, the input handle is
-                //           destroyed *immediately* by closing its scope.
-                // ============================================================
-                try {
-                    switch (choice) {
-                    case 0: {
-                        const std::string payload =
-                            "stress_echo_" + std::to_string(num(rng));
-
-                        std::optional<lingofuse::DataHandle> resp;
-
-                        // Input handle lives in its own scope: it is
-                        // destroyed the instant we leave this block,
-                        // which is right after the call returns.
-                        {
-                            lingofuse::DataHandle in("echo");
-                            in.write(payload);
-                            resp = lingofuse::tryCall(
-                                stress::kServiceApp, in, kCallTimeoutMs);
-                        }
-                        // ¡û R2 satisfied: `in` destroyed here.
-
-                        // `resp` is a *new* handle from LF_Call; it is
-                        // independent of `in`. Safe to use now.
-                        if (resp) {
-                            std::string echoed;
-                            ok = resp->read(echoed) && (echoed == payload);
-                        }
-                        // `resp` destroyed by RAII at end of the case.
-                        break;
-                    }
-                    case 1: {
-                        const std::int32_t a =
-                            static_cast<std::int32_t>(num(rng));
-                        const std::int32_t b =
-                            static_cast<std::int32_t>(num(rng));
-
-                        std::optional<lingofuse::DataHandle> resp;
-                        {
-                            lingofuse::DataHandle in("add");
-                            in.write(a);
-                            in.write(b);
-                            resp = lingofuse::tryCall(
-                                stress::kServiceApp, in, kCallTimeoutMs);
-                        }
-                        // ¡û R2 satisfied: `in` destroyed here.
-
-                        if (resp) {
-                            std::int32_t sum = 0;
-                            ok = resp->read(sum) && (sum == a + b);
-                        }
-                        break;
-                    }
-                    case 2: {
-                        const std::string payload =
-                            "stress_hash_" + std::to_string(num(rng));
-
-                        std::optional<lingofuse::DataHandle> resp;
-                        {
-                            lingofuse::DataHandle in("hash");
-                            in.write(payload);
-                            resp = lingofuse::tryCall(
-                                stress::kServiceApp, in, kCallTimeoutMs);
-                        }
-                        // ¡û R2 satisfied: `in` destroyed here.
-
-                        if (resp) {
-                            std::uint64_t h = 0;
-                            ok = resp->read(h);
-                        }
-                        break;
-                    }
-                    default:
-                        break;
-                    }
-                }
-                catch (const std::exception& e) {
-                    log_line("[Worker ", index, "] EXCEPTION: ", e.what());
-                    ok = false;
-                }
-                catch (...) {
-                    log_line("[Worker ", index, "] EXCEPTION: unknown");
-                    ok = false;
-                }
-            }
-
-            // Per-API counters (both paths).
-            switch (choice) {
-            case 0: stats.echo_calls.fetch_add(
-                1, std::memory_order_relaxed); break;
-            case 1: stats.add_calls.fetch_add(
-                1, std::memory_order_relaxed); break;
-            case 2: stats.hash_calls.fetch_add(
-                1, std::memory_order_relaxed); break;
-            default: break;
-            }
-
-            stats.total.fetch_add(1, std::memory_order_relaxed);
-            if (ok) {
-                stats.success.fetch_add(1, std::memory_order_relaxed);
-            }
-            else {
-                stats.failure.fetch_add(1, std::memory_order_relaxed);
-            }
-
-            const int pause = g_pause_ms.load(std::memory_order_relaxed);
-            if (pause > 0) {
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(pause));
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    //  Reporter thread
-    // -------------------------------------------------------------------------
-    void reporter(const Stats& stats, const std::atomic<bool>& stop_flag) {
-        const std::uint32_t my_pid = stress::get_current_pid();
-
-        auto last_report = std::chrono::steady_clock::now();
-        std::uint64_t last_total = 0;
-
-        auto publish = [&](int running) {
-            stress::ClientReport r;
-            r.pid = my_pid;
-            r.timestamp_ms = stress::now_ms();
-            r.total_calls = stats.total.load(std::memory_order_relaxed);
-            r.success_calls = stats.success.load(std::memory_order_relaxed);
-            r.failure_calls = stats.failure.load(std::memory_order_relaxed);
-            r.echo_calls = stats.echo_calls.load(std::memory_order_relaxed);
-            r.add_calls = stats.add_calls.load(std::memory_order_relaxed);
-            r.hash_calls = stats.hash_calls.load(std::memory_order_relaxed);
-            r.leaked_calls = stats.leaked_calls.load(std::memory_order_relaxed);
-            r.leaked_handles = stats.leaked_handles.load(
-                std::memory_order_relaxed);
-            r.running = running;
-
-            if (!lingofuse::checkApp(stress::kMonitorApp)) {
-                return;
-            }
-
-            // `param` is used strictly inside this scope: it is built,
-            // handed to LF_Notify, and destroyed by RAII on scope exit.
-            // This matches R1 + R2 for the reporter path too.
-            try {
-                lingofuse::DataHandle param(stress::kMonitorApi);
-                if (stress::write_report(param, r)) {
-                    lingofuse::notify(stress::kMonitorApp, param);
-                }
-                // LF_Notify returns; `param` is destroyed by ~DataHandle
-                // as the `if` block closes. No further use.
-            }
-            catch (...) {
-                // Never let a reporting failure disturb the load loop.
-            }
-            };
-
-        while (!stop_flag.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(kStatusIntervalMs));
-            if (stop_flag.load(std::memory_order_relaxed)) break;
-
-            const auto now = std::chrono::steady_clock::now();
-            const double dt =
-                std::chrono::duration<double>(now - last_report).count();
-            last_report = now;
-
-            const std::uint64_t total =
-                stats.total.load(std::memory_order_relaxed);
-            const double rate = (dt > 0.0)
-                ? static_cast<double>(total - last_total) / dt
-                : 0.0;
-            last_total = total;
-
-            publish(1);
-
-            log_line("[Client ", my_pid, "] total=", total,
-                " success=", stats.success.load(std::memory_order_relaxed),
-                " failure=", stats.failure.load(std::memory_order_relaxed),
-                " leaked=", stats.leaked_calls.load(std::memory_order_relaxed),
-                " handles_leaked=", stats.leaked_handles.load(
-                    std::memory_order_relaxed),
-                " rate=", static_cast<std::uint64_t>(rate), " calls/s");
-        }
-
-        publish(0);
+        std::cout.flush();
     }
 
     struct ShutdownGuard {
@@ -471,46 +130,367 @@ namespace {
         }
     };
 
+    inline bool roll_leak() {
+        static thread_local int counter = kLeakEveryN;
+        if (--counter <= 0) {
+            counter = kLeakEveryN;
+            return true;
+        }
+        return false;
+    }
+
+    struct Stats {
+        std::atomic<std::uint64_t> call_total{ 0 };
+        std::atomic<std::uint64_t> call_success{ 0 };
+        std::atomic<std::uint64_t> call_failure{ 0 };
+        std::atomic<std::uint64_t> notify_total{ 0 };
+        std::atomic<std::uint64_t> leaked_calls{ 0 };
+        std::atomic<std::uint64_t> leaked_handles{ 0 };
+        std::atomic<std::uint64_t> per_api[stress::kApiCount]{};
+
+        Stats() = default;
+        Stats(const Stats&) = delete;
+        Stats& operator=(const Stats&) = delete;
+    };
+
+    template <typename WriteFn, typename VerifyFn>
+    bool call_api(const char* api,
+        std::size_t api_index,
+        WriteFn write_fn,
+        VerifyFn verify_fn,
+        Stats& stats) {
+        const bool leak_this = roll_leak();
+        try {
+            lingofuse::DataHandle param(api);
+            write_fn(param);
+
+            auto response = lingofuse::tryCall(
+                stress::kServiceApp, param, kCallTimeoutMs);
+
+            bool ok = false;
+            if (response) {
+                ok = verify_fn(*response);
+            }
+
+            if (leak_this) {
+                (void)param.release();
+                stats.leaked_handles.fetch_add(1, std::memory_order_relaxed);
+                stats.leaked_calls.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            stats.call_total.fetch_add(1, std::memory_order_relaxed);
+            stats.per_api[api_index].fetch_add(1, std::memory_order_relaxed);
+            if (ok) {
+                stats.call_success.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                stats.call_failure.fetch_add(1, std::memory_order_relaxed);
+            }
+            return ok;
+        }
+        catch (...) {
+            stats.call_total.fetch_add(1, std::memory_order_relaxed);
+            stats.per_api[api_index].fetch_add(1, std::memory_order_relaxed);
+            stats.call_failure.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
+
+    void worker(int index,
+        Stats& stats,
+        int notify_per_loop,
+        int call_per_loop) {
+        std::mt19937 rng(
+            static_cast<std::uint32_t>(index) ^
+            static_cast<std::uint32_t>(
+                std::chrono::steady_clock::now()
+                .time_since_epoch().count()));
+
+        std::uniform_int_distribution<int> num(kNumberMin, kNumberMax);
+        std::uniform_int_distribution<int> api_pick(
+            0, static_cast<int>(stress::kCallApiCount) - 1);
+
+        int consecutive_errors = 0;
+
+        while (!g_stop_flag.load(std::memory_order_relaxed)) {
+
+            // ---------------------------------------------------------
+            //  Phase 1: notify burst
+            // ---------------------------------------------------------
+            for (int i = 0; i < notify_per_loop; ++i) {
+                if (g_stop_flag.load(std::memory_order_relaxed)) return;
+
+                const bool leak_this = roll_leak();
+                try {
+                    lingofuse::DataHandle param("notify_demo");
+                    param.write(std::string("tick"));
+                    lingofuse::notify(stress::kServiceApp, param);
+
+                    stats.notify_total.fetch_add(1, std::memory_order_relaxed);
+                    stats.per_api[stress::kIdxNotifyDemo].fetch_add(
+                        1, std::memory_order_relaxed);
+
+                    if (leak_this) {
+                        (void)param.release();
+                        stats.leaked_handles.fetch_add(
+                            1, std::memory_order_relaxed);
+                        stats.leaked_calls.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
+                }
+                catch (...) {}
+            }
+
+            // ---------------------------------------------------------
+            //  Phase 2: call burst (serial)
+            // ---------------------------------------------------------
+            bool iteration_ok = true;
+
+            for (int c = 0; c < call_per_loop; ++c) {
+                if (g_stop_flag.load(std::memory_order_relaxed)) return;
+
+                bool ok = true;
+                const int which = api_pick(rng);
+                switch (which) {
+                case 0: {
+                    const std::int32_t a = static_cast<std::int32_t>(num(rng));
+                    const std::int32_t b = static_cast<std::int32_t>(num(rng));
+                    ok = call_api("add", stress::kIdxAdd,
+                        [&](lingofuse::DataHandle& p) { p.write(a); p.write(b); },
+                        [&](lingofuse::DataHandle& r) {
+                            std::int32_t v = 0;
+                            return r.read(v) && v == a + b;
+                        }, stats);
+                    break;
+                }
+                case 1: {
+                    const std::int32_t a = static_cast<std::int32_t>(num(rng));
+                    const std::int32_t b = static_cast<std::int32_t>(num(rng));
+                    ok = call_api("sub", stress::kIdxSub,
+                        [&](lingofuse::DataHandle& p) { p.write(a); p.write(b); },
+                        [&](lingofuse::DataHandle& r) {
+                            std::int32_t v = 0;
+                            return r.read(v) && v == a - b;
+                        }, stats);
+                    break;
+                }
+                case 2: {
+                    const std::int32_t a = static_cast<std::int32_t>(num(rng));
+                    const std::int32_t b = static_cast<std::int32_t>(num(rng));
+                    ok = call_api("mul", stress::kIdxMul,
+                        [&](lingofuse::DataHandle& p) { p.write(a); p.write(b); },
+                        [&](lingofuse::DataHandle& r) {
+                            std::int32_t v = 0;
+                            return r.read(v) && v == a * b;
+                        }, stats);
+                    break;
+                }
+                case 3: {
+                    const std::int32_t a = static_cast<std::int32_t>(num(rng));
+                    const std::int32_t b = static_cast<std::int32_t>(num(rng));
+                    ok = call_api("div", stress::kIdxDiv,
+                        [&](lingofuse::DataHandle& p) { p.write(a); p.write(b); },
+                        [&](lingofuse::DataHandle& r) {
+                            std::int32_t v = 0;
+                            const std::int32_t expected = (b == 0) ? 0 : a / b;
+                            return r.read(v) && v == expected;
+                        }, stats);
+                    break;
+                }
+                case 4: {
+                    const std::string payload =
+                        "echo_" + std::to_string(num(rng));
+                    ok = call_api("echo", stress::kIdxEcho,
+                        [&](lingofuse::DataHandle& p) { p.write(payload); },
+                        [&](lingofuse::DataHandle& r) {
+                            std::string s;
+                            return r.read(s) && s == payload;
+                        }, stats);
+                    break;
+                }
+                default:
+                    break;
+                }
+
+                if (!ok) iteration_ok = false;
+            }
+
+            // ---------------------------------------------------------
+            //  Error kill switch
+            // ---------------------------------------------------------
+            if (iteration_ok) {
+                consecutive_errors = 0;
+            }
+            else {
+                ++consecutive_errors;
+                if (consecutive_errors >= kMaxConsecutiveErrors) {
+                    if (!g_ci_mode) {
+                        log_line("[Worker ", index,
+                            "] too many consecutive errors; exiting.");
+                    }
+                    return;
+                }
+            }
+
+            // ---------------------------------------------------------
+            //  Rate limiting (optional)
+            // ---------------------------------------------------------
+            const int pause = g_pause_ms.load(std::memory_order_relaxed);
+            if (pause > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(pause));
+            }
+        }
+    }
+
+    void reporter(const Stats& stats, int interval_ms) {
+        try {
+            const std::uint32_t my_pid = stress::get_current_pid();
+            const auto start_steady = std::chrono::steady_clock::now();
+
+            auto last_report = std::chrono::steady_clock::now();
+            std::uint64_t last_call_total = 0;
+
+            auto publish = [&](int running) {
+                stress::ClientReport r;
+                r.pid = my_pid;
+                r.timestamp_ms = stress::now_ms();
+                r.role = stress::kRoleClient;
+                r.running = running;
+                r.call_total = stats.call_total.load(std::memory_order_relaxed);
+                r.call_success = stats.call_success.load(std::memory_order_relaxed);
+                r.call_failure = stats.call_failure.load(std::memory_order_relaxed);
+                r.notify_total = stats.notify_total.load(std::memory_order_relaxed);
+                r.leaked_calls = stats.leaked_calls.load(std::memory_order_relaxed);
+                r.leaked_handles = stats.leaked_handles.load(std::memory_order_relaxed);
+                for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                    r.per_api[i] = stats.per_api[i].load(
+                        std::memory_order_relaxed);
+                }
+                if (!lingofuse::checkApp(stress::kMonitorApp)) return;
+                try {
+                    lingofuse::DataHandle param(stress::kMonitorApi);
+                    if (stress::write_report(param, r)) {
+                        lingofuse::notify(stress::kMonitorApp, param);
+                    }
+                }
+                catch (...) {}
+                };
+
+            while (!g_stop_flag.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(interval_ms));
+                if (g_stop_flag.load(std::memory_order_relaxed)) break;
+
+                const auto now = std::chrono::steady_clock::now();
+                const double dt =
+                    std::chrono::duration<double>(now - last_report).count();
+                last_report = now;
+
+                const std::uint64_t total =
+                    stats.call_total.load(std::memory_order_relaxed);
+                const double call_rate = (dt > 0.0)
+                    ? static_cast<double>(total - last_call_total) / dt
+                    : 0.0;
+                last_call_total = total;
+
+                publish(1);
+
+                const auto now_steady = std::chrono::steady_clock::now();
+                const double elapsed_sec =
+                    std::chrono::duration<double>(now_steady - start_steady).count();
+
+                if (g_ci_mode) {
+                    nlohmann::json j;
+                    j["event"] = "progress";
+                    j["t_sec"] = static_cast<int>(elapsed_sec);
+                    j["call_total"] = total;
+                    j["call_success"] = stats.call_success.load(
+                        std::memory_order_relaxed);
+                    j["call_failure"] = stats.call_failure.load(
+                        std::memory_order_relaxed);
+                    j["notify_total"] = stats.notify_total.load(
+                        std::memory_order_relaxed);
+                    j["leaked_handles"] = stats.leaked_handles.load(
+                        std::memory_order_relaxed);
+                    j["call_rate"] = static_cast<std::uint64_t>(call_rate);
+                    stress::json_emit(j);
+                }
+                else {
+                    log_line("[Client ", my_pid,
+                        "] calls=", total,
+                        " ok=", stats.call_success.load(
+                            std::memory_order_relaxed),
+                        " fail=", stats.call_failure.load(
+                            std::memory_order_relaxed),
+                        " notifies=", stats.notify_total.load(
+                            std::memory_order_relaxed),
+                        " leaks=", stats.leaked_handles.load(
+                            std::memory_order_relaxed),
+                        " call_rate=",
+                        static_cast<std::uint64_t>(call_rate),
+                        " calls/s");
+                }
+            }
+
+            publish(0);
+        }
+        catch (const std::exception& e) {
+            if (!g_ci_mode) {
+                log_line("[Reporter] FATAL: ", e.what());
+            }
+        }
+        catch (...) {
+            if (!g_ci_mode) {
+                log_line("[Reporter] FATAL: unknown exception.");
+            }
+        }
+    }
+
 } // namespace
 
 int main(int argc, char* argv[]) {
-    const int num_threads =
-        (argc > 1) ? std::atoi(argv[1]) : kDefaultThreads;
-    const int pause_ms =
-        (argc > 2) ? std::atoi(argv[2]) : kDefaultPauseMs;
-
-    g_pause_ms.store(pause_ms > 0 ? pause_ms : 0);
+    const stress::CliOptions opt =
+        stress::CliOptions::parse(argc, argv, "StressClient");
+    g_ci_mode = opt.ci;
+    g_pause_ms.store(opt.pause_ms > 0 ? opt.pause_ms : 0);
 
     const std::uint32_t my_pid = stress::get_current_pid();
+    const auto start_steady = std::chrono::steady_clock::now();
 
-    std::cout << "=== Stress Client (multi-threaded caller) ==="
-        << std::endl;
-    std::cout << "[Client] PID           : " << my_pid << "\n"
-        << "[Client] Threads       : " << num_threads << "\n"
-        << "[Client] Pause/call    : " << pause_ms << " ms\n"
-        << "[Client] Call timeout  : " << kCallTimeoutMs << " ms\n"
-        << "[Client] Handle policy : R1 use before/during call,\n"
-        << "[Client]                 R2 destroy right after call,\n"
-        << "[Client]                 R3 if leaked, never reuse\n"
-        << "[Client] Leak policy   : 1 out of every "
-        << kLeakEveryN << " calls\n"
-        << "[Client] Target app    : " << stress::kServiceApp << "\n"
-        << "[Client] Monitor app   : " << stress::kMonitorApp
-        << " (API \"" << stress::kMonitorApi << "\")\n"
-        << "[Client] Exit with Ctrl+C, or press Enter." << std::endl;
-
-    try {
 #if defined(_WIN32)
-        SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
 #else
-        std::signal(SIGINT, posix_signal_handler);
-        std::signal(SIGTERM, posix_signal_handler);
+    std::signal(SIGINT, posix_stop_handler);
+    std::signal(SIGTERM, posix_stop_handler);
 #endif
 
+    if (!opt.ci) {
+        std::cout << "=== Stress Client (multi-threaded caller) ===" << std::endl;
+        std::cout << "[Client] PID             : " << my_pid << "\n"
+            << "[Client] Threads         : " << opt.threads << "\n"
+            << "[Client] Notify/loop     : " << opt.notify_per_loop << "\n"
+            << "[Client] Call/loop       : " << opt.call_per_loop << "\n"
+            << "[Client] Pause/loop      : " << opt.pause_ms << " ms"
+            << (opt.pause_ms > 0
+                ? "\n"
+                : "   (no pause; full speed)\n")
+            << "[Client] Call timeout    : " << kCallTimeoutMs << " ms\n"
+            << "[Client] Handle leak rate: 1 in " << kLeakEveryN
+            << " handles (deliberate; reclaimed after 10 min idle)\n"
+            << "[Client] Target app      : " << stress::kServiceApp << "\n"
+            << "[Client] Endpoint        : " << stress::kEndpoint << "\n"
+            << "[Client] Exit with Ctrl+C, or press Enter." << std::endl;
+    }
+
+    try {
         lingofuse::LibraryLoader loader;
         ShutdownGuard shutdown_guard;
 
         lingofuse::setOption("Wait_Ready", "False");
+        if (opt.ci) {
+            lingofuse::setOption("Quiet", "True");
+        }
         lingofuse::resetPrepare();
 
         const int tag = lingofuse::prepareClient(stress::kEndpoint, nullptr);
@@ -520,90 +500,213 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
+        const int tag2 = lingofuse::prepareClient("127.0.0.1:9588", nullptr);
+        if (tag2 < 0) {
+            std::cerr << "[FATAL] LF_PrepareClient failed for "
+                << "127.0.0.1:9588" << std::endl;
+            return EXIT_FAILURE;
+        }
+
         if (lingofuse::prepareDone() != 1) {
             std::cerr << "[FATAL] LF_PrepareDone failed." << std::endl;
             return EXIT_FAILURE;
         }
 
-        std::cout << "[Client " << my_pid << "] Connected to "
-            << stress::kEndpoint << ". Waiting for "
-            << stress::kServiceApp << " to become visible..." << std::endl;
+        if (!opt.ci) {
+            std::cout << "[Client " << my_pid << "] Waiting for "
+                << stress::kServiceApp << "..." << std::endl;
+        }
 
         bool ready = false;
         for (int i = 0; i < 50 && !g_stop_flag.load(); ++i) {
-            if (lingofuse::checkApi(stress::kServiceApp, "echo") &&
-                lingofuse::checkApi(stress::kServiceApp, "add") &&
-                lingofuse::checkApi(stress::kServiceApp, "hash")) {
-                ready = true;
-                break;
+            bool all_visible = true;
+            for (std::size_t k = 0; k < stress::kApiCount; ++k) {
+                if (!lingofuse::checkApi(stress::kServiceApp,
+                    stress::kApiNames[k])) {
+                    all_visible = false;
+                    break;
+                }
             }
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(200));
+            if (all_visible) { ready = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
         if (!ready) {
             std::cerr << "[FATAL] Service '" << stress::kServiceApp
-                << "' not visible after 10 seconds." << std::endl;
+                << "' not fully visible after 10 seconds."
+                << std::endl;
             lingofuse::exitMainThread();
             return EXIT_FAILURE;
         }
 
-        std::cout << "[Client " << my_pid << "] Service is ready. Starting "
-            << num_threads << " worker threads (infinite loop)..."
-            << std::endl;
-
-        Stats stats;
-
-        std::vector<std::thread> workers;
-        workers.reserve(static_cast<std::size_t>(num_threads));
-        for (int i = 0; i < num_threads; ++i) {
-            workers.emplace_back(worker, i, std::ref(stats));
+        if (opt.ci) {
+            nlohmann::json j;
+            j["event"] = "ready";
+            j["pid"] = my_pid;
+            j["role"] = "client";
+            j["threads"] = opt.threads;
+            j["notify_per_loop"] = opt.notify_per_loop;
+            j["call_per_loop"] = opt.call_per_loop;
+            j["pause_ms"] = opt.pause_ms;
+            j["duration_sec"] = opt.duration_sec;
+            j["warmup_sec"] = opt.warmup_sec;
+            j["min_success_pct"] = opt.min_success_pct;
+            j["min_total_calls"] = opt.min_total_calls;
+            stress::json_emit(j);
+        }
+        else {
+            std::cout << "[Client " << my_pid << "] Service ready. Starting "
+                << opt.threads << " worker threads ("
+                << opt.notify_per_loop << " notify + "
+                << opt.call_per_loop << " call per loop)..."
+                << std::endl;
         }
 
-        std::thread reporter_thread(
-            reporter,
-            std::cref(stats),
-            std::cref(g_stop_flag));
+        Stats stats;
+        std::vector<std::thread> threads;
+        threads.reserve(static_cast<std::size_t>(opt.threads) + 1);
 
-        std::thread([]() {
-            std::string line;
-            if (std::getline(std::cin, line)) {
-                g_stop_flag.store(true);
-            }
-            }).detach();
+        for (int i = 0; i < opt.threads; ++i) {
+            threads.emplace_back(worker, i, std::ref(stats),
+                opt.notify_per_loop, opt.call_per_loop);
+        }
+        threads.emplace_back(reporter, std::cref(stats), opt.interval_ms);
+
+        if (!opt.ci) {
+            std::thread([]() {
+                std::string line;
+                if (std::getline(std::cin, line)) {
+                    g_stop_flag.store(true);
+                }
+                }).detach();
+        }
+
+        if (!opt.ci) {
+            std::cout << "[Client " << my_pid
+                << "] All threads running. Press Ctrl+C or Enter to stop."
+                << std::endl;
+        }
 
         while (!g_stop_flag.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            if (opt.duration_sec > 0) {
+                const auto now_steady = std::chrono::steady_clock::now();
+                const int elapsed =
+                    static_cast<int>(std::chrono::duration_cast<
+                        std::chrono::seconds>(now_steady - start_steady).count());
+                if (elapsed >= opt.duration_sec) {
+                    g_stop_flag.store(true);
+                }
+            }
         }
 
-        std::cout << "\n[Client " << my_pid
-            << "] Stop signal received. Joining threads..."
-            << std::endl;
+        if (!opt.ci) {
+            std::cout << "\n[Client " << my_pid
+                << "] Stop signal received. Joining threads..."
+                << std::endl;
+        }
 
-        for (auto& t : workers) {
+        for (auto& t : threads) {
             if (t.joinable()) t.join();
         }
 
-        if (reporter_thread.joinable()) {
-            reporter_thread.join();
+        const auto now_steady = std::chrono::steady_clock::now();
+        const double elapsed_sec =
+            std::chrono::duration<double>(now_steady - start_steady).count();
+
+        const auto total = stats.call_total.load();
+        const auto success = stats.call_success.load();
+        const auto failure = stats.call_failure.load();
+        const auto notifies = stats.notify_total.load();
+        const auto leaked_h = stats.leaked_handles.load();
+        const auto leaked_c = stats.leaked_calls.load();
+
+        const double success_pct =
+            (total > 0)
+            ? (100.0 * static_cast<double>(success) / static_cast<double>(total))
+            : 0.0;
+
+        // ---------------------------------------------------------
+        //  Verdict
+        // ---------------------------------------------------------
+        //  Pass both the Call count AND the Notify count to the
+        //  verdict function. The function decides which threshold to
+        //  apply based on the run shape (pure-Notify vs Call-dominant).
+        const bool pass =
+            stress::ci_verdict_pass(total, notifies, success_pct, opt);
+
+        if (opt.ci) {
+            nlohmann::json j;
+            j["event"] = "summary";
+            j["pid"] = my_pid;
+            j["role"] = "client";
+            j["duration_sec"] = static_cast<int>(elapsed_sec);
+            j["threads"] = opt.threads;
+            j["notify_per_loop"] = opt.notify_per_loop;
+            j["call_per_loop"] = opt.call_per_loop;
+            j["call_total"] = total;
+            j["call_success"] = success;
+            j["call_failure"] = failure;
+            j["success_pct"] = success_pct;
+            j["notify_total"] = notifies;
+            j["leaked_calls"] = leaked_c;
+            j["leaked_handles"] = leaked_h;
+            j["call_rate"] = (elapsed_sec > 0.0)
+                ? static_cast<std::uint64_t>(
+                    static_cast<double>(total) / elapsed_sec)
+                : 0;
+            j["notify_rate"] = (elapsed_sec > 0.0)
+                ? static_cast<std::uint64_t>(
+                    static_cast<double>(notifies) / elapsed_sec)
+                : 0;
+            j["success_rate_per_sec"] = (elapsed_sec > 0.0)
+                ? static_cast<std::uint64_t>(
+                    static_cast<double>(success) / elapsed_sec)
+                : 0;
+            for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                j["per_api"][stress::kApiNames[i]] =
+                    stats.per_api[i].load(std::memory_order_relaxed);
+            }
+            j["status"] = pass ? "PASS" : "FAIL";
+            if (!pass) {
+                // Distinguish the two failure modes for diagnosability.
+                if (total == 0) {
+                    j["reason"] = "NO_MESSAGES_DISPATCHED";
+                }
+                else if (opt.min_total_calls > 0 && total < opt.min_total_calls) {
+                    j["reason"] = "TOTAL_CALLS_BELOW_MINIMUM";
+                }
+                else if (success_pct < opt.min_success_pct) {
+                    j["reason"] = "SUCCESS_RATE_BELOW_MINIMUM";
+                }
+            }
+            stress::json_emit(j);
         }
-
-        const auto total = stats.total.load();
-        const auto success = stats.success.load();
-        const auto failure = stats.failure.load();
-        const auto leaked_calls = stats.leaked_calls.load();
-        const auto leaked_handles = stats.leaked_handles.load();
-
-        std::cout << "\n[Client " << my_pid << "] Final summary\n"
-            << "         total calls       : " << total << "\n"
-            << "         success           : " << success << "\n"
-            << "         failed            : " << failure << "\n"
-            << "         leaked calls      : " << leaked_calls << "\n"
-            << "         leaked handles    : " << leaked_handles << "\n"
-            << std::endl;
+        else {
+            std::cout << "\n[Client " << my_pid << "] Final summary\n"
+                << "         duration       : " << elapsed_sec << " s\n"
+                << "         call total     : " << total << "\n"
+                << "         call success   : " << success << "\n"
+                << "         call failed    : " << failure << "\n"
+                << "         success rate   : " << success_pct << " %\n"
+                << "         notify total   : " << notifies << "\n"
+                << "         leaked calls   : " << leaked_c << "\n"
+                << "         leaked handles : " << leaked_h << "\n"
+                << "         per-API counts :\n";
+            for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                std::cout << "             " << stress::kApiNames[i] << " = "
+                    << stats.per_api[i].load(std::memory_order_relaxed)
+                    << "\n";
+            }
+            std::cout << std::endl;
+        }
 
         lingofuse::exitMainThread();
 
+        if (opt.ci) {
+            return pass ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
     }
     catch (const lingofuse::Error& e) {
         std::cerr << "[FATAL] lingofuse::Error (code="
@@ -623,6 +726,8 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::cout << "[Client " << my_pid << "] Bye." << std::endl;
+    if (!opt.ci) {
+        std::cout << "[Client " << my_pid << "] Bye." << std::endl;
+    }
     return EXIT_SUCCESS;
 }

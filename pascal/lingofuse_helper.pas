@@ -228,6 +228,7 @@ type
         function IsValid: boolean; inline;
       public
         constructor Create(const MethodName: string); overload;
+        constructor Create_Permanent(const MethodName: string);
         constructor Create(AHandle: TDataHnd___; const Owned: boolean = False); overload;
         destructor Destroy; override;
 
@@ -427,6 +428,87 @@ type
       * @return The new opaque handle.
       * }
     class function LF_CreateDataEx(MethodName: string): TDataHnd___; static;
+
+    (*
+      * LF_CreateData_Permanent: Creates a new data handle initialised with
+      * the given API name, but NOT registered in the internal data pool.
+      * The internal buffer is empty (size = 0).
+      *
+      * Semantics:
+      *   – The handle is created with auto_recycle___ = False.
+      *   – It is NOT added to LF_DataPool, so TLF_DataPool.Progress (the
+      *     idle scanner that runs every 5 seconds on the main thread) will
+      *     NEVER reclaim it, regardless of how long it stays untouched.
+      *   – LF_FreeData releases the record IMMEDIATELY (synchronously),
+      *     rather than merely marking it as deleted for a later pool scan.
+      *
+      * When to use:
+      *   – Handles that must survive for the entire lifetime of the process
+      *     or for an unbounded period (cached request templates, long-lived
+      *     scratch buffers, entries in a global registry, etc.).
+      *
+      * When NOT to use:
+      *   – Short-lived or one-shot handles. For those, use LF_CreateData so
+      *     the pool can reclaim any handle you forget to free.
+      *
+      * @param MethodName  Null-terminated UTF-8 string naming the target API.
+      * @return A new TDataHnd___ (never nil). Must be freed with LF_FreeData.
+      *
+      * [PITFALL – LIFETIME] "Permanent" means "not automatically reclaimed",
+      *   NOT "never released". You are fully responsible for calling
+      *   LF_FreeData. There is no pool safety net: losing the pointer
+      *   leaks the handle for the lifetime of the process.
+      *
+      * [PITFALL – SYNCHRONOUS FREE] When LF_FreeData is called on a permanent
+      *   handle, the release happens inside that call. Do not touch the
+      *   handle after LF_FreeData returns.
+      *
+      * [PITFALL – NO-OP WINDOW] LF_FreeData is still a no-op while the
+      *   simulated main thread is not active (before LF_PrepareDone or
+      *   after LF_ExitMainThread). Permanent handles created in that
+      *   window stay allocated until the process terminates.
+      *
+      * [PITFALL – TIMESTAMPS IRRELEVANT] Every accessor (LF_GetSize,
+      *   LF_GetPos, LF_ReadBuffer, LF_WriteBuffer, ...) still updates the
+      *   handle's internal updated___ flag, but the pool scanner never
+      *   reads it for permanent handles.
+      *
+      * @Example (C):
+      *   static TDataHnd___ g_template = NULL;
+      *
+      *   void init_template(void) {
+      *       g_template = LF_CreateData_Permanent("myapi");
+      *       int hdr = 0x12345678;
+      *       LF_WriteBuffer(g_template, &hdr, sizeof(hdr));
+      *   }
+      *
+      *   void shutdown_template(void) {
+      *       LF_FreeData(g_template);   // released immediately
+      *       g_template = NULL;
+      *   }
+      *
+      * @Example (Pascal):
+      *   var
+      *     Template: TDataHnd___;
+      *   begin
+      *     Template := LF_CreateData_Permanent('myapi');
+      *     try
+      *       // use Template across many calls / long lifetimes
+      *     finally
+      *       LF_FreeData(Template);
+      *     end;
+      *   end;
+      *)
+    class function LF_CreateData_Permanent(MethodName: pansichar): TDataHnd___; static;
+
+    (*
+     * LF_CreateData_PermanentEx: Convenience wrapper for LF_CreateData_Permanent
+     * that accepts a Pascal string (automatically UTF-8 encoded).
+     *
+     * @param MethodName  Pascal string API name.
+     * @return A new TDataHnd___ (never nil). Must be freed with LF_FreeData.
+     *)
+    class function LF_CreateData_PermanentEx(MethodName: string): TDataHnd___;
 
     { * Frees a data handle and releases all associated memory.
       * @param Hnd  The handle to free (can be nil).
@@ -651,6 +733,15 @@ constructor LF.TDataHandle.Create(const MethodName: string);
 begin
   inherited Create;
   FHandle := LF_CreateDataEx(MethodName);
+  FOwned := True;
+  FDisposed := False;
+  FLock := TCritical.Create;
+end;
+
+constructor LF.TDataHandle.Create_Permanent(const MethodName: string);
+begin
+  inherited Create;
+  FHandle := LF_CreateData_PermanentEx(MethodName);
   FOwned := True;
   FDisposed := False;
   FLock := TCritical.Create;
@@ -1482,6 +1573,16 @@ end;
 class function LF___.LF_CreateDataEx(MethodName: string): TDataHnd___;
 begin
   Result := lingofuse_import.LF_CreateDataEx(MethodName);
+end;
+
+class function LF___.LF_CreateData_Permanent(MethodName: pansichar): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_CreateData_Permanent(MethodName);
+end;
+
+class function LF___.LF_CreateData_PermanentEx(MethodName: string): TDataHnd___;
+begin
+  Result := lingofuse_import.LF_CreateData_PermanentEx(MethodName);
 end;
 
 class procedure LF___.LF_FreeData(Hnd: TDataHnd___);

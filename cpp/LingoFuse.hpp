@@ -24,6 +24,33 @@
  *   - json.hpp       available on the include path (nlohmann/json)
  *
  * ============================================================================
+ * LIBRARY LOADING CONTRACT (READ THIS FIRST)
+ * ============================================================================
+ *
+ * The C ABI layer is DYNAMICALLY LOADED. Before LF_LoadLibrary() is called,
+ * every LF_* function pointer is null. Invoking any LF_* function without a
+ * prior successful LF_LoadLibrary() is undefined behaviour (typically a
+ * null-pointer dereference).
+ *
+ * In this header, `lingofuse::LibraryLoader` performs both LF_LoadLibrary()
+ * (in its constructor) and LF_FreeLibrary() (when the last LibraryLoader
+ * instance is destroyed). Construct a LibraryLoader as the very first
+ * object in main(), before any other LingoFuse code:
+ *
+ *     int main() {
+ *         lingofuse::LibraryLoader loader;   // loads the runtime
+ *         // ... everything else ...
+ *         return 0;                          // unloads the runtime
+ *     }
+ *
+ * If LF_LoadLibrary fails, the constructor throws
+ * lingofuse::Error(ErrorCode::LibraryLoadFailed).
+ *
+ * If you prefer to call LF_LoadLibrary() / LF_FreeLibrary() manually, be
+ * aware that LF_LoadLibrary() must still be the first LF_* call in the
+ * process.
+ *
+ * ============================================================================
  * PAYLOAD I/O DELEGATION TO lf_io.hpp
  * ============================================================================
  * The string and JSON payload methods of DataHandle delegate to
@@ -94,6 +121,38 @@
  * behave identically.
  *
  * ============================================================================
+ * DATA HANDLE KINDS - AUTO-RECYCLED vs PERMANENT
+ * ============================================================================
+ * The library provides two flavours of data handles:
+ *
+ *   1. AUTO-RECYCLED (created by DataHandle(const std::string&)).
+ *        - Backed by LF_CreateData().
+ *        - Added to the library's idle pool.
+ *        - The pool scans every 5 seconds and frees any handle that has
+ *          been idle (no accessor call) for more than 10 minutes.
+ *        - Any accessor (getSize / seek / read / write) refreshes the
+ *          idle timestamp.
+ *        - The destructor calls LF_FreeData(), which only marks the
+ *          handle for release; the actual release happens on the next
+ *          pool scan (at most 5 seconds later).
+ *        - Recommended for the vast majority of use cases.
+ *
+ *   2. PERMANENT (created by DataHandle::createPermanent()).
+ *        - Backed by LF_CreateData_Permanent().
+ *        - NOT added to the library's idle pool.
+ *        - The automatic idle-timeout reclaimer will NEVER free it, no
+ *          matter how long it has been idle.
+ *        - The destructor calls LF_FreeData(), which releases the handle
+ *          IMMEDIATELY (synchronously).
+ *        - Recommended for handles that must survive for the entire
+ *          process lifetime (cached request templates, long-lived
+ *          scratch buffers, global registries, etc.).
+ *
+ * Both kinds are released by LF_Shutdown() when the process terminates.
+ * Do not forget to call lingofuse::shutdown() before unloading the
+ * runtime.
+ *
+ * ============================================================================
  * QUICK START
  * ============================================================================
  * @code
@@ -162,6 +221,9 @@
  * RESOURCE LIFETIME
  * ============================================================================
  *   - DataHandle: frees the underlying handle on destruction (if owned).
+ *     Auto-recycled handles (regular constructor) are marked for pool
+ *     release; permanent handles (createPermanent) are released
+ *     synchronously.
  *   - App: calls LF_FreeApp on destruction (detach; the object itself
  *     remains in the global pool until LF_Shutdown).
  *   - LibraryLoader: internally reference-counted; the underlying
@@ -250,6 +312,10 @@ namespace lingofuse {
      * std::shared_ptr pair.
      *
      * This class is thread-safe for construction and destruction.
+     *
+     * Because LF_LoadLibrary must be the FIRST LF_* call in the process,
+     * construct a LibraryLoader (or call LF_LoadLibrary manually) before
+     * any other LingoFuse code.
      * ============================================================================ */
 
     class LibraryLoader {
@@ -328,11 +394,23 @@ namespace lingofuse {
       * The string and JSON payload methods delegate to lingofuse::io
       * (lf_io.hpp), which is the single source of truth for the NUL
       * framing and the JSON serialization policy.
+      *
+      * Two construction paths:
+      *   - DataHandle(const std::string&)        auto-recycled handle
+      *   - DataHandle::createPermanent(name)      permanent handle
+      * See the file-level docstring ("DATA HANDLE KINDS") for the
+      * difference.
       */
     class DataHandle {
     public:
         /**
-         * @brief Create a new data handle bound to the given API name.
+         * @brief Create a new auto-recycled data handle bound to the given
+         *        API name.
+         *
+         * The underlying handle is created with LF_CreateData(), which adds
+         * it to the library's idle pool. The pool frees it after 10 minutes
+         * of idle time (scanned every 5 seconds).
+         *
          * @throws Error with ErrorCode::Generic if LF_CreateData returns NULL.
          */
         explicit DataHandle(const std::string& api_name)
@@ -375,6 +453,53 @@ namespace lingofuse {
         DataHandle& operator=(const DataHandle&) = delete;
 
         ~DataHandle() { reset(); }
+
+        /* ---- Factory: permanent handle ---- */
+
+        /**
+         * @brief Create a new PERMANENT data handle bound to the given API
+         *        name.
+         *
+         * The underlying handle is created with LF_CreateData_Permanent().
+         *
+         * Difference from the regular DataHandle(const std::string&)
+         * constructor:
+         *   - NOT added to the library's idle pool.
+         *   - The automatic idle-timeout reclaimer will NEVER free it, no
+         *     matter how long it has been idle.
+         *   - On destruction, LF_FreeData() releases it IMMEDIATELY
+         *     (synchronously), rather than marking it for a later pool scan.
+         *
+         * When to use:
+         *   - Handles that must survive for the entire lifetime of the
+         *     process, or for an unbounded period (cached request templates,
+         *     long-lived scratch buffers, global registries, etc.).
+         *
+         * When NOT to use:
+         *   - Short-lived or one-shot handles. Use the regular constructor
+         *     for those, so the pool can reclaim any handle you forget to
+         *     free.
+         *
+         * [PITFALL - NO-OP WINDOW]
+         *   The underlying LF_FreeData is a no-op while the simulated main
+         *   thread is not active (before LF_PrepareDone or after
+         *   LF_ExitMainThread). Permanent handles created in that window
+         *   stay allocated until the process terminates. In practice this
+         *   is safe: the OS reclaims the process memory on exit.
+         *
+         * @throws Error with ErrorCode::Generic if LF_CreateData_Permanent
+         *         returns NULL.
+         */
+        static DataHandle createPermanent(const std::string& api_name) {
+            TDataHnd h = LF_CreateData_Permanent(api_name.c_str());
+            if (!h) {
+                throw Error(ErrorCode::Generic,
+                    "DataHandle::createPermanent: "
+                    "LF_CreateData_Permanent failed for '"
+                    + api_name + "'");
+            }
+            return DataHandle(h, true);
+        }
 
         /* ---- Handle accessors ---- */
 

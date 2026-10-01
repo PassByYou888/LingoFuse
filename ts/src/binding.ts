@@ -20,6 +20,18 @@
 //      parameter as `any` so that call sites do not need casts. Real
 //      type checking is enforced by the higher-level wrappers
 //      (DataHandle / AppHandle / framework).
+//
+//  Export count:
+//      37 functions, matching the C ABI export table:
+//        - 10 data handle
+//        - 5  application handle
+//        - 3  API registration
+//        - 2  local execution
+//        - 5  network preparation
+//        - 3  remote invocation
+//        - 7  options and diagnostics
+//        - 1  shutdown
+//        - 1  network events
 // =============================================================================
 
 import koffi = require("koffi");
@@ -35,7 +47,14 @@ type KoffiLib = ReturnType<typeof koffi.load>;
 //  Platform name and search-path helpers
 // -----------------------------------------------------------------------------
 
-/** Platform-specific shared library file name. */
+/**
+ * Return the platform-specific shared library file name.
+ *
+ * Windows 64-bit : LingoFuse64.dll
+ * Windows 32-bit : LingoFuse32.dll
+ * Linux / BSD    : liblingofuse.so
+ * macOS          : liblingofuse.dylib
+ */
 export function selectPlatformFileName(): string {
     const info = getRuntimeInfo();
     if (info.platform === "win32") {
@@ -47,7 +66,19 @@ export function selectPlatformFileName(): string {
     return "liblingofuse.so";
 }
 
-/** Ordered list of candidate absolute paths for the native library. */
+/**
+ * Return the ordered list of candidate absolute paths for the native
+ * library.
+ *
+ * Resolution order:
+ *   1. The directory containing the current executable.
+ *   2. The current working directory.
+ *   3. The package-local "native/" subdirectory.
+ *
+ * The final fallback in loadLibrary() is to ask the OS loader to
+ * resolve the bare file name, which covers PATH on Windows,
+ * LD_LIBRARY_PATH on Linux, and DYLD_LIBRARY_PATH on macOS.
+ */
 export function buildSearchPaths(): readonly string[] {
     const fileName = selectPlatformFileName();
     const candidates: string[] = [];
@@ -118,14 +149,15 @@ export const LfNetworkEventFuncPtr = koffi.pointer(LfNetworkEventFuncProto);
 // -----------------------------------------------------------------------------
 
 /**
- * Function table for the 36 exported LingoFuse functions.
+ * Function table for the 37 exported LingoFuse functions.
  *
  * FFI-boundary parameters are typed as `any`; the interface exists to
  * name the functions and to pin their return types.
  */
 export interface NativeFunctions {
-    // ---- Data handles (9) ----
+    // ---- Data handles (10) ----
     LF_CreateData(methodName: string): any;
+    LF_CreateData_Permanent(methodName: string): any;
     LF_FreeData(hnd: any): void;
     LF_GetBuffer(hnd: any): any;
     LF_WriteBuffer(hnd: any, buff: Uint8Array, size: any): any;
@@ -247,64 +279,159 @@ function loadLibrary(): KoffiLib {
 function declareFunctions(lib: KoffiLib): NativeFunctions {
     const f = {} as NativeFunctions;
 
-    // ---- Data handles (9) ----
-    f.LF_CreateData = lib.func("LF_CreateData", DataHnd, ["str"]) as NativeFunctions["LF_CreateData"];
-    f.LF_FreeData = lib.func("LF_FreeData", "void", [DataHnd]) as NativeFunctions["LF_FreeData"];
-    f.LF_GetBuffer = lib.func("LF_GetBuffer", koffi.pointer("void"), [DataHnd]) as NativeFunctions["LF_GetBuffer"];
+    // ---- Data handles (10) ----
+    f.LF_CreateData = lib.func(
+        "LF_CreateData", DataHnd, ["str"],
+    ) as NativeFunctions["LF_CreateData"];
+
+    // PERMANENT data handle. Not added to the idle pool; never
+    // auto-reclaimed; LF_FreeData releases it synchronously.
+    f.LF_CreateData_Permanent = lib.func(
+        "LF_CreateData_Permanent", DataHnd, ["str"],
+    ) as NativeFunctions["LF_CreateData_Permanent"];
+
+    f.LF_FreeData = lib.func(
+        "LF_FreeData", "void", [DataHnd],
+    ) as NativeFunctions["LF_FreeData"];
+
+    f.LF_GetBuffer = lib.func(
+        "LF_GetBuffer", koffi.pointer("void"), [DataHnd],
+    ) as NativeFunctions["LF_GetBuffer"];
+
     f.LF_WriteBuffer = lib.func("LF_WriteBuffer", "int64", [
         DataHnd, koffi.pointer("uint8_t"), "int64",
     ]) as NativeFunctions["LF_WriteBuffer"];
+
     f.LF_ReadBuffer = lib.func("LF_ReadBuffer", "int64", [
         DataHnd, koffi.pointer("uint8_t"), "int64",
     ]) as NativeFunctions["LF_ReadBuffer"];
-    f.LF_GetPos = lib.func("LF_GetPos", "int64", [DataHnd]) as NativeFunctions["LF_GetPos"];
-    f.LF_SetPos = lib.func("LF_SetPos", "void", [DataHnd, "int64"]) as NativeFunctions["LF_SetPos"];
-    f.LF_GetSize = lib.func("LF_GetSize", "int64", [DataHnd]) as NativeFunctions["LF_GetSize"];
-    f.LF_SetSize = lib.func("LF_SetSize", "void", [DataHnd, "int64"]) as NativeFunctions["LF_SetSize"];
+
+    f.LF_GetPos = lib.func(
+        "LF_GetPos", "int64", [DataHnd],
+    ) as NativeFunctions["LF_GetPos"];
+
+    f.LF_SetPos = lib.func(
+        "LF_SetPos", "void", [DataHnd, "int64"],
+    ) as NativeFunctions["LF_SetPos"];
+
+    f.LF_GetSize = lib.func(
+        "LF_GetSize", "int64", [DataHnd],
+    ) as NativeFunctions["LF_GetSize"];
+
+    f.LF_SetSize = lib.func(
+        "LF_SetSize", "void", [DataHnd, "int64"],
+    ) as NativeFunctions["LF_SetSize"];
 
     // ---- Application handles (5) ----
-    f.LF_CreateApp = lib.func("LF_CreateApp", AppHnd, ["str", "str"]) as NativeFunctions["LF_CreateApp"];
-    f.LF_FreeApp = lib.func("LF_FreeApp", "void", [AppHnd]) as NativeFunctions["LF_FreeApp"];
-    f.LF_Generate_AppName = lib.func("LF_Generate_AppName", "str", []) as NativeFunctions["LF_Generate_AppName"];
-    f.LF_Get_AppName = lib.func("LF_Get_AppName", "str", [AppHnd]) as NativeFunctions["LF_Get_AppName"];
-    f.LF_BindApp = lib.func("LF_BindApp", "int", [AppHnd]) as NativeFunctions["LF_BindApp"];
+    f.LF_CreateApp = lib.func(
+        "LF_CreateApp", AppHnd, ["str", "str"],
+    ) as NativeFunctions["LF_CreateApp"];
+
+    f.LF_FreeApp = lib.func(
+        "LF_FreeApp", "void", [AppHnd],
+    ) as NativeFunctions["LF_FreeApp"];
+
+    f.LF_Generate_AppName = lib.func(
+        "LF_Generate_AppName", "str", [],
+    ) as NativeFunctions["LF_Generate_AppName"];
+
+    f.LF_Get_AppName = lib.func(
+        "LF_Get_AppName", "str", [AppHnd],
+    ) as NativeFunctions["LF_Get_AppName"];
+
+    f.LF_BindApp = lib.func(
+        "LF_BindApp", "int", [AppHnd],
+    ) as NativeFunctions["LF_BindApp"];
 
     // ---- API registration (3) ----
     f.LF_RegisterCall = lib.func("LF_RegisterCall", "int", [
         AppHnd, "str", "str", koffi.pointer("void"), LfCallFuncPtr,
     ]) as NativeFunctions["LF_RegisterCall"];
+
     f.LF_RegisterNotify = lib.func("LF_RegisterNotify", "int", [
         AppHnd, "str", "str", koffi.pointer("void"), LfNotifyFuncPtr,
     ]) as NativeFunctions["LF_RegisterNotify"];
-    f.LF_Unregister = lib.func("LF_Unregister", "int", [AppHnd, "str"]) as NativeFunctions["LF_Unregister"];
+
+    f.LF_Unregister = lib.func(
+        "LF_Unregister", "int", [AppHnd, "str"],
+    ) as NativeFunctions["LF_Unregister"];
 
     // ---- Local execution (2) ----
-    f.LF_LocalCall = lib.func("LF_LocalCall", DataHnd, [AppHnd, DataHnd]) as NativeFunctions["LF_LocalCall"];
-    f.LF_LocalNotify = lib.func("LF_LocalNotify", "void", [AppHnd, DataHnd]) as NativeFunctions["LF_LocalNotify"];
+    f.LF_LocalCall = lib.func(
+        "LF_LocalCall", DataHnd, [AppHnd, DataHnd],
+    ) as NativeFunctions["LF_LocalCall"];
+
+    f.LF_LocalNotify = lib.func(
+        "LF_LocalNotify", "void", [AppHnd, DataHnd],
+    ) as NativeFunctions["LF_LocalNotify"];
 
     // ---- Network preparation (5) ----
-    f.LF_ResetPrepare = lib.func("LF_ResetPrepare", "void", []) as NativeFunctions["LF_ResetPrepare"];
-    f.LF_PrepareService = lib.func("LF_PrepareService", "int", ["str", "str"]) as NativeFunctions["LF_PrepareService"];
-    f.LF_PrepareClient = lib.func("LF_PrepareClient", "int", ["str", AppHnd]) as NativeFunctions["LF_PrepareClient"];
-    f.LF_PrepareDone = lib.func("LF_PrepareDone", "int", []) as NativeFunctions["LF_PrepareDone"];
-    f.LF_ExitMainThread = lib.func("LF_ExitMainThread", "void", []) as NativeFunctions["LF_ExitMainThread"];
+    f.LF_ResetPrepare = lib.func(
+        "LF_ResetPrepare", "void", [],
+    ) as NativeFunctions["LF_ResetPrepare"];
+
+    f.LF_PrepareService = lib.func(
+        "LF_PrepareService", "int", ["str", "str"],
+    ) as NativeFunctions["LF_PrepareService"];
+
+    f.LF_PrepareClient = lib.func(
+        "LF_PrepareClient", "int", ["str", AppHnd],
+    ) as NativeFunctions["LF_PrepareClient"];
+
+    f.LF_PrepareDone = lib.func(
+        "LF_PrepareDone", "int", [],
+    ) as NativeFunctions["LF_PrepareDone"];
+
+    f.LF_ExitMainThread = lib.func(
+        "LF_ExitMainThread", "void", [],
+    ) as NativeFunctions["LF_ExitMainThread"];
 
     // ---- Remote invocation (3) ----
-    f.LF_Call = lib.func("LF_Call", DataHnd, ["str", DataHnd, "uint64"]) as NativeFunctions["LF_Call"];
-    f.LF_Notify = lib.func("LF_Notify", "void", ["str", DataHnd]) as NativeFunctions["LF_Notify"];
-    f.LF_Sequenced_Notify = lib.func("LF_Sequenced_Notify", "void", ["str", DataHnd]) as NativeFunctions["LF_Sequenced_Notify"];
+    f.LF_Call = lib.func(
+        "LF_Call", DataHnd, ["str", DataHnd, "uint64"],
+    ) as NativeFunctions["LF_Call"];
+
+    f.LF_Notify = lib.func(
+        "LF_Notify", "void", ["str", DataHnd],
+    ) as NativeFunctions["LF_Notify"];
+
+    f.LF_Sequenced_Notify = lib.func(
+        "LF_Sequenced_Notify", "void", ["str", DataHnd],
+    ) as NativeFunctions["LF_Sequenced_Notify"];
 
     // ---- Options and diagnostics (7) ----
-    f.LF_SetOption = lib.func("LF_SetOption", "void", ["str", "str"]) as NativeFunctions["LF_SetOption"];
-    f.LF_GetStatusCount = lib.func("LF_GetStatusCount", "int", []) as NativeFunctions["LF_GetStatusCount"];
-    f.LF_GetStatus = lib.func("LF_GetStatus", "str", []) as NativeFunctions["LF_GetStatus"];
-    f.LF_PostStatus = lib.func("LF_PostStatus", "void", ["str"]) as NativeFunctions["LF_PostStatus"];
-    f.LF_CheckMainThread = lib.func("LF_CheckMainThread", "int", []) as NativeFunctions["LF_CheckMainThread"];
-    f.LF_CheckApp = lib.func("LF_CheckApp", "int", ["str"]) as NativeFunctions["LF_CheckApp"];
-    f.LF_CheckApi = lib.func("LF_CheckApi", "int", ["str", "str"]) as NativeFunctions["LF_CheckApi"];
+    f.LF_SetOption = lib.func(
+        "LF_SetOption", "void", ["str", "str"],
+    ) as NativeFunctions["LF_SetOption"];
+
+    f.LF_GetStatusCount = lib.func(
+        "LF_GetStatusCount", "int", [],
+    ) as NativeFunctions["LF_GetStatusCount"];
+
+    f.LF_GetStatus = lib.func(
+        "LF_GetStatus", "str", [],
+    ) as NativeFunctions["LF_GetStatus"];
+
+    f.LF_PostStatus = lib.func(
+        "LF_PostStatus", "void", ["str"],
+    ) as NativeFunctions["LF_PostStatus"];
+
+    f.LF_CheckMainThread = lib.func(
+        "LF_CheckMainThread", "int", [],
+    ) as NativeFunctions["LF_CheckMainThread"];
+
+    f.LF_CheckApp = lib.func(
+        "LF_CheckApp", "int", ["str"],
+    ) as NativeFunctions["LF_CheckApp"];
+
+    f.LF_CheckApi = lib.func(
+        "LF_CheckApi", "int", ["str", "str"],
+    ) as NativeFunctions["LF_CheckApi"];
 
     // ---- Shutdown (1) ----
-    f.LF_Shutdown = lib.func("LF_Shutdown", "void", []) as NativeFunctions["LF_Shutdown"];
+    f.LF_Shutdown = lib.func(
+        "LF_Shutdown", "void", [],
+    ) as NativeFunctions["LF_Shutdown"];
 
     // ---- Network events (1) ----
     f.LF_Set_Network_Event = lib.func("LF_Set_Network_Event", "void", [
@@ -320,7 +447,10 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
 
 let _instance: Binding | null = null;
 
-/** Return the binding singleton, loading the library on first call. */
+/**
+ * Return the binding singleton, loading the native library and
+ * declaring all 37 functions on first call.
+ */
 export function getBinding(): Binding {
     if (_instance !== null) {
         return _instance;

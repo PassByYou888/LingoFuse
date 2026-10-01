@@ -23,10 +23,47 @@ in background threads from the library's internal thread pool. Therefore:
 These restrictions are part of the LingoFuse callback contract and
 are critical for correct operation across all supported languages.
 
+==================== DATA HANDLE KINDS ==============================
+The library provides two kinds of data handles:
+
+  1. AUTO-RECYCLED (LF_CreateData):
+       - The handle is added to the library's idle pool.
+       - The pool scans every 5 seconds and frees any handle that has
+         been idle (no accessor call) for more than 10 MINUTES.
+       - Any accessor (LF_GetSize, LF_GetPos, LF_ReadBuffer,
+         LF_WriteBuffer, ...) refreshes the idle timestamp.
+       - LF_FreeData only marks the handle as deleted; the actual
+         release happens on the next pool scan (at most 5 seconds later).
+       - Recommended for the vast majority of use cases.
+
+  2. PERMANENT (LF_CreateData_Permanent):
+       - The handle is NOT added to the idle pool.
+       - The automatic idle-timeout reclaimer will NEVER free it,
+         no matter how long it has been idle.
+       - LF_FreeData releases it IMMEDIATELY (synchronously).
+       - Recommended for handles that must survive for the entire
+         process lifetime (cached request templates, long-lived
+         scratch buffers, global registries, etc.).
+
+==================== SECONDARY MEMORY POOL ==========================
+Freed TLF_Data records are not immediately Disposed; they are pushed
+back into a secondary pool (TLF_DataMemory) that reuses them on the
+next LF_CreateData call. This reduces New/Dispose churn. The pool is
+released in full when LF_Shutdown is called.
+
+==================== CALLING COUNTER ================================
+While a remote call is in flight, the input handle's internal
+calling___ counter is > 0. The pool scanner treats this the same as
+a fresh accessor call, so the handle cannot be reclaimed even if it
+would otherwise be past the 10-minute idle threshold. User code does
+NOT call the counter directly; the LF_Call / LF_LocalCall / LF_Notify /
+LF_Sequenced_Notify implementations maintain it.
+
 ==================== IMPORTANT NOTES (from the wire protocol) =======
-- Data handles must be freed explicitly with LF_FreeData, although
-  an automatic idle-timeout reclaimer (5 minutes) runs on the main thread.
-  Relying on it can cause leaks under heavy load.
+- Data handles must be freed explicitly with LF_FreeData, although an
+  automatic idle-timeout reclaimer (10 minutes, scanned every 5 s)
+  runs on the main thread. Relying on it can cause leaks under heavy
+  load.
 - Do not free a handle while it is being used in a callback or while
   a remote call is pending.
 - API names are case-insensitive when matching, but stored exactly as
@@ -34,7 +71,8 @@ are critical for correct operation across all supported languages.
 - LF_Call() with timeout 0 means infinite wait. On timeout, an empty
   handle (size 0) is returned - always check LF_GetSize().
 - Sequenced notifications (LF_Sequenced_Notify) guarantee FIFO order
-  per (app, api) pair; they are slightly slower than plain notifications.
+  per (app, api) pair; they are slightly slower than plain
+  notifications.
 - The status queue (LF_GetStatus) holds up to 1000 messages; old ones
   are discarded when full.
 - LF_GetStatus and LF_PostStatus rely on the simulated main thread.
@@ -299,12 +337,57 @@ LFNetworkEventFunc = ctypes.CFUNCTYPE(
 # Data Handle Operations
 # ======================================================================
 
+# ----------------------------------------------------------------------
+# LF_CreateData: creates an AUTO-RECYCLED data handle.
+#
+# The returned handle is added to the library's idle pool. The pool
+# scans every 5 seconds and frees any handle that has been idle for
+# more than 10 minutes. The high-level wrapper DataHandle(...) uses
+# this function.
+#
+# Callers that need to be sure that the handle is not reclaimed
+# automatically must use LF_CreateData_Permanent instead.
+# ----------------------------------------------------------------------
 LF_CreateData = _set_func(
     "LF_CreateData",
     [ctypes.c_char_p],
     DataHnd,
 )
 
+# ----------------------------------------------------------------------
+# LF_CreateData_Permanent: creates a PERMANENT data handle.
+#
+# The returned handle is NOT added to the library's idle pool. The
+# automatic idle-timeout reclaimer will NEVER free it, no matter how
+# long it has been idle. LF_FreeData releases it IMMEDIATELY
+# (synchronously), rather than marking it as deleted for a later pool
+# scan.
+#
+# Use this for handles that must survive for the entire lifetime of
+# the process, or for an unbounded period (cached request templates,
+# long-lived scratch buffers, global registries, etc.).
+#
+# The high-level wrapper exposes this as
+# ``DataHandle.create_permanent(api_name)``.
+# ----------------------------------------------------------------------
+LF_CreateData_Permanent = _set_func(
+    "LF_CreateData_Permanent",
+    [ctypes.c_char_p],
+    DataHnd,
+)
+
+# ----------------------------------------------------------------------
+# LF_FreeData: release a data handle.
+#
+# Behaviour depends on which creation function was used:
+#   * Auto-recycled handle: only marks the handle as deleted. The
+#     actual release happens on the next pool scan (at most 5 seconds
+#     later).
+#   * Permanent handle: releases the record immediately.
+#
+# LF_FreeData is a no-op while the simulated main thread is not
+# active (i.e. before LF_PrepareDone or after LF_ExitMainThread).
+# ----------------------------------------------------------------------
 LF_FreeData = _set_func(
     "LF_FreeData",
     [DataHnd],

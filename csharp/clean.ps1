@@ -12,6 +12,16 @@
     The script does NOT touch source files, .git, .vs, or any file
     outside the build artefacts it is responsible for.
 
+    Layout this script expects (documentation only; the scan itself is
+    layout-independent):
+
+        lf_csharp.sln
+        CrossCall/CrossCall.csproj
+        CrossNode/CrossNode.csproj
+        crossService/crossService.csproj
+        src/LingoFuse_cs/LingoFuse_cs.csproj
+        test/test.csproj
+
 .PARAMETER Configuration
     The build configuration whose artefacts should be removed.
 
@@ -32,7 +42,7 @@
 
 .EXAMPLE
     .\clean.ps1
-    Removes every bin/ and obj/ directory under the repository root.
+    Removes every bin/ and obj/ directory under the script directory.
 
 .EXAMPLE
     .\clean.ps1 -Configuration Release
@@ -57,6 +67,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The script sits next to lf_csharp.sln and every project folder, so
+# $PSScriptRoot is the repository root for cleaning purposes.
 $RepoRoot = $PSScriptRoot
 
 # ---------------------------------------------------------------------------
@@ -93,7 +105,7 @@ function Remove-DirectoryIfExists {
 
 Write-Host '[1/2] Removing bin/ and obj/ directories...' -ForegroundColor Yellow
 
-# Discover every *.csproj under the repository root, excluding anything
+# Discover every *.csproj under the script directory, excluding anything
 # that lives inside an existing bin/ or obj/ directory.
 $csprojFiles = @(
     Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.csproj' `
@@ -103,9 +115,10 @@ $csprojFiles = @(
 )
 
 if ($csprojFiles.Count -eq 0) {
-    Write-Host '  No .csproj files found under the repository root.' -ForegroundColor DarkYellow
+    Write-Host '  No .csproj files found under the script directory.' -ForegroundColor DarkYellow
     Write-Host '  Nothing to clean.' -ForegroundColor DarkYellow
-} else {
+}
+else {
     Write-Host "  Found $($csprojFiles.Count) project file(s)."
 }
 
@@ -122,7 +135,8 @@ foreach ($csproj in $csprojFiles) {
                 $removedCount++
             }
         }
-    } else {
+    }
+    else {
         # Remove only the selected configuration subdirectory.
         foreach ($parent in @('bin', 'obj')) {
             $target = Join-Path $projectDir (Join-Path $parent $Configuration)
@@ -153,7 +167,7 @@ if ($IncludePackages) {
         }
     }
 
-    # Stray .nupkg / .snupkg files anywhere under the repository root,
+    # Stray .nupkg / .snupkg files anywhere under the script directory,
     # excluding anything already covered by the bin/obj removal above.
     $packageFiles = @(
         Get-ChildItem -LiteralPath $RepoRoot -Recurse -File `
@@ -168,7 +182,8 @@ if ($IncludePackages) {
 
     $itemsWord = if ($removedItems -eq 1) { 'item' } else { 'items' }
     Write-Host "  Removed $removedItems package $itemsWord." -ForegroundColor Green
-} else {
+}
+else {
     Write-Host '[2/2] Skipping package cleanup (use -IncludePackages to enable).' `
         -ForegroundColor DarkGray
 }

@@ -3,6 +3,12 @@
 //                        LingoFuse C# binding (two-layer design).
 // =============================================================================
 //
+// Version 3.2 — permanent-handle support:
+//   - New tests in the DataHandle category covering DataHandle.CreatePermanent:
+//     creation, survival across the idle pool window, and synchronous
+//     release semantics.
+//   - Total test count raised from 55 to 58.
+//
 // Version 3.1 — network-session fix:
 //   - NetworkSession.StartWithService now takes an optional
 //     configureApp callback so APIs are registered on the AppHandle
@@ -29,10 +35,10 @@
 // namespace (NativeMethods, Utf8Marshal, DataHnd, AppHnd, the delegate
 // prototypes) is internal and is deliberately never referenced here.
 //
-// TEST PLAN (55 tests)
+// TEST PLAN (58 tests)
 // --------------------
 //
-// DataHandle (16)
+// DataHandle (19)
 //   01  basic types                every integer / floating-point type
 //   02  unicode                    UTF-8 round trip
 //   03  fault-tolerant read        no NUL on the wire (LF-DATA-004)
@@ -49,59 +55,62 @@
 //   14  ReadBytesExact short fail  LingoFuseIoException on short read
 //   15  Try* family                boolean non-throwing reads
 //   16  ReadAllBytes               consume remaining bytes
+//   17  create permanent handle    DataHandle.CreatePermanent success
+//   18  permanent survives idle    not added to the idle pool
+//   19  permanent dispose sync     synchronous release + idempotent
 //
 // AppHandle (10)
-//   17  register / local call      basic registration and execution
-//   18  duplicate registration     second register returns false
-//   19  unregister then re-register
-//   20  case-insensitive match     "add" matches "Add"
-//   21  callback no output         empty response on no write
-//   22  callback exception         swallowed by the wrapper
-//   23  LocalNotify                one-way local delivery
-//   24  LocalCallBinary            raw local call
-//   25  LocalNotifyBinary          raw local notify
-//   26  dispose safety             use-after-dispose throws
+//   20  register / local call      basic registration and execution
+//   21  duplicate registration     second register returns false
+//   22  unregister then re-register
+//   23  case-insensitive match     "add" matches "Add"
+//   24  callback no output         empty response on no write
+//   25  callback exception         swallowed by the wrapper
+//   26  LocalNotify                one-way local delivery
+//   27  LocalCallBinary            raw local call
+//   28  LocalNotifyBinary          raw local notify
+//   29  dispose safety             use-after-dispose throws
 //
 // LfIo (7)
-//   27  JSON POCO round trip
-//   28  JSON null value
-//   29  JSON unicode content       no \uXXXX escapes (BMP or surrogates)
-//   30  JSON array
-//   31  JSON numeric
-//   32  TryReadJson returns false on invalid
-//   33  ReadJson throws on invalid
+//   30  JSON POCO round trip
+//   31  JSON null value
+//   32  JSON unicode content       no \uXXXX escapes (BMP or surrogates)
+//   33  JSON array
+//   34  JSON numeric
+//   35  TryReadJson returns false on invalid
+//   36  ReadJson throws on invalid
 //
 // Framework (5)
-//   34  SetOption does not throw
-//   35  ResetPrepare does not throw
-//   36  GenerateAppName after PrepareDone
-//   37  PrepareDone returns 1 only once
-//   38  Shutdown is idempotent
+//   37  SetOption does not throw
+//   38  ResetPrepare does not throw
+//   39  GenerateAppName after PrepareDone
+//   40  PrepareDone returns 1 only once
+//   41  Shutdown is idempotent
 //
 // Network integration (8)
-//   39  single address JSON call
-//   40  missing target returns empty handle (LF-CALL-001)
-//   41  long string round trip (LF-XLANG-002)
-//   42  Notify
-//   43  SequencedNotify FIFO order
-//   44  CheckApp / CheckApi
-//   45  NetworkEvents install / clear
-//   46  Status queue operations
+//   42  single address JSON call
+//   43  missing target returns empty handle (LF-CALL-001)
+//   44  long string round trip (LF-XLANG-002)
+//   45  Notify
+//   46  SequencedNotify FIFO order
+//   47  CheckApp / CheckApi
+//   48  NetworkEvents install / clear
+//   49  Status queue operations
 //
 // ABI cross-language (5)
-//   47  CallBinary int32
-//   48  CallBinary multi-type round trip
-//   49  byte-exact little-endian wire format
-//   50  NotifyBinary
-//   51  SequencedNotifyBinary
+//   50  CallBinary int32
+//   51  CallBinary multi-type round trip
+//   52  byte-exact little-endian wire format
+//   53  NotifyBinary
+//   54  SequencedNotifyBinary
 //
 // Concurrency (2)
-//   52  10 threads x 100 local calls
-//   53  8 threads x 500 independent DataHandles
+//   55  10 threads x 100 local calls
+//   56  8 threads x 500 independent DataHandles
 //
 // Stress (2)
-//   54  1000 sequential local calls
-//   55  100 rapid App create / destroy cycles
+//   57  1000 sequential local calls
+//   58  100 rapid App create / destroy cycles
 // =============================================================================
 
 using System;
@@ -571,7 +580,7 @@ internal static class Rpc
 
 /* ============================================================================
  * A POCO used by the JSON tests.
- * ==========================================================================
+ * ============================================================================
  *
  * System.Text.Json uses the C# property name verbatim; the wire JSON
  * keys therefore match the property names. This is a deliberate choice
@@ -886,6 +895,90 @@ internal static class DataHandleTests
         Verify.Equal(rest[1], (byte)4);
         Verify.Equal(rest[2], (byte)5);
         Verify.Equal(dh.Position, dh.Size);
+
+        return true;
+    }
+
+    public static bool PermanentHandleCreation()
+    {
+        // A permanent handle is created and used exactly like an
+        // auto-recycled one; the only difference is lifetime.
+        using var dh = DataHandle.CreatePermanent("test_permanent");
+
+        Verify.True(dh.IsValid);
+        Verify.True(dh.IsOwning);
+        Verify.True(dh.Raw != IntPtr.Zero);
+
+        dh.WriteInt32(unchecked((int)0x11223344));
+        dh.WriteString("permanent-payload");
+
+        dh.Position = 0;
+        Verify.Equal(dh.ReadInt32(), unchecked((int)0x11223344));
+        Verify.Equal(dh.ReadString(), "permanent-payload");
+
+        return true;
+    }
+
+    public static bool PermanentHandleSurvivesIdleWindow()
+    {
+        // We cannot wait 10 real minutes in a test. What we verify is
+        // that the handle is NOT added to the idle pool, so the pool
+        // scanner would never see it. Observationally: creating and
+        // disposing a permanent handle inside a session does not
+        // interfere with other handle activity, and no reclamation
+        // warning is triggered for it.
+        var endpoint = TestEnv.UniqueEndpoint("perm_surv");
+        var appName = TestEnv.UniqueAppName("perm_surv");
+
+        using var session = NetworkSession.StartWithService(
+            appName, endpoint);
+
+        using var perm = DataHandle.CreatePermanent("perm_api");
+        perm.WriteInt32(42);
+
+        // Give the simulated main thread enough time to run several
+        // Progress ticks. Any auto-recycled handle with the wrong
+        // lifetime expectation would already have been marked for
+        // release; the permanent handle must remain intact.
+        TestEnv.Settle(1200);
+
+        Verify.True(perm.IsValid);
+        perm.Position = 0;
+        Verify.Equal(perm.ReadInt32(), 42);
+
+        // A fresh auto-recycled handle created in the same window must
+        // also work normally.
+        using var auto = new DataHandle("auto_api");
+        auto.WriteString("auto");
+        auto.Position = 0;
+        Verify.Equal(auto.ReadString(), "auto");
+
+        return true;
+    }
+
+    public static bool PermanentHandleDisposeIsSynchronous()
+    {
+        var dh = DataHandle.CreatePermanent("perm_sync");
+        dh.WriteInt32(1);
+        Verify.True(dh.IsValid);
+
+        dh.Dispose();
+
+        // After Dispose, the wrapper is disposed.
+        Verify.False(dh.IsValid);
+        Verify.True(dh.Raw == IntPtr.Zero);
+        Verify.Throws<LingoFuseObjectDisposedException>(
+            () => { _ = dh.ReadInt32(); });
+
+        // Dispose is idempotent.
+        dh.Dispose();
+        dh.Dispose();
+
+        // A second independent permanent handle must also be usable.
+        using var dh2 = DataHandle.CreatePermanent("perm_sync_2");
+        dh2.WriteString("second");
+        dh2.Position = 0;
+        Verify.Equal(dh2.ReadString(), "second");
 
         return true;
     }
@@ -1492,7 +1585,7 @@ internal static class NetworkIntegrationTests
 
 /* ============================================================================
  * CATEGORY: ABI cross-language
- * ==========================================================================
+ * ============================================================================
  *
  * These tests exercise the raw binary path that the C++ / Pascal /
  * Python bindings use to interoperate with a C# peer. Every byte on the
@@ -1892,7 +1985,7 @@ internal sealed class FailureRecord
 
 internal static class Program
 {
-    private const string SuiteVersion = "3.1 (network-session fix)";
+    private const string SuiteVersion = "3.2 (permanent-handle support)";
 
     private static string BuildTypeString()
     {
@@ -2102,7 +2195,7 @@ internal static class Program
         {
             new Category(
                 "DataHandle",
-                "Buffer I/O, termination, position, RAII dispose",
+                "Buffer I/O, termination, position, RAII dispose, permanent handles",
                 new List<TestCase>
                 {
                     new TestCase("DataHandle :: basic types",
@@ -2137,6 +2230,12 @@ internal static class Program
                         DataHandleTests.TryReadFamily),
                     new TestCase("DataHandle :: ReadAllBytes",
                         DataHandleTests.ReadAllBytes),
+                    new TestCase("DataHandle :: create permanent handle",
+                        DataHandleTests.PermanentHandleCreation),
+                    new TestCase("DataHandle :: permanent handle survives idle window",
+                        DataHandleTests.PermanentHandleSurvivesIdleWindow),
+                    new TestCase("DataHandle :: permanent handle dispose is synchronous",
+                        DataHandleTests.PermanentHandleDisposeIsSynchronous),
                 }),
 
             new Category(

@@ -26,8 +26,13 @@
  * ============================================================================
  * The status queue is processed by the native simulated main thread.
  * Before prepareDone() has been called, the queue may be empty or
- * contain stale data. Applications should not rely on status messages
+ * contain stale data; applications should not rely on status messages
  * during initialization.
+ *
+ * Injection is NOT subject to the same restriction: postStatus queues
+ * the message even when the simulated main thread is not yet running.
+ * The message becomes observable once the main thread starts
+ * processing the queue (or immediately, if it is already running).
  *
  * ============================================================================
  * STATIC BUFFER HAZARD
@@ -109,6 +114,10 @@ function getStatusCount() {
  * pointer into a JavaScript string before this function returns, so
  * the caller never observes that hazard.
  *
+ * [CAVEAT] The native ABI cannot distinguish "empty queue" from
+ * "empty message": both produce an empty string. Callers that need to
+ * distinguish the two must call getStatusCount first.
+ *
  * @returns {string}
  */
 function getStatus() {
@@ -173,8 +182,13 @@ function drainStatus(maxMessages = 64) {
 /**
  * Injects a custom log message into the status queue.
  *
- * Messages posted before the simulated main thread has started may be
- * discarded by the native side.
+ * The native side queues the message even when the simulated main
+ * thread is not yet running. The queue is bounded at 1000 entries;
+ * older entries are dropped when the buffer is full.
+ *
+ * Messages posted during the initialisation window (before
+ * prepareDone returns) are therefore not lost, but they may only
+ * become observable once the main thread starts processing the queue.
  *
  * @param {string} message
  *   Message to inject. Must be a string. An empty string is allowed;

@@ -7,12 +7,12 @@
  * the export table defined in `LingoFuse.lpr`.
  *
  * ============================================================================
- * EXPORTED FUNCTIONS (36 total, defined in LingoFuse.lpr)
+ * EXPORTED FUNCTIONS (37 total, defined in LingoFuse.lpr)
  * ============================================================================
  *
- *   Data handles (9):
- *       LF_CreateData, LF_FreeData, LF_GetBuffer,
- *       LF_WriteBuffer, LF_ReadBuffer,
+ *   Data handles (10):
+ *       LF_CreateData, LF_CreateData_Permanent, LF_FreeData,
+ *       LF_GetBuffer, LF_WriteBuffer, LF_ReadBuffer,
  *       LF_GetPos, LF_SetPos, LF_GetSize, LF_SetSize
  *
  *   Application handles (5):
@@ -135,14 +135,21 @@
  * ============================================================================
  * DATA HANDLE LIFETIME
  * ============================================================================
- * Every TDataHnd created with LF_CreateData() MUST be freed with
- * LF_FreeData() when no longer needed. The library has an automatic
- * idle-timeout reclaimer (5 minutes) on the simulated main thread, but it is
- * not immediate; relying on it can leak resources under heavy load.
+ * Every TDataHnd created with LF_CreateData() or LF_CreateData_Permanent()
+ * MUST be freed with LF_FreeData() when no longer needed.
+ *
+ * The library has an automatic idle-timeout reclaimer on the simulated
+ * main thread. It scans the handle pool every 5 seconds and frees any
+ * handle that has been idle (no accessor call) for more than 10 minutes.
+ * This is a safety net only; relying on it can leak resources under heavy
+ * load. It does NOT apply to handles created with LF_CreateData_Permanent().
  *
  * LF_Call() ALWAYS returns a valid TDataHnd (never a NULL pointer). If the
  * call times out or fails, the handle size will be 0. You must still free it
  * with LF_FreeData().
+ *
+ * LF_LocalCall() also ALWAYS returns a valid TDataHnd, following the same
+ * contract as LF_Call().
  *
  * ============================================================================
  * LIBRARY LOADING
@@ -154,8 +161,11 @@
  * The loader first tries the executable's own directory, then falls back to
  * the system search path. Call `LF_FreeLibrary()` when done.
  *
- * Note: The loader functions (LF_LoadLibrary / LF_FreeLibrary) are provided
- * by the C wrapper itself; they are NOT exported from the dynamic library.
+ * The loader functions (LF_LoadLibrary / LF_FreeLibrary) are provided by
+ * the C wrapper itself; they are NOT exported from the dynamic library.
+ *
+ * Call `LF_LoadLibrary()` BEFORE any other LF_* function. Calling any other
+ * LF_* function first is undefined behaviour (null-pointer dereference).
  *
  * ============================================================================
  * USAGE EXAMPLE
@@ -295,9 +305,18 @@ extern "C" {
      * ============================================================================ */
 
      /**
-      * @brief Creates a new data handle bound to the given API name.
+      * @brief Creates a new auto-recycled data handle bound to the given API name.
       *
       * The initial payload is empty. The handle must be freed with LF_FreeData().
+      *
+      * Auto-recycle behaviour:
+      *   - The handle is added to the library's idle pool.
+      *   - The pool scans every 5 seconds and frees any handle that has been
+      *     idle for more than 10 minutes.
+      *   - Any accessor call (LF_GetSize, LF_GetPos, LF_ReadBuffer,
+      *     LF_WriteBuffer, ...) refreshes the idle timestamp.
+      *   - LF_FreeData() marks the handle for release; the actual release
+      *     happens on the next pool scan (at most 5 seconds later).
       *
       * @param method_name  UTF-8, null-terminated API name.
       * @return A new TDataHnd (never NULL on success).
@@ -305,9 +324,65 @@ extern "C" {
     TDataHnd LF_CreateData(const char* method_name);
 
     /**
+     * @brief Creates a new PERMANENT data handle bound to the given API name.
+     *
+     * Difference from LF_CreateData:
+     *   - The handle is NOT added to the library's idle pool.
+     *   - The automatic idle-timeout reclaimer will NEVER free it, no matter
+     *     how long it has been idle.
+     *   - LF_FreeData() releases it IMMEDIATELY (synchronously), rather than
+     *     merely marking it as deleted for a later pool scan.
+     *
+     * When to use:
+     *   - Handles that must survive for the entire lifetime of the process,
+     *     or for an unbounded period (cached request templates, long-lived
+     *     scratch buffers, global registries, etc.).
+     *
+     * When NOT to use:
+     *   - Short-lived or one-shot handles. For those, use LF_CreateData so
+     *     the pool can reclaim any handle you forget to free.
+     *
+     * [PITFALL - LIFETIME]
+     *   "Permanent" means "not automatically reclaimed", NOT "never released".
+     *   You are fully responsible for calling LF_FreeData. There is no pool
+     *   safety net: losing the pointer leaks the handle for the lifetime of
+     *   the process.
+     *
+     * [PITFALL - SYNCHRONOUS FREE]
+     *   When LF_FreeData is called on a permanent handle, the release happens
+     *   inside that call. Do not touch the handle after LF_FreeData returns.
+     *
+     * [PITFALL - NO-OP WINDOW]
+     *   LF_FreeData is a no-op while the simulated main thread is not active
+     *   (i.e. before LF_PrepareDone or after LF_ExitMainThread). Permanent
+     *   handles created in that window stay allocated until the process
+     *   terminates.
+     *
+     * [PITFALL - TIMESTAMPS IRRELEVANT]
+     *   Every accessor still updates the handle's internal updated flag, but
+     *   the pool scanner never reads it for permanent handles (the handle is
+     *   not in the pool at all).
+     *
+     * @param method_name  UTF-8, null-terminated API name.
+     * @return A new TDataHnd (never NULL on success). Must be freed with
+     *         LF_FreeData().
+     */
+    TDataHnd LF_CreateData_Permanent(const char* method_name);
+
+    /**
      * @brief Destroys a data handle and releases its memory.
      *
      * @param hnd  Handle to free. NULL is accepted and ignored.
+     *
+     * [PITFALL] If the simulated main thread is not active (before
+     *   LF_PrepareDone or after LF_ExitMainThread), this call is a NO-OP.
+     *   It is intentionally so, to avoid double-free during library
+     *   initialisation/finalisation.
+     *
+     * [PITFALL] For auto-recycled handles (created with LF_CreateData),
+     *   this only sets the "deleted" flag; the actual release happens on
+     *   the next pool scan (at most 5 seconds later). For permanent handles,
+     *   the release is synchronous.
      */
     void LF_FreeData(TDataHnd hnd);
 
@@ -570,6 +645,10 @@ extern "C" {
      *
      * The framework stops processing network events but does not free all
      * resources. Call LF_Shutdown() for a full cleanup.
+     *
+     * [PITFALL] LF_ExitMainThread also flushes the data handle pool, releasing
+     *   every outstanding handle - including those created with
+     *   LF_CreateData_Permanent. Do not use any data handle after this call.
      */
     void LF_ExitMainThread(void);
 
@@ -623,30 +702,106 @@ extern "C" {
       *
       * Supported option keys (case-insensitive, aliases accepted):
       *
+      *   === Authentication ===
+      *
       *   "password" / "passwd"
       *       C4 P2PVM authentication token (string).
+      *
+      *   === Logging & Debugging ===
+      *
       *   "Quiet"
-      *       Enable/disable quiet mode (boolean).
+      *       Enable/disable quiet mode (boolean). When enabled, most
+      *       internal log messages are suppressed.
       *   "ShowThreadID" / "ShowThread" / "Show_Thread"
       *       Show thread IDs in log output (boolean).
       *   "ConsoleOutput" / "Console_Output"
       *       Enable/disable console logging (boolean).
+      *
+      *   === Connection Readiness ===
+      *
       *   "Overlap_Connection" / "Overlap_Client" / "OverlapConnection" /
       *   "OverlapClient" / "OverlapConnect"
       *       Allow multiple client tunnels to the same address (boolean).
-      *   "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" / "WaitConnect" /
-      *   "Wait_Ready" / "WaitReady"
-      *       Block until all prepared clients are ready (boolean).
-      *   "Wait_Connection_Timeout" / "Wait_TimeOut" / "API_Prepare_Done_TimeOut"
+      *       When False (default), only one tunnel per address is created;
+      *       subsequent LF_PrepareClient calls with a different appHnd are
+      *       silently ignored. When True, each LF_PrepareClient call creates
+      *       a new independent tunnel bound to the provided appHnd.
+      *   "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
+      *   "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" / "WaitReady"
+      *       Block LF_PrepareDone until all prepared clients are connected
+      *       and their applications are online (boolean). Default is True.
+      *   "Wait_Connection_Timeout" / "Wait_TimeOut" /
+      *   "API_Prepare_Done_TimeOut" / "WaitTimeOut"
       *       Timeout for the above wait (integer, milliseconds).
+      *       Default is 30000 ms (30 seconds).
+      *
+      *   === IPC (Inter-Process Communication) ===
+      *
       *   "IPC_Serv_ThreadCount" / "IPC_ThreadCount" / "IPC_Server_ThreadCount"
       *       Number of IPC server threads (integer).
-      *   "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength"
+      *   "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength" /
+      *   "IPC_Server_MaxQueueLength"
       *       Maximum IPC message queue length (integer).
-      *   "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize"
+      *   "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize" / "IPC_Server_MaxMsgSize"
       *       Maximum size of a single IPC message in bytes (integer).
+      *
+      *   === Sequenced Notifications ===
+      *
       *   "Fixed_Sequenced_Time" / "Fixed_Sequenced_Life"
-      *       Idle timeout for sequenced notification fallback (integer, ms).
+      *       Idle timeout for sequenced-notification client-selection
+      *       fallback (integer, milliseconds). When the candidate with the
+      *       oldest timestamp is older than this value, the system falls
+      *       back to the newest client to avoid starvation.
+      *       Default is 20000 ms (20 seconds).
+      *
+      *   === Data Handle Pool ===
+      *
+      *   "DataHandle_Idle_Timeout" / "Data_Idle_Timeout" / "Idle_Timeout"
+      *       Idle-timeout for automatic reclamation of non-permanent data
+      *       handles by the data-handle pool scanner (integer, milliseconds).
+      *         >  0 : ENABLED. A tracked handle that has not been accessed
+      *                for this long becomes a candidate for release on the
+      *                next pool scan. Default is 600000 ms (10 minutes).
+      *         <= 0 : DISABLED. Only an explicit LF_FreeData call releases
+      *                a handle; the idle-reclaim branch is skipped entirely.
+      *
+      *       Notes:
+      *         - Any accessor call on the handle (LF_GetSize / LF_GetPos /
+      *           LF_ReadBuffer / LF_WriteBuffer / ...) refreshes its idle
+      *           timer and postpones the timeout.
+      *         - A remote call in flight (internal calling counter > 0)
+      *           also postpones the timeout, regardless of idle time.
+      *         - This option does NOT affect handles created with
+      *           LF_CreateData_Permanent. Those are released synchronously
+      *           by LF_FreeData and never enter the idle-reclaim path.
+      *
+      *   "DataHandle_Pool_Scan_Interval" / "Data_Scan_Interval" /
+      *   "DataHandle_Scan_Interval"
+      *       Minimum interval between two consecutive scans of the data-handle
+      *       pool by the library's pool scanner (integer, milliseconds).
+      *         >  0 : ENABLED. The scanner returns immediately if fewer than
+      *                this many milliseconds have elapsed since the last
+      *                scan. Default is 5000 ms (5 seconds).
+      *         <= 0 : DISABLED. The scanner runs on every progress tick,
+      *                without rate-limiting.
+      *
+      *       Relationship with DataHandle_Idle_Timeout:
+      *         - DataHandle_Pool_Scan_Interval controls HOW OFTEN the pool
+      *           is scanned.
+      *         - DataHandle_Idle_Timeout controls WHEN a scanned handle is
+      *           actually released.
+      *         - A handle that becomes eligible at time T is typically
+      *           released at T plus up to one scan interval of latency.
+      *
+      *       Notes:
+      *         - The scanner is driven by the simulated main thread. Its
+      *           effective call frequency is bounded below by the main
+      *           thread's tick granularity, not by this value alone.
+      *         - Setting this very low (< 1 second) is almost never useful:
+      *           the pool lock and the O(N) walk dominate the cost, while
+      *           the reclamation-latency improvement is negligible.
+      *         - Setting this to 0 disables the rate limiter, but does NOT
+      *           disable reclamation itself.
       *
       * Unknown options are silently ignored. Changes are not persisted across
       * restarts.
@@ -745,7 +900,8 @@ extern "C" {
       * Steps performed (matching Pascal LF_Shutdown):
       *   1. Clears network event callbacks.
       *   2. Stops all sequenced notification threads.
-      *   3. Frees all remaining data handles.
+      *   3. Frees all remaining data handles (including any permanent handle
+      *      still alive in the global app/queue pools).
       *   4. Exits the simulated main thread.
       *   5. Clears the global application pool (destroying all TLF_App objects).
       *   6. Unloads the IPC library.
@@ -900,7 +1056,7 @@ extern "C" {
      *
      *   Case 2 - No #0 is found before the end of the buffer (fault-tolerant):
      *       The remaining bytes up to the end of the buffer are copied, and the
-     *       cursor is advanced to (buffer size + 1) ¡ª i.e. ONE BYTE PAST the
+     *       cursor is advanced to (buffer size + 1) - i.e. ONE BYTE PAST the
      *       end of the buffer. This matches Pascal's LF_SetPos(Hnd, e + 1)
      *       with e == size: the underlying library implicitly grows the buffer
      *       by one byte to accommodate the new position.
@@ -941,7 +1097,7 @@ extern "C" {
      *
      *   Case 2 - No #0 found before the end of the buffer:
      *       Copies all remaining bytes, advances the cursor to
-     *       (buffer size + 1) ¡ª i.e. ONE BYTE PAST the end of the buffer.
+     *       (buffer size + 1) - i.e. ONE BYTE PAST the end of the buffer.
      *       This matches Pascal's LF_SetPos(Hnd, e + 1) with e == size; the
      *       underlying library implicitly grows the buffer by one byte.
      *       Returns the number of bytes copied.

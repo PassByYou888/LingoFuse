@@ -150,6 +150,7 @@ uses
 
 exports
   LF_CreateData,
+  LF_CreateData_Permanent,
   LF_FreeData,
   LF_GetBuffer,
   LF_WriteBuffer,

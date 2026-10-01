@@ -10,14 +10,43 @@
  *
  * This is the LOW-LEVEL primitive layer. JSON serialization and
  * NUL-framed byte sequences are provided by the higher-level `LfIo`
- * class, which is built on top of DataHandle.
+ * module, which is built on top of DataHandle.
+ *
+ * TWO KINDS OF HANDLES
+ * --------------------
+ * The native library provides two flavours of data handle:
+ *
+ *   Auto-recycled  (created by the public constructor)
+ *       - Backed by LF_CreateData.
+ *       - Added to the library's idle pool.
+ *       - The pool scans every 5 seconds and frees any handle idle
+ *         (no accessor call) for more than 10 minutes.
+ *       - dispose() only marks the handle as deleted; the actual
+ *         release happens on the next pool scan (at most 5 seconds
+ *         later).
+ *       - Recommended for the vast majority of use cases.
+ *
+ *   Permanent      (created by the CreatePermanent factory)
+ *       - Backed by LF_CreateData_Permanent.
+ *       - NOT added to the library's idle pool.
+ *       - The automatic idle-timeout reclaimer will NEVER free it,
+ *         no matter how long it has been idle.
+ *       - dispose() releases it IMMEDIATELY (synchronously).
+ *       - Recommended for handles that must survive for the entire
+ *         process lifetime (cached request templates, long-lived
+ *         scratch buffers, global registries, etc.).
+ *
+ *   Both kinds are released by framework.shutdown() when the process
+ *   terminates, and both kinds must be explicitly disposed to avoid
+ *   leaks.
  *
  * OWNERSHIP
  * ---------
  * A DataHandle is either "owning" or "borrowing":
  *
- *   Owning    — created by the public constructor. dispose() calls
- *               LF_FreeData on the native handle.
+ *   Owning    — created by the public constructor or by
+ *               createPermanent(). dispose() calls LF_FreeData on the
+ *               native handle.
  *   Borrowing — created by fromRaw(raw, false). dispose() is a no-op;
  *               the native layer owns the underlying resource and
  *               releases it when the callback returns.
@@ -29,8 +58,8 @@
  * ----------------------------------
  * For a borrowed handle, dispose() deliberately does NOT change the
  * wrapper state. A callback body that accidentally calls dispose() on
- * its input or output handle must not corrupt the wrapper state for
- * the rest of the callback body. The wrapper's `#disposed` flag stays
+ * its input or output handle must not corrupt the wrapper state for the
+ * rest of the callback body. The wrapper's `#disposed` flag stays
  * false, so isValid, raw, and all read methods remain usable until the
  * callback returns.
  *
@@ -63,7 +92,7 @@
  *
  * The atomic-type readers are exact by default, because a partially
  * read integer is never useful. Each exact reader has a try* counter-
- * part that returns false instead of throwing.
+ * part that returns { ok: false } instead of throwing.
  *
  * WRITE FAILURE SEMANTICS
  * -----------------------
@@ -76,10 +105,9 @@
  *
  * INTERNAL CONSTRUCTION PATH
  * --------------------------
- * The public constructor takes only an API name. The static factory
- * fromRaw(raw, owned) needs to build an instance around an
- * already-allocated native pointer, WITHOUT going through the native
- * LF_CreateData allocation.
+ * The public constructor takes only an API name. The static factories
+ * fromRaw(raw, owned) and createPermanent(apiName) need to build an
+ * instance without going through the "public" allocation branch.
  *
  * Because JavaScript private fields (#field) are only initialised by a
  * real construction path (Object.create(proto) produces an object that
@@ -198,11 +226,12 @@ class DataHandle {
     // --------------------------------------------------------------------
 
     /**
-     * Creates a new data handle bound to the given API name. The
-     * underlying buffer starts empty.
+     * Creates a new AUTO-RECYCLED data handle bound to the given API
+     * name. The underlying buffer starts empty.
      *
      * The second argument is an internal implementation detail used by
-     * the static factory fromRaw(). User code must never pass it.
+     * the static factories fromRaw() and createPermanent(). User code
+     * must never pass it.
      *
      * @param {string|null} apiName
      *   UTF-8 API name. Must be a string when `internal` is null.
@@ -264,6 +293,64 @@ class DataHandle {
         return new DataHandle(null, { handle: raw, owned: Boolean(owned) });
     }
 
+    /**
+     * Creates a new PERMANENT data handle bound to the given API name.
+     * The underlying buffer starts empty.
+     *
+     * Difference from `new DataHandle(apiName)`:
+     *   - NOT added to the library's idle pool.
+     *   - The automatic idle-timeout reclaimer will NEVER free it,
+     *     no matter how long it has been idle.
+     *   - dispose() releases it IMMEDIATELY (synchronously), rather
+     *     than marking it for a later pool scan.
+     *
+     * When to use:
+     *   - Handles that must survive for the entire lifetime of the
+     *     process, or for an unbounded period (cached request
+     *     templates, long-lived scratch buffers, global registries).
+     *
+     * When NOT to use:
+     *   - Short-lived or one-shot handles. Use the regular constructor
+     *     for those, so the pool can reclaim any handle you forget to
+     *     dispose.
+     *
+     * [PITFALL - NO-OP WINDOW]
+     *   The underlying LF_FreeData is a no-op while the simulated main
+     *   thread is not active (before framework.prepareDone or after
+     *   framework.exitMainThread). Permanent handles created in that
+     *   window stay allocated until the process terminates, or until
+     *   framework.shutdown runs.
+     *
+     * [PITFALL - LIFETIME]
+     *   "Permanent" means "not automatically reclaimed", NOT "never
+     *   released". You are fully responsible for disposing it. Losing
+     *   the reference leaks the handle for the lifetime of the
+     *   process.
+     *
+     * @param {string} apiName
+     *   UTF-8 API name. Must be a string.
+     * @returns {DataHandle}
+     * @throws {TypeError} When apiName is not a string.
+     * @throws {import('./errors').LingoFuseError}
+     *   When the native library fails to allocate the handle.
+     */
+    static createPermanent(apiName) {
+        if (typeof apiName !== "string") {
+            throw new TypeError(
+                "DataHandle.createPermanent: apiName must be a string."
+            );
+        }
+
+        const binding = getBinding();
+        const raw = binding.funcs.LF_CreateData_Permanent(apiName);
+        if (raw === null || raw === undefined) {
+            throw new LingoFuseError(
+                `Failed to create a permanent data handle for API '${apiName}'.`
+            );
+        }
+        return new DataHandle(null, { handle: raw, owned: true });
+    }
+
     // --------------------------------------------------------------------
     // Identity and state
     // --------------------------------------------------------------------
@@ -307,9 +394,18 @@ class DataHandle {
     /**
      * Releases the native handle when ownership applies.
      *
-     * For an OWNING handle: calls LF_FreeData, sets the disposed flag
-     * (subsequent operations throw LingoFuseObjectDisposedError), and
-     * is idempotent.
+     * For an OWNING AUTO-RECYCLED handle (created by the public
+     * constructor): calls LF_FreeData, which only marks the handle as
+     * deleted. The actual release happens on the next idle-pool scan
+     * (at most 5 seconds later). The wrapper's state transitions to
+     * disposed and subsequent operations throw
+     * LingoFuseObjectDisposedError. Idempotent.
+     *
+     * For an OWNING PERMANENT handle (created by createPermanent):
+     * calls LF_FreeData, which releases the handle IMMEDIATELY
+     * (synchronously). The wrapper's state transitions to disposed,
+     * and subsequent operations throw LingoFuseObjectDisposedError.
+     * Idempotent.
      *
      * For a BORROWED handle: this method is a NO-OP. The native layer
      * owns the underlying resource and releases it when the callback

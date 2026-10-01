@@ -1,6 +1,6 @@
 ﻿(*
   * ===========================================================================
-  * Z.LingoFuse_Export – C ABI Export Layer for LingoFuse
+  * Z.LingoFuse_Export - C ABI Export Layer for LingoFuse
   * ===========================================================================
   *
   * This unit provides a set of plain C-style (cdecl) functions that can be
@@ -11,14 +11,14 @@
   * layer.
   *
   * The exported functions manage:
-  *   – Opaque handles for API data (TDataHnd___) and application instances
+  *   - Opaque handles for API data (TDataHnd___) and application instances
   *     (TAppHnd___). These handles must be created and freed using the provided
-  *     functions – never dereference them directly.
-  *   – Registration of local Call and Notify APIs with user-supplied cdecl
+  *     functions - never dereference them directly.
+  *   - Registration of local Call and Notify APIs with user-supplied cdecl
   *     callbacks.
-  *   – Preparation and startup of the underlying C4 distributed communication
+  *   - Preparation and startup of the underlying C4 distributed communication
   *     layer (TCP and IPC).
-  *   – Remote API calls and notifications (including sequenced notifications)
+  *   - Remote API calls and notifications (including sequenced notifications)
   *     across a network.
   *
   * The unit also manages a simulated main thread that runs the C4 progress
@@ -34,34 +34,34 @@
   * All string parameters (API names, descriptions, addresses) must be UTF-8
   * encoded and null-terminated (PAnsiChar). The library internally decodes
   * them to Pascal strings. The internal binary data handles are encoding-
-  * agnostic – they are just byte buffers.
+  * agnostic - they are just byte buffers.
   *
   * ===========================================================================
   * THREAD SAFETY & CALLBACK RESTRICTIONS
   * ===========================================================================
   *
-  * – All exported functions are thread-safe. They may be called from any
+  * - All exported functions are thread-safe. They may be called from any
   *   thread without external locking.
   *
-  * – For a given TDataHnd___: write operations must be serialised. Read
+  * - For a given TDataHnd___: write operations must be serialised. Read
   *   operations are safe as long as the handle is not being written
   *   concurrently.
   *
-  * – [PITFALL] Callbacks registered via LF_RegisterCall / LF_RegisterNotify
+  * - [PITFALL] Callbacks registered via LF_RegisterCall / LF_RegisterNotify
   *   and the network event handlers installed via LF_Set_Network_Event all
   *   run on BACKGROUND WORKER THREADS. Inside a callback you MUST NOT:
   *       * touch UI controls directly (VCL / LCL / GDI / OpenGL context);
   *       * call any blocking LingoFuse function (LF_Call, LF_LocalCall,
-  *         LF_PrepareDone, LF_Shutdown) – this will deadlock;
-  *       * block for a long time – worker threads are a shared resource.
+  *         LF_PrepareDone, LF_Shutdown) - this will deadlock;
+  *       * block for a long time - worker threads are a shared resource.
   *   Offload heavy work to a dedicated thread, and marshal UI updates back
   *   to the main thread.
   *
-  * – [PITFALL] Callback exceptions are SILENTLY SWALLOWED by the library.
+  * - [PITFALL] Callback exceptions are SILENTLY SWALLOWED by the library.
   *   Do not rely on exceptions for control flow; log explicitly if you
   *   need diagnostics.
   *
-  * – [PITFALL] Callback parameter strings (such as the addr_ in
+  * - [PITFALL] Callback parameter strings (such as the addr_ in
   *   TLF_Network_Event) are typically valid ONLY DURING THE CALLBACK
   *   INVOCATION. Copy them (e.g. strdup / string assignment) before
   *   returning, if you need to retain them.
@@ -112,7 +112,7 @@ unit Z.LingoFuse_Export;
 interface
 
 const
-  C_LingoFuse_Edition = '3.06';
+  C_LingoFuse_Edition = '3.10';
 
 type
   (*
@@ -123,10 +123,11 @@ type
     * write, and manage its contents.
     *
     * Lifecycle:
-    *   – Created with LF_CreateData.
-    *   – Freed with LF_FreeData.
+    *   - Created with LF_CreateData (auto-recycled after 10 minutes idle)
+    *     or LF_CreateData_Permanent (never auto-recycled).
+    *   - Freed with LF_FreeData.
     *
-    * [PITFALL] A data handle that is never touched for 5 minutes is
+    * [PITFALL] A data handle that is never touched for 10 minutes is
     *   automatically reclaimed by the internal idle pool. The reclamation
     *   runs asynchronously on the main thread, and a log line like
     *   `hint: Data handle pool "N" handles were idle...` is emitted. If
@@ -135,7 +136,7 @@ type
     *
     * [PITFALL] LF_FreeData is a no-op while the simulated main thread is
     *   not active (i.e. before LF_PrepareDone or after LF_ExitMainThread).
-    *   This is by design – it avoids double-free during library
+    *   This is by design - it avoids double-free during library
     *   initialisation/finalisation.
   *)
   TDataHnd___ = Pointer;
@@ -150,7 +151,7 @@ type
     *   TLF_App. It only detaches the app from all clients and stops
     *   sequenced notification threads. The object stays alive in the
     *   global LF_App_Pool until LF_Shutdown, which frees it for real.
-    *   After LF_FreeApp, treat the handle as invalid – do not register
+    *   After LF_FreeApp, treat the handle as invalid - do not register
     *   APIs or perform calls through it.
   *)
   TAppHnd___ = Pointer;
@@ -208,27 +209,27 @@ type
     *
     * Connect path:
     *   TC40_LF_Client.cmd_update_service_api_info
-    *     → (on first service-info broadcast) Do_LF_Network_Connect
-    *     → TCompute.RunC(...) → On_Network_Connect_Event(addr_)
+    *     -> (on first service-info broadcast) Do_LF_Network_Connect
+    *     -> TCompute.RunC(...) -> On_Network_Connect_Event(addr_)
     *
     * Disconnect path:
     *   TC40_LF_Client.DoNetworkOffline
-    *     → Do_LF_Network_Disconnect
-    *     → TCompute.RunC(...) → On_Network_Disconnect_Event(addr_)
+    *     -> Do_LF_Network_Disconnect
+    *     -> TCompute.RunC(...) -> On_Network_Disconnect_Event(addr_)
     *
     * ===========================================================================
     * SEMANTIC CONTRACT
     * ===========================================================================
     *
-    * – "Connect" is NOT the same as "TCP handshake completed". It fires only
+    * - "Connect" is NOT the same as "TCP handshake completed". It fires only
     *   after the client has received its FIRST service-API-info broadcast
     *   from the server. That is the earliest point at which remote routing
     *   can actually be performed.
     *
-    * – "Disconnect" fires when the physical link is lost.
+    * - "Disconnect" fires when the physical link is lost.
     *
-    * – Both events fire exactly ONCE per connection lifecycle:
-    *       * Connect fires once per `FService_Info_Is_Onlne` False → True
+    * - Both events fire exactly ONCE per connection lifecycle:
+    *       * Connect fires once per `FService_Info_Is_Onlne` False -> True
     *         transition.
     *       * Disconnect fires once per DoNetworkOffline invocation (i.e.
     *         actual link loss).
@@ -237,29 +238,29 @@ type
     * PITFALLS
     * ===========================================================================
     *
-    * [PITFALL – THREADING] The callback runs on a BACKGROUND TCompute WORKER
+    * [PITFALL - THREADING] The callback runs on a BACKGROUND TCompute WORKER
     *   THREAD. It is neither the caller thread nor the main thread. Never
     *   touch UI controls directly. Use main-thread marshalling
     *   (e.g. TThread.Queue, Synchronize) if UI update is required.
     *
-    * [PITFALL – LIFETIME] The addr_ parameter is a raw UTF-8 PAnsiChar
+    * [PITFALL - LIFETIME] The addr_ parameter is a raw UTF-8 PAnsiChar
     *   buffer owned by the library. It is released IMMEDIATELY AFTER this
     *   callback returns (via TLF_String.FreeUTF8AnsiChar). DO NOT retain
     *   the pointer, and DO NOT free it. Copy the content (e.g. strdup in
     *   C, string assignment in Pascal) if you need it beyond the call.
     *
-    * [PITFALL – EXCEPTIONS] Exceptions raised inside the callback are
+    * [PITFALL - EXCEPTIONS] Exceptions raised inside the callback are
     *   silently swallowed by the library. Do not use exceptions for
     *   control flow here; log explicitly if you need diagnostics.
     *
-    * [PITFALL – ABI] The callback MUST be declared cdecl to be
+    * [PITFALL - ABI] The callback MUST be declared cdecl to be
     *   ABI-compatible with the C export layer.
     *
-    * [PITFALL – BLOCKING] Never call blocking LingoFuse functions
+    * [PITFALL - BLOCKING] Never call blocking LingoFuse functions
     *   (LF_Call, LF_LocalCall, LF_PrepareDone, LF_Shutdown) inside this
     *   callback. It will deadlock.
     *
-    * [PITFALL – GLOBAL SCOPE] These events are process-global. There is
+    * [PITFALL - GLOBAL SCOPE] These events are process-global. There is
     *   currently no per-client registration API. If you need per-client
     *   callbacks, do the filtering yourself by inspecting addr_.
     *
@@ -295,8 +296,9 @@ type
     * @return A new TDataHnd___ (never nil). Must be freed with LF_FreeData.
     *
     * [PITFALL] The returned handle is tracked by an idle pool that
-    *   reclaims untouched handles after 5 minutes. Refresh it if you
-    *   need to keep it longer.
+    *   reclaims untouched handles after 10 minutes. Refresh it if you
+    *   need to keep it longer, or use LF_CreateData_Permanent to opt out
+    *   of automatic recycling entirely.
     *
     * @Example:
     *   TDataHnd___ d = LF_CreateData("echo");
@@ -305,654 +307,811 @@ type
     *   // ... use d in a call ...
     *   LF_FreeData(d);
   *)
-function LF_CreateData(MethodName: pansichar): TDataHnd___; cdecl;
+  function LF_CreateData(MethodName: pansichar): TDataHnd___; cdecl;
 
-(*
-  * LF_FreeData: Destroys a data handle and releases all associated
-  * memory. After this call, the handle is invalid.
-  *
-  * @param Hnd  The handle to free (can be nil, does nothing).
-  *
-  * [PITFALL] If the simulated main thread is not active (i.e. before
-  *   LF_PrepareDone or after LF_ExitMainThread), the call is a NO-OP.
-  *   This is intentional – it avoids double-free during library
-  *   initialisation/finalisation.
-*)
-procedure LF_FreeData(Hnd: TDataHnd___); cdecl;
+  (*
+    * LF_CreateData_Permanent: Creates a new data handle initialised with
+    * the given API name, but NOT registered in the internal data pool.
+    * The internal buffer is empty (size = 0).
+    *
+    * Semantics:
+    *   - The handle is created with auto_recycle___ = False.
+    *   - It is NOT added to LF_DataPool, so TLF_DataPool.Progress (the
+    *     idle scanner that runs every 5 seconds on the main thread) will
+    *     NEVER reclaim it, regardless of how long it stays untouched.
+    *   - LF_FreeData releases the record IMMEDIATELY (synchronously),
+    *     rather than merely marking it as deleted for a later pool scan.
+    *
+    * When to use:
+    *   - Handles that must survive for the entire lifetime of the process
+    *     or for an unbounded period (cached request templates, long-lived
+    *     scratch buffers, entries in a global registry, etc.).
+    *
+    * When NOT to use:
+    *   - Short-lived or one-shot handles. For those, use LF_CreateData so
+    *     the pool can reclaim any handle you forget to free.
+    *
+    * @param MethodName  Null-terminated UTF-8 string naming the target API.
+    * @return A new TDataHnd___ (never nil). Must be freed with LF_FreeData.
+    *
+    * [PITFALL - LIFETIME] "Permanent" means "not automatically reclaimed",
+    *   NOT "never released". You are fully responsible for calling
+    *   LF_FreeData. There is no pool safety net: losing the pointer
+    *   leaks the handle for the lifetime of the process.
+    *
+    * [PITFALL - SYNCHRONOUS FREE] When LF_FreeData is called on a permanent
+    *   handle, the release happens inside that call. Do not touch the
+    *   handle after LF_FreeData returns.
+    *
+    * [PITFALL - NO-OP WINDOW] LF_FreeData is still a no-op while the
+    *   simulated main thread is not active (before LF_PrepareDone or
+    *   after LF_ExitMainThread). Permanent handles created in that
+    *   window stay allocated until the process terminates.
+    *
+    * [PITFALL - TIMESTAMPS IRRELEVANT] Every accessor (LF_GetSize,
+    *   LF_GetPos, LF_ReadBuffer, LF_WriteBuffer, ...) still updates the
+    *   handle's internal updated___ flag, but the pool scanner never
+    *   reads it for permanent handles.
+    *
+    * @Example (C):
+    *   static TDataHnd___ g_template = NULL;
+    *
+    *   void init_template(void) {
+    *       g_template = LF_CreateData_Permanent("myapi");
+    *       int hdr = 0x12345678;
+    *       LF_WriteBuffer(g_template, &hdr, sizeof(hdr));
+    *   }
+    *
+    *   void shutdown_template(void) {
+    *       LF_FreeData(g_template);   // released immediately
+    *       g_template = NULL;
+    *   }
+    *
+    * @Example (Pascal):
+    *   var
+    *     Template: TDataHnd___;
+    *   begin
+    *     Template := LF_CreateData_Permanent('myapi');
+    *     try
+    *       // use Template across many calls / long lifetimes
+    *     finally
+    *       LF_FreeData(Template);
+    *     end;
+    *   end;
+  *)
+  function LF_CreateData_Permanent(MethodName: pansichar): TDataHnd___; cdecl;
 
-(*
-  * LF_GetBuffer: Returns a direct pointer to the raw binary data in the
-  * handle. The pointer is valid until the handle is freed or the buffer
-  * is resized.
-  *
-  * @param Hnd  The data handle.
-  * @return Pointer to internal memory block, or nil if empty.
-  *
-  * [PITFALL] Do NOT free the returned pointer – it is owned by the handle.
-  * [PITFALL] The pointer becomes invalid as soon as the buffer is resized
-  *   (e.g. by LF_WriteBuffer or LF_SetSize).
-*)
-function LF_GetBuffer(Hnd: TDataHnd___): Pointer; cdecl;
+  (*
+    * LF_FreeData: Destroys a data handle and releases all associated
+    * memory. After this call, the handle is invalid.
+    *
+    * @param Hnd  The handle to free (can be nil, does nothing).
+    *
+    * [PITFALL] If the simulated main thread is not active (i.e. before
+    *   LF_PrepareDone or after LF_ExitMainThread), the call is a NO-OP.
+    *   This is intentional - it avoids double-free during library
+    *   initialisation/finalisation.
+    *
+    * [PITFALL] For auto-recycled handles (created with LF_CreateData),
+    *   this only sets the deleted___ flag; the actual release happens on
+    *   the next TLF_DataPool.Progress scan (at most 5 seconds later).
+    *   For permanent handles, the release is synchronous.
+  *)
+  procedure LF_FreeData(Hnd: TDataHnd___); cdecl;
 
-(*
-  * LF_WriteBuffer: Appends or overwrites binary data into the handle's
-  * buffer at the current position. The position advances by the number of
-  * bytes written. The buffer is automatically enlarged if needed.
-  *
-  * @param Hnd   The data handle.
-  * @param Buff  Source data pointer.
-  * @param Size  Number of bytes to write.
-  * @return Number of bytes written (normally equals Size).
-*)
-function LF_WriteBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; cdecl;
+  (*
+    * LF_GetBuffer: Returns a direct pointer to the raw binary data in the
+    * handle. The pointer is valid until the handle is freed or the buffer
+    * is resized.
+    *
+    * @param Hnd  The data handle.
+    * @return Pointer to internal memory block, or nil if empty.
+    *
+    * [PITFALL] Do NOT free the returned pointer - it is owned by the handle.
+    * [PITFALL] The pointer becomes invalid as soon as the buffer is resized
+    *   (e.g. by LF_WriteBuffer or LF_SetSize).
+    * [PITFALL] This call refreshes the handle's idle timestamp, protecting
+    *   it from the 10-minute auto-recycle.
+  *)
+  function LF_GetBuffer(Hnd: TDataHnd___): Pointer; cdecl;
 
-(*
-  * LF_ReadBuffer: Reads binary data from the handle's buffer into the
-  * caller's buffer, starting at the current position. The position
-  * advances by the number of bytes actually read.
-  *
-  * @param Hnd   The data handle.
-  * @param Buff  Destination buffer.
-  * @param Size  Maximum number of bytes to read.
-  * @return Number of bytes actually read (may be less than Size if EOF).
-*)
-function LF_ReadBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; cdecl;
+  (*
+    * LF_WriteBuffer: Appends or overwrites binary data into the handle's
+    * buffer at the current position. The position advances by the number of
+    * bytes written. The buffer is automatically enlarged if needed.
+    *
+    * @param Hnd   The data handle.
+    * @param Buff  Source data pointer.
+    * @param Size  Number of bytes to write.
+    * @return Number of bytes written (normally equals Size).
+    *
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  function LF_WriteBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; cdecl;
 
-(*
-  * LF_GetPos: Returns the current read/write position (zero-based).
-  * @param Hnd  The data handle.
-  * @return Current offset in bytes.
-*)
-function LF_GetPos(Hnd: TDataHnd___): int64; cdecl;
+  (*
+    * LF_ReadBuffer: Reads binary data from the handle's buffer into the
+    * caller's buffer, starting at the current position. The position
+    * advances by the number of bytes actually read.
+    *
+    * @param Hnd   The data handle.
+    * @param Buff  Destination buffer.
+    * @param Size  Maximum number of bytes to read.
+    * @return Number of bytes actually read (may be less than Size if EOF).
+    *
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  function LF_ReadBuffer(Hnd: TDataHnd___; Buff: Pointer; Size: int64): int64; cdecl;
 
-(*
-  * LF_SetPos: Sets the current read/write position. If the new position
-  * is beyond the current size, the buffer is extended with zero bytes.
-  * @param Hnd   The data handle.
-  * @param Pos_  New position (must be >= 0).
-*)
-procedure LF_SetPos(Hnd: TDataHnd___; Pos_: int64); cdecl;
+  (*
+    * LF_GetPos: Returns the current read/write position (zero-based).
+    * @param Hnd  The data handle.
+    * @return Current offset in bytes.
+    *
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  function LF_GetPos(Hnd: TDataHnd___): int64; cdecl;
 
-(*
-  * LF_GetSize: Returns the total size (in bytes) of the data stored in
-  * the handle.
-  * @param Hnd  The data handle.
-  * @return Current buffer size.
-*)
-function LF_GetSize(Hnd: TDataHnd___): int64; cdecl;
+  (*
+    * LF_SetPos: Sets the current read/write position. If the new position
+    * is beyond the current size, the buffer is extended with zero bytes.
+    * @param Hnd   The data handle.
+    * @param Pos_  New position (must be >= 0).
+    *
+    * [PITFALL] Setting a huge position may allocate a large buffer.
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  procedure LF_SetPos(Hnd: TDataHnd___; Pos_: int64); cdecl;
 
-(*
-  * LF_SetSize: Resizes the internal buffer to the specified size.
-  * If larger, the added space is uninitialised; if smaller, data beyond
-  * the new size is discarded.
-  * @param Hnd    The data handle.
-  * @param Size_  New desired size in bytes.
-*)
-procedure LF_SetSize(Hnd: TDataHnd___; Size_: int64); cdecl;
+  (*
+    * LF_GetSize: Returns the total size (in bytes) of the data stored in
+    * the handle.
+    * @param Hnd  The data handle.
+    * @return Current buffer size.
+    *
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  function LF_GetSize(Hnd: TDataHnd___): int64; cdecl;
 
-(*
-  * LF_CreateApp: Creates a new application context with the given name
-  * and description. The handle encapsulates a TLF_App object that can host
-  * a set of APIs. It must be detached with LF_FreeApp.
-  *
-  * @param appName  Unique application identifier (UTF-8). Matching on the
-  *                 wire is case-insensitive.
-  * @param Desc     Human-readable description (UTF-8, can be empty –
-  *                 empty is replaced by "No Description").
-  * @return A new TAppHnd___ (never nil).
-  *
-  * [PITFALL] The app name is the routing key on the network. Two apps with
-  *   the same name on the same service may cause ambiguous routing. Use
-  *   LF_Generate_AppName to produce a collision-free name when needed.
-*)
-function LF_CreateApp(appName, Desc: pansichar): TAppHnd___; cdecl;
+  (*
+    * LF_SetSize: Resizes the internal buffer to the specified size.
+    * If larger, the added space is uninitialised; if smaller, data beyond
+    * the new size is discarded.
+    * @param Hnd    The data handle.
+    * @param Size_  New desired size in bytes.
+    *
+    * [PITFALL] Newly added space is UNINITIALISED. Do not read from it
+    *   without first writing to it.
+    * [PITFALL] Refreshes the handle's idle timestamp.
+  *)
+  procedure LF_SetSize(Hnd: TDataHnd___; Size_: int64); cdecl;
 
-(*
-  * LF_FreeApp: Detaches an application from all clients and stops its
-  * sequenced notification threads, but does NOT immediately destroy the
-  * underlying TLF_App object.
-  *
-  * The object remains alive in the global LF_App_Pool until LF_Shutdown
-  * is called, which then frees it forcibly.
-  *
-  * Why two-phase destruction?
-  *   – Network broadcasts and per-(app,api) sequenced threads may still
-  *     hold references while they drain their queues. Destroying the
-  *     app immediately would cause dangling pointers on those threads.
-  *   – LF_Shutdown is the single synchronisation point where it is safe
-  *     to release everything.
-  *
-  * After calling LF_FreeApp, treat the handle as INVALID:
-  *   – Do not register new APIs through it.
-  *   – Do not call LF_BindApp on it.
-  *   – Do not pass it to LF_LocalCall / LF_LocalNotify.
-  *
-  * @param appHnd  The application handle to detach (can be nil).
-  *
-  * [PITFALL] LF_FreeApp does NOT free the handle. Forgetting LF_Shutdown
-  *   will leave the underlying app alive for the lifetime of the process.
-*)
-procedure LF_FreeApp(appHnd: TAppHnd___); cdecl;
+  (*
+    * LF_CreateApp: Creates a new application context with the given name
+    * and description. The handle encapsulates a TLF_App object that can host
+    * a set of APIs. It must be detached with LF_FreeApp.
+    *
+    * @param appName  Unique application identifier (UTF-8). Matching on the
+    *                 wire is case-insensitive.
+    * @param Desc     Human-readable description (UTF-8, can be empty -
+    *                 empty is replaced by "No Description").
+    * @return A new TAppHnd___ (never nil).
+    *
+    * [PITFALL] The app name is the routing key on the network. Two apps with
+    *   the same name on the same service may cause ambiguous routing. Use
+    *   LF_Generate_AppName to produce a collision-free name when needed.
+  *)
+  function LF_CreateApp(appName, Desc: pansichar): TAppHnd___; cdecl;
 
-(*
-  * LF_Generate_AppName: Generates a globally unique application name string.
-  *
-  * The name is built by concatenating:
-  *   – All active C4 physics tunnel addresses and remote IDs,
-  *   – The current process name (with PID),
-  *   – A monotonically increasing counter (per call).
-  *
-  * This ensures that each call produces a distinct identifier, suitable for
-  * point-to-point communication where each node must have a unique identity.
-  *
-  * ===========================================================================
-  * [PITFALL – CRITICAL] RETURNED POINTER IS VALID FOR ONLY ~5 SECONDS
-  * ===========================================================================
-  *
-  * The library automatically frees the underlying memory after 5 seconds
-  * (via Z.Notify.DelayFreeMem). The caller MUST copy the content
-  * immediately:
-  *
-  *   Pascal:
-  *     var s: string;
-  *     s := UTF8ToString(LF_Generate_AppName());   // copy now
-  *
-  *   C:
-  *     char* uniqueName = LF_Generate_AppName();
-  *     char* copy = strdup(uniqueName);            // MUST copy immediately
-  *     // use copy...
-  *     free(copy);
-  *
-  * Failure to copy will result in accessing freed memory.
-  *
-  * @return PAnsiChar pointing to a null-terminated UTF-8 string.
-*)
-function LF_Generate_AppName(): pansichar; cdecl;
+  (*
+    * LF_FreeApp: Detaches an application from all clients and stops its
+    * sequenced notification threads, but does NOT immediately destroy the
+    * underlying TLF_App object.
+    *
+    * The object remains alive in the global LF_App_Pool until LF_Shutdown
+    * is called, which then frees it forcibly.
+    *
+    * Why two-phase destruction?
+    *   - Network broadcasts and per-(app,api) sequenced threads may still
+    *     hold references while they drain their queues. Destroying the
+    *     app immediately would cause dangling pointers on those threads.
+    *   - LF_Shutdown is the single synchronisation point where it is safe
+    *     to release everything.
+    *
+    * After calling LF_FreeApp, treat the handle as INVALID:
+    *   - Do not register new APIs through it.
+    *   - Do not call LF_BindApp on it.
+    *   - Do not pass it to LF_LocalCall / LF_LocalNotify.
+    *
+    * @param appHnd  The application handle to detach (can be nil).
+    *
+    * [PITFALL] LF_FreeApp does NOT free the handle. Forgetting LF_Shutdown
+    *   will leave the underlying app alive for the lifetime of the process.
+  *)
+  procedure LF_FreeApp(appHnd: TAppHnd___); cdecl;
 
-(*
-  * LF_Get_AppName: Retrieves the application name associated with the
-  * given application handle.
-  *
-  * ===========================================================================
-  * [PITFALL – CRITICAL] RETURNED POINTER IS VALID FOR ONLY ~5 SECONDS
-  * ===========================================================================
-  *
-  * Same contract as LF_Generate_AppName – copy immediately.
-  *
-  * @param appHnd The application handle (TLF_App) whose name is queried.
-  * @return PAnsiChar pointing to the UTF-8 encoded name stored in the app.
-*)
-function LF_Get_AppName(appHnd: TAppHnd___): pansichar; cdecl;
+  (*
+    * LF_Generate_AppName: Generates a globally unique application name string.
+    *
+    * The name is built by concatenating:
+    *   - All active C4 physics tunnel addresses and remote IDs,
+    *   - The current process name (with PID),
+    *   - A monotonically increasing counter (per call).
+    *
+    * This ensures that each call produces a distinct identifier, suitable for
+    * point-to-point communication where each node must have a unique identity.
+    *
+    * ===========================================================================
+    * [PITFALL - CRITICAL] RETURNED POINTER IS VALID FOR ONLY ~5 SECONDS
+    * ===========================================================================
+    *
+    * The library automatically frees the underlying memory after 5 seconds
+    * (via Z.Notify.DelayFreeMem). The caller MUST copy the content
+    * immediately:
+    *
+    *   Pascal:
+    *     var s: string;
+    *     s := UTF8ToString(LF_Generate_AppName());   // copy now
+    *
+    *   C:
+    *     char* uniqueName = LF_Generate_AppName();
+    *     char* copy = strdup(uniqueName);            // MUST copy immediately
+    *     // use copy...
+    *     free(copy);
+    *
+    * Failure to copy will result in accessing freed memory.
+    *
+    * @return PAnsiChar pointing to a null-terminated UTF-8 string.
+  *)
+  function LF_Generate_AppName(): pansichar; cdecl;
 
-(*
-  * LF_BindApp: Binds an application to all currently UNBOUND LingoFuse
-  * clients. Each client can host at most one app.
-  *
-  * @param appHnd The application handle to bind.
-  * @return The number of clients to which the application was successfully
-  *         bound. A return value of 0 indicates that either:
-  *             (a) the simulated main thread is not active, or
-  *             (b) all existing clients already host an app.
-  *
-  * ===========================================================================
-  * [PITFALL – ORDERING] MUST be called AFTER LF_PrepareDone has been
-  *   invoked AND the simulated main thread is active. Calling it earlier
-  *   logs an error and returns 0 without binding anything.
-  * ===========================================================================
-  *
-  * ===========================================================================
-  * [PITFALL – ONE APP PER CLIENT] A client hosting an app is skipped by
-  *   subsequent LF_BindApp calls. To host multiple apps, either use the
-  *   Overlap_Connection = True option when preparing clients, or bind
-  *   different appHnd values to different clients.
-  * ===========================================================================
-  *
-  * On success, the function logs the app name, description, connection
-  * details, and every registered API (with mode Call / Notify).
-*)
-function LF_BindApp(appHnd: TAppHnd___): Integer; cdecl;
+  (*
+    * LF_Get_AppName: Retrieves the application name associated with the
+    * given application handle.
+    *
+    * ===========================================================================
+    * [PITFALL - CRITICAL] RETURNED POINTER IS VALID FOR ONLY ~5 SECONDS
+    * ===========================================================================
+    *
+    * Same contract as LF_Generate_AppName - copy immediately.
+    *
+    * @param appHnd The application handle (TLF_App) whose name is queried.
+    * @return PAnsiChar pointing to the UTF-8 encoded name stored in the app,
+    *         or nil if appHnd is nil.
+  *)
+  function LF_Get_AppName(appHnd: TAppHnd___): pansichar; cdecl;
 
-(*
-  * LF_RegisterCall: Registers a Call-mode API within the application.
-  *
-  * @param appHnd      The application handle.
-  * @param MethodName  Unique API name (UTF-8, matching is case-insensitive).
-  * @param Desc        Optional description (UTF-8).
-  * @param Trigger     User data passed to the callback.
-  * @param OnCall      cdecl function pointer implementing the API.
-  * @return 1 if registration succeeded, 0 if the API name already exists.
-  *
-  * [PITFALL] OnCall MUST be declared cdecl. Using the default Pascal
-  *   convention will corrupt the stack on C ABI invocation.
-  *
-  * [PITFALL] Registering the same MethodName twice is a no-op (returns 0).
-  *   Unregister with LF_Unregister first if you need to replace it.
-  *
-  * [PITFALL] This triggers a network broadcast of the API list. It is
-  *   coalesced by the service side with a ~2 second delay window.
-  *
-  * @Example (C):
-  *   static void __cdecl MyCall(void* trigger, void* input, void* output) {
-  *     // read input, write output
-  *   }
-  *   LF_RegisterCall(app, "echo", "Echo", NULL, MyCall);
-*)
-function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): Integer; cdecl;
+  (*
+    * LF_BindApp: Binds an application to all currently UNBOUND LingoFuse
+    * clients. Each client can host at most one app.
+    *
+    * @param appHnd The application handle to bind.
+    * @return The number of clients to which the application was successfully
+    *         bound. A return value of 0 indicates that either:
+    *             (a) the simulated main thread is not active, or
+    *             (b) all existing clients already host an app.
+    *
+    * ===========================================================================
+    * [PITFALL - ORDERING] MUST be called AFTER LF_PrepareDone has been
+    *   invoked AND the simulated main thread is active. Calling it earlier
+    *   logs an error and returns 0 without binding anything.
+    * ===========================================================================
+    *
+    * ===========================================================================
+    * [PITFALL - ONE APP PER CLIENT] A client hosting an app is skipped by
+    *   subsequent LF_BindApp calls. To host multiple apps, either use the
+    *   Overlap_Connection = True option when preparing clients, or bind
+    *   different appHnd values to different clients.
+    * ===========================================================================
+    *
+    * On success, the function logs the app name, description, connection
+    * details, and every registered API (with mode Call / Notify).
+  *)
+  function LF_BindApp(appHnd: TAppHnd___): Integer; cdecl;
 
-(*
-  * LF_RegisterNotify: Registers a Notify-mode API.
-  *
-  * Similar to LF_RegisterCall but for one-way notifications. The callback
-  * receives only an input handle and produces no response.
-  *
-  * @return 1 on success, 0 if the name already exists.
-  *
-  * [PITFALL] OnNotify MUST be cdecl.
-*)
-function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): Integer; cdecl;
+  (*
+    * LF_RegisterCall: Registers a Call-mode API within the application.
+    *
+    * @param appHnd      The application handle.
+    * @param MethodName  Unique API name (UTF-8, matching is case-insensitive).
+    * @param Desc        Optional description (UTF-8).
+    * @param Trigger     User data passed to the callback.
+    * @param OnCall      cdecl function pointer implementing the API.
+    * @return 1 if registration succeeded, 0 if the API name already exists.
+    *
+    * [PITFALL] OnCall MUST be declared cdecl. Using the default Pascal
+    *   convention will corrupt the stack on C ABI invocation.
+    *
+    * [PITFALL] Registering the same MethodName twice is a no-op (returns 0).
+    *   Unregister with LF_Unregister first if you need to replace it.
+    *
+    * [PITFALL] This triggers a network broadcast of the API list. It is
+    *   coalesced by the service side with a ~2 second delay window.
+    *
+    * @Example (C):
+    *   static void __cdecl MyCall(void* trigger, void* input, void* output) {
+    *     // read input, write output
+    *   }
+    *   LF_RegisterCall(app, "echo", "Echo", NULL, MyCall);
+  *)
+  function LF_RegisterCall(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnCall: TLF_Call_Event): Integer; cdecl;
 
-(*
-  * LF_Unregister: Removes a previously registered API from the application.
-  *
-  * This function also triggers a network update broadcast. After calling
-  * LF_Unregister, the change is propagated to all connected C4 services and
-  * clients within approximately 2–3 seconds (the service side uses a
-  * coalescing window).
-  *
-  * @param appHnd      The application handle.
-  * @param MethodName  The name of the API to unregister (UTF-8).
-  * @return 1 on success, 0 if the API name does not exist.
-*)
-function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): Integer; cdecl;
+  (*
+    * LF_RegisterNotify: Registers a Notify-mode API.
+    *
+    * Similar to LF_RegisterCall but for one-way notifications. The callback
+    * receives only an input handle and produces no response.
+    *
+    * @return 1 on success, 0 if the name already exists.
+    *
+    * [PITFALL] OnNotify MUST be cdecl.
+  *)
+  function LF_RegisterNotify(appHnd: TAppHnd___; MethodName, Desc: pansichar; Trigger: Pointer; OnNotify: TLF_Notify_Event): Integer; cdecl;
 
-(*
-  * LF_LocalCall: Executes a Call-mode API locally within the application,
-  * bypassing the network. Synchronous.
-  *
-  * @param appHnd  The application handle.
-  * @param Param   Input data handle (created with LF_CreateData).
-  * @return A new TDataHnd___ with the result (size 0 if not found / error).
-  *
-  * [PITFALL] The INPUT handle is NOT freed by this function. Caller must
-  *   call LF_FreeData on it separately.
-  * [PITFALL] The RETURN handle is NEW – caller owns it and must free it.
-  *
-  * @Example:
-  *   TDataHnd___ d = LF_CreateData("echo");
-  *   LF_WriteBuffer(d, "hello", 5);
-  *   TDataHnd___ res = LF_LocalCall(app, d);
-  *   LF_FreeData(d);
-  *   // process res...
-  *   LF_FreeData(res);
-*)
-function LF_LocalCall(appHnd: TAppHnd___; Param: TDataHnd___): TDataHnd___; cdecl;
+  (*
+    * LF_Unregister: Removes a previously registered API from the application.
+    *
+    * This function also triggers a network update broadcast. After calling
+    * LF_Unregister, the change is propagated to all connected C4 services and
+    * clients within approximately 2-3 seconds (the service side uses a
+    * coalescing window).
+    *
+    * @param appHnd      The application handle.
+    * @param MethodName  The name of the API to unregister (UTF-8).
+    * @return 1 on success, 0 if the API name does not exist.
+  *)
+  function LF_Unregister(appHnd: TAppHnd___; MethodName: pansichar): Integer; cdecl;
 
-(*
-  * LF_LocalNotify: Sends a notification locally within the application.
-  * Synchronous, no result.
-  *
-  * [PITFALL] The input handle is NOT freed by this function. Caller must
-  *   free it separately.
-*)
-procedure LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___); cdecl;
+  (*
+    * LF_LocalCall: Executes a Call-mode API locally within the application,
+    * bypassing the network. Synchronous.
+    *
+    * @param appHnd  The application handle.
+    * @param Param   Input data handle (created with LF_CreateData).
+    * @return A new TDataHnd___ with the result (size 0 if not found / error).
+    *
+    * [PITFALL] The INPUT handle is NOT freed by this function. Caller must
+    *   call LF_FreeData on it separately.
+    * [PITFALL] The RETURN handle is NEW - caller owns it and must free it.
+    * [PITFALL] During execution, the input handle's calling___ counter is
+    *   incremented (Begin_Call / End_Call) to prevent the 10-minute
+    *   auto-recycle from firing while the call is in flight.
+    *
+    * @Example:
+    *   TDataHnd___ d = LF_CreateData("echo");
+    *   LF_WriteBuffer(d, "hello", 5);
+    *   TDataHnd___ res = LF_LocalCall(app, d);
+    *   LF_FreeData(d);
+    *   // process res...
+    *   LF_FreeData(res);
+  *)
+  function LF_LocalCall(appHnd: TAppHnd___; Param: TDataHnd___): TDataHnd___; cdecl;
 
-(*
-  * LF_PrepareService: Prepares or immediately creates a C4 service.
-  *
-  * This function can be called at any time – before or after LF_PrepareDone.
-  *   – Before LF_PrepareDone: the command is queued and started later.
-  *   – After  LF_PrepareDone: the service is created and started immediately
-  *     (dynamic addition).
-  *
-  * @param ListeningAddr_  Address to bind (UTF-8). Supported formats:
-  *          - IPv4:   "0.0.0.0" or "127.0.0.1:9898"
-  *          - IPv6:   "[::1]:8080" or "::1|8080"
-  *          - Domain: "myhost.com:9090"
-  *          - IPC:    "ipc:my_service" (port ignored)
-  *        Default port is 9898 if omitted.
-  * @param PhysicsAddr_    Public address advertised to clients (same format).
-  * @return A tag (integer ID) identifying this service, or -1 on failure.
-  *
-  * [PITFALL] Duplicate detection only runs when the simulated main thread
-  *   is ALREADY ACTIVE (`Init_Successed and Simulated_Main_Thread_Running`).
-  *   If you call LF_PrepareService twice before LF_PrepareDone with the
-  *   same listen address, you will get a "-1" only via the prepared-list
-  *   check. If you call it after LF_PrepareDone with a duplicate listen
-  *   address, you will get a "-1" via the runtime service-pool check.
-  *   In both cases, the function does not start a new service.
-  *
-  * @Example:
-  *   LF_ResetPrepare();
-  *   LF_PrepareService("0.0.0.0", "127.0.0.1:9898");   // TCP
-  *   LF_PrepareService("ipc:test", "ipc:test");        // IPC
-  *   LF_PrepareClient("127.0.0.1:9898", app);
-  *   LF_PrepareDone();
-*)
-function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): Integer; cdecl;
+  (*
+    * LF_LocalNotify: Sends a notification locally within the application.
+    * Synchronous, no result.
+    *
+    * [PITFALL] The input handle is NOT freed by this function. Caller must
+    *   free it separately.
+    * [PITFALL] Begin_Call / End_Call are used to protect the input handle
+    *   from auto-recycle during execution.
+  *)
+  procedure LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___); cdecl;
 
-(*
-  * LF_PrepareClient: Prepares or immediately creates a C4 client.
-  *
-  * @param PhysicsAddr_  Address of the remote service to connect to (same
-  *                      format as for LF_PrepareService).
-  * @param appHnd        Optional TAppHnd___. If non-nil, the client exposes
-  *                      this application; if nil, it acts as a consumer.
-  * @return A tag for this client, or -1 if a duplicate address is detected
-  *         (see below).
-  *
-  * ===========================================================================
-  * [PITFALL – Overlap_Connection SEMANTICS]
-  * ===========================================================================
-  *
-  * The behaviour regarding duplicate addresses is controlled by the global
-  * Overlap_Connection option (see LF_SetOption):
-  *
-  *   – Overlap_Connection = False (default):
-  *       * A single physical tunnel per remote address is reused.
-  *       * Only the FIRST appHnd for a given address takes effect.
-  *       * Subsequent calls with a different appHnd are SILENTLY IGNORED
-  *         (the tag is stored but no new client is created, so the app
-  *         never gets bound).
-  *       * This mode is appropriate for single-app-per-address setups.
-  *
-  *   – Overlap_Connection = True:
-  *       * A new physical tunnel is created for each call, even if the
-  *         same address already has one.
-  *       * Each call receives a unique tag and its appHnd is bound to a
-  *         dedicated client.
-  *       * This mode enables hosting multiple apps on the same service.
-  *
-  * ===========================================================================
-  * [PITFALL – Wait_Connection_ReadyOk SEMANTICS]
-  * ===========================================================================
-  *
-  * The Wait_Connection_ReadyOk / Wait_Connection_Timeout options only take
-  * effect when LF_PrepareClient is called WHILE THE SIMULATED MAIN THREAD
-  * IS ALREADY ACTIVE (i.e. after LF_PrepareDone has already returned 1).
-  *
-  * If you prepare clients BEFORE LF_PrepareDone, the wait is performed
-  * inside the simulated main thread's startup sequence (see
-  * Simulated_Main_Thread in Z.LingoFuse_Export.pas), which uses the same
-  * Wait_Connection_Timeout value.
-  *
-  * ===========================================================================
-  *
-  * The client automatically reconnects if the connection is lost; on
-  * reconnection, the application (if provided) is re-registered.
-  *
-  * @Example:
-  *   LF_PrepareClient("127.0.0.1:9898", nil);   // consumer only
-  *   LF_PrepareClient("ipc:test", app);        // provide APIs via app
-*)
-function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): Integer; cdecl;
+  (*
+    * LF_PrepareService: Prepares or immediately creates a C4 service.
+    *
+    * This function can be called at any time - before or after LF_PrepareDone.
+    *   - Before LF_PrepareDone: the command is queued and started later.
+    *   - After  LF_PrepareDone: the service is created and started immediately
+    *     (dynamic addition).
+    *
+    * @param ListeningAddr_  Address to bind (UTF-8). Supported formats:
+    *          - IPv4:   "0.0.0.0" or "127.0.0.1:9898"
+    *          - IPv6:   "[::1]:8080" or "::1|8080"
+    *          - Domain: "myhost.com:9090"
+    *          - IPC:    "ipc:my_service" (port ignored)
+    *        Default port is 9898 if omitted.
+    * @param PhysicsAddr_    Public address advertised to clients (same format).
+    * @return A tag (integer ID) identifying this service, or -1 on failure.
+    *
+    * [PITFALL] Duplicate detection only runs when the simulated main thread
+    *   is ALREADY ACTIVE (`Init_Successed and Simulated_Main_Thread_Running`).
+    *   If you call LF_PrepareService twice before LF_PrepareDone with the
+    *   same listen address, you will get a "-1" only via the prepared-list
+    *   check. If you call it after LF_PrepareDone with a duplicate listen
+    *   address, you will get a "-1" via the runtime service-pool check.
+    *   In both cases, the function does not start a new service.
+    *
+    * @Example:
+    *   LF_ResetPrepare();
+    *   LF_PrepareService("0.0.0.0", "127.0.0.1:9898");   // TCP
+    *   LF_PrepareService("ipc:test", "ipc:test");        // IPC
+    *   LF_PrepareClient("127.0.0.1:9898", app);
+    *   LF_PrepareDone();
+  *)
+  function LF_PrepareService(ListeningAddr_, PhysicsAddr_: pansichar): Integer; cdecl;
 
-(*
-  * LF_ResetPrepare: Clears all previously prepared services and clients.
-  * Call this before preparing a new set to avoid conflicts.
-  *
-  * [PITFALL] This function does not affect already running services or
-  *   clients – it only clears the preparation queue. Use LF_Shutdown to
-  *   tear down running instances.
-*)
-procedure LF_ResetPrepare(); cdecl;
+  (*
+    * LF_PrepareClient: Prepares or immediately creates a C4 client.
+    *
+    * @param PhysicsAddr_  Address of the remote service to connect to (same
+    *                      format as for LF_PrepareService).
+    * @param appHnd        Optional TAppHnd___. If non-nil, the client exposes
+    *                      this application; if nil, it acts as a consumer.
+    * @return A tag for this client, or -1 if a duplicate address is detected
+    *         (see below).
+    *
+    * ===========================================================================
+    * [PITFALL - Overlap_Connection SEMANTICS]
+    * ===========================================================================
+    *
+    * The behaviour regarding duplicate addresses is controlled by the global
+    * Overlap_Connection option (see LF_SetOption):
+    *
+    *   - Overlap_Connection = False (default):
+    *       * A single physical tunnel per remote address is reused.
+    *       * Only the FIRST appHnd for a given address takes effect.
+    *       * Subsequent calls with a different appHnd are SILENTLY IGNORED
+    *         (the tag is stored but no new client is created, so the app
+    *         never gets bound).
+    *       * This mode is appropriate for single-app-per-address setups.
+    *
+    *   - Overlap_Connection = True:
+    *       * A new physical tunnel is created for each call, even if the
+    *         same address already has one.
+    *       * Each call receives a unique tag and its appHnd is bound to a
+    *         dedicated client.
+    *       * This mode enables hosting multiple apps on the same service.
+    *
+    * ===========================================================================
+    * [PITFALL - Wait_Connection_ReadyOk SEMANTICS]
+    * ===========================================================================
+    *
+    * The Wait_Connection_ReadyOk / Wait_Connection_Timeout options only take
+    * effect when LF_PrepareClient is called WHILE THE SIMULATED MAIN THREAD
+    * IS ALREADY ACTIVE (i.e. after LF_PrepareDone has already returned 1).
+    *
+    * If you prepare clients BEFORE LF_PrepareDone, the wait is performed
+    * inside the simulated main thread's startup sequence (see
+    * Simulated_Main_Thread in Z.LingoFuse_Export.pas), which uses the same
+    * Wait_Connection_Timeout value.
+    *
+    * ===========================================================================
+    *
+    * The client automatically reconnects if the connection is lost; on
+    * reconnection, the application (if provided) is re-registered.
+    *
+    * @Example:
+    *   LF_PrepareClient("127.0.0.1:9898", nil);   // consumer only
+    *   LF_PrepareClient("ipc:test", app);        // provide APIs via app
+  *)
+  function LF_PrepareClient(PhysicsAddr_: pansichar; appHnd: TAppHnd___): Integer; cdecl;
 
-(*
-  * LF_PrepareDone: Starts the C4 framework with all prepared services and
-  * clients. Blocks until the framework is initialised. Also launches the
-  * simulated main thread that runs the C4 progress loop.
-  *
-  * @return 1 if successful, 0 on failure.
-  *
-  * [PITFALL] Do NOT call this twice without resetting first. If the
-  *   simulated main thread is already running, this function returns 0
-  *   immediately (no double-start).
-  *
-  * [PITFALL] If Wait_Connection_ReadyOk is True (default), this call
-  *   blocks up to Wait_Connection_Timeout (default 30 seconds) waiting
-  *   for all prepared clients to become online. Increase the timeout if
-  *   your network is slow.
-  *
-  * [PITFALL] On failure, check the log via LF_GetStatus (but only after
-  *   the simulated main thread is active).
-*)
-function LF_PrepareDone: Integer; cdecl;
+  (*
+    * LF_ResetPrepare: Clears all previously prepared services and clients.
+    * Call this before preparing a new set to avoid conflicts.
+    *
+    * [PITFALL] This function does not affect already running services or
+    *   clients - it only clears the preparation queue. Use LF_Shutdown to
+    *   tear down running instances.
+  *)
+  procedure LF_ResetPrepare(); cdecl;
 
-(*
-  * LF_ExitMainThread: Signals the simulated main thread to exit gracefully.
-  * After this call, the network loop stops, but resources are not freed.
-  *
-  * [PITFALL] You should still call LF_Shutdown for a full cleanup.
-  * [PITFALL] Safe to call repeatedly.
-  * [PITFALL] After exiting, you may call LF_PrepareDone again to restart
-  *   the framework.
-*)
-procedure LF_ExitMainThread; cdecl;
+  (*
+    * LF_PrepareDone: Starts the C4 framework with all prepared services and
+    * clients. Blocks until the framework is initialised. Also launches the
+    * simulated main thread that runs the C4 progress loop.
+    *
+    * @return 1 if successful, 0 on failure.
+    *
+    * [PITFALL] Do NOT call this twice without resetting first. If the
+    *   simulated main thread is already running, this function returns 0
+    *   immediately (no double-start).
+    *
+    * [PITFALL] If Wait_Connection_ReadyOk is True (default), this call
+    *   blocks up to Wait_Connection_Timeout (default 30 seconds) waiting
+    *   for all prepared clients to become online. Increase the timeout if
+    *   your network is slow.
+    *
+    * [PITFALL] On failure, check the log via LF_GetStatus (but only after
+    *   the simulated main thread is active).
+  *)
+  function LF_PrepareDone: Integer; cdecl;
 
-(*
-  * LF_Call: Performs a synchronous remote (or local) call.
-  * Blocks until the response is received or the timeout expires.
-  *
-  * @param appName   Target application name (UTF-8, case-insensitive).
-  * @param Param     Input data handle. The function reads the buffer
-  *                  synchronously and serialises it for transmission; it
-  *                  does NOT take ownership of the handle.
-  * @param Timeout_  Maximum wait in milliseconds. 0 means infinite.
-  * @return A new TDataHnd___ with the result. If the call times out or
-  *         fails, the handle has size 0 (but is still valid).
-  *
-  * [PITFALL] The INPUT handle is NOT freed by this function. Caller must
-  *   free it separately with LF_FreeData.
-  * [PITFALL] The RESULT handle is NEW – caller owns it and must free it.
-  * [PITFALL] This call is synchronous and blocks the calling thread. Do
-  *   NOT call it from inside a callback (deadlock).
-  * [PITFALL] If no client is connected, the result is an empty handle.
-  *   Use LF_CheckApp or LF_CheckMainThread to probe first.
-  *
-  * [NOTE] The function first tries to find a local instance of the target
-  *   application to avoid a network round-trip.
-*)
-function LF_Call(appName: pansichar; Param: TDataHnd___; Timeout_: uint64): TDataHnd___; cdecl;
+  (*
+    * LF_ExitMainThread: Signals the simulated main thread to exit gracefully.
+    * After this call, the network loop stops, but resources are not freed.
+    *
+    * [PITFALL] You should still call LF_Shutdown for a full cleanup.
+    * [PITFALL] Safe to call repeatedly.
+    * [PITFALL] After exiting, you may call LF_PrepareDone again to restart
+    *   the framework.
+  *)
+  procedure LF_ExitMainThread; cdecl;
 
-(*
-  * LF_Notify: Sends a one-way notification.
-  * Returns immediately after the notification has been queued.
-  *
-  * @param appName  Target application name (UTF-8, case-insensitive).
-  * @param Param    Input data handle. Caller must free it separately with
-  *                 LF_FreeData after this call returns.
-  *
-  * [PITFALL] Notifications are NOT ordered. If ordering matters, use
-  *   LF_Sequenced_Notify instead.
-*)
-procedure LF_Notify(appName: pansichar; Param: TDataHnd___); cdecl;
+  (*
+    * LF_Call: Performs a synchronous remote (or local) call.
+    * Blocks until the response is received or the timeout expires.
+    *
+    * @param appName   Target application name (UTF-8, case-insensitive).
+    * @param Param     Input data handle. The function reads the buffer
+    *                  synchronously and serialises it for transmission; it
+    *                  does NOT take ownership of the handle.
+    * @param Timeout_  Maximum wait in milliseconds. 0 means infinite.
+    * @return A new TDataHnd___ with the result. If the call times out or
+    *         fails, the handle has size 0 (but is still valid).
+    *
+    * [PITFALL] The INPUT handle is NOT freed by this function. Caller must
+    *   free it separately with LF_FreeData.
+    * [PITFALL] The RESULT handle is NEW - caller owns it and must free it.
+    * [PITFALL] This call is synchronous and blocks the calling thread. Do
+    *   NOT call it from inside a callback (deadlock).
+    * [PITFALL] If no client is connected, the result is an empty handle.
+    *   Use LF_CheckApp or LF_CheckMainThread to probe first.
+    * [PITFALL] Begin_Call / End_Call are used to protect the input handle
+    *   from auto-recycle during the (potentially long) network round-trip.
+    *
+    * [NOTE] The function first tries to find a local instance of the target
+    *   application to avoid a network round-trip.
+  *)
+  function LF_Call(appName: pansichar; Param: TDataHnd___; Timeout_: uint64): TDataHnd___; cdecl;
 
-(*
-  * LF_Sequenced_Notify: Sends a one-way notification with FIFO ordering
-  * guarantee for the same (application, API) pair.
-  *
-  * The library maintains a dedicated thread per (app, api) key, which
-  * processes notifications sequentially. Large payloads are chunked
-  * internally. The call returns immediately after the data is queued.
-  *
-  * @param appName  Target application name (UTF-8, case-insensitive).
-  * @param Param    Input data handle. Caller must free it separately with
-  *                 LF_FreeData after this call returns.
-  *
-  * [PITFALL] The underlying per-key thread has a 5-minute idle timeout.
-  *   Threads terminate when idle and are re-created on demand. This is
-  *   transparent to callers.
-  * [PITFALL] Notifications are ordered PER (app, api) pair. There is no
-  *   cross-key ordering guarantee.
-*)
-procedure LF_Sequenced_Notify(appName: pansichar; Param: TDataHnd___); cdecl;
+  (*
+    * LF_Notify: Sends a one-way notification.
+    * Returns immediately after the notification has been queued.
+    *
+    * @param appName  Target application name (UTF-8, case-insensitive).
+    * @param Param    Input data handle. Caller must free it separately with
+    *                 LF_FreeData after this call returns.
+    *
+    * [PITFALL] Notifications are NOT ordered. If ordering matters, use
+    *   LF_Sequenced_Notify instead.
+    * [PITFALL] Begin_Call / End_Call protect the input handle during the
+    *   network submission.
+  *)
+  procedure LF_Notify(appName: pansichar; Param: TDataHnd___); cdecl;
 
-(*
-  * LF_CheckMainThread: Returns 1 if the simulated main thread (which runs
-  * the C4 progress loop) is currently active.
-  *
-  * [PITFALL] Before LF_PrepareDone and after LF_ExitMainThread this
-  *   returns 0. Remote communication is unavailable in that state.
-*)
-function LF_CheckMainThread(): Integer; cdecl;
+  (*
+    * LF_Sequenced_Notify: Sends a one-way notification with FIFO ordering
+    * guarantee for the same (application, API) pair.
+    *
+    * The library maintains a dedicated thread per (app, api) key, which
+    * processes notifications sequentially. Large payloads are chunked
+    * internally. The call returns immediately after the data is queued.
+    *
+    * @param appName  Target application name (UTF-8, case-insensitive).
+    * @param Param    Input data handle. Caller must free it separately with
+    *                 LF_FreeData after this call returns.
+    *
+    * [PITFALL] The underlying per-key thread has a 5-minute idle timeout.
+    *   Threads terminate when idle and are re-created on demand. This is
+    *   transparent to callers.
+    * [PITFALL] Notifications are ordered PER (app, api) pair. There is no
+    *   cross-key ordering guarantee.
+    * [PITFALL] Begin_Call / End_Call protect the input handle during the
+    *   network submission.
+  *)
+  procedure LF_Sequenced_Notify(appName: pansichar; Param: TDataHnd___); cdecl;
 
-(*
-  * LF_CheckApp: Checks whether an application with the given name is
-  * currently registered on the network (locally or remotely).
-  *
-  * @return 1 if at least one instance is available, 0 otherwise.
-  *
-  * [PITFALL] This is a point-in-time probe and does not guarantee that
-  *   the application will still be online at the moment of a subsequent
-  *   call.
-*)
-function LF_CheckApp(appName: pansichar): Integer; cdecl;
+  (*
+    * LF_CheckMainThread: Returns 1 if the simulated main thread (which runs
+    * the C4 progress loop) is currently active.
+    *
+    * [PITFALL] Before LF_PrepareDone and after LF_ExitMainThread this
+    *   returns 0. Remote communication is unavailable in that state.
+  *)
+  function LF_CheckMainThread(): Integer; cdecl;
 
-(*
-  * LF_CheckApi: Checks whether a specific API is available on the network
-  * for the given application.
-  *
-  * @return 1 if available on at least one instance, 0 otherwise.
-  *
-  * [PITFALL] Based on cached information; may not reflect recent changes.
-*)
-function LF_CheckApi(appName, apiName: pansichar): Integer; cdecl;
+  (*
+    * LF_CheckApp: Checks whether an application with the given name is
+    * currently registered on the network (locally or remotely).
+    *
+    * @return 1 if at least one instance is available, 0 otherwise.
+    *
+    * [PITFALL] This is a point-in-time probe and does not guarantee that
+    *   the application will still be online at the moment of a subsequent
+    *   call.
+  *)
+  function LF_CheckApp(appName: pansichar): Integer; cdecl;
 
-(*
-  * LF_SetOption: Dynamically adjusts global runtime options.
-  * All changes take effect immediately for subsequent operations.
-  *
-  * @param Option  Configuration key (UTF-8, case-insensitive).
-  * @param Value   New value (UTF-8).
-  *
-  * Supported keys and aliases:
-  *
-  *   === Authentication ===
-  *   - "password" / "passwd"
-  *       Sets the C4 P2PVM authentication token.
-  *
-  *   === Logging & Debugging ===
-  *   - "Quiet"
-  *       Enable/disable quiet mode. Suppresses most internal log messages.
-  *   - "ShowThreadID" / "ShowThread" / "Show_Thread"
-  *       Show thread IDs in log output.
-  *   - "ConsoleOutput" / "Console_Output"
-  *       Enable or disable console logging.
-  *
-  *   === Connection Readiness ===
-  *   - "Overlap_Connection" / "Overlap_Client" / "OverlapConnection" /
-  *     "OverlapClient" / "OverlapConnect"
-  *       Controls whether multiple independent C4 physics tunnels can be
-  *       created to the same remote address. See LF_PrepareClient for a
-  *       detailed semantics description.
-  *
-  *   - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
-  *     "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" / "WaitReady"
-  *       If True, LF_PrepareDone blocks until all prepared clients are
-  *       connected and their apps are online.
-  *
-  *   - "Wait_Connection_Timeout" / "Wait_TimeOut" /
-  *     "API_Prepare_Done_TimeOut" / "WaitTimeOut"
-  *       Timeout in milliseconds for the above wait.
-  *
-  *   === IPC (Inter-Process Communication) ===
-  *   - "IPC_Serv_ThreadCount" / "IPC_ThreadCount" /
-  *     "IPC_Server_ThreadCount"
-  *       Number of threads in the IPC server thread pool.
-  *   - "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength" /
-  *     "IPC_Server_MaxQueueLength"
-  *       Maximum length of the IPC message queue.
-  *   - "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize" / "IPC_Server_MaxMsgSize"
-  *       Maximum size (in bytes) of a single IPC message.
-  *
-  *   === Sequenced Notifications ===
-  *   - "Fixed_Sequenced_Time" / "Fixed_Sequenced_Life"
-  *       Idle timeout (in milliseconds) for the sequenced-notification
-  *       client-selection fallback. When the candidate with the oldest
-  *       timestamp is older than this value, the system falls back to the
-  *       newest client to avoid starvation. Default is 20 seconds.
-  *
-  * [PITFALL] Unknown options are SILENTLY IGNORED.
-  * [PITFALL] Changes are not persisted across restarts.
-*)
-procedure LF_SetOption(Option, Value: pansichar); cdecl;
+  (*
+    * LF_CheckApi: Checks whether a specific API is available on the network
+    * for the given application.
+    *
+    * @return 1 if available on at least one instance, 0 otherwise.
+    *
+    * [PITFALL] Based on cached information; may not reflect recent changes.
+  *)
+  function LF_CheckApi(appName, apiName: pansichar): Integer; cdecl;
 
-(*
-  * LF_GetStatusCount: Returns the number of pending log messages in the
-  * internal status buffer.
-  *
-  * [PITFALL] This only reflects messages that have been queued through the
-  *   DoStatus hook. It does not reflect messages still in flight.
-*)
-function LF_GetStatusCount(): Integer; cdecl;
+  (*
+    * LF_SetOption: Dynamically adjusts global runtime options.
+    * All changes take effect immediately for subsequent operations.
+    *
+    * @param Option  Configuration key (UTF-8, case-insensitive).
+    * @param Value   New value (UTF-8).
+    *
+    * Supported keys and aliases:
+    *
+    *   === Authentication ===
+    *   - "password" / "passwd"
+    *       Sets the C4 P2PVM authentication token.
+    *
+    *   === Logging & Debugging ===
+    *   - "Quiet"
+    *       Enable/disable quiet mode. Suppresses most internal log messages.
+    *   - "ShowThreadID" / "ShowThread" / "Show_Thread"
+    *       Show thread IDs in log output.
+    *   - "ConsoleOutput" / "Console_Output"
+    *       Enable or disable console logging.
+    *
+    *   === Connection Readiness ===
+    *   - "Overlap_Connection" / "Overlap_Client" / "OverlapConnection" /
+    *     "OverlapClient" / "OverlapConnect"
+    *       Controls whether multiple independent C4 physics tunnels can be
+    *       created to the same remote address. See LF_PrepareClient for a
+    *       detailed semantics description.
+    *
+    *   - "Wait_Connection_ReadyOk" / "Wait_API_Prepare_Done" /
+    *     "API_Prepare_Done_Wait" / "WaitConnect" / "Wait_Ready" / "WaitReady"
+    *       If True, LF_PrepareDone blocks until all prepared clients are
+    *       connected and their apps are online.
+    *
+    *   - "Wait_Connection_Timeout" / "Wait_TimeOut" /
+    *     "API_Prepare_Done_TimeOut" / "WaitTimeOut"
+    *       Timeout in milliseconds for the above wait.
+    *
+    *   === IPC (Inter-Process Communication) ===
+    *   - "IPC_Serv_ThreadCount" / "IPC_ThreadCount" /
+    *     "IPC_Server_ThreadCount"
+    *       Number of threads in the IPC server thread pool.
+    *   - "IPC_Serv_MaxQueueLength" / "IPC_MaxQueueLength" /
+    *     "IPC_Server_MaxQueueLength"
+    *       Maximum length of the IPC message queue.
+    *   - "IPC_Serv_MaxMsgSize" / "IPC_MaxMsgSize" / "IPC_Server_MaxMsgSize"
+    *       Maximum size (in bytes) of a single IPC message.
+    *
+    *   === Sequenced Notifications ===
+    *   - "Fixed_Sequenced_Time" / "Fixed_Sequenced_Life"
+    *       Idle timeout (in milliseconds) for the sequenced-notification
+    *       client-selection fallback. When the candidate with the oldest
+    *       timestamp is older than this value, the system falls back to the
+    *       newest client to avoid starvation. Default is 20 seconds.
+    *
+    *   === Data Handle Pool ===
+    *   - "DataHandle_Idle_Timeout" / "Data_Idle_Timeout" / "Idle_Timeout"
+    *       Idle-timeout in milliseconds for automatic data-handle
+    *       reclamation. A tracked handle that has not been accessed for
+    *       this long becomes a candidate for release on the next pool
+    *       scan.
+    *         >  0 : enabled (default: 600000 ms = 10 minutes).
+    *         <= 0 : disabled; only an explicit LF_FreeData call releases
+    *                a handle.
+    *
+    *       Notes:
+    *         - Any accessor call (LF_GetSize / LF_GetPos / LF_ReadBuffer /
+    *           LF_WriteBuffer / ...) refreshes the handle's idle timer and
+    *           postpones the timeout.
+    *         - A remote call in flight (calling___ > 0) also postpones it,
+    *           regardless of idle time.
+    *         - This option does NOT affect handles created with
+    *           LF_CreateData_Permanent; those are released synchronously by
+    *           LF_FreeData and never enter the idle path.
+    *
+    *   - "DataHandle_Pool_Scan_Interval" / "Data_Scan_Interval" /
+    *     "DataHandle_Scan_Interval"
+    *       Minimum interval in milliseconds between two consecutive scans
+    *       of the data-handle pool by TLF_DataPool.Progress.
+    *         >  0 : rate-limit enabled (default: 5000 ms = 5 seconds).
+    *         <= 0 : rate-limit disabled; every Progress() call scans.
+    *
+    *       Relationship with DataHandle_Idle_Timeout:
+    *         - DataHandle_Pool_Scan_Interval controls HOW OFTEN the pool
+    *           is scanned.
+    *         - DataHandle_Idle_Timeout controls WHEN a scanned handle is
+    *           actually released.
+    *         - A handle that becomes eligible at time T is typically
+    *           released at T plus up to one scan interval of latency.
+    *
+    *       Notes:
+    *         - Progress() is driven by the simulated main thread; its
+    *           effective call frequency is bounded below by the main
+    *           thread's tick granularity, not by this value alone.
+    *         - Setting this very low (< 1 second) is almost never useful:
+    *           the pool lock and the O(N) walk dominate the cost, while
+    *           the reclamation-latency improvement is negligible.
+    *         - Setting this to 0 disables the rate limiter, but does NOT
+    *           disable reclamation itself.
+    *
+    * [PITFALL] Unknown options are SILENTLY IGNORED.
+    * [PITFALL] Changes are not persisted across restarts.
+    *
+    * @Example (Pascal):
+    *   LF_SetOption('DataHandle_Idle_Timeout', '60000');        // 1 minute
+    *   LF_SetOption('DataHandle_Pool_Scan_Interval', '1000');   // 1 second
+    *   LF_SetOption('DataHandle_Idle_Timeout', '0');            // disabled
+    *)
+  procedure LF_SetOption(Option, Value: pansichar); cdecl;
 
-(*
-  * LF_GetStatus: Retrieves the next log message from the internal status
-  * buffer (FIFO order). The returned pointer points to a static 64-KB
-  * buffer that is valid only until the next call to this function.
-  *
-  * [PITFALL – BUFFER REUSE] The pointer is INVALIDATED by the next call
-  *   to LF_GetStatus. Copy the string immediately if you need to retain
-  *   it. Messages longer than 65,534 bytes are truncated.
-  *
-  * [PITFALL] This function relies on the simulated main thread to
-  *   process the status queue. Before LF_PrepareDone, the buffer may be
-  *   empty or contain stale data.
-  *
-  * @return PAnsiChar pointing to a null-terminated UTF-8 string, or an
-  *         empty string if no message is available.
-*)
-function LF_GetStatus(): pansichar; cdecl;
+  (*
+    * LF_GetStatusCount: Returns the number of pending log messages in the
+    * internal status buffer.
+    *
+    * [PITFALL] This only reflects messages that have been queued through the
+    *   DoStatus hook. It does not reflect messages still in flight.
+  *)
+  function LF_GetStatusCount(): Integer; cdecl;
 
-(*
-  * LF_PostStatus: Injects a user-supplied log message into the internal
-  * status buffer, as if it were generated by the library itself.
-  *
-  * @param status  Null-terminated UTF-8 string containing the message.
-  *
-  * [PITFALL] Before LF_PrepareDone, the message may be discarded or may
-  *   not appear in the buffer at all.
-*)
-procedure LF_PostStatus(status: pansichar); cdecl;
+  (*
+    * LF_GetStatus: Retrieves the next log message from the internal status
+    * buffer (FIFO order). The returned pointer points to a static 64-KB
+    * buffer that is valid only until the next call to this function.
+    *
+    * [PITFALL - BUFFER REUSE] The pointer is INVALIDATED by the next call
+    *   to LF_GetStatus. Copy the string immediately if you need to retain
+    *   it. Messages longer than 65,534 bytes are truncated.
+    *
+    * [PITFALL] This function relies on the simulated main thread to
+    *   process the status queue. Before LF_PrepareDone, the buffer may be
+    *   empty or contain stale data.
+    *
+    * @return PAnsiChar pointing to a null-terminated UTF-8 string, or an
+    *         empty string if no message is available.
+  *)
+  function LF_GetStatus(): pansichar; cdecl;
 
-(*
-  * LF_Shutdown: Gracefully terminates the entire LingoFuse framework.
-  *
-  * Steps:
-  *   1. Clears the network event callbacks (On_Network_).
-  *   2. Stops all sequenced notification threads.
-  *   3. Frees all remaining data handles.
-  *   4. Exits the simulated main thread.
-  *   5. Clears the global LF_App_Pool (this is where TLF_App objects are
-  *      finally destroyed – LF_FreeApp only detached them).
-  *   6. Unloads the IPC library and closes the core dispatch thread.
-  *
-  * [PITFALL] Safe to call multiple times.
-  * [PITFALL] Even if LF_FreeApp was never called for some apps, LF_Shutdown
-  *   ensures they are properly destroyed, preventing leaks.
-  * [PITFALL] After LF_Shutdown, the library is fully reset and can be
-  *   re-initialised by calling LF_PrepareService / LF_PrepareClient again
-  *   followed by LF_PrepareDone.
-*)
-procedure LF_Shutdown; cdecl;
+  (*
+    * LF_PostStatus: Injects a user-supplied log message into the internal
+    * status buffer, as if it were generated by the library itself.
+    *
+    * @param status  Null-terminated UTF-8 string containing the message.
+    *
+    * [PITFALL] Before LF_PrepareDone, the message is still enqueued (with a
+    *   diagnostic log line), but may not appear in the returned buffer
+    *   until the simulated main thread starts polling.
+  *)
+  procedure LF_PostStatus(status: pansichar); cdecl;
 
-(*
-  * TLF_Network_Event is defined above (see the type declaration for the
-  * full contract). This block documents the two global handler slots and
-  * the installer function.
-  *
-  * [PITFALL] Both handler slots are PROCESS-GLOBAL. Installing a handler
-  *   affects every LingoFuse client in the current process. There is no
-  *   per-client registration API.
-  *
-  * [PITFALL] The callbacks are stored as raw function pointers. In managed
-  *   languages (C#, Java, Python via ctypes) you MUST keep a strong
-  *   reference to the delegate / callback object to prevent it from being
-  *   garbage-collected while the library may still invoke it.
-  *
-  * [PITFALL] LF_Shutdown automatically clears both callbacks before
-  *   tearing down the framework. It is safe (but not required) to call
-  *   LF_Set_Network_Event(nil, nil) explicitly before LF_Shutdown.
-*)
+  (*
+    * LF_Shutdown: Gracefully terminates the entire LingoFuse framework.
+    *
+    * Steps:
+    *   1. Clears the network event callbacks (On_Network_).
+    *   2. Stops all sequenced notification threads.
+    *   3. Frees all remaining data handles.
+    *   4. Exits the simulated main thread.
+    *   5. Clears the global LF_App_Pool (this is where TLF_App objects are
+    *      finally destroyed - LF_FreeApp only detached them).
+    *   6. Unloads the IPC library and closes the core dispatch thread.
+    *
+    * [PITFALL] Safe to call multiple times.
+    * [PITFALL] Even if LF_FreeApp was never called for some apps, LF_Shutdown
+    *   ensures they are properly destroyed, preventing leaks.
+    * [PITFALL] After LF_Shutdown, the library is fully reset and can be
+    *   re-initialised by calling LF_PrepareService / LF_PrepareClient again
+    *   followed by LF_PrepareDone.
+  *)
+  procedure LF_Shutdown; cdecl;
+
+  (*
+    * TLF_Network_Event is defined above (see the type declaration for the
+    * full contract). This block documents the two global handler slots and
+    * the installer function.
+    *
+    * [PITFALL] Both handler slots are PROCESS-GLOBAL. Installing a handler
+    *   affects every LingoFuse client in the current process. There is no
+    *   per-client registration API.
+    *
+    * [PITFALL] The callbacks are stored as raw function pointers. In managed
+    *   languages (C#, Java, Python via ctypes) you MUST keep a strong
+    *   reference to the delegate / callback object to prevent it from being
+    *   garbage-collected while the library may still invoke it.
+    *
+    * [PITFALL] LF_Shutdown automatically clears both callbacks before
+    *   tearing down the framework. It is safe (but not required) to call
+    *   LF_Set_Network_Event(nil, nil) explicitly before LF_Shutdown.
+  *)
 var
   (*
     * On_Network_Connect_Event
@@ -1044,7 +1203,7 @@ begin
 end;
 
 (*
-  * Internal helper: DS – Decode UTF-8 string.
+  * Internal helper: DS - Decode UTF-8 string.
   *
   * Decodes a null-terminated UTF-8 string (PAnsiChar) into a TLF_String.
   * Used throughout the unit to convert external UTF-8 inputs to internal
@@ -1067,15 +1226,46 @@ end;
   * TMemory_Param_Tool, and returns the handle.
   *
   * [PITFALL] The returned handle is tracked by an idle pool with a
-  *   5-minute idle timeout. Refresh the handle periodically if you need
-  *   it to survive longer.
+  *   10-minute idle timeout. Refresh the handle periodically if you need
+  *   it to survive longer, or use LF_CreateData_Permanent to opt out
+  *   of automatic recycling.
 *)
-function LF_CreateData(MethodName: pansichar): TDataHnd___;
+function LF_CreateData(MethodName: pansichar): TDataHnd___; cdecl;
 var
   s: TLF_String;
 begin
   s := DS(MethodName);
-  Result := TLF_Data.New_Param(s);
+  Result := TLF_Data.New_Param(s, True);
+end;
+
+(*
+  * LF_CreateData_Permanent
+  *
+  * Creates a new data handle with the given API name, but with
+  * auto_recycle___ = False so that it is NOT added to LF_DataPool.
+  * Reads the UTF-8 name, creates a TLF_Data record with a
+  * TMemory_Param_Tool, and returns the handle.
+  *
+  * Because the handle is not tracked by the pool, TLF_DataPool.Progress
+  * will never reclaim it - regardless of how long it stays untouched.
+  * LF_FreeData releases it immediately (synchronously), rather than
+  * deferring the release to the next pool scan.
+  *
+  * [PITFALL] You are fully responsible for calling LF_FreeData. There is
+  *   no idle-timeout safety net: losing the pointer leaks the record for
+  *   the lifetime of the process.
+  *
+  * [PITFALL] LF_FreeData is a no-op while the simulated main thread is
+  *   not active (before LF_PrepareDone or after LF_ExitMainThread), so
+  *   permanent handles created in that window remain allocated until the
+  *   process terminates.
+*)
+function LF_CreateData_Permanent(MethodName: pansichar): TDataHnd___; cdecl;
+var
+  s: TLF_String;
+begin
+  s := DS(MethodName);
+  Result := TLF_Data.New_Param(s, False);
 end;
 
 (*
@@ -1086,6 +1276,9 @@ end;
   * [PITFALL] Only actually frees the handle when the simulated main
   *   thread is active. Before LF_PrepareDone or after LF_ExitMainThread,
   *   the call is a no-op (see the interface documentation for details).
+  *
+  * [PITFALL] For auto-recycled handles, this only marks the handle as
+  *   deleted; the actual release happens on the next Progress scan.
 *)
 procedure LF_FreeData(Hnd: TDataHnd___);
 begin
@@ -1099,7 +1292,7 @@ end;
   * Returns the raw data pointer from the TLF_Data record.
   *
   * [PITFALL] Updates the handle's last-access timestamp. This refreshes
-  *   the 5-minute idle countdown.
+  *   the 10-minute idle countdown.
   * [PITFALL] The pointer is valid only until the handle is freed or
   *   resized. Do not free the returned pointer.
 *)
@@ -1220,7 +1413,7 @@ end;
   * LF_FreeApp
   *
   * Detaches the app from all clients and stops sequenced notification
-  * threads. The TLF_App object itself is NOT destroyed here – it stays
+  * threads. The TLF_App object itself is NOT destroyed here - it stays
   * alive in LF_App_Pool until LF_Shutdown.
   *
   * [PITFALL] See the interface documentation for the full two-phase
@@ -1252,7 +1445,7 @@ end;
   * Builds a globally unique app name from active C4 tunnel info, the
   * process name + PID, and an atomic counter.
   *
-  * [PITFALL – CRITICAL] The returned UTF-8 pointer is auto-freed after
+  * [PITFALL - CRITICAL] The returned UTF-8 pointer is auto-freed after
   *   ~5 seconds (Z.Notify.DelayFreeMem(5.0, Result)). The caller MUST
   *   copy the content immediately.
 *)
@@ -1291,13 +1484,20 @@ end;
   *
   * Returns the app's Name field as UTF-8 PAnsiChar.
   *
-  * [PITFALL – CRITICAL] Same 5-second auto-free contract as
+  * [PITFALL - CRITICAL] Same 5-second auto-free contract as
   *   LF_Generate_AppName. Copy immediately.
+  *
+  * [PITFALL] Returns nil if appHnd is nil.
 *)
 function LF_Get_AppName(appHnd: TAppHnd___): pansichar;
 var
   app: TLF_App;
 begin
+  if appHnd = nil then
+    begin
+      Result := nil;
+      exit;
+    end;
   app := appHnd;
   Result := app.Name.BuildUTF8AnsiChar();
   Z.Notify.DelayFreeMem(5.0, Result); // auto-free after 5 seconds
@@ -1325,7 +1525,7 @@ begin
   app := appHnd;
   if not Simulator_Main_Thread_Activted then
     begin
-      DoStatus('LF_BindApp: Main thread is not active – cannot bind app.');
+      DoStatus('LF_BindApp: Main thread is not active - cannot bind app.');
       exit;
     end;
   arry := C40_ClientPool.FastSearchClass(TC40_LF_Client);
@@ -1356,7 +1556,7 @@ begin
         end;
     end;
   if Result = 0 then
-      DoStatus('LF_BindApp: All clients are already occupied – cannot bind app "%s".', [app.Name.Text]);
+      DoStatus('LF_BindApp: All clients are already occupied - cannot bind app "%s".', [app.Name.Text]);
 end;
 
 (*
@@ -1423,6 +1623,8 @@ end;
   *
   * [PITFALL] Input handle is NOT freed here.
   * [PITFALL] The returned handle is NEW and must be freed by the caller.
+  * [PITFALL] Begin_Call / End_Call protect the input handle from the
+  *   10-minute auto-recycle during execution.
 *)
 function LF_LocalCall(appHnd: TAppHnd___; Param: TDataHnd___): TDataHnd___;
 var
@@ -1431,10 +1633,15 @@ var
 begin
   app := appHnd;
   tmp := TMem64.Create;
-  PLF_Data(Param).Data_Param.EncryptToMem(tmp);
-  Result := TLF_Data.New_Result_From(app.Engine.Execute_Call(tmp));
-  PLF_Data(Result)^.Data_Info := PFormat('result for app:%s api:%s', [app.Name.Text, PLF_Data(Param)^.Data_Param.MethodName.Text]);
-  DisposeObject(tmp);
+  try
+    PLF_Data(Param).Data_Param.EncryptToMem(tmp);
+    PLF_Data(Param).Begin_Call;
+    Result := TLF_Data.New_Result_From(app.Engine.Execute_Call(tmp), True);
+  finally
+    PLF_Data(Result)^.Data_Info := PFormat('result for app:%s api:%s', [app.Name.Text, PLF_Data(Param)^.Data_Param.MethodName.Text]);
+    PLF_Data(Param).End_Call;
+    DisposeObject(tmp);
+  end;
 end;
 
 (*
@@ -1443,6 +1650,7 @@ end;
   * Sends a notification locally. Synchronous, no result.
   *
   * [PITFALL] Input handle is NOT freed here.
+  * [PITFALL] Begin_Call / End_Call protect the input handle.
 *)
 procedure LF_LocalNotify(appHnd: TAppHnd___; Param: TDataHnd___);
 var
@@ -1451,9 +1659,14 @@ var
 begin
   app := appHnd;
   tmp := TMem64.Create;
-  PLF_Data(Param).Data_Param.EncryptToMem(tmp);
-  app.Engine.Execute_Notify(tmp);
-  DisposeObject(tmp);
+  try
+    PLF_Data(Param).Data_Param.EncryptToMem(tmp);
+    PLF_Data(Param).Begin_Call;
+    app.Engine.Execute_Notify(tmp);
+  finally
+    PLF_Data(Param).End_Call;
+    DisposeObject(tmp);
+  end;
 end;
 
 (*
@@ -1542,7 +1755,7 @@ type
 
 procedure TTemp_C40_PhysicsService_Bridge__.C40_PhysicsService_Build_Network(Sender: TC40_PhysicsService; Custom_Service_: TC40_Custom_Service);
 begin
-  { Nothing to do – the network is already built. }
+  { Nothing to do - the network is already built. }
 end;
 
 procedure TTemp_C40_PhysicsService_Bridge__.C40_PhysicsService_Start(Sender: TC40_PhysicsService);
@@ -1565,7 +1778,7 @@ var
 begin
   serv := Custom_Service_ as TC40_LF_Service;
   user_io := Trigger_ as TC40_LF_RecvTunnel;
-  DoStatus('LingoFuse Service Link Successed IO "%s"', [user_io.Owner.GetPeerIP]);
+  DoStatus('LingoFuse Service Link Succeeded IO "%s"', [user_io.Owner.GetPeerIP]);
 end;
 
 procedure TTemp_C40_PhysicsService_Bridge__.C40_PhysicsService_UserOut(Sender: TC40_PhysicsService; Custom_Service_: TC40_Custom_Service; Trigger_: TCore_Object);
@@ -1583,7 +1796,7 @@ end;
   *
   * Logging bridge and app-binding bridge for C4 client tunnel lifecycle.
   *
-  * [PITFALL] C40_PhysicsTunnel_Client_Connected performs the tag → app
+  * [PITFALL] C40_PhysicsTunnel_Client_Connected performs the tag -> app
   *   binding. If the tag is not found in AppHnd_Bind_Tag_List, the client
   *   will not host an app. This is a common source of "app not visible on
   *   the network" reports. Check that LF_PrepareClient was called with a
@@ -1606,7 +1819,7 @@ end;
 
 procedure TTemp_C40_PhysicsTunnel_Bridge__.C40_PhysicsTunnel_Connected(Sender: TC40_PhysicsTunnel);
 begin
-  DoStatus('Connection %s Successed', [Build_Host_URL(Sender.PhysicsAddr, Sender.PhysicsPort)]);
+  DoStatus('Connection %s Succeeded', [Build_Host_URL(Sender.PhysicsAddr, Sender.PhysicsPort)]);
 end;
 
 procedure TTemp_C40_PhysicsTunnel_Bridge__.C40_PhysicsTunnel_Disconnect(Sender: TC40_PhysicsTunnel);
@@ -1659,7 +1872,7 @@ end;
 (*
   * Global state for the simulated main thread.
   *
-  * Overlap_Connection defaults to False – see LF_PrepareClient for the
+  * Overlap_Connection defaults to False - see LF_PrepareClient for the
   * full semantics. Wait_Connection_ReadyOk defaults to True with a
   * 30-second timeout.
 *)
@@ -1891,7 +2104,7 @@ end;
   *
   * [PITFALL] This is the thread that ultimately invokes the network event
   *   callbacks via TCompute.RunC. Do not call blocking LingoFuse
-  *   functions from inside Simulated_Main_Thread – it would freeze the
+  *   functions from inside Simulated_Main_Thread - it would freeze the
   *   whole framework.
 *)
 procedure Simulated_Main_Thread();
@@ -1901,8 +2114,8 @@ var
   Cli: TC40_LF_Client;
   Prepare_Cli_Num, Online_Num: Integer;
 begin
-  DoStatus('LingoFuse-v%s Main Thread Begin, C4-v%s,Net-v%s,%s,IPC-v%s',
-    [C_LingoFuse_Edition, C_C4_Edition, C_ZNet_Edition, C_Cross_Edition, C_Z_IPC_Edition]);
+  DoStatus('Main Thread Begin, LingoFuse-v%s C4-v%s,Net-v%s,%s,IPC-v%s,Core-v%s',
+    [C_LingoFuse_Edition, C_C4_Edition, C_ZNet_Edition, C_Cross_Edition, C_Z_IPC_Edition, C_Z_Core_Edition]);
 
   SetLength(C40AppParam, Prepare_Commands.Count);
   for i := 0 to Prepare_Commands.Count - 1 do
@@ -1927,7 +2140,7 @@ begin
 
           if Prepare_Cli_Num > 0 then
             begin
-              tk := GetTimeTick + if_(Wait_Connection_Timeout < 500, 5000, Wait_Connection_Timeout);
+              tk := GetTimeTick + if_(Wait_Connection_Timeout < 500, uint64(5000), Wait_Connection_Timeout);
               repeat
                 C40Progress(10);
                 Online_Num := 0;
@@ -1972,7 +2185,8 @@ begin
   end;
 
   try
-      LF_DataPool.Free_All_Hnd();
+    LF_DataPool.Free_All_Hnd();
+    LF_DataMemory.Free_All_PLF_Data_Memory();
   except
   end;
   DoStatus('LingoFuse Main Thread Exit');
@@ -2000,9 +2214,10 @@ begin
   Init_Running := True;
   Init_Successed := False;
   Simulated_Main_Thread_Running := True;
+  LF_RunningCount.V := 0;
 
   Begin_Simulator_Main_Thread(Simulated_Main_Thread);
-  tk := GetTimeTick() + if_(Wait_Connection_Timeout < 500, 5000, Wait_Connection_Timeout) + 1000;
+  tk := GetTimeTick() + if_(Wait_Connection_Timeout < 500, uint64(5000), Wait_Connection_Timeout) + 1000;
   while Init_Running do
     begin
       Boot_Thread_Sync_Tool.Check_Synchronize(10);
@@ -2033,9 +2248,11 @@ var
     * Synchronous remote call. Finds a connected LingoFuse client, packs the
     * input, and calls Wait_Execute_Call.
     *
-    * [PITFALL] Input handle is NOT freed here – caller must free it.
-    * [PITFALL] Result is a NEW handle – caller owns it.
+    * [PITFALL] Input handle is NOT freed here - caller must free it.
+    * [PITFALL] Result is a NEW handle - caller owns it.
     * [PITFALL] Blocking call. Do not call from a callback (deadlock).
+    * [PITFALL] Begin_Call / End_Call protect the input handle during the
+    *   network round-trip.
   *)
 function LF_Call(appName: pansichar; Param: TDataHnd___; Timeout_: uint64): TDataHnd___;
 var
@@ -2057,13 +2274,15 @@ begin
   if Cli <> nil then
     begin
       tmp := TMem64.Create;
-      PLF_Data(Param).Data_Param.EncryptToMem(tmp);
+      PLF_Data(Param)^.Data_Param.EncryptToMem(tmp);
+      PLF_Data(Param)^.Begin_Call;
       try
           Output := Cli.Wait_Execute_Call(DS(appName), tmp, Timeout_);
       except
           DoStatus('LF_Call(%s, ...) except', [DS(appName).Text]);
       end;
       DisposeObject(tmp);
+      PLF_Data(Param)^.End_Call;
     end
   else
     begin
@@ -2071,7 +2290,7 @@ begin
     end;
   if Output = nil then
       Output := TMem64.Create;
-  Result := TLF_Data.New_Result_From(Output);
+  Result := TLF_Data.New_Result_From(Output, True);
   PLF_Data(Result)^.Data_Info := PFormat('result for app:%s api:%s', [DS(appName).Text, PLF_Data(Param)^.Data_Param.MethodName.Text]);
 end;
 
@@ -2081,7 +2300,8 @@ end;
   * Non-sequenced notification. Returns immediately.
   *
   * [PITFALL] Not ordered. Use LF_Sequenced_Notify for FIFO per (app, api).
-  * [PITFALL] Input handle is NOT freed here – caller must free it.
+  * [PITFALL] Input handle is NOT freed here - caller must free it.
+  * [PITFALL] Begin_Call / End_Call protect the input handle.
 *)
 procedure LF_Notify(appName: pansichar; Param: TDataHnd___);
 var
@@ -2102,12 +2322,14 @@ begin
   if Cli = nil then
       exit;
   tmp := TMem64.Create;
-  PLF_Data(Param).Data_Param.EncryptToMem(tmp);
+  PLF_Data(Param)^.Data_Param.EncryptToMem(tmp);
+  PLF_Data(Param)^.Begin_Call;
   try
       Cli.Send_Execute_Notify(DS(appName), tmp);
   except
       DoStatus('LF_Notify(%s, ...) except', [DS(appName).Text]);
   end;
+  PLF_Data(Param)^.End_Call;
   DisposeObject(tmp);
 end;
 
@@ -2116,8 +2338,9 @@ end;
   *
   * Sequenced notification. FIFO per (app, api) pair.
   *
-  * [PITFALL] Input handle is NOT freed here – caller must free it.
+  * [PITFALL] Input handle is NOT freed here - caller must free it.
   * [PITFALL] Per-(app, api) threads idle out after 5 minutes.
+  * [PITFALL] Begin_Call / End_Call protect the input handle.
 *)
 procedure LF_Sequenced_Notify(appName: pansichar; Param: TDataHnd___);
 var
@@ -2138,12 +2361,14 @@ begin
   if Cli = nil then
       exit;
   tmp := TMem64.Create;
-  PLF_Data(Param).Data_Param.EncryptToMem(tmp);
+  PLF_Data(Param)^.Data_Param.EncryptToMem(tmp);
+  PLF_Data(Param)^.Begin_Call;
   try
       Cli.Send_Sequenced_Notify(DS(appName), tmp);
   except
       DoStatus('LF_Sequenced_Notify(%s, ...) except', [DS(appName).Text]);
   end;
+  PLF_Data(Param)^.End_Call;
   DisposeObject(tmp);
 end;
 
@@ -2187,7 +2412,17 @@ end;
   * list of keys and their semantics.
   *
   * [PITFALL] Unknown keys are silently ignored. There is no error return.
-*)
+  *
+  * [PITFALL] Boolean values accept "True" / "False" (case-insensitive).
+  *   Numeric values are parsed as decimal strings; malformed input
+  *   resolves to 0 (which, for the two data-handle options, means
+  *   "disabled").
+  *
+  * [PITFALL] The two DataHandle_* options target fields of the global
+  *   LF_DataPool singleton. If a host has replaced that singleton with
+  *   its own instance, these options will NOT affect that custom pool;
+  *   configure the replacement directly instead.
+  *)
 procedure LF_SetOption(Option, Value: pansichar);
 var
   opt, V, tmp: TLF_String;
@@ -2254,6 +2489,22 @@ begin
     begin
       Fixed_Sequenced_Time := EStrToUInt64(V.Text);
       DoStatus('Fixed_Sequenced_Time = %s', [V.Text]);
+    end
+  else if opt.Same('DataHandle_Idle_Timeout', 'Data_Idle_Timeout', 'Idle_Timeout') then
+    begin
+      LF_DataPool.LF_DataHandle_Idle_Timeout := EStrToUInt64(V.Text);
+      if LF_DataPool.LF_DataHandle_Idle_Timeout > 0 then
+          DoStatus('Data handle idle timeout = %s ms', [umlIntToStr(LF_DataPool.LF_DataHandle_Idle_Timeout).Text])
+      else
+          DoStatus('Data handle idle timeout = disabled (idle reclamation off)');
+    end
+  else if opt.Same('DataHandle_Pool_Scan_Interval', 'Data_Scan_Interval', 'DataHandle_Scan_Interval') then
+    begin
+      LF_DataPool.LF_DataHandle_Pool_Scan_Interval := EStrToUInt64(V.Text);
+      if LF_DataPool.LF_DataHandle_Pool_Scan_Interval > 0 then
+          DoStatus('Data handle pool scan interval = %s ms', [umlIntToStr(LF_DataPool.LF_DataHandle_Pool_Scan_Interval).Text])
+      else
+          DoStatus('Data handle pool scan interval = disabled (scan on every Progress call)');
     end;
 end;
 
@@ -2267,11 +2518,11 @@ end;
   * DESIGN
   * ===========================================================================
   *
-  * – Library logs are forwarded here via a DoStatus hook installed in the
+  * - Library logs are forwarded here via a DoStatus hook installed in the
   *   initialization section (backcall_DoStatus).
-  * – Messages are stored as UTF-8 byte arrays in a FIFO queue
+  * - Messages are stored as UTF-8 byte arrays in a FIFO queue
   *   (TStatus_Buffer, a TOrderStruct<TBytes>).
-  * – Host applications poll LF_GetStatus() to pop messages one at a time.
+  * - Host applications poll LF_GetStatus() to pop messages one at a time.
   *
   * ===========================================================================
   * [PITFALL] MAIN-THREAD DEPENDENCY
@@ -2318,7 +2569,7 @@ var
     * TStatus_Buffer.DoFree
     *
     * Clears the byte array when a queue item is popped. There is no
-    * explicit FreeMemory here – the TB dynamic array is managed by the
+    * explicit FreeMemory here - the TB dynamic array is managed by the
     * RTL. SetLength(..., 0) is enough.
   *)
 procedure TStatus_Buffer.DoFree(var Data: TBytes);
@@ -2417,22 +2668,26 @@ end;
   * Injects a user-supplied message into the status system, as if it had
   * been emitted by the library itself.
   *
-  * [PITFALL] Before LF_PrepareDone, the message may be discarded. See
-  *   the interface documentation.
+  * [PITFALL] Before LF_PrepareDone, the message is still enqueued (with a
+  *   diagnostic log line), but may not appear in the returned buffer until
+  *   the simulated main thread starts polling.
 *)
 procedure LF_PostStatus(status: pansichar);
+var
+  s: TLF_String;
 begin
   if not Simulator_Main_Thread_Activted then
     begin
       DoStatus('LF_PostStatus: Main thread not running; message queued directly. message: %s', [DS(status).Text]);
-      exit;
     end;
+  s := DS(status);
   Status_Critical__.Lock;
   try
-      Post_To_DoStatus_Queue(TCompute.CurrentThread, DS(status), 0);
+      Post_To_DoStatus_Queue(TCompute.CurrentThread, s.Text, 0);
   finally
       Status_Critical__.UnLock;
   end;
+  s := '';
 end;
 
 (*
@@ -2476,7 +2731,7 @@ end;
 *)
 procedure LF_Shutdown;
 begin
-  // reset network event – protects against in-flight worker threads
+  // reset network event - protects against in-flight worker threads
   On_Network_Connect_Event := nil;
   On_Network_Disconnect_Event := nil;
 
@@ -2506,7 +2761,7 @@ On_Network_Disconnect_Event := nil;
   *
   * [PITFALL] This block runs as part of unit initialisation, BEFORE any
   *   exported function is called. Do not remove or reorder the statements
-  *   below – LF_PrepareService / LF_PrepareClient / LF_PrepareDone all
+  *   below - LF_PrepareService / LF_PrepareClient / LF_PrepareDone all
   *   depend on these globals being initialised.
 *)
 
@@ -2582,8 +2837,8 @@ finalization
   *   installed in Z.Status.
   *
   * [PITFALL] The order of releases matters:
-  *   – C4 event bridges are unhooked FIRST to prevent any late callbacks.
-  *   – The DoStatus hook is removed BEFORE Status_Pool is freed;
+  *   - C4 event bridges are unhooked FIRST to prevent any late callbacks.
+  *   - The DoStatus hook is removed BEFORE Status_Pool is freed;
   *     otherwise a late DoStatus could touch a freed object.
 *)
 

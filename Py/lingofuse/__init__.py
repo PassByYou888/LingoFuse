@@ -26,6 +26,71 @@ All functions are thread-safe. For detailed usage, see the docstrings
 in the respective modules and the Pascal import unit
 (lingofuse_import.pas).
 
+{!!!!!  DATA HANDLE KINDS  !!!!!}
+The library provides two kinds of data handles, both wrapped by the
+DataHandle class:
+
+  1. AUTO-RECYCLED (created by the regular constructor):
+
+         dh = DataHandle('my_api')
+
+     - The handle is added to the library's idle pool.
+     - The pool scans the handle list periodically (default: once
+       every 5 seconds) and frees any handle that has been idle
+       (no accessor call) for longer than the configured idle
+       timeout (default: 10 minutes).
+     - Any accessor (get_size, get_pos, read_*, write_*) refreshes
+       the idle timestamp, postponing the timeout.
+     - A remote call in flight (internal calling counter > 0) also
+       postpones the timeout, regardless of how long the caller
+       holds the handle.
+     - The destructor calls LF_FreeData, which only marks the handle
+       for release; the actual release happens on the next pool
+       scan (at most one scan interval later).
+     - Recommended for the vast majority of use cases.
+
+  2. PERMANENT (created by the classmethod `create_permanent`):
+
+         dh = DataHandle.create_permanent('my_api')
+
+     - The handle is NOT added to the library's idle pool.
+     - The automatic idle-timeout reclaimer will NEVER free it, no
+       matter how long it has been idle.
+     - The destructor calls LF_FreeData, which releases the record
+       IMMEDIATELY (synchronously).
+     - Recommended for handles that must survive for the entire
+       process lifetime (cached request templates, long-lived scratch
+       buffers, global registries, etc.).
+
+Both kinds are released when LF_Shutdown is called at process exit.
+See lingofuse.core.DataHandle for the full contract.
+
+{!!!!!  DATA HANDLE RECLAMATION IS CONFIGURABLE  !!!!!}
+The two thresholds that govern auto-recycled handles are exposed as
+runtime options (see `set_option` below for the full alias list):
+
+    # Scan at most once every 5 seconds (default).
+    set_option('DataHandle_Pool_Scan_Interval', '5000')
+
+    # Reclaim after 10 minutes of idle time (default).
+    set_option('DataHandle_Idle_Timeout', '600000')
+
+Each of these accepts a millisecond integer. A value of 0 or less
+disables that side of the reclamation logic:
+
+    # Disable idle reclamation entirely. Only an explicit
+    # LF_FreeData / DataHandle.free() releases a handle.
+    set_option('DataHandle_Idle_Timeout', '0')
+
+    # Disable the scan rate limiter. The scanner runs on every
+    # progress tick of the simulated main thread.
+    set_option('DataHandle_Pool_Scan_Interval', '0')
+
+These options do NOT affect handles created by
+`DataHandle.create_permanent`: those are always released
+synchronously by the wrapper's destructor and never enter the
+idle-reclaim path.
+
 {!!!!!  APP LIFETIME  !!!!!}
 - `App.free()` detaches the application but does NOT destroy it
   immediately. The underlying object remains in the global pool until
@@ -188,6 +253,34 @@ from .json_repair_preprocess import repair_json_text
 #     if the candidate with the oldest timestamp is older than this
 #     value, the system falls back to the newest client to avoid
 #     starvation (integer).
+#
+# === Data Handle Pool ===
+# - "DataHandle_Idle_Timeout" / "Data_Idle_Timeout" / "Idle_Timeout"
+#     Idle timeout (in milliseconds) for automatic reclamation of
+#     non-permanent data handles (integer).
+#       >  0 : ENABLED. A tracked handle that has not been accessed
+#              for this long becomes a candidate for release on the
+#              next pool scan. Default is 600,000 ms (10 minutes).
+#       <= 0 : DISABLED. The idle-reclaim branch is skipped entirely;
+#              only an explicit LF_FreeData / DataHandle.free() call
+#              releases a handle.
+#     Any accessor call on a handle refreshes its idle timer. A
+#     remote call in flight (internal calling counter > 0) also
+#     postpones the timeout. This option does NOT affect handles
+#     created by DataHandle.create_permanent.
+#
+# - "DataHandle_Pool_Scan_Interval" / "Data_Scan_Interval" /
+#   "DataHandle_Scan_Interval"
+#     Minimum interval (in milliseconds) between two consecutive
+#     scans of the data-handle pool (integer).
+#       >  0 : ENABLED. The scanner returns immediately if fewer
+#              than this many milliseconds have elapsed since the
+#              last scan. Default is 5,000 ms (5 seconds).
+#       <= 0 : DISABLED. The scanner runs on every progress tick,
+#              without rate-limiting.
+#     The scanner is driven by the simulated main thread; its
+#     effective call frequency is bounded below by the main thread's
+#     tick granularity, not by this value alone.
 #
 # === JSON Repair Preprocessing ===
 # - Not an LF_SetOption key. Controlled by the environment variable

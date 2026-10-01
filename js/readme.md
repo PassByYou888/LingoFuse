@@ -1,15 +1,17 @@
 # LingoFuse JavaScript 接口库
 
 **LingoFuse** 分布式 RPC 框架的跨平台 JavaScript 绑定。支持
-**Node.js**、**Deno**（2.x）和 **Bun**。通过 [Koffi](https://koffi.dev/) 调用 LingoFuse 原生库的 C ABI。
+**Node.js**、**Deno**（2.x）和 **Bun**。通过 [Koffi](https://koffi.dev/)
+调用 LingoFuse 原生库的 C ABI。
 
 本绑定由一个 CommonJS 核心和一个轻量 ESM 包装组成，与 C++、C#、
 Pascal 各版本一一对应：
 
-- 相同的 36 个导出 C 函数。
+- 相同的 **37 个**导出 C 函数。
 - 相同的 NUL 结尾 UTF-8 线格式。
 - 相同的 JSON 序列化策略（紧凑、字面 UTF-8、无 `\uXXXX` 转义）。
 - 相同的字符串三态容错读取。
+- 相同的 `tryCall` / `getAppName` / `createPermanent` 便捷 API。
 
 在一个绑定上能工作的逻辑，在其他绑定上也一样。
 
@@ -42,7 +44,9 @@ Pascal 各版本一一对应：
    - [6.9 最简 Call API 示例](#69-最简-call-api-示例)
    - [6.10 最简 Notify API 示例](#610-最简-notify-api-示例)
    - [6.11 纯客户端示例](#611-纯客户端示例)
-   - [6.12 JSON 载荷约定](#612-json-载荷约定)
+   - [6.12 `tryCall` 与 `call` 的选择](#612-trycall-与-call-的选择)
+   - [6.13 永久句柄与短生命周期句柄](#613-永久句柄与短生命周期句柄)
+   - [6.14 JSON 载荷约定](#614-json-载荷约定)
 7. [故障排查](#7-故障排查)
 8. [API 速查](#8-api-速查)
 
@@ -71,9 +75,6 @@ Pascal 各版本一一对应：
 ```
 js/
 ├── check-env.js               环境诊断脚本
-├── lf_js_helloworld.js        端到端演示
-├── test.js                    测试套件（node:test）
-├── package.json
 ├── index.js                   CommonJS 入口
 ├── index.mjs                  ESM 入口
 ├── errors.js                  异常层级
@@ -84,7 +85,16 @@ js/
 ├── framework.js               进程级 ABI 门面
 ├── network-events.js          连接 / 断开事件处理器
 ├── status.js                  状态队列与健康检查
+├── package.json
 ├── PORTABILITY.md             各运行时的专项说明
+├── readme.md                  本文件
+├── test/
+│   ├── test.js                测试套件（自带 harness，跨运行时）
+│   └── lf_js_helloworld.js    端到端演示
+├── cross/
+│   ├── cross-service.js       信标（协调器）
+│   ├── cross-node.js          工作节点（暴露 "demo" 应用）
+│   └── cross-call.js          负载测试客户端
 └── node_modules/              已安装依赖（koffi）
 ```
 
@@ -373,7 +383,7 @@ Report
 ### 5.2 运行演示
 
 ```bash
-node lf_js_helloworld.js
+node test/lf_js_helloworld.js
 ```
 
 演示会创建一个自连通过程，注册三个 API（`add`、`echo`、`log`），
@@ -386,16 +396,17 @@ node lf_js_helloworld.js
 ### 5.3 运行测试套件
 
 ```bash
-node --test test.js
+node test/test.js
 ```
 
-预期输出：
+预期输出（末尾摘要）：
 
 ```
-ℹ tests 116
-ℹ suites 9
-ℹ pass 116
-ℹ fail 0
+Summary
+  runtime : Node.js 24.21.0
+  passed  : 127
+  failed  : 0
+  total   : 127
 ```
 
 ### 5.4 npm 脚本
@@ -404,8 +415,8 @@ node --test test.js
 
 ```bash
 npm run check      # node check-env.js
-npm run demo       # node lf_js_helloworld.js
-npm test           # node --test test.js
+npm run demo       # node test/lf_js_helloworld.js
+npm test           # node test/test.js
 ```
 
 ---
@@ -888,7 +899,86 @@ if (lf.framework.prepareDone() !== 1) {
 
 注意：客户端没有创建 `AppHandle`。纯消费者从不需要它。
 
-### 6.12 JSON 载荷约定
+### 6.12 `tryCall` 与 `call` 的选择
+
+框架提供两个同步远程调用入口，行为差异在**失败时返回什么**：
+
+| 场景 | `framework.call(app, param, timeout)` | `framework.tryCall(app, param, timeout)` |
+|---|---|---|
+| 正常返回 | `DataHandle`（`size > 0`） | `DataHandle`（`size > 0`） |
+| 超时 | `DataHandle`（`size == 0`） | `null` |
+| 目标不可达 | `DataHandle`（`size == 0`） | `null` |
+
+**推荐用法**：
+
+```javascript
+// 只关心"成功/失败"，不区分超时和空响应：
+const response = lf.framework.tryCall("Calc", param, 3000);
+if (response === null) {
+    console.log("call failed");
+} else {
+    console.log(lf.io.readJson(response));
+    response.dispose();
+}
+
+// 需要区分"超时"和"服务返回了空响应"：
+const response2 = lf.framework.call("Calc", param, 3000);
+if (response2.size === 0) {
+    // 两者都有可能
+} else {
+    // 服务返回了非空响应
+}
+response2.dispose();
+```
+
+**所有权**：`tryCall` 返回 `null` 时已自动释放内部句柄；返回 `DataHandle` 时，调用者负责 `dispose`。这一契约与 C# 的 `Framework.TryCall` 完全一致。
+
+### 6.13 永久句柄与短生命周期句柄
+
+框架提供两种数据句柄，生命周期不同：
+
+| 类型 | 创建方式 | 空闲回收 | `dispose()` 语义 |
+|---|---|---|---|
+| **自动回收** | `new DataHandle(apiName)` | 10 分钟未访问后由池回收 | 只标记删除；实际释放在下一次池扫描（≤ 5 秒） |
+| **永久** | `DataHandle.createPermanent(apiName)` | **永不自动回收** | **同步**立即释放 |
+
+**默认使用自动回收句柄**。池子会在你忘记 `dispose` 时兜底。
+
+**仅在以下场景使用永久句柄**：
+
+- 需要跨整个进程生命周期持有（缓存请求模板、全局注册表）。
+- 需要避免 10 分钟空闲回收造成的悬空风险。
+- 长耗时操作且无法保证每 10 分钟刷新一次访问时间戳。
+
+**永久句柄的两个陷阱**：
+
+1. **"永久"不等于"永不释放"**。你必须显式 `dispose`，否则整个进程生命周期内泄漏。
+2. **no-op 窗口**：在 `prepareDone()` 之前或 `exitMainThread()` 之后创建并 `dispose` 的永久句柄，由于主线程未激活，`LF_FreeData` 是 no-op。此时创建的句柄会一直保留到进程退出（或 `shutdown()` 释放）。
+
+**示例**：
+
+```javascript
+// 短生命周期：用默认构造
+{
+    const param = new lf.DataHandle("myapi");
+    lf.io.writeJson(param, payload);
+    const result = lf.framework.call("Target", param, 3000);
+    result.dispose();
+    param.dispose();
+}
+
+// 进程生命周期：用 createPermanent
+const cachedTemplate = lf.DataHandle.createPermanent("myapi");
+lf.io.writeJson(cachedTemplate, { template: true });
+
+// ... 整个进程生命周期内可反复使用，无需担心 10 分钟超时 ...
+
+// 退出前显式释放
+cachedTemplate.dispose();
+lf.framework.shutdown();
+```
+
+### 6.14 JSON 载荷约定
 
 本接口库在所有语言之间强制同一套序列化策略：
 
@@ -925,7 +1015,7 @@ if (lf.framework.prepareDone() !== 1) {
 ### 7.2 `Cannot find module './index.js'`
 
 你从**不包含** `index.js` 的目录运行脚本。每个脚本
-（`check-env.js`、`test.js`、`lf_js_helloworld.js`）都必须从 `js/`
+（`check-env.js`、`test/test.js`、`test/lf_js_helloworld.js`）都必须从 `js/`
 目录、与绑定文件在同一目录下运行。不要把脚本移入子目录。
 
 ### 7.3 `Failed to load the LingoFuse native library`
@@ -943,7 +1033,8 @@ node -e "console.log(require('./binding.js').buildSearchPaths().join('\n'))"
 
 原生库加载成功，但符号解析到了错误或截断的版本。确保 DLL /
 `.so` / `.dylib` 与接口库编写时对应的头文件版本一致
-（LingoFuse 3.0+）。
+（LingoFuse 3.0+）。若使用的是 v3.09 或更新版本，`LF_CreateData_Permanent`
+应当也能解析。
 
 ### 7.5 `prepareDone()` 返回 `0`
 
@@ -988,6 +1079,12 @@ deno run \
 
 见 [§6.6](#66-require-路径不能指到目录)。绝对路径必须指向
 `index.js` 文件，不能指向 `js` 目录。
+
+### 7.10 `getAppName` 对已销毁的句柄抛出 `LingoFuseObjectDisposedError`
+
+这是**预期行为**。`AppHandle.raw` 在销毁后返回 `null` 而不抛异常，
+但 `framework.getAppName` 会显式检查 `isValid`，并拒绝已销毁的句柄。
+捕获异常或在使用前检查 `app.isValid`。
 
 ---
 
@@ -1044,7 +1141,9 @@ deno run \
 | `exitMainThread()`                      | 请求优雅退出。                    |
 | `setOption(name, value)`                | 调整运行时选项。                  |
 | `generateAppName()`                     | 生成唯一名称。                    |
+| `getAppName(app)`                       | 查询 App 的权威名称。             |
 | `call(appName, param, timeoutMs)`       | 同步远程调用。                    |
+| `tryCall(appName, param, timeoutMs)`    | 超时/不可达时返回 `null` 的 `call`。 |
 | `notify(appName, param)`                | 单向通知。                        |
 | `sequencedNotify(appName, param)`       | FIFO 单向通知。                   |
 | `shutdown()`                            | 完全关闭。                        |
@@ -1066,25 +1165,32 @@ deno run \
 | `getStatusCount()`              | 队列中待处理的消息数。               |
 | `getStatus()`                   | 弹出下一条消息。                     |
 | `drainStatus(maxMessages)`      | 最多弹出 N 条。                      |
-| `postStatus(message)`           | 推入一条消息。                       |
+| `postStatus(message)`           | 推入一条消息（主线程未运行也入队）。 |
 | `checkMainThread()`             | 框架是否运行中？                     |
 | `checkApp(appName)`             | 应用是否可见？                       |
 | `checkApi(appName, apiName)`    | API 是否可见？                       |
 
 ### 8.6 `DataHandle`
 
-通过 `new lf.DataHandle("api_name")` 创建。使用完毕后一定要调用
-`dispose()`，或者在回调内部使用（此时接口库自动管理其生命周期）。
+通过 `new lf.DataHandle("api_name")` 创建自动回收句柄；
+通过 `lf.DataHandle.createPermanent("api_name")` 创建永久句柄。
+使用完毕后一定要调用 `dispose()`，或者在回调内部使用（此时接口库
+自动管理其生命周期）。
 
-| 方法                                       | 说明                       |
+| 方法 / 属性                                | 说明                       |
 |--------------------------------------------|----------------------------|
+| `DataHandle.createPermanent(apiName)`      | 静态工厂：创建永久句柄。   |
+| `DataHandle.fromRaw(raw, owned)`           | 包装已有指针（内部使用）。 |
 | `writeBytes(bytes)` / `readBytes(n)`       | 原始字节 I/O。             |
 | `readBytesExact(n)` / `tryReadBytes(n)`    | 定长字节 I/O。             |
 | `readAllBytes()`                           | 读到缓冲区末尾。           |
 | `writeInt8` … `writeDouble`                | 小端原子写。               |
 | `readInt8` … `readDouble`                  | 小端原子读。               |
+| `tryReadInt8` … `tryReadDouble`            | 不抛异常的原子读。         |
 | `writeString(s)` / `readString()`          | NUL 帧的 UTF-8。           |
+| `tryReadString()`                          | 不抛异常的 `readString`。  |
 | `position` / `size`                        | 游标和缓冲区大小。         |
+| `getBufferPointer()`                       | 内部缓冲区的原生指针。     |
 | `dispose()`                                | 释放原生句柄。             |
 | `isValid` / `isOwning` / `raw`             | 状态访问器。               |
 
@@ -1102,6 +1208,34 @@ deno run \
 | `bind()`                                      | 绑定到空闲客户端。    |
 | `dispose()`                                   | 解除关联并停止线程。  |
 | `name` / `isValid` / `raw`                    | 状态访问器。          |
+
+### 8.8 异常层级
+
+| 类型                            | 基类                        | 附加字段                |
+|---------------------------------|-----------------------------|-------------------------|
+| `LingoFuseError`                | `Error`                     | `cause`                 |
+| `LingoFuseLibraryLoadError`     | `LingoFuseError`            | `libraryName`           |
+| `LingoFuseCallError`            | `LingoFuseError`            | `targetApp`, `targetApi`|
+| `LingoFuseIoError`              | `LingoFuseError`            | `operation`             |
+| `LingoFuseObjectDisposedError`  | `LingoFuseError`            | `objectName`            |
+| `LingoFuseCallbackError`        | `LingoFuseError`            | `source`, `originalCause`|
+
+**捕获策略**：捕获 `LingoFuseError` 即可覆盖所有本接口库抛出的异常；
+需要细化处理时按子类 `instanceof` 判断。
+
+```javascript
+try {
+    // ... LingoFuse 操作 ...
+} catch (err) {
+    if (err instanceof lf.LingoFuseCallError) {
+        console.error("调用失败:", err.targetApp, err.message);
+    } else if (err instanceof lf.LingoFuseError) {
+        console.error("LingoFuse 错误:", err.message);
+    } else {
+        throw err;      // 不是本接口库抛的，重新抛出
+    }
+}
+```
 
 ---
 
@@ -1121,14 +1255,31 @@ deno run \
 同一个 JSON 载荷在每个绑定上产生相同的线字节，读取语义也一致。
 跨语言 RPC 无需任何转码层。
 
-## 附录 B —— 延伸阅读
+## 附录 B —— 与 C++ / C# 的 API 对应
+
+| 功能                | C++                                | C#                                | JS                                     |
+|---------------------|------------------------------------|-----------------------------------|----------------------------------------|
+| 加载运行时          | `LF_LoadLibrary()`                 | 自动（CLR 惰性加载）              | `lf.loadLibrary()`（幂等；也可省略）   |
+| 创建数据句柄        | `DataHandle dh("api")`             | `new DataHandle("api")`           | `new lf.DataHandle("api")`             |
+| 创建永久句柄        | `DataHandle::createPermanent(...)` | `DataHandle.CreatePermanent(...)` | `lf.DataHandle.createPermanent(...)`   |
+| 写 JSON             | `dh.writeJson(obj)`                | `LfIo.WriteJson(dh, obj)`         | `lf.io.writeJson(dh, obj)`             |
+| 读 JSON             | `dh.readJson()`                    | `LfIo.ReadJson<T>(dh)`            | `lf.io.readJson(dh)`                   |
+| 远程调用（显式）    | `lingofuse::call(...)`             | `Framework.Call(...)`             | `lf.framework.call(...)`               |
+| 远程调用（try）     | `lingofuse::tryCall(...)`          | `Framework.TryCall(...)`          | `lf.framework.tryCall(...)`            |
+| 生成唯一名          | `generateAppName()`                | `Framework.GenerateAppName()`     | `lf.framework.generateAppName()`       |
+| 查询 App 权威名     | `getAppName(app)`                  | `Framework.GetAppName(app)`       | `lf.framework.getAppName(app)`         |
+| 回调错误报告        | 无（异常被吞）                     | `Framework.CallbackErrorHandler`  | `lf.framework.setCallbackErrorHandler` |
+| 关闭                | `shutdown()`                       | `Framework.Shutdown()`            | `lf.framework.shutdown()`              |
+
+## 附录 C —— 延伸阅读
 
 - [PORTABILITY.md](PORTABILITY.md) —— 各运行时的详细说明。
 - `lf-io.js` 文件头 —— 完整的线格式和序列化策略。
-- `data-handle.js` 文件头 —— 所有权和 I/O 失败语义。
+- `data-handle.js` 文件头 —— 所有权、I/O 失败语义、两种句柄。
 - `app-handle.js` 文件头 —— 回调生命周期和线程模型。
 - `framework.js` 文件头 —— 进程级契约和数值参数。
+- `binding.js` 文件头 —— Koffi 声明和平台探测。
 
-## 附录 C —— 许可证
+## 附录 D —— 许可证
 
 MIT。见 `package.json` 的 `license` 字段。

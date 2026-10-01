@@ -8,9 +8,9 @@
  *
  *   - Network preparation (reset / prepare service / prepare client /
  *     prepare done / exit main thread).
- *   - Remote invocation (call / notify / sequenced notify).
+ *   - Remote invocation (call / try call / notify / sequenced notify).
  *   - Runtime options (set option).
- *   - Application name generation.
+ *   - Application name generation and query.
  *   - Process-wide shutdown.
  *
  * The module exists because binding.js returns only the raw function
@@ -81,10 +81,13 @@
 const { getBinding } = require("./binding");
 const { DataHandle } = require("./data-handle");
 const { AppHandle, setCallbackErrorReporter } = require("./app-handle");
-const { LingoFuseCallError } = require("./errors");
+const {
+    LingoFuseCallError,
+    LingoFuseObjectDisposedError,
+} = require("./errors");
 
 // ============================================================================
-// Callback error reporting
+// Module-level state
 // ============================================================================
 
 /**
@@ -104,6 +107,10 @@ function funcs() {
     }
     return _funcs;
 }
+
+// ============================================================================
+// Callback error reporting
+// ============================================================================
 
 /**
  * Optional handler invoked when a user callback raises an unhandled
@@ -301,6 +308,11 @@ function prepareDone() {
 /**
  * Requests the simulated main thread to exit. Does not release all
  * resources; call shutdown() afterwards for a full cleanup.
+ *
+ * [PITFALL] LF_ExitMainThread also flushes the data handle pool,
+ * releasing every outstanding handle — including those created with
+ * DataHandle.createPermanent. Do not use any data handle after this
+ * call has returned.
  */
 function exitMainThread() {
     funcs().LF_ExitMainThread();
@@ -331,7 +343,7 @@ function setOption(option, value) {
 }
 
 // ============================================================================
-// Application name generation
+// Application name generation and query
 // ============================================================================
 
 /**
@@ -348,6 +360,54 @@ function setOption(option, value) {
  */
 function generateAppName() {
     const name = funcs().LF_Generate_AppName();
+    return typeof name === "string" ? name : "";
+}
+
+/**
+ * Returns the name of an existing application handle.
+ *
+ * The native function LF_Get_AppName returns a pointer into a
+ * temporary buffer that is valid for approximately 5 seconds. Koffi
+ * copies the string to a JavaScript string immediately, so the
+ * returned string is safe to hold indefinitely.
+ *
+ * Returns an empty string when the native function returns a null
+ * pointer (for example, a null handle).
+ *
+ * The managed AppHandle.name property returns the name that was passed
+ * to the constructor. This function, by contrast, queries the native
+ * side and therefore reflects the authoritative name stored in the C4
+ * mesh registry. The two are usually identical, but they can differ
+ * if the AppHandle was constructed with a name that the native layer
+ * normalised, or if the caller is inspecting an AppHandle obtained
+ * from another source.
+ *
+ * [PITFALL] A disposed AppHandle is rejected here with
+ * LingoFuseObjectDisposedError. Note that AppHandle.raw itself does
+ * NOT throw after dispose(); it simply returns null. The check is
+ * therefore performed explicitly in this function, so that a caller
+ * who passes a disposed handle receives a clear, catchable error
+ * instead of a silently empty string.
+ *
+ * @param {AppHandle} app
+ *   Application handle. Must not be null and must not be disposed.
+ * @returns {string}
+ * @throws {TypeError} When app is not an AppHandle.
+ * @throws {import('./errors').LingoFuseObjectDisposedError}
+ *   When the handle has been disposed.
+ */
+function getAppName(app) {
+    if (!(app instanceof AppHandle)) {
+        throw new TypeError("getAppName: app must be an AppHandle.");
+    }
+    if (!app.isValid) {
+        // AppHandle.raw returns null after dispose without throwing;
+        // we must detect the disposed state explicitly, otherwise the
+        // native call below would receive a null handle and silently
+        // return an empty string.
+        throw new LingoFuseObjectDisposedError("AppHandle");
+    }
+    const name = funcs().LF_Get_AppName(app.raw);
     return typeof name === "string" ? name : "";
 }
 
@@ -369,6 +429,11 @@ function generateAppName() {
  *   A new DataHandle owning the response. On timeout or failure the
  *   native side returns an empty handle (size 0). The result is never
  *   null; the caller must dispose it.
+ *
+ *   Callers who need to distinguish "timeout / unreachable target"
+ *   from "empty response" should inspect `size` directly, or use
+ *   tryCall() for a null-on-failure contract.
+ *
  * @throws {TypeError} When appName is not a string, or param is not a
  *   DataHandle.
  * @throws {RangeError} When timeoutMs is negative or out of range.
@@ -393,6 +458,45 @@ function call(appName, param, timeoutMs = 5000) {
         );
     }
     return DataHandle.fromRaw(result, true);
+}
+
+/**
+ * Performs a synchronous remote call and returns the response only
+ * when the native layer produced a non-empty payload.
+ *
+ * This is the JavaScript equivalent of the C++ tryCall helper and the
+ * C# Framework.TryCall method. It returns null on timeout or
+ * unreachable target, instead of a size-0 DataHandle. Callers who need
+ * to distinguish "timeout" from "empty response" must use call() and
+ * inspect `size` themselves.
+ *
+ * Ownership: when the function returns a non-null handle, the caller
+ * is responsible for disposing it. When the function returns null, the
+ * underlying empty handle has already been disposed by this function;
+ * the caller must not free anything.
+ *
+ * Idiom:
+ *     const response = framework.tryCall("App", param, 3000);
+ *     if (response === null) { ... }       // timeout / unreachable
+ *     else { ... }                          // response.size > 0
+ *
+ * @param {string} appName
+ * @param {DataHandle} param
+ * @param {number|bigint} [timeoutMs=5000]
+ * @returns {DataHandle|null}
+ *   A new DataHandle when the response is non-empty; null when the
+ *   native layer returned an empty (size-0) handle.
+ * @throws {TypeError} When appName is not a string, or param is not a
+ *   DataHandle.
+ * @throws {RangeError} When timeoutMs is negative or out of range.
+ */
+function tryCall(appName, param, timeoutMs = 5000) {
+    const response = call(appName, param, timeoutMs);
+    if (response.size === 0) {
+        response.dispose();
+        return null;
+    }
+    return response;
 }
 
 /**
@@ -445,6 +549,11 @@ function sequencedNotify(appName, param) {
  * call. The AppHandle wrappers do not detect this automatically;
  * callers must ensure that no AppHandle is used after shutdown() has
  * returned.
+ *
+ * The native side also clears both network event callbacks during
+ * teardown. The managed references held by network-events.js are NOT
+ * released automatically; call network.clearNetworkEvent() explicitly
+ * before shutdown if you want to release them.
  */
 function shutdown() {
     funcs().LF_Shutdown();
@@ -473,9 +582,11 @@ module.exports = {
 
     // Application name
     generateAppName,
+    getAppName,
 
     // Remote invocation
     call,
+    tryCall,
     notify,
     sequencedNotify,
 

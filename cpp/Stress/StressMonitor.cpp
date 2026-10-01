@@ -3,43 +3,38 @@
 // -----------------------------------------------------------------------------
 //  Fleet observer for the LingoFuse stress test.
 //
-//  It connects to ipc:stress as a client, publishes its App to the mesh, and
-//  waits for status reports from any number of concurrently running
-//  StressClient processes.
+//  Interactive mode: redraws a full-screen ASCII dashboard once per second.
+//  CI mode (--ci):  emits a JSON Lines event stream instead, and terminates
+//                   automatically after --duration seconds.
 //
-//  Once per second (configurable), the terminal is cleared and a single
-//  fleet-wide aggregate report is drawn in place:
+//  In CI mode, the render target is a sequence of JSON objects:
 //
-//      * client liveness (RUN / STOP / DEAD)
-//      * total calls / success / failed
-//      * calls per second (total, plus per-API breakdown)
-//      * per-API cumulative call counts
-//      * average and peak throughput
-//      * deliberate handle leaks reported by the clients
-//      * total RSS / handles / threads / CPU across all live clients
+//      {"event":"ready", ...}
+//      {"event":"progress","t_sec":N,"clients_run":N,...,"per_api":{...}}
+//      ...
+//      {"event":"summary","clients_seen":N,"peak_rate":N,...,"status":"PASS"}
 //
-//  Set the environment variable STRESS_MONITOR_NO_CLEAR=1 to disable the
-//  clear and let the reports accumulate (useful when piping to a log file).
-//
-//  Usage:
-//      StressMonitor [interval_ms] [stale_timeout_ms]
-//      Defaults: interval = 1000 ms, stale_timeout = 5000 ms
+//  Set STRESS_MONITOR_NO_CLEAR=1 to disable the screen clear in interactive
+//  mode (useful when piping to a file).
 // =============================================================================
 
 #include "LingoFuse.hpp"
 #include "StressCommon.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -58,23 +53,21 @@
 
 namespace {
 
-    constexpr int kDefaultIntervalMs     = 1000;
-    constexpr int kDefaultStaleTimeoutMs = 5000;
-
-    std::atomic<bool> g_stop_flag{false};
+    std::atomic<bool> g_stop_flag{ false };
+    bool g_ci_mode = false;
 
 #if defined(_WIN32)
     BOOL WINAPI console_ctrl_handler(DWORD type) {
         switch (type) {
-            case CTRL_C_EVENT:
-            case CTRL_BREAK_EVENT:
-            case CTRL_CLOSE_EVENT:
-            case CTRL_LOGOFF_EVENT:
-            case CTRL_SHUTDOWN_EVENT:
-                g_stop_flag.store(true);
-                return TRUE;
-            default:
-                return FALSE;
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            g_stop_flag.store(true);
+            return TRUE;
+        default:
+            return FALSE;
         }
     }
 #else
@@ -83,9 +76,7 @@ namespace {
     }
 #endif
 
-    // -------------------------------------------------------------------------
-    //  Terminal control
-    // -------------------------------------------------------------------------
+    // ---- Terminal control --------------------------------------------------
     bool g_use_clear_screen = true;
 
     void init_terminal() {
@@ -94,14 +85,12 @@ namespace {
                 g_use_clear_screen = false;
             }
         }
-
 #if defined(_WIN32)
         HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
         if (h != INVALID_HANDLE_VALUE) {
             DWORD mode = 0;
             if (GetConsoleMode(h, &mode)) {
-                SetConsoleMode(
-                    h, mode | 0x0004 /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */);
+                SetConsoleMode(h, mode | 0x0004);  // ENABLE_VT_PROCESSING
             }
         }
 #endif
@@ -112,9 +101,7 @@ namespace {
         std::cout << "\x1b[2J\x1b[H";
     }
 
-    // -------------------------------------------------------------------------
-    //  Collected reports
-    // -------------------------------------------------------------------------
+    // ---- Report storage ----------------------------------------------------
     struct ReportEntry {
         stress::ClientReport report;
         std::uint64_t        last_seen_ms = 0;
@@ -125,47 +112,54 @@ namespace {
         return m;
     }
 
-    std::map<std::uint32_t, ReportEntry>& reports() {
+    std::map<std::uint32_t, ReportEntry>& client_reports() {
+        static std::map<std::uint32_t, ReportEntry> r;
+        return r;
+    }
+
+    std::map<std::uint32_t, ReportEntry>& service_reports() {
         static std::map<std::uint32_t, ReportEntry> r;
         return r;
     }
 
     void LF_CDECL api_report(void* /*trigger*/, void* input) {
         if (input == nullptr) return;
-
         lingofuse::DataHandle in(static_cast<TDataHnd>(input), false);
+
         stress::ClientReport r;
         if (!stress::read_report(in, r)) return;
         if (r.pid == 0) return;
 
+        const std::uint64_t now = stress::now_ms();
+
         std::lock_guard<std::mutex> lock(reports_mutex());
-        reports()[r.pid] = {r, stress::now_ms()};
+        if (r.role == stress::kRoleService) {
+            service_reports()[r.pid] = { r, now };
+        }
+        else {
+            client_reports()[r.pid] = { r, now };
+        }
     }
 
-    // -------------------------------------------------------------------------
-    //  Process metrics
-    // -------------------------------------------------------------------------
+    // ---- Process metrics (unchanged) ---------------------------------------
     struct ProcessMetrics {
-        std::uint64_t rss_kib        = 0;
-        std::uint64_t handle_count   = 0;
-        std::uint64_t thread_count   = 0;
-        double        cpu_user_sec   = 0.0;
+        std::uint64_t rss_kib = 0;
+        std::uint64_t handle_count = 0;
+        std::uint64_t thread_count = 0;
+        double        cpu_user_sec = 0.0;
         double        cpu_system_sec = 0.0;
-        bool          valid          = false;
+        bool          valid = false;
     };
 
 #if defined(_WIN32)
-
     ProcessMetrics sample_process_win(std::uint32_t pid) {
         ProcessMetrics m;
         if (pid == 0) return m;
-
         HANDLE h = OpenProcess(
             PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
             FALSE, static_cast<DWORD>(pid));
         if (!h) {
-            h = OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
+            h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
                 FALSE, static_cast<DWORD>(pid));
         }
         if (!h) return m;
@@ -175,24 +169,20 @@ namespace {
             m.rss_kib = pmc.WorkingSetSize / 1024;
             m.valid = true;
         }
-
         DWORD hc = 0;
-        if (GetProcessHandleCount(h, &hc)) {
-            m.handle_count = hc;
-        }
+        if (GetProcessHandleCount(h, &hc)) m.handle_count = hc;
 
         FILETIME c{}, e{}, k{}, u{};
         if (GetProcessTimes(h, &c, &e, &k, &u)) {
             auto to_sec = [](const FILETIME& ft) -> double {
                 ULARGE_INTEGER li;
-                li.LowPart  = ft.dwLowDateTime;
+                li.LowPart = ft.dwLowDateTime;
                 li.HighPart = ft.dwHighDateTime;
                 return static_cast<double>(li.QuadPart) / 10000000.0;
-            };
-            m.cpu_user_sec   = to_sec(u);
+                };
+            m.cpu_user_sec = to_sec(u);
             m.cpu_system_sec = to_sec(k);
         }
-
         CloseHandle(h);
 
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -208,49 +198,40 @@ namespace {
             }
             CloseHandle(snap);
         }
-
         return m;
     }
-
 #else
-
     ProcessMetrics sample_process_linux(std::uint32_t pid) {
         ProcessMetrics m;
         if (pid == 0) return m;
-
         const std::string base = "/proc/" + std::to_string(pid);
 
         {
             std::ifstream f(base + "/statm");
             if (f.is_open()) {
-                std::uint64_t total_pages = 0;
-                std::uint64_t resident_pages = 0;
+                std::uint64_t total_pages = 0, resident_pages = 0;
                 f >> total_pages >> resident_pages;
                 const long page_size = sysconf(_SC_PAGESIZE);
                 if (page_size > 0) {
                     m.rss_kib = (resident_pages *
-                                 static_cast<std::uint64_t>(page_size)) / 1024;
+                        static_cast<std::uint64_t>(page_size)) / 1024;
                     m.valid = true;
                 }
             }
         }
-
         {
             DIR* dir = opendir((base + "/fd").c_str());
             if (dir) {
                 std::uint64_t count = 0;
                 while (dirent* entry = readdir(dir)) {
                     if (std::strcmp(entry->d_name, ".") == 0 ||
-                        std::strcmp(entry->d_name, "..") == 0) {
-                        continue;
-                    }
+                        std::strcmp(entry->d_name, "..") == 0) continue;
                     ++count;
                 }
                 closedir(dir);
                 m.handle_count = count;
             }
         }
-
         {
             std::ifstream f(base + "/status");
             if (f.is_open()) {
@@ -264,7 +245,6 @@ namespace {
                 }
             }
         }
-
         {
             std::ifstream f(base + "/stat");
             if (f.is_open()) {
@@ -275,21 +255,18 @@ namespace {
                     std::istringstream iss(line.substr(pos + 2));
                     std::string tok;
                     for (int i = 0; i < 11; ++i) iss >> tok;
-                    std::uint64_t utime = 0;
-                    std::uint64_t stime = 0;
+                    std::uint64_t utime = 0, stime = 0;
                     iss >> utime >> stime;
                     const long hz = sysconf(_SC_CLK_TCK);
                     if (hz > 0) {
-                        m.cpu_user_sec   = static_cast<double>(utime) / hz;
+                        m.cpu_user_sec = static_cast<double>(utime) / hz;
                         m.cpu_system_sec = static_cast<double>(stime) / hz;
                     }
                 }
             }
         }
-
         return m;
     }
-
 #endif
 
     ProcessMetrics sample_process(std::uint32_t pid) {
@@ -300,36 +277,30 @@ namespace {
 #endif
     }
 
-    // -------------------------------------------------------------------------
-    //  Per-PID history kept between reports
-    // -------------------------------------------------------------------------
+    // ---- History -----------------------------------------------------------
     struct ClientHistory {
-        std::uint64_t first_seen_ms     = 0;
-        std::uint64_t last_total        = 0;
-        std::uint64_t last_echo         = 0;
-        std::uint64_t last_add          = 0;
-        std::uint64_t last_hash         = 0;
-        std::uint64_t last_leaked_calls = 0;
-        std::uint64_t last_leaked_hnd   = 0;
-        std::uint64_t last_ts_ms        = 0;
-        double        current_echo_rate = 0.0;
-        double        current_add_rate  = 0.0;
-        double        current_hash_rate = 0.0;
-        double        current_leak_rate = 0.0;
+        std::uint64_t first_seen_ms = 0;
+        std::uint64_t baseline_call_total = 0;
+        std::uint64_t last_ts_ms = 0;
+        std::uint64_t last_per_api[stress::kApiCount] = {};
+        double        current_per_api_rate[stress::kApiCount] = {};
         ProcessMetrics last_metrics;
     };
 
-    // -------------------------------------------------------------------------
-    //  Fleet-wide state kept between reports
-    // -------------------------------------------------------------------------
-    struct FleetState {
-        std::uint64_t first_seen_ms = 0;
-        double        peak_rate     = 0.0;
+    struct ServiceHistory {
+        std::uint64_t last_ts_ms = 0;
+        std::uint64_t last_per_api[stress::kApiCount] = {};
+        double        current_per_api_rate[stress::kApiCount] = {};
+        double        call_rate = 0.0;
+        double        notify_rate = 0.0;
     };
 
-    // -------------------------------------------------------------------------
-    //  Formatting helpers
-    // -------------------------------------------------------------------------
+    struct FleetState {
+        std::uint64_t first_seen_ms = 0;
+        double        peak_call_rate = 0.0;
+    };
+
+    // ---- Formatting helpers (interactive mode) -----------------------------
     std::string format_wallclock(std::uint64_t unix_ms) {
         const std::time_t t = static_cast<std::time_t>(unix_ms / 1000ULL);
         std::tm tm_buf{};
@@ -339,7 +310,7 @@ namespace {
         localtime_r(&t, &tm_buf);
 #endif
         std::ostringstream oss;
-        oss << std::put_time(&tm_buf, "%H:%M:%S");
+        oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
         return oss.str();
     }
 
@@ -347,11 +318,13 @@ namespace {
         std::ostringstream oss;
         if (seconds < 60.0) {
             oss << std::fixed << std::setprecision(0) << seconds << "s";
-        } else if (seconds < 3600.0) {
+        }
+        else if (seconds < 3600.0) {
             const int m = static_cast<int>(seconds) / 60;
             const int s = static_cast<int>(seconds) % 60;
             oss << m << "m " << s << "s";
-        } else {
+        }
+        else {
             const int h = static_cast<int>(seconds) / 3600;
             const int m = (static_cast<int>(seconds) % 3600) / 60;
             oss << h << "h " << m << "m";
@@ -365,10 +338,7 @@ namespace {
         out.reserve(s.size() + s.size() / 3);
         int count = 0;
         for (auto it = s.rbegin(); it != s.rend(); ++it) {
-            if (count == 3) {
-                out.push_back(',');
-                count = 0;
-            }
+            if (count == 3) { out.push_back(','); count = 0; }
             out.push_back(*it);
             ++count;
         }
@@ -376,163 +346,297 @@ namespace {
         return out;
     }
 
-    // -------------------------------------------------------------------------
-    //  Report rendering
-    // -------------------------------------------------------------------------
-    constexpr const char* kHeavyRule =
-        "================================================================================";
+    std::string format_bytes_mib(std::uint64_t kib) {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(1)
+            << (static_cast<double>(kib) / 1024.0) << " MiB"
+            << "  (" << format_thousands(kib) << " KiB)";
+        return oss.str();
+    }
 
-    void render_fleet_report(int report_index,
-                             std::uint64_t now_wall_ms,
-                             double uptime_sec,
-                             int interval_ms,
-                             int n_run,
-                             int n_stop,
-                             int n_dead,
-                             int n_total_seen,
-                             const stress::ClientReport& sum,
-                             const ProcessMetrics& sum_metrics,
-                             std::uint64_t rate_total,
-                             std::uint64_t rate_echo,
-                             std::uint64_t rate_add,
-                             std::uint64_t rate_hash,
-                             std::uint64_t leak_rate,
-                             double average_rate,
-                             double peak_rate) {
-        std::ostringstream out;
+    constexpr int kFrameWidth = 80;
 
-        // ---- Header ----
-        out << kHeavyRule << "\n";
-        out << " STRESS MONITOR (fleet total)  #" << report_index
-            << "   " << format_wallclock(now_wall_ms)
-            << "   uptime " << format_duration(uptime_sec)
-            << "   sample " << interval_ms << " ms\n";
-        out << kHeavyRule << "\n";
+    std::string rule_double() { return std::string(kFrameWidth, '='); }
+    std::string rule_single() { return std::string(kFrameWidth, '-'); }
 
-        // ---- Liveness ----
-        out << " Clients          : " << n_run << " RUN";
-        if (n_stop > 0) out << "  |  " << n_stop << " STOP";
-        if (n_dead > 0) out << "  |  " << n_dead << " DEAD";
-        out << "   (total ever seen: " << n_total_seen << ")\n";
-
-        // ---- Call counters ----
+    void render_fleet_report(
+        int report_index,
+        std::uint64_t now_wall_ms,
+        double uptime_sec,
+        int interval_ms,
+        int n_run, int n_stop, int n_dead, int n_total_seen,
+        std::uint64_t client_call_total,
+        std::uint64_t client_call_success,
+        std::uint64_t client_call_failure,
+        std::uint64_t client_notify_total,
+        std::uint64_t client_leaked_calls,
+        std::uint64_t client_leaked_handles,
+        double client_call_rate_total,
+        double client_notify_rate_total,
+        double client_leak_rate,
+        double average_call_rate,
+        double peak_call_rate,
+        bool service_online,
+        std::uint32_t service_pid,
+        double service_call_rate,
+        double service_notify_rate,
+        std::uint64_t service_call_cumulative,
+        std::uint64_t service_notify_cumulative,
+        const std::uint64_t service_per_api_cumulative[stress::kApiCount],
+        const std::uint64_t service_per_api_rate[stress::kApiCount],
+        const std::uint64_t client_per_api_cumulative[stress::kApiCount],
+        const std::uint64_t client_per_api_rate[stress::kApiCount],
+        const ProcessMetrics& sum_metrics)
+    {
         const double success_pct =
-            (sum.total_calls > 0)
-                ? (100.0 * static_cast<double>(sum.success_calls) /
-                   static_cast<double>(sum.total_calls))
-                : 0.0;
+            (client_call_total > 0)
+            ? (100.0 * static_cast<double>(client_call_success) /
+                static_cast<double>(client_call_total))
+            : 0.0;
 
-        out << " Total calls      : " << format_thousands(sum.total_calls)
-            << "\n";
+        std::ostringstream out;
+        out << rule_double() << "\n";
+        out << "  LINGOFUSE  -  STRESS MONITOR\n";
+        out << "  Report #" << report_index
+            << "   -   " << format_wallclock(now_wall_ms)
+            << "   -   Uptime " << format_duration(uptime_sec)
+            << "   -   Sample " << interval_ms << " ms\n";
+        out << rule_double() << "\n\n";
 
-        // ---- Calls per second ----
-        out << " Calls per second : " << format_thousands(rate_total)
-            << "   (echo=" << format_thousands(rate_echo)
-            << "  add="  << format_thousands(rate_add)
-            << "  hash=" << format_thousands(rate_hash) << ")\n";
+        out << "  CLIENT FLEET"
+            "                              "
+            "SERVICE\n";
+        out << "  " << std::string(36, '-') << "      "
+            << std::string(36, '-') << "\n";
 
-        out << " Success / Failed : "
-            << format_thousands(sum.success_calls) << " / "
-            << format_thousands(sum.failure_calls)
-            << "   (" << std::fixed << std::setprecision(2)
-            << success_pct << " %)\n";
-        out << " Per-API (total)  : echo="
-            << format_thousands(sum.echo_calls)
-            << "   add="  << format_thousands(sum.add_calls)
-            << "   hash=" << format_thousands(sum.hash_calls) << "\n";
+        {
+            std::ostringstream a, b;
+            a << "    Running ................ " << std::setw(3) << n_run;
+            b << "    Status ................ "
+                << (service_online ? "ONLINE" : "OFFLINE");
+            out << a.str() << "     " << b.str() << "\n";
 
-        // ---- Deliberate leaks ----
-        out << " Leaked handles   : "
-            << format_thousands(sum.leaked_handles)
-            << " handles, " << format_thousands(sum.leaked_calls)
-            << " calls   (rate " << format_thousands(leak_rate)
-            << " calls/s)\n";
+            a.str(""); a.clear(); b.str(""); b.clear();
+            a << "    Stopped ................ " << std::setw(3) << n_stop;
+            b << "    Call processing ....... "
+                << std::setw(9)
+                << format_thousands(static_cast<std::uint64_t>(
+                    service_call_rate + 0.5))
+                << " /s";
+            out << a.str() << "     " << b.str() << "\n";
 
-        // ---- Throughput ----
-        out << " Throughput       : average "
-            << std::fixed << std::setprecision(0)
-            << average_rate << " c/s   peak " << peak_rate << " c/s\n";
+            a.str(""); a.clear(); b.str(""); b.clear();
+            a << "    Dead ................... " << std::setw(3) << n_dead;
+            b << "    Notify processing ..... "
+                << std::setw(9)
+                << format_thousands(static_cast<std::uint64_t>(
+                    service_notify_rate + 0.5))
+                << " /s";
+            out << a.str() << "     " << b.str() << "\n";
 
-        // ---- Resource totals ----
-        std::ostringstream rss;
-        rss << format_thousands(sum_metrics.rss_kib) << " KiB";
-        if (sum_metrics.rss_kib >= 1024) {
-            rss << "  (" << std::fixed << std::setprecision(1)
-                << (static_cast<double>(sum_metrics.rss_kib) / 1024.0)
-                << " MiB)";
+            a.str(""); a.clear(); b.str(""); b.clear();
+            a << "    Total ever seen ........ " << std::setw(3) << n_total_seen;
+            b << "    Total processed ....... "
+                << std::setw(12)
+                << format_thousands(service_call_cumulative +
+                    service_notify_cumulative);
+            out << a.str() << "     " << b.str() << "\n";
+
+            a.str(""); a.clear(); b.str(""); b.clear();
+            a << "    Leaked handles ........ "
+                << std::setw(12) << format_thousands(client_leaked_handles);
+            b << "    Service PID ........... " << std::setw(12)
+                << (service_online ? std::to_string(service_pid) : "-");
+            out << a.str() << "     " << b.str() << "\n";
         }
 
-        out << kHeavyRule << "\n";
-        out << " Total RSS        : " << rss.str() << "\n";
-        out << " Total handles    : "
-            << format_thousands(sum_metrics.handle_count) << "\n";
-        out << " Total threads    : "
-            << format_thousands(sum_metrics.thread_count) << "\n";
-        out << " Total CPU time   : "
-            << std::fixed << std::setprecision(1)
-            << sum_metrics.cpu_user_sec << " s user + "
-            << sum_metrics.cpu_system_sec << " s system = "
-            << (sum_metrics.cpu_user_sec + sum_metrics.cpu_system_sec)
-            << " s\n";
-        out << " RSS/handle/thread/CPU totals cover the "
-            << n_run << " live client(s) only.\n";
-        out << kHeavyRule << "\n";
+        out << "\n" << rule_single() << "\n";
+        out << "  THROUGHPUT (fleet  -  current second)\n";
+        out << rule_single() << "\n";
 
-        // ---- Draw ----
+        auto tp_line = [&](const std::string& label, const std::string& value) {
+            out << "    " << std::left << std::setw(28) << label
+                << std::right << std::setw(18) << value << "\n";
+            };
+
+        tp_line("Calls sent ..................",
+            format_thousands(static_cast<std::uint64_t>(
+                client_call_rate_total + 0.5)) + " /s");
+        tp_line("Notifies sent ...............",
+            format_thousands(static_cast<std::uint64_t>(
+                client_notify_rate_total + 0.5)) + " /s");
+        tp_line("Success rate ................",
+            (std::ostringstream() << std::fixed << std::setprecision(2)
+                << success_pct << " %").str());
+        tp_line("Average (observation window) .",
+            format_thousands(static_cast<std::uint64_t>(
+                average_call_rate + 0.5)) + " /s");
+        tp_line("Peak ........................",
+            format_thousands(static_cast<std::uint64_t>(
+                peak_call_rate + 0.5)) + " /s");
+
+        out << "\n" << rule_single() << "\n";
+        out << "  HANDLE LEAKS  "
+            "(deliberate; reclaimed by the library after 10 min idle)\n";
+        out << rule_single() << "\n";
+        tp_line("Leaked calls ................",
+            format_thousands(client_leaked_calls) + "   rate "
+            + format_thousands(static_cast<std::uint64_t>(
+                client_leak_rate + 0.5)) + " /s");
+        tp_line("Leaked handles ..............",
+            format_thousands(client_leaked_handles));
+
+        out << "\n" << rule_single() << "\n";
+        out << "  RESOURCES (live clients only)\n";
+        out << rule_single() << "\n";
+        tp_line("RSS .........................",
+            format_bytes_mib(sum_metrics.rss_kib));
+        tp_line("Open handles ................",
+            format_thousands(sum_metrics.handle_count));
+        tp_line("Threads .....................",
+            format_thousands(sum_metrics.thread_count));
+        {
+            std::ostringstream cpu;
+            cpu << std::fixed << std::setprecision(1)
+                << sum_metrics.cpu_user_sec << " s user + "
+                << sum_metrics.cpu_system_sec << " s system  =  "
+                << (sum_metrics.cpu_user_sec + sum_metrics.cpu_system_sec)
+                << " s";
+            tp_line("CPU time ....................", cpu.str());
+        }
+
+        out << "\n" << rule_single() << "\n";
+        out << "  PER-API  (client view)\n";
+        out << rule_single() << "\n";
+        for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+            out << "    " << std::left << std::setw(14)
+                << stress::kApiNames[i]
+                << std::right << std::setw(12)
+                << format_thousands(client_per_api_rate[i])
+                << " /s   cumulative  "
+                << std::setw(14)
+                << format_thousands(client_per_api_cumulative[i]);
+            if (i == stress::kIdxNotifyDemo) out << "   [notify]";
+            out << "\n";
+        }
+
+        out << "\n" << rule_double() << "\n";
+
         clear_screen();
         std::cout << out.str();
         std::cout.flush();
     }
 
+    // ---- CI progress emitter ------------------------------------------------
+    void emit_ci_progress(
+        int report_index,
+        double uptime_sec,
+        int n_run, int n_stop, int n_dead, int n_total_seen,
+        std::uint64_t sum_call_total,
+        std::uint64_t sum_call_success,
+        std::uint64_t sum_call_failure,
+        std::uint64_t sum_notify_total,
+        double client_call_rate_total,
+        double average_call_rate,
+        double peak_call_rate,
+        const std::uint64_t sum_per_api_rate[stress::kApiCount],
+        const std::uint64_t sum_per_api_cumulative[stress::kApiCount],
+        const ProcessMetrics& sum_metrics)
+    {
+        const double success_pct =
+            (sum_call_total > 0)
+            ? (100.0 * static_cast<double>(sum_call_success) /
+                static_cast<double>(sum_call_total))
+            : 0.0;
+
+        nlohmann::json j;
+        j["event"] = "progress";
+        j["report"] = report_index;
+        j["t_sec"] = static_cast<int>(uptime_sec);
+        j["clients_run"] = n_run;
+        j["clients_stop"] = n_stop;
+        j["clients_dead"] = n_dead;
+        j["clients_seen"] = n_total_seen;
+        j["call_total"] = sum_call_total;
+        j["call_success"] = sum_call_success;
+        j["call_failure"] = sum_call_failure;
+        j["notify_total"] = sum_notify_total;
+        j["success_pct"] = success_pct;
+        j["rate_calls_per_sec"] =
+            static_cast<std::uint64_t>(client_call_rate_total + 0.5);
+        j["rate_average"] = static_cast<std::uint64_t>(average_call_rate + 0.5);
+        j["rate_peak"] = static_cast<std::uint64_t>(peak_call_rate + 0.5);
+
+        for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+            j["per_api_rate"][stress::kApiNames[i]] = sum_per_api_rate[i];
+            j["per_api_cumulative"][stress::kApiNames[i]] =
+                sum_per_api_cumulative[i];
+        }
+
+        j["rss_kib"] = sum_metrics.rss_kib;
+        j["handles"] = sum_metrics.handle_count;
+        j["threads"] = sum_metrics.thread_count;
+        j["cpu_user_sec"] = sum_metrics.cpu_user_sec;
+        j["cpu_system_sec"] = sum_metrics.cpu_system_sec;
+
+        stress::json_emit(j);
+    }
+
 } // namespace
 
 int main(int argc, char* argv[]) {
-    const int interval_ms =
-        (argc > 1) ? std::atoi(argv[1]) : kDefaultIntervalMs;
-    const int stale_timeout_ms =
-        (argc > 2) ? std::atoi(argv[2]) : kDefaultStaleTimeoutMs;
+    const stress::CliOptions opt =
+        stress::CliOptions::parse(argc, argv, "StressMonitor");
+    g_ci_mode = opt.ci;
 
     init_terminal();
 
-    std::cout << "=== Stress Monitor (fleet total) ===" << std::endl;
-    std::cout << "[Monitor] Endpoint       : " << stress::kEndpoint << "\n"
-              << "[Monitor] App name       : " << stress::kMonitorApp << "\n"
-              << "[Monitor] API name       : " << stress::kMonitorApi << "\n"
-              << "[Monitor] Report period  : " << interval_ms << " ms\n"
-              << "[Monitor] Stale timeout  : " << stale_timeout_ms << " ms\n"
-              << "[Monitor] Clear screen   : "
-              << (g_use_clear_screen ? "yes" : "no") << "\n"
-              << "[Monitor] Press Ctrl+C to stop.\n"
-              << std::endl;
+    if (!opt.ci) {
+        std::cout << "=== Stress Monitor (fleet total) ===" << std::endl;
+        std::cout << "[Monitor] Endpoint       : " << stress::kEndpoint << "\n"
+            << "[Monitor] App name       : " << stress::kMonitorApp << "\n"
+            << "[Monitor] API name       : " << stress::kMonitorApi << "\n"
+            << "[Monitor] Report period  : " << opt.interval_ms << " ms\n"
+            << "[Monitor] Stale timeout  : " << opt.stale_timeout_ms << " ms\n"
+            << "[Monitor] Clear screen   : "
+            << (g_use_clear_screen ? "yes" : "no") << "\n"
+            << "[Monitor] Press Ctrl+C to stop.\n"
+            << std::endl;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
 
     try {
 #if defined(_WIN32)
         SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
 #else
-        std::signal(SIGINT,  posix_signal_handler);
+        std::signal(SIGINT, posix_signal_handler);
         std::signal(SIGTERM, posix_signal_handler);
 #endif
 
         lingofuse::LibraryLoader loader;
 
         lingofuse::App app(stress::kMonitorApp,
-                           "Stress test monitor observer");
+            "Stress test monitor observer");
         if (!app.registerNotify(stress::kMonitorApi,
-                                "client status report (binary payload)",
-                                nullptr, api_report)) {
+            "client and service status reports",
+            nullptr, api_report)) {
             std::cerr << "[FATAL] Failed to register monitor API '"
-                      << stress::kMonitorApi << "'." << std::endl;
+                << stress::kMonitorApi << "'." << std::endl;
             return EXIT_FAILURE;
         }
 
         lingofuse::setOption("Wait_Ready", "False");
+        if (opt.ci) {
+            lingofuse::setOption("Quiet", "True");
+        }
         lingofuse::resetPrepare();
 
         const int cli_tag =
             lingofuse::prepareClient(stress::kEndpoint, app.get());
         if (cli_tag < 0) {
             std::cerr << "[FATAL] LF_PrepareClient failed for "
-                      << stress::kEndpoint << std::endl;
+                << stress::kEndpoint << std::endl;
             return EXIT_FAILURE;
         }
 
@@ -543,164 +647,172 @@ int main(int argc, char* argv[]) {
 
         for (int i = 0; i < 50 && !g_stop_flag.load(); ++i) {
             if (lingofuse::checkApi(stress::kMonitorApp,
-                                    stress::kMonitorApi)) {
-                break;
-            }
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(200));
+                stress::kMonitorApi)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        std::cout << "[Monitor] Online on " << stress::kEndpoint
-                  << ". Waiting for client reports..." << std::endl;
+        if (opt.ci) {
+            nlohmann::json j;
+            j["event"] = "ready";
+            j["pid"] = stress::get_current_pid();
+            j["role"] = "monitor";
+            j["endpoint"] = stress::kEndpoint;
+            j["app"] = stress::kMonitorApp;
+            j["api"] = stress::kMonitorApi;
+            j["interval_ms"] = opt.interval_ms;
+            j["stale_timeout_ms"] = opt.stale_timeout_ms;
+            j["duration_sec"] = opt.duration_sec;
+            stress::json_emit(j);
+        }
+        else {
+            std::cout << "[Monitor] Online on " << stress::kEndpoint
+                << ". Waiting for reports..." << std::endl;
+        }
 
-        const auto start = std::chrono::steady_clock::now();
-
-        std::map<std::uint32_t, ClientHistory> history;
+        std::map<std::uint32_t, ClientHistory>  client_hist;
+        std::map<std::uint32_t, ServiceHistory> service_hist;
         FleetState fleet;
         int report_index = 0;
-        int total_seen   = 0;
+        int total_seen = 0;
 
-        // Placeholder report so the operator sees an empty table immediately.
-        {
+        // Interactive placeholder so the operator sees a frame immediately.
+        if (!opt.ci) {
             const auto now_steady = std::chrono::steady_clock::now();
             const double uptime_sec =
                 std::chrono::duration<double>(now_steady - start).count();
-            render_fleet_report(0, stress::now_ms(), uptime_sec,
-                                interval_ms,
-                                0, 0, 0, 0,
-                                stress::ClientReport{},
-                                ProcessMetrics{},
-                                0, 0, 0, 0, 0,
-                                0.0, 0.0);
+            std::uint64_t zero[stress::kApiCount] = {};
+            render_fleet_report(
+                0, stress::now_ms(), uptime_sec, opt.interval_ms,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                false, 0, 0.0, 0.0, 0, 0,
+                zero, zero, zero, zero,
+                ProcessMetrics{});
         }
+
+        // Snapshot for the final CI summary.
+        std::uint64_t final_call_total = 0;
+        std::uint64_t final_call_success = 0;
+        std::uint64_t final_call_failure = 0;
+        std::uint64_t final_notify_total = 0;
+        double        final_peak_rate = 0.0;
+        double        final_avg_rate = 0.0;
+        double        final_success_pct = 0.0;
 
         while (!g_stop_flag.load()) {
             std::this_thread::sleep_for(
-                std::chrono::milliseconds(interval_ms));
+                std::chrono::milliseconds(opt.interval_ms));
             if (g_stop_flag.load()) break;
+
+            // CI auto-termination after --duration sec.
+            if (opt.ci && opt.duration_sec > 0) {
+                const auto now_steady = std::chrono::steady_clock::now();
+                const int elapsed = static_cast<int>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        now_steady - start).count());
+                if (elapsed >= opt.duration_sec) {
+                    g_stop_flag.store(true);
+                    break;
+                }
+            }
 
             const auto now_steady = std::chrono::steady_clock::now();
             const double uptime_sec =
                 std::chrono::duration<double>(now_steady - start).count();
             const std::uint64_t now_wall_ms = stress::now_ms();
 
-            // Snapshot the reports map.
-            std::map<std::uint32_t, ReportEntry> snapshot;
+            // Snapshot under lock.
+            std::map<std::uint32_t, ReportEntry> client_snap;
+            std::map<std::uint32_t, ReportEntry> service_snap;
             {
                 std::lock_guard<std::mutex> lock(reports_mutex());
-                snapshot = reports();
+                client_snap = client_reports();
+                service_snap = service_reports();
             }
 
-            // Fleet accumulators.
-            stress::ClientReport sum{};
+            // ---- Client aggregate ----------------------------------------
+            std::uint64_t sum_call_total = 0;
+            std::uint64_t sum_call_success = 0;
+            std::uint64_t sum_call_failure = 0;
+            std::uint64_t sum_notify_total = 0;
+            std::uint64_t sum_leaked_calls = 0;
+            std::uint64_t sum_leaked_handles = 0;
+            std::uint64_t sum_per_api_cumulative[stress::kApiCount] = {};
+            std::uint64_t sum_per_api_rate[stress::kApiCount] = {};
             ProcessMetrics sum_metrics{};
-
-            std::uint64_t rate_echo = 0;
-            std::uint64_t rate_add  = 0;
-            std::uint64_t rate_hash = 0;
-            std::uint64_t leak_rate = 0;
-
+            std::uint64_t fleet_delta_call = 0;
+            double        leak_rate = 0.0;
             int n_run = 0, n_stop = 0, n_dead = 0;
 
-            for (auto& [pid, entry] : snapshot) {
-                // Liveness
-                std::string state;
+            for (auto& [pid, entry] : client_snap) {
                 if (entry.report.running == 0) {
-                    state = "STOP";
                     ++n_stop;
-                } else if (now_wall_ms - entry.last_seen_ms >
-                           static_cast<std::uint64_t>(stale_timeout_ms)) {
-                    state = "DEAD";
+                }
+                else if (now_wall_ms - entry.last_seen_ms >
+                    static_cast<std::uint64_t>(opt.stale_timeout_ms)) {
                     ++n_dead;
-                } else {
-                    state = "RUN";
+                }
+                else {
                     ++n_run;
                 }
 
-                // History bookkeeping.
-                ClientHistory& h = history[pid];
+                ClientHistory& h = client_hist[pid];
                 if (h.first_seen_ms == 0) {
-                    h.first_seen_ms     = entry.last_seen_ms;
-                    h.last_total        = entry.report.total_calls;
-                    h.last_echo         = entry.report.echo_calls;
-                    h.last_add          = entry.report.add_calls;
-                    h.last_hash         = entry.report.hash_calls;
-                    h.last_leaked_calls = entry.report.leaked_calls;
-                    h.last_leaked_hnd   = entry.report.leaked_handles;
-                    h.last_ts_ms        = entry.report.timestamp_ms;
+                    h.first_seen_ms = entry.last_seen_ms;
+                    h.baseline_call_total = entry.report.call_total;
+                    h.last_ts_ms = entry.report.timestamp_ms;
+                    for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                        h.last_per_api[i] = entry.report.per_api[i];
+                    }
                     ++total_seen;
                 }
 
-                // Per-API rates from successive reports.
                 if (entry.report.timestamp_ms > h.last_ts_ms) {
-                    const double dt =
-                        static_cast<double>(
-                            entry.report.timestamp_ms - h.last_ts_ms) / 1000.0;
+                    const double dt = static_cast<double>(
+                        entry.report.timestamp_ms - h.last_ts_ms) / 1000.0;
                     if (dt > 0.0) {
-                        if (entry.report.echo_calls >= h.last_echo) {
-                            h.current_echo_rate =
-                                static_cast<double>(
-                                    entry.report.echo_calls - h.last_echo)
-                                / dt;
-                        }
-                        if (entry.report.add_calls >= h.last_add) {
-                            h.current_add_rate =
-                                static_cast<double>(
-                                    entry.report.add_calls - h.last_add)
-                                / dt;
-                        }
-                        if (entry.report.hash_calls >= h.last_hash) {
-                            h.current_hash_rate =
-                                static_cast<double>(
-                                    entry.report.hash_calls - h.last_hash)
-                                / dt;
-                        }
-                        if (entry.report.leaked_calls >= h.last_leaked_calls) {
-                            h.current_leak_rate =
-                                static_cast<double>(
-                                    entry.report.leaked_calls -
-                                    h.last_leaked_calls) / dt;
+                        for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                            if (entry.report.per_api[i] >= h.last_per_api[i]) {
+                                h.current_per_api_rate[i] =
+                                    static_cast<double>(
+                                        entry.report.per_api[i] -
+                                        h.last_per_api[i]) / dt;
+                            }
+                            else {
+                                h.current_per_api_rate[i] = 0.0;
+                            }
                         }
                     }
                 }
-                h.last_total        = entry.report.total_calls;
-                h.last_echo         = entry.report.echo_calls;
-                h.last_add          = entry.report.add_calls;
-                h.last_hash         = entry.report.hash_calls;
-                h.last_leaked_calls = entry.report.leaked_calls;
-                h.last_leaked_hnd   = entry.report.leaked_handles;
-                h.last_ts_ms        = entry.report.timestamp_ms;
+                for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                    h.last_per_api[i] = entry.report.per_api[i];
+                }
+                h.last_ts_ms = entry.report.timestamp_ms;
 
-                // Accumulate rates.
-                rate_echo += static_cast<std::uint64_t>(
-                    h.current_echo_rate + 0.5);
-                rate_add  += static_cast<std::uint64_t>(
-                    h.current_add_rate  + 0.5);
-                rate_hash += static_cast<std::uint64_t>(
-                    h.current_hash_rate + 0.5);
-                leak_rate += static_cast<std::uint64_t>(
-                    h.current_leak_rate + 0.5);
+                for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                    sum_per_api_rate[i] += static_cast<std::uint64_t>(
+                        h.current_per_api_rate[i] + 0.5);
+                    sum_per_api_cumulative[i] += entry.report.per_api[i];
+                }
+                sum_call_total += entry.report.call_total;
+                sum_call_success += entry.report.call_success;
+                sum_call_failure += entry.report.call_failure;
+                sum_notify_total += entry.report.notify_total;
+                sum_leaked_calls += entry.report.leaked_calls;
+                sum_leaked_handles += entry.report.leaked_handles;
 
-                // Accumulate counters.
-                sum.total_calls    += entry.report.total_calls;
-                sum.success_calls  += entry.report.success_calls;
-                sum.failure_calls  += entry.report.failure_calls;
-                sum.echo_calls     += entry.report.echo_calls;
-                sum.add_calls      += entry.report.add_calls;
-                sum.hash_calls     += entry.report.hash_calls;
-                sum.leaked_calls   += entry.report.leaked_calls;
-                sum.leaked_handles += entry.report.leaked_handles;
+                fleet_delta_call +=
+                    (entry.report.call_total - h.baseline_call_total);
 
-                // Accumulate resources for live clients only.
-                if (state == "RUN") {
+                if (entry.report.running != 0 &&
+                    now_wall_ms - entry.last_seen_ms <=
+                    static_cast<std::uint64_t>(opt.stale_timeout_ms)) {
                     ProcessMetrics m = sample_process(pid);
-                    if (m.valid) {
-                        h.last_metrics = m;
-                    }
-                    sum_metrics.rss_kib        += h.last_metrics.rss_kib;
-                    sum_metrics.handle_count   += h.last_metrics.handle_count;
-                    sum_metrics.thread_count   += h.last_metrics.thread_count;
-                    sum_metrics.cpu_user_sec   += h.last_metrics.cpu_user_sec;
+                    if (m.valid) h.last_metrics = m;
+                    sum_metrics.rss_kib += h.last_metrics.rss_kib;
+                    sum_metrics.handle_count += h.last_metrics.handle_count;
+                    sum_metrics.thread_count += h.last_metrics.thread_count;
+                    sum_metrics.cpu_user_sec += h.last_metrics.cpu_user_sec;
                     sum_metrics.cpu_system_sec += h.last_metrics.cpu_system_sec;
                 }
             }
@@ -709,43 +821,169 @@ int main(int argc, char* argv[]) {
                 sum_metrics.valid = true;
             }
 
-            // Fleet-level rate history.
-            const std::uint64_t rate_total = rate_echo + rate_add + rate_hash;
+            double client_call_rate_total = 0.0;
+            for (std::size_t i = 0; i < stress::kCallApiCount; ++i) {
+                client_call_rate_total += static_cast<double>(
+                    sum_per_api_rate[i]);
+            }
+            const double client_notify_rate_total = static_cast<double>(
+                sum_per_api_rate[stress::kIdxNotifyDemo]);
 
             if (fleet.first_seen_ms == 0) {
                 fleet.first_seen_ms = now_wall_ms;
             }
-            if (static_cast<double>(rate_total) > fleet.peak_rate) {
-                fleet.peak_rate = static_cast<double>(rate_total);
-            }
-
             const double elapsed_since_start =
                 static_cast<double>(now_wall_ms - fleet.first_seen_ms) / 1000.0;
-            const double average_rate =
+            leak_rate = (elapsed_since_start > 0.0)
+                ? static_cast<double>(sum_leaked_handles) / elapsed_since_start
+                : 0.0;
+
+            if (client_call_rate_total > fleet.peak_call_rate) {
+                fleet.peak_call_rate = client_call_rate_total;
+            }
+            const double average_call_rate =
                 (elapsed_since_start > 0.0)
-                    ? (static_cast<double>(sum.total_calls) /
-                       elapsed_since_start)
-                    : 0.0;
+                ? (static_cast<double>(fleet_delta_call) / elapsed_since_start)
+                : 0.0;
+
+            // ---- Service aggregate ---------------------------------------
+            bool          service_online = false;
+            std::uint32_t service_pid = 0;
+            double        service_call_rate = 0.0;
+            double        service_notify_rate = 0.0;
+            std::uint64_t service_call_cumul = 0;
+            std::uint64_t service_notify_cumul = 0;
+            std::uint64_t service_per_api_cumul[stress::kApiCount] = {};
+            std::uint64_t service_per_api_rate[stress::kApiCount] = {};
+
+            for (auto& [pid, entry] : service_snap) {
+                const bool fresh = (now_wall_ms - entry.last_seen_ms <=
+                    static_cast<std::uint64_t>(opt.stale_timeout_ms));
+                if (!fresh) continue;
+
+                service_online = true;
+                service_pid = pid;
+
+                ServiceHistory& h = service_hist[pid];
+                if (entry.report.timestamp_ms > h.last_ts_ms) {
+                    const double dt = static_cast<double>(
+                        entry.report.timestamp_ms - h.last_ts_ms) / 1000.0;
+                    if (dt > 0.0) {
+                        for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                            if (entry.report.per_api[i] >= h.last_per_api[i]) {
+                                h.current_per_api_rate[i] =
+                                    static_cast<double>(
+                                        entry.report.per_api[i] -
+                                        h.last_per_api[i]) / dt;
+                            }
+                            else {
+                                h.current_per_api_rate[i] = 0.0;
+                            }
+                        }
+                    }
+                }
+                for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                    h.last_per_api[i] = entry.report.per_api[i];
+                }
+                h.last_ts_ms = entry.report.timestamp_ms;
+
+                for (std::size_t i = 0; i < stress::kApiCount; ++i) {
+                    service_per_api_cumul[i] = entry.report.per_api[i];
+                    service_per_api_rate[i] = static_cast<std::uint64_t>(
+                        h.current_per_api_rate[i] + 0.5);
+                }
+                service_call_cumul = entry.report.call_total;
+                service_notify_cumul = entry.report.notify_total;
+
+                double sum_call_rate = 0.0;
+                for (std::size_t i = 0; i < stress::kCallApiCount; ++i) {
+                    sum_call_rate += h.current_per_api_rate[i];
+                }
+                service_call_rate = sum_call_rate;
+                service_notify_rate = h.current_per_api_rate[
+                    stress::kIdxNotifyDemo];
+            }
+
+            // Remember the values that go into the CI summary.
+            final_call_total = sum_call_total;
+            final_call_success = sum_call_success;
+            final_call_failure = sum_call_failure;
+            final_notify_total = sum_notify_total;
+            final_peak_rate = fleet.peak_call_rate;
+            final_avg_rate = average_call_rate;
+            final_success_pct = (sum_call_total > 0)
+                ? (100.0 * static_cast<double>(sum_call_success) /
+                    static_cast<double>(sum_call_total))
+                : 0.0;
 
             ++report_index;
-            render_fleet_report(report_index, now_wall_ms, uptime_sec,
-                                interval_ms,
-                                n_run, n_stop, n_dead, total_seen,
-                                sum, sum_metrics,
-                                rate_total,
-                                rate_echo, rate_add, rate_hash,
-                                leak_rate,
-                                average_rate, fleet.peak_rate);
+
+            if (opt.ci) {
+                emit_ci_progress(
+                    report_index, uptime_sec,
+                    n_run, n_stop, n_dead, total_seen,
+                    sum_call_total, sum_call_success, sum_call_failure,
+                    sum_notify_total,
+                    client_call_rate_total, average_call_rate,
+                    fleet.peak_call_rate,
+                    sum_per_api_rate, sum_per_api_cumulative,
+                    sum_metrics);
+            }
+            else {
+                render_fleet_report(
+                    report_index, now_wall_ms, uptime_sec, opt.interval_ms,
+                    n_run, n_stop, n_dead, total_seen,
+                    sum_call_total, sum_call_success, sum_call_failure,
+                    sum_notify_total,
+                    sum_leaked_calls, sum_leaked_handles,
+                    client_call_rate_total, client_notify_rate_total,
+                    leak_rate, average_call_rate, fleet.peak_call_rate,
+                    service_online, service_pid,
+                    service_call_rate, service_notify_rate,
+                    service_call_cumul, service_notify_cumul,
+                    service_per_api_cumul, service_per_api_rate,
+                    sum_per_api_cumulative, sum_per_api_rate,
+                    sum_metrics);
+            }
         }
 
-        std::cout << "\n[Monitor] Shutting down..." << std::endl;
-        lingofuse::exitMainThread();
+        if (!opt.ci) {
+            std::cout << "\n[Monitor] Shutting down..." << std::endl;
+        }
 
+        // ---- Final CI summary -------------------------------------------
+        if (opt.ci) {
+            const auto now_steady = std::chrono::steady_clock::now();
+            const double uptime_sec =
+                std::chrono::duration<double>(now_steady - start).count();
+
+            nlohmann::json j;
+            j["event"] = "summary";
+            j["pid"] = stress::get_current_pid();
+            j["role"] = "monitor";
+            j["uptime_sec"] = static_cast<int>(uptime_sec);
+            j["reports"] = report_index;
+            j["clients_seen"] = total_seen;
+            j["call_total"] = final_call_total;
+            j["call_success"] = final_call_success;
+            j["call_failure"] = final_call_failure;
+            j["notify_total"] = final_notify_total;
+            j["success_pct"] = final_success_pct;
+            j["rate_average"] =
+                static_cast<std::uint64_t>(final_avg_rate + 0.5);
+            j["rate_peak"] =
+                static_cast<std::uint64_t>(final_peak_rate + 0.5);
+            j["status"] = (final_success_pct >= opt.min_success_pct)
+                ? "PASS" : "FAIL";
+            stress::json_emit(j);
+        }
+
+        lingofuse::exitMainThread();
     }
     catch (const lingofuse::Error& e) {
         std::cerr << "[FATAL] lingofuse::Error (code="
-                  << static_cast<int>(e.code()) << "): "
-                  << e.what() << std::endl;
+            << static_cast<int>(e.code()) << "): "
+            << e.what() << std::endl;
         g_stop_flag.store(true);
         return EXIT_FAILURE;
     }
@@ -760,6 +998,8 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::cout << "[Monitor] Bye." << std::endl;
+    if (!opt.ci) {
+        std::cout << "[Monitor] Bye." << std::endl;
+    }
     return EXIT_SUCCESS;
 }

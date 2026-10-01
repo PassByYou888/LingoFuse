@@ -1,14 +1,21 @@
-# LingoFuse C++ Interface Knowledge Base (v6.0, English Edition)
+# LingoFuse C++ Interface Knowledge Base (v7.0, English Edition)
 
 > **Purpose**: The self-contained, authoritative reference for the LingoFuse C++ interface. Any AI or human engineer can read this file alone and write correct, complete, production-grade LingoFuse C++ programs without reading the source.
 >
-> **Source coverage**: `LingoFuse.h`, `LingoFuse.c`, `lf_io.hpp`, `LingoFuse.hpp`, `lf_http_bridge_client.hpp`, cross-checked against the Pascal layer (`lingofuse_import.pas`, `lingofuse_helper.pas`) and against `LingoFuse_Pascal_Complete_Guide.md`.
+> **Source coverage**: `LingoFuse.h`, `LingoFuse.c`, `lf_io.hpp`, `LingoFuse.hpp`, `lf_http_bridge_client.hpp`, cross-checked against the Pascal layer (`lingofuse_import.pas`, `lingofuse_helper.pas`, `Z.LingoFuse_Export.pas`, `Z.LingoFuse_Core.pas`) and against `LingoFuse_Pascal_Complete_Guide.md`.
 >
 > **Evidence level**: 🟢 verified against source / 🟡 documentation inference / ⏳ unverified
 >
 > **Diagrams**: All diagrams use Mermaid.
 >
-> **Changelog**: v6.0 (2026-09-25) — English rebuild. Adds an explicit **ABI loading contract** section and a new pitfall class discovered while building the CMake test-program generator. See §0.7 and §22.
+> **Changelog**: v7.0 (2026-10-01) — Synchronised with the Pascal-side API changes:
+>   - **ABI export count raised from 36 to 37** (`LF_CreateData_Permanent` added).
+>   - **Data-handle idle reclamation changed from 5 to 10 minutes** across all layers.
+>   - **New RAII factory `DataHandle::createPermanent()`** in `LingoFuse.hpp`.
+>   - **`LF_LoadLibrary()` requirement elevated to a first-class "iron rule"** — see §0.4 rule #6 and §0.7.
+>   - **Chapter 22 (Generated-Code Pitfalls)** strengthened with the observed production failures.
+>
+> **Evidence level legend**: 🟢 verified against source / 🟡 documentation inference / ⏳ unverified
 
 ---
 
@@ -37,7 +44,7 @@
 - [Chapter 19 — Anti-Patterns and Pitfalls](#chapter-19--anti-patterns-and-pitfalls)
 - [Chapter 20 — API Quick Reference](#chapter-20--api-quick-reference)
 - [Chapter 21 — Honest Uncertainty List](#chapter-21--honest-uncertainty-list)
-- [Chapter 22 — Generated-Code Pitfalls (NEW in v6.0)](#chapter-22--generated-code-pitfalls-new-in-v60)
+- [Chapter 22 — Generated-Code Pitfalls](#chapter-22--generated-code-pitfalls)
 - [Appendix A — Glossary](#appendix-a--glossary)
 - [Appendix B — Pascal LF-* Numbering Cross-Reference](#appendix-b--pascal-lf--numbering-cross-reference)
 - [Appendix C — Version History](#appendix-c--version-history)
@@ -56,7 +63,7 @@
 flowchart TB
     JSON["json.hpp<br/>nlohmann/json single file"]
     H["LingoFuse.h<br/>C ABI declarations"]
-    C["LingoFuse.c<br/>dynamic loader + 36 symbol resolvers"]
+    C["LingoFuse.c<br/>dynamic loader + 37 symbol resolvers"]
     IO["lf_io.hpp<br/>unified I/O"]
     HPP["LingoFuse.hpp<br/>RAII wrapper"]
     BRIDGE["lf_http_bridge_client.hpp<br/>HTTP bridge client"]
@@ -81,12 +88,12 @@ Dependency direction is strictly one-way: `LingoFuse.h → lf_io.hpp → LingoFu
 
 | Layer | File | Purpose | Who uses it |
 |---|---|---|---|
-| C ABI | `LingoFuse.h` / `.c` | Dynamic loading, 36 exports, C helpers | C / C++ / any-FFI language |
+| C ABI | `LingoFuse.h` / `.c` | Dynamic loading, 37 exports, C helpers | C / C++ / any-FFI language |
 | Unified I/O | `lf_io.hpp` | Only sanctioned entry for JSON/string/byte wire format | Callbacks, RAII layer |
 | RAII | `LingoFuse.hpp` | `DataHandle` / `App` / `LibraryLoader` / network events | Modern C++ applications |
 | HTTP Bridge client | `lf_http_bridge_client.hpp` | Call `bridge.py` / `bridge.exe` over the LF mesh | Services needing HTTP/JSON repair |
 
-### 0.4 Five Iron Rules
+### 0.4 Six Iron Rules
 
 | # | Rule | Violation Consequence |
 |:-:|---|---|
@@ -101,10 +108,10 @@ Dependency direction is strictly one-way: `LingoFuse.h → lf_io.hpp → LingoFu
 
 | Item | Value |
 |---|---:|
-| C ABI export count | 36 |
+| C ABI export count | **37** |
 | Default TCP port | 9898 |
-| DataHandle idle reclamation | 5 minutes |
-| Reclamation scan interval | 5 seconds |
+| DataHandle idle reclamation | **10 minutes** |
+| Reclamation scan interval | **5 seconds** |
 | `LF_PrepareDone` init timeout | 30 seconds |
 | `Wait_Connection_Timeout` default | 30000 ms |
 | `Overlap_Connection` default | False |
@@ -117,6 +124,8 @@ Dependency direction is strictly one-way: `LingoFuse.h → lf_io.hpp → LingoFu
 | Bridge default HTTP timeout | 25.0 s |
 | Bridge HTTP timeout cap | 300.0 s |
 | `LF_Generate_AppName` pointer validity | ~5 seconds |
+| Sequenced Notify thread idle timeout | 5 minutes |
+| Sequenced Notify thread delayed release | 5 seconds |
 
 ### 0.6 Reading Paths
 
@@ -145,17 +154,19 @@ flowchart TD
 
 ### 0.7 ABI Loading Contract (READ THIS FIRST)
 
-> **This is the single most important operational rule when using the C ABI layer from C++.** Every bug that manifests as "my service does nothing", "LF_CreateData returns garbage", or "callback never fires" traces back to violating this contract.
+> **This is the single most important operational rule when using the C ABI layer from C++.**
+>
+> **Empirical observation**: In production code, in AI-generated code, and in the `cpp_abi_cmake_generator_tool` output, the most common cause of "my service does nothing", "LF_CreateData returns garbage", and "callback never fires" is **forgetting to call `LF_LoadLibrary()` at program start**. The library and its headers cannot catch this at compile time, because every `LF_*` symbol compiles to a thin forwarding wrapper around a null function pointer.
 
 #### 0.7.1 The Rule
 
-The C ABI layer is **dynamically loaded**. `LingoFuse.h` declares 36 functions. `LingoFuse.c` implements them as **thin wrappers around a table of function pointers**. Those pointers are populated only when you explicitly call:
+The C ABI layer is **dynamically loaded**. `LingoFuse.h` declares 37 functions. `LingoFuse.c` implements them as **thin wrappers around a table of function pointers**. Those pointers are populated only when you explicitly call:
 
 ```c
 int LF_LoadLibrary(void);   /* returns 1 on success, 0 on failure */
 ```
 
-**Before that call, every `LF_*` pointer is null.** Invoking any other `LF_*` function without a prior successful `LF_LoadLibrary()` is undefined behaviour — typically a null-pointer dereference.
+**Before that call, every `LF_*` pointer is null.** Invoking any other `LF_*` function without a prior successful `LF_LoadLibrary()` is undefined behaviour — typically a null-pointer dereference. In Debug builds it usually crashes immediately; in Release builds it may appear to "do nothing" because the compiler may have optimised the call site based on the assumption that a function pointer is never null, or the crash may land in an unrelated location.
 
 #### 0.7.2 Mandatory Ordering
 
@@ -219,7 +230,7 @@ int main() {
 }
 ```
 
-#### 0.7.5 RAII Shortcut
+#### 0.7.5 RAII Shortcut (RECOMMENDED)
 
 `lingofuse::LibraryLoader` handles both `LF_LoadLibrary()` and `LF_FreeLibrary()` via RAII. **Construct it as the very first object in `main()`** (or before any other LingoFuse code):
 
@@ -233,11 +244,25 @@ int main() {
 
 If `LF_LoadLibrary` fails, the constructor throws `lingofuse::Error` with `code() == ErrorCode::LibraryLoadFailed`.
 
+**Recommended for all C++ code.** It makes the load/unload contract impossible to forget and handles multi-module reference counting.
+
 #### 0.7.6 Why This Rule Is Easy to Miss
 
-- **Pascal has no equivalent**: Pascal links statically against `LingoFuse` and the runtime is always present.
-- **Python has no equivalent**: the Python wrapper loads the library during import.
+- **Pascal has no equivalent**: Pascal links statically against `LingoFuse` and the runtime is always present. A Pascal developer moving to C++ does not realise a load call is required.
+- **Python has no equivalent**: the Python wrapper loads the library during import, invisibly.
+- **C# / Java / Node.js have no equivalent**: their FFI layers load the library automatically.
 - **Generated test programs** (from `cpp_abi_cmake_generator_tool`) are a common failure point: a naive generator emits `LF_CreateApp`, `LF_PrepareService`, etc. without a leading `LF_LoadLibrary()`. The resulting program compiles cleanly and then dies at the first `LF_*` call. See Chapter 22.
+
+**Do not assume the C++ compiler will warn you.** `LingoFuse.h` declares the `LF_*` functions with the `LF_CDECL` calling convention; from the compiler's perspective they are ordinary external functions. There is no attribute that can express "must be preceded by a load call".
+
+#### 0.7.7 Diagnostic Checklist
+
+If a program using the C ABI appears to do nothing or crashes without a clear message:
+
+1. **Verify that `LF_LoadLibrary()` (or `lingofuse::LibraryLoader`) is called before every other `LF_*` call.**
+2. Verify that `LF_LoadLibrary()` returned 1 (or that the `LibraryLoader` constructor did not throw).
+3. Verify the runtime library file is present in the search path (`LingoFuse64.dll` on the exe's directory, or on `PATH`).
+4. Enable Debug logging via `setOption("Quiet", "False")` and `setOption("ConsoleOutput", "True")`.
 
 ---
 
@@ -269,7 +294,7 @@ flowchart LR
 
 | Abstraction | Underlying type | Lifetime | Owner |
 |---|---|---|---|
-| **DataHnd** | `TLF_Data` record | 5 min idle → reclaimed | Global handle pool |
+| **DataHnd** | `TLF_Data` record | 10 min idle → reclaimed (auto kind only) | Global handle pool |
 | **AppHnd** | `TLF_App` object | Until `LF_Shutdown` | Global app pool |
 | **Service** | C4 physical service | Until `LF_Shutdown` | Internal |
 | **Client** | C4 physical client | Until `LF_Shutdown` | Internal |
@@ -402,20 +427,25 @@ flowchart TB
     DATA --> LT["Last_Update<br/>last access time"]
 
     POOL["LF_DataPool"] -.->|"scans every 5 s"| HND
-    LT -.->|"5 min no access"| RECYCLE["auto reclaim"]
+    LT -.->|"10 min no access"| RECYCLE["auto reclaim"]
+    MEM["LF_DataMemory<br/>secondary pool"] -.->|"record reuse"| POOL
 
     style HND fill:#4E79A7,stroke:#2C4C6B,stroke-width:3px,color:#FFFFFF
     style DATA fill:#59A14F,stroke:#2F5928,stroke-width:3px,color:#FFFFFF
     style POOL fill:#E15759,stroke:#8C2A2B,stroke-width:3px,color:#FFFFFF
     style RECYCLE fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+    style MEM fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#FFFFFF
 ```
 
 | Property | Note |
 |---|---|
 | **`Data_Param` and `Data_Result` are mutually exclusive** | Input handle has Param only; output handle has Result only |
-| **Auto reclamation** | Scans every 5 s; releases handles idle for 5 min |
-| **Keep-alive** | Any `LF_*` access refreshes `Last_Update` |
+| **Auto reclamation (auto-recycled handles)** | Scans every 5 s; releases handles idle for 10 min |
+| **Keep-alive** | Any `LF_*` access refreshes `LastUpdate` |
+| **calling counter** | While a remote call is in flight, the input handle's `calling___` counter is > 0 and it is protected from reclamation |
 | **Do not rely on auto-reclamation** | Under heavy load, handle growth can outpace reclamation → OOM |
+| **Secondary memory pool** | `LF_DataMemory` caches freed `TLF_Data` records to reduce `New`/`Dispose` churn |
+| **Two kinds of handles** | Auto-recycled (`LF_CreateData`) vs permanent (`LF_CreateData_Permanent`) |
 
 ### 1.7 Three Invocation Modes
 
@@ -439,7 +469,7 @@ LingoFuse is not standalone. It builds on the Z framework:
 | C4 distribution | `Z.Net.C4`, `Z.Net.DoubleTunnelIO.NoAuth`, `Z.Net.PhysicsIO` |
 | JSON | `Z.Json` |
 
-The C++ layer is a thin wrapper over the Pascal core. Understanding this explains why certain behaviours exist (5-second pointer validity, 5-minute reclamation, etc.).
+The C++ layer is a thin wrapper over the Pascal core. Understanding this explains why certain behaviours exist (5-second pointer validity, 10-minute reclamation, 5-second sequenced-thread delayed release, etc.).
 
 ---
 
@@ -504,12 +534,14 @@ void LF_FreeLibrary(void);
 2. Determine the executable directory.
 3. Try loading from the executable directory first.
 4. Fall back to the system search path.
-5. Resolve all 36 exports; any failure → `FreeLibrary` + return 0.
+5. Resolve all 37 exports; any failure → `FreeLibrary` + return 0.
 6. All succeed → `g_loaded = 1`, return 1.
 
 **`LF_FreeLibrary`**: unloads the dynamic library and clears all static function pointers. Safe to call multiple times.
 
 **Thread safety**: `LF_LoadLibrary` / `LF_FreeLibrary` are **not** thread-safe with each other; call them from a single thread. Other `LF_*` functions are thread-safe.
+
+**Contract**: see §0.7 — `LF_LoadLibrary` MUST be the first `LF_*` call in the process.
 
 ### 2.6 `LF_CDECL`
 
@@ -576,6 +608,8 @@ flowchart TB
 
 **Simulated main thread responsibilities**: drives C4 network I/O, processes timers, runs DataHandle reclamation (every 5 s), dispatches network event callbacks, processes the synchronous callback queue.
 
+**`LF_ExitMainThread` also flushes the handle pool**: it triggers a final `Free_All_Hnd` pass that releases every outstanding data handle — including permanent ones. After this call, any data handle in the process is invalid.
+
 ### 3.2 Why Callbacks Cannot Call `LF_Call`
 
 - Callbacks run on C4 worker threads.
@@ -586,8 +620,10 @@ flowchart TB
 ### 3.3 DataHandle Auto-Reclamation
 
 - `TLF_DataPool.Progress` scans every 5 s.
-- Handles idle for 5 min are reclaimed.
+- Auto-recycled handles idle for **10 minutes** are reclaimed.
 - Any `LF_*` access refreshes `Last_Update`.
+- While a remote call is in flight, the input handle's `calling___` counter is > 0, protecting it from reclamation regardless of idle time.
+- Permanent handles are not added to the pool and are never reclaimed.
 - **Do not rely on auto-reclamation**; production code should explicitly `LF_FreeData`.
 
 ### 3.4 Status Queue
@@ -683,6 +719,7 @@ sequenceDiagram
 |---|---|
 | **One thread per (app, api) pair** | No ordering guarantee between pairs |
 | **Idle thread terminates after 5 min** | Next call recreates it (startup latency) |
+| **Delayed release (5 s)** | After termination, the thread object is released via `DelayFreeObj(5.0, self)`, preventing use-after-free in the surrounding TCompute machinery |
 | **Automatic chunking** | Underlying chunked transfer; no manual chunking needed |
 | **Fallback threshold** | `Fixed_Sequenced_Time` (default 20 s), after which routing falls back to the newest client |
 
@@ -766,12 +803,13 @@ typedef void (LF_CDECL* LF_NetworkEventFunc)(const char* addr);
 | `LF_NotifyFunc` | Notify | `trigger`, read-only `input` | background worker |
 | `LF_NetworkEventFunc` | Network event | `addr` (valid only during the callback) | background worker |
 
-### 4.3 The 36 Exported Functions
+### 4.3 The 37 Exported Functions
 
-#### 4.3.1 Data Handles (9)
+#### 4.3.1 Data Handles (10)
 
 ```c
 TDataHnd LF_CreateData(const char* method_name);
+TDataHnd LF_CreateData_Permanent(const char* method_name);
 void     LF_FreeData(TDataHnd hnd);
 void*    LF_GetBuffer(TDataHnd hnd);
 int64_t  LF_WriteBuffer(TDataHnd hnd, const void* buff, int64_t size);
@@ -784,8 +822,9 @@ void     LF_SetSize(TDataHnd hnd, int64_t size);
 
 | Function | Contract |
 |---|---|
-| `LF_CreateData` | Creates an input handle bound to an API name. `method_name` must be UTF-8 + NUL. Must be freed with `LF_FreeData`. |
-| `LF_FreeData` | Releases the handle. `NULL` is ignored. |
+| `LF_CreateData` | Creates an **auto-recycled** input handle bound to an API name. The handle is added to the global pool and is reclaimed after 10 minutes of idle time (scanned every 5 s). `method_name` must be UTF-8 + NUL. Must be freed with `LF_FreeData`. |
+| `LF_CreateData_Permanent` | Creates a **permanent** input handle. Not added to the pool; never auto-reclaimed. `LF_FreeData` releases it synchronously. Use this for handles that must survive for the entire process lifetime (cached templates, long-lived scratch buffers, etc.). |
+| `LF_FreeData` | Releases the handle. `NULL` is ignored. For auto-recycled handles this only sets the "deleted" flag (actual release happens on the next pool scan, ≤ 5 s); for permanent handles the release is immediate. |
 | `LF_GetBuffer` | Returns a pointer to the internal buffer. Returns `NULL` if the handle is empty. The pointer may be invalidated by `WriteBuffer` / `SetSize`. |
 | `LF_WriteBuffer` | Writes `size` bytes at the current position; auto-grows; advances the cursor. Returns actual bytes written. |
 | `LF_ReadBuffer` | Reads up to `size` bytes at the current position; advances the cursor. Returns actual bytes read. |
@@ -853,7 +892,7 @@ void LF_ExitMainThread(void);
 | `LF_PrepareService` | Prepares or immediately creates a C4 service. Returns a tag; returns -1 for a duplicate address. |
 | `LF_PrepareClient` | Prepares or immediately creates a client. By default only one client per address; duplicate returns -1 unless `Overlap_Connection=True`. |
 | `LF_PrepareDone` | Starts the framework. **Returns 1 only once per process.** 0 is not necessarily a failure. |
-| `LF_ExitMainThread` | Requests the simulated main thread to exit. Does not release everything; call `LF_Shutdown` too. |
+| `LF_ExitMainThread` | Requests the simulated main thread to exit. **Also flushes the data handle pool, including permanent handles.** Does not release everything; call `LF_Shutdown` too. |
 
 #### 4.3.6 Remote Invocation (3)
 
@@ -892,7 +931,7 @@ int         LF_CheckApi(const char* app_name, const char* api_name);
 void LF_Shutdown(void);
 ```
 
-Clears network event callbacks → stops sequenced threads → frees remaining data handles → exits the simulated main thread → clears the global App pool → unloads the IPC library. Safe to call multiple times.
+Clears network event callbacks → stops sequenced threads → frees remaining data handles (**including permanent handles**) → exits the simulated main thread → clears the global App pool → unloads the IPC library. Safe to call multiple times.
 
 #### 4.3.9 Network Events (1)
 
@@ -970,6 +1009,7 @@ int64_t LF_ReadStringBytes(TDataHnd, void* buf, int64_t buf_size);
 - Writes on the same `TDataHnd` must be serialised by the caller; reads are safe.
 - Different `TDataHnd` instances are independent.
 - `LF_LoadLibrary` / `LF_FreeLibrary` are **not** thread-safe with each other.
+- `LF_LoadLibrary` must be called before any other `LF_*` function (see §0.7).
 
 ---
 
@@ -1105,14 +1145,15 @@ public:
 
 **Why a sentinel**: `std::shared_ptr` needs a non-null pointer and a custom deleter. Since the library base address is unavailable, `1` is used as an un-dereferenced token.
 
-**Deployment reminder**: `LibraryLoader` performs both `LF_LoadLibrary` and `LF_FreeLibrary`; see §0.7 for the ordering contract.
+**Deployment reminder**: `LibraryLoader` performs both `LF_LoadLibrary` and `LF_FreeLibrary`; see §0.7 for the ordering contract. **Recommended for all C++ code** — the constructor should be the first statement in `main()`.
 
 ### 6.3 `DataHandle`
 
 ```cpp
 class DataHandle {
 public:
-    explicit DataHandle(const std::string& api_name);
+    explicit DataHandle(const std::string& api_name);            // auto-recycled
+    static DataHandle createPermanent(const std::string& api_name);  // permanent
     explicit DataHandle(TDataHnd h, bool owned) noexcept;
     ~DataHandle();
 
@@ -1146,6 +1187,13 @@ public:
     const std::uint8_t* data() const;
 };
 ```
+
+**Two construction paths**:
+
+| Path | Underlying C call | Lifetime | Use case |
+|---|---|---|---|
+| `DataHandle(const std::string&)` | `LF_CreateData` | Auto-recycled; 10 min idle → pool releases | Default; most use cases |
+| `DataHandle::createPermanent(const std::string&)` | `LF_CreateData_Permanent` | Never auto-reclaimed; `LF_FreeData` releases immediately | Cached templates, long-lived buffers, global registries |
 
 **Template constraint**: `write<T>` / `read<T>` accept only `std::is_arithmetic` non-`bool`. The `bool` wire format is undefined.
 
@@ -1351,7 +1399,9 @@ static void LF_CDECL ctx_cb(void* trigger, void* in, void* out) {
 }
 
 int main() {
+    lingofuse::LibraryLoader loader;
     CallContext ctx{"[calc] ", 0};
+    lingofuse::App app("Calc", "demo");
     app.registerCall("echo", "echo with prefix", &ctx, ctx_cb);
     // ...
 }
@@ -1371,10 +1421,6 @@ static void LF_CDECL method_cb(void* trigger, void* in, void* out) {
     auto* self = static_cast<MyService*>(trigger);
     self->handle(in, out);
 }
-
-// Registration
-MyService svc;
-app.registerCall("api", "desc", &svc, method_cb);
 ```
 
 **Use case C — `nullptr` (no context)**:
@@ -1400,7 +1446,6 @@ static void LF_CDECL chunked_read_cb(void*, void* in, void* out) {
         if (got <= 0) break;
         buf.insert(buf.end(), chunk, chunk + got);
     }
-    // ...process buf...
 }
 ```
 
@@ -1471,9 +1516,7 @@ static void LF_CDECL safe_cb(void*, void* in, void* out) {
                 static_cast<TDataHnd>(out),
                 {{"error", std::string(e.what())}});
         }
-        catch (...) {
-            // Even the error response failed; nothing more we can do
-        }
+        catch (...) { }
     }
     catch (...) {
         std::cerr << "Callback error: unknown\n";
@@ -1679,6 +1722,10 @@ stateDiagram-v2
         Next notification recreates the thread
         with a small startup latency
     end note
+    note right of Destroyed
+        Released via DelayFreeObj(5.0, self)
+        to avoid TCompute UAF
+    end note
 ```
 
 ---
@@ -1720,7 +1767,6 @@ static void LF_CDECL app_b_cb(void*, void* in, void* out) {
 }
 
 int main() {
-    /* Step 1: load the runtime. */
     lingofuse::LibraryLoader loader;
 
     lingofuse::App app_a("ServiceA", "App A");
@@ -1728,7 +1774,6 @@ int main() {
     app_a.registerCall("ping", "ping A", nullptr, app_a_cb);
     app_b.registerCall("ping", "ping B", nullptr, app_b_cb);
 
-    /* Key: enable Overlap_Connection */
     lingofuse::setOption("Overlap_Connection", "True");
     lingofuse::setOption("Wait_Ready", "False");
 
@@ -1847,7 +1892,6 @@ for (int i = 0; i < 100; ++i) {
     lingofuse::DataHandle p("add");
     p.writeJson({{"a", i}, {"b", i}});
     auto resp = lingofuse::tryCall("demo", p, 1000);
-    // ...
 }
 ```
 
@@ -2001,8 +2045,8 @@ lingofuse::setOption("wait_ready", "True");    // ✅ case-insensitive, works
 
 | `ErrorCode` | Trigger | Recovery |
 |---|---|---|
-| `Generic` | `LF_CreateData` / `LF_CreateApp` returns NULL | OOM or invalid argument |
-| `LibraryLoadFailed` | `LibraryLoader` constructor | Check DLL placement (exe dir or PATH) |
+| `Generic` | `LF_CreateData` / `LF_CreateData_Permanent` / `LF_CreateApp` returns NULL | OOM or invalid argument |
+| `LibraryLoadFailed` | `LibraryLoader` constructor | Check DLL placement (exe dir or PATH); see §0.7 |
 | `NullHandle` | Operation on a freed `DataHandle` / `App` | Check lifetime |
 | `InvalidArgument` | `writeRaw(nullptr, n>0)` | Check arguments |
 | `WriteFailed` | `write` / `writeJson` / `writeRaw` failure | Usually invalid handle |
@@ -2026,19 +2070,14 @@ try {
 }
 catch (const lingofuse::Error& e) {
     switch (e.code()) {
-        case lingofuse::ErrorCode::Timeout:
-            // ...
-            break;
-        case lingofuse::ErrorCode::WriteFailed:
-            // ...
-            break;
+        case lingofuse::ErrorCode::Timeout:      /* ... */ break;
+        case lingofuse::ErrorCode::WriteFailed:  /* ... */ break;
         default:
             std::cerr << "Error " << static_cast<int>(e.code())
                       << ": " << e.what() << "\n";
     }
 }
 catch (const lingofuse::io::LfIoError& e) {
-    // Only thrown when calling io::* directly
     std::cerr << "I/O error: " << e.what() << "\n";
 }
 catch (const std::exception& e) {
@@ -2047,8 +2086,6 @@ catch (const std::exception& e) {
 ```
 
 ### 12.4 Retry Pattern
-
-**Recommended**: `tryCall` + retry + `checkApi` pre-check.
 
 ```cpp
 std::optional<lingofuse::DataHandle> call_with_retry(
@@ -2089,19 +2126,14 @@ static void LF_CDECL payment_cb(void*, void* in, void* out) {
     auto req = lingofuse::io::read_json(static_cast<TDataHnd>(in));
     const std::string request_id = req.at("request_id").get<std::string>();
 
-    // Idempotency cache lookup
     if (idempotency_cache.contains(request_id)) {
         lingofuse::io::write_json(static_cast<TDataHnd>(out),
                                   idempotency_cache[request_id]);
         return;
     }
 
-    // Perform the operation
     auto result = do_payment(req);
-
-    // Record idempotency
     idempotency_cache[request_id] = result;
-
     lingofuse::io::write_json(static_cast<TDataHnd>(out), result);
 }
 ```
@@ -2172,15 +2204,6 @@ flowchart LR
 
 Each generator emits Pascal / Python / C++ / JavaScript.
 
-**Workflow**:
-
-1. Declare service APIs (Pascal unit or C header).
-2. Run `code_decl_to_json_abi`.
-3. Generates a server skeleton + client header + README.
-4. The client header `#include "lf_http_bridge_client.hpp"` uses this header's runtime.
-
-**This header is the runtime half** of the HTTP/JSON binding; the generator produces the API-specific half.
-
 ### 13.3 Constants
 
 ```cpp
@@ -2194,15 +2217,11 @@ inline constexpr double kBMaxHttpTimeoutSec = 300.0;
 
 ### 13.4 Bridge Configuration
 
-The bridge is configured via CLI args or env vars:
-
 | Argument | Environment variable | Default | C++ constant |
 |---|---|---|---|
 | `--bridge-app` | `LINGOFUSE_BRIDGE_APP` | `__lf_http_bridge__` | `kBDefaultAppName` |
 | `--bridge-api` | `LINGOFUSE_BRIDGE_API` | `__lf_outbound_post__` | `kBDefaultPostApiName` |
 | `--bridge-repair-api` | `LINGOFUSE_BRIDGE_REPAIR_API` | `__lf_repair_json__` | `kBDefaultRepairApiName` |
-
-**If the bridge runs with non-default names**, the C++ client must pass the corresponding names.
 
 ### 13.5 Outbound HTTP Request/Response Contract
 
@@ -2223,8 +2242,8 @@ The bridge is configured via CLI args or env vars:
 ```json
 {
     "status_code": 200,
-    "headers":     { "content-type": "application/json", ... },
-    "body":        { ... } | "raw string if not JSON"
+    "headers":     { "content-type": "application/json" },
+    "body":        { } | "raw string if not JSON"
 }
 ```
 
@@ -2384,7 +2403,7 @@ static void LF_CDECL add_cb(void*, void* in, void* out) {
 
 int main() {
     try {
-        lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+        lingofuse::LibraryLoader loader;
 
         lingofuse::App app("Calc", "JSON calc");
         app.registerCall("add", "add two ints", nullptr, add_cb);
@@ -2417,7 +2436,7 @@ int main() {
 
 int main() {
     try {
-        lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+        lingofuse::LibraryLoader loader;
 
         lingofuse::resetPrepare();
         if (lingofuse::prepareClient("ipc:calc", nullptr) < 0) return 1;
@@ -2459,7 +2478,7 @@ int main() {
 #include "LingoFuse.hpp"
 
 int main() {
-    lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+    lingofuse::LibraryLoader loader;
     lingofuse::setOption("Wait_Ready", "False");
     lingofuse::resetPrepare();
     lingofuse::prepareService("ipc:compute_grid", "ipc:compute_grid");
@@ -2475,6 +2494,7 @@ int main() {
 
 ```cpp
 #include "LingoFuse.hpp"
+#include <cmath>
 
 static void LF_CDECL exp_cb(void*, void* in, void* out) {
     auto req = lingofuse::io::read_json(static_cast<TDataHnd>(in));
@@ -2486,7 +2506,7 @@ static void LF_CDECL exp_cb(void*, void* in, void* out) {
 }
 
 int main() {
-    lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+    lingofuse::LibraryLoader loader;
     lingofuse::App app("compute_node", "compute worker");
     app.registerCall("exp", "exponent", nullptr, exp_cb);
 
@@ -2508,7 +2528,7 @@ int main() {
 #include <iostream>
 
 int main() {
-    lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+    lingofuse::LibraryLoader loader;
     lingofuse::resetPrepare();
     lingofuse::prepareClient("ipc:compute_grid", nullptr);
     if (lingofuse::prepareDone() != 1) return 1;
@@ -2550,11 +2570,12 @@ Pascal server + C++ client:
 ```cpp
 lingofuse::DataHandle p("chunk");
 for (int i = 0; i < 1000; ++i) {
-    p.reset();  /* or a fresh handle */
+    p.reset();
+    p = lingofuse::DataHandle("chunk");
     p.writeJson({
         {"index", i},
         {"total", 1000},
-        {"data", std::string(10240, 'x')}  /* 10 KB payload */
+        {"data", std::string(10240, 'x')}
     });
     lingofuse::sequencedNotify("receiver", p);
 }
@@ -2567,7 +2588,6 @@ static void LF_CDECL chunk_cb(void*, void* in, void*) {
     auto j = lingofuse::io::read_json(static_cast<TDataHnd>(in));
     int index = j.at("index").get<int>();
     /* Arrives in order (FIFO per (app, api)) */
-    /* Reassemble by index */
 }
 ```
 
@@ -2617,7 +2637,7 @@ struct RouterListener : lingofuse::NetworkEventListener {
 };
 
 int main() {
-    lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+    lingofuse::LibraryLoader loader;
     auto listener = std::make_shared<RouterListener>();
     lingofuse::setNetworkEvent(listener);
 
@@ -2644,7 +2664,7 @@ int main() {
 
 int main() {
     try {
-        lingofuse::LibraryLoader loader;    /* LF_LoadLibrary */
+        lingofuse::LibraryLoader loader;
         lingofuse::resetPrepare();
         lingofuse::prepareClient("ipc:compute_grid", nullptr);
         if (lingofuse::prepareDone() != 1) return 1;
@@ -2682,6 +2702,35 @@ int main() {
 }
 ```
 
+### 14.8 Permanent Handle for Cached Templates
+
+```cpp
+#include "LingoFuse.hpp"
+
+int main() {
+    lingofuse::LibraryLoader loader;
+
+    // A permanent handle: not added to the idle pool, never auto-reclaimed.
+    // Released synchronously by the DataHandle destructor.
+    lingofuse::DataHandle cached_template =
+        lingofuse::DataHandle::createPermanent("myapi");
+
+    // Populate once at startup.
+    cached_template.writeJson({
+        {"type", "json_schema"},
+        {"schema", nlohmann::json::object()}
+    });
+
+    // Throughout the process lifetime, reuse cached_template freely.
+    // No idle-timeout concern. No need to call reset() or refresh it.
+    // ...
+
+    // LF_Shutdown() releases it, if it is still alive.
+    lingofuse::shutdown();
+    return 0;
+}
+```
+
 ---
 
 ## Chapter 15 — Cross-Language Comparison
@@ -2691,7 +2740,8 @@ int main() {
 | Feature | Pascal | Python | C++ |
 |---|---|---|---|
 | Load library | automatic (static link) | automatic (import) | **`LibraryLoader` / `LF_LoadLibrary`** |
-| Create data handle | `LF_CreateDataEx` | `DataHandle('api')` | `DataHandle dh("api")` |
+| Create auto-recycled data handle | `LF_CreateDataEx` | `DataHandle('api')` | `DataHandle dh("api")` |
+| **Create permanent data handle** | `LF_CreateData_PermanentEx` | — | **`DataHandle::createPermanent("api")`** |
 | Write JSON | `LF_WriteString` | `dh.write_json(obj)` | `dh.writeJson(obj)` |
 | Read JSON | `LF_ReadString` | `dh.read_json()` | `dh.readJson()` |
 | Create App | `LF_CreateAppEx` | `App('name')` | `App app("name")` |
@@ -2738,6 +2788,7 @@ int main() {
 | `App.Engine.Reg_Call('api', ...)` | `app.registerCall("api", ...)` |
 | `App.FakeFree` | `~App` calls `LF_FreeApp` |
 | `LF_Data.Free_Data(hnd)` | `DataHandle` destructor frees |
+| `LF_CreateData_Permanent` | `DataHandle::createPermanent` |
 | `LF_WriteString(hnd, s)` | `dh.write(s)` or `io::write_string` |
 | `App.Engine.Execute_Call(param)` | `app.localCall(param)` |
 | `SysPost.PostExecuteC_NP(delay, proc)` | `std::thread` + `sleep_for` |
@@ -2772,10 +2823,13 @@ int main() {
 
 | C++ behaviour | Underlying Z mechanism |
 |---|---|
-| DataHandle 5-min reclamation | `TLF_DataPool.Progress` scans every 5 s |
+| DataHandle 10-min reclamation | `TLF_DataPool.Progress` scans every 5 s |
+| Permanent handles survive | Not added to `LF_DataPool` |
+| Secondary memory pool | `TLF_DataMemory` reuses `TLF_Data` records |
 | `prepareDone` 30 s timeout | `Simulated_Main_Thread` init loop |
 | Network events on background threads | `TCompute.RunC` |
 | Sequenced Notify 5-min termination | `TLF_Notify_Sequence_Thread` idle timeout |
+| Sequenced Notify 5-s delayed release | `DelayFreeObj(5.0, self)` |
 | `generateAppName` 5-second expiry | `Z.Notify.DelayFreeMem(5.0, Result)` |
 | Bridge JSON repair | `Z.Json` repair engine |
 
@@ -2809,13 +2863,11 @@ Generates:
 ### 17.1 Status Queue
 
 ```cpp
-// Drain periodically from a main loop
 while (lingofuse::statusCount() > 0) {
     std::string msg = lingofuse::popStatus();
     std::cout << "[LF] " << msg << "\n";
 }
 
-// Inject a custom log entry
 lingofuse::postStatus("Custom marker: entering critical section");
 ```
 
@@ -2832,16 +2884,13 @@ lingofuse::setOption("Quiet", "False");
 ### 17.3 Health Checks
 
 ```cpp
-// Check the main thread
 bool mt_ok = lingofuse::checkMainThread();
 
-// Check an app (with retry; broadcast has ~3 s delay)
 for (int i = 0; i < 15; ++i) {
     if (lingofuse::checkApp("MyApp")) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
 
-// Check an API
 bool api_ok = lingofuse::checkApi("MyApp", "my_api");
 ```
 
@@ -2855,7 +2904,6 @@ for (auto b : raw) {
 }
 std::cout << "\n";
 
-// Or parse as a string
 std::string s(raw.begin(), raw.end());
 std::cout << "As string: " << s << "\n";
 ```
@@ -2865,7 +2913,9 @@ std::cout << "As string: " << s << "\n";
 ```mermaid
 flowchart TD
     Start["An issue appears"] --> Q1{"Crash?"}
-    Q1 -- Yes --> Q2{"Crash inside a callback?"}
+    Q1 -- Yes --> Q0{"LF_LoadLibrary called first?"}
+    Q0 -- No --> A0["Add LibraryLoader / LF_LoadLibrary (§0.7)"]
+    Q0 -- Yes --> Q2{"Crash inside a callback?"}
     Q2 -- Yes --> A1["Check: LF_CDECL, UI access, blocking calls"]
     Q2 -- No --> A2["Check: cleanup order, dangling handles"]
     Q1 -- No --> Q3{"Call timed out?"}
@@ -2876,6 +2926,7 @@ flowchart TD
     Q5 -- Yes --> A5["Inspect raw bytes: read_string_bytes"]
     Q5 -- No --> A6["Enable debug logs, read status queue"]
 
+    style A0 fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
     style A1 fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
     style A2 fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
     style A3 fill:#E67E22,stroke:#9C4A0C,stroke-width:3px,color:#FFFFFF
@@ -2890,21 +2941,21 @@ flowchart TD
 |---|---|---|
 | `LingoFuse: Failed to load LingoFuse64.dll` | DLL not found | Place next to exe or on PATH |
 | `LingoFuse: Failed to resolve symbol LF_xxx` | Missing symbol | DLL version mismatch |
-| `LingoFuse: xxx called before LF_LoadLibrary` | Called before load | Call `LF_LoadLibrary` first |
+| `LingoFuse: xxx called before LF_LoadLibrary` | Called before load | Call `LF_LoadLibrary` first (§0.7) |
 | `no found api "X"` | API not registered | Check registration |
 | `repeat connection` | Duplicate address | Enable `Overlap_Connection` |
 | `All clients are already occupied` | No idle client | `bind` failed; needs a new client |
-| `hint: Data handle pool "N" handles ... 5 minutes` | Handle reclamation | Normal behaviour |
+| `hint: Data handle pool "N" handles ... 10 minutes` | Handle reclamation | Normal behaviour |
 | `invoked as Call` warning | Mode mismatch | Use the right invocation mode |
 | `application mismatch` | Same key, different App | Use a distinct key |
 | `Callback type mismatch` | Callback missing `cdecl` | Add `LF_CDECL` |
+| `Sequenced notify ... idle timeout, auto-terminating` | Sequenced thread idle | Normal behaviour |
 
 ### 17.7 Thread Debugging
 
 ```cpp
 lingofuse::setOption("ShowThreadID", "True");
 
-// Print thread ID in a callback
 static void LF_CDECL debug_cb(void*, void* in, void*) {
     std::cout << "Callback on thread: "
               << std::this_thread::get_id() << "\n";
@@ -2948,11 +2999,26 @@ TEST(LingoFuseTest, WriteReadJson) {
     };
 
     dh.writeJson(original);
-
     dh.seek(0);
     auto parsed = dh.readJson();
 
     ASSERT_EQ(parsed, original);
+}
+```
+
+**Test permanent handle**:
+
+```cpp
+TEST(LingoFuseTest, PermanentHandle) {
+    lingofuse::LibraryLoader loader;
+
+    auto p = lingofuse::DataHandle::createPermanent("perm");
+    p.writeJson({{"kind", "permanent"}});
+
+    ASSERT_TRUE(p.get() != nullptr);
+    ASSERT_GT(p.size(), 0);
+
+    /* Lifetime is managed by the DataHandle itself. */
 }
 ```
 
@@ -2962,7 +3028,6 @@ TEST(LingoFuseTest, WriteReadJson) {
 TEST(LingoFuseTest, IntegrationCall) {
     lingofuse::LibraryLoader loader;
 
-    // Server side
     lingofuse::App app("TestServer", "integration");
     app.registerCall("echo", "echo", nullptr, echo_cb);
 
@@ -2972,13 +3037,11 @@ TEST(LingoFuseTest, IntegrationCall) {
     lingofuse::prepareClient("ipc:test", app.get());
     ASSERT_EQ(lingofuse::prepareDone(), 1);
 
-    // Wait for broadcast
     for (int i = 0; i < 15; ++i) {
         if (lingofuse::checkApi("TestServer", "echo")) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // Invoke
     lingofuse::DataHandle p("echo");
     p.writeJson({{"msg", "hello"}});
     auto resp = lingofuse::tryCall("TestServer", p, 3000);
@@ -3045,14 +3108,8 @@ TEST(LingoFuseTest, WireFormat) {
 
     // Expected: 7B 22 61 22 3A 31 7D 00
     ASSERT_EQ(raw.size(), 8);
-    ASSERT_EQ(raw[0], 0x7B);  // {
-    ASSERT_EQ(raw[1], 0x22);  // "
-    ASSERT_EQ(raw[2], 0x61);  // a
-    ASSERT_EQ(raw[3], 0x22);  // "
-    ASSERT_EQ(raw[4], 0x3A);  // :
-    ASSERT_EQ(raw[5], 0x31);  // 1
-    ASSERT_EQ(raw[6], 0x7D);  // }
-    ASSERT_EQ(raw[7], 0x00);  // NUL
+    ASSERT_EQ(raw[0], 0x7B);
+    ASSERT_EQ(raw[7], 0x00);
 }
 ```
 
@@ -3074,20 +3131,16 @@ cd LingoFuse/Binary
 ./test_lingofuse_json
 ```
 
-### 18.6 Loading Contract Test (NEW in v6.0)
+### 18.6 Loading Contract Test
 
 ```cpp
 TEST(LingoFuseTest, LoadLibraryContract) {
-    /* LF_LoadLibrary must succeed before anything else */
     ASSERT_EQ(LF_LoadLibrary(), 1);
 
-    /* Now every other call is safe */
     lingofuse::DataHandle dh("test");
     dh.writeJson({{"ok", true}});
-
     ASSERT_GT(dh.size(), 0);
 
-    /* And cleanly unload */
     LF_FreeLibrary();
 
     /* Second load is a no-op and still returns 1 */
@@ -3096,19 +3149,17 @@ TEST(LingoFuseTest, LoadLibraryContract) {
 }
 
 TEST(LingoFuseTest, LoaderRaiiContract) {
-    /* LibraryLoader is idempotent, reference-counted */
     {
         lingofuse::LibraryLoader a;
         lingofuse::LibraryLoader b;   /* inner load: no-op */
         lingofuse::DataHandle dh("x");
         dh.writeJson({{"v", 42}});
-    }   /* one loader goes out of scope; library still loaded */
+    }
     {
         lingofuse::LibraryLoader c;   /* library still usable */
         lingofuse::DataHandle dh("x");
         dh.writeJson({{"v", 43}});
     }
-    /* Final destruction triggers LF_FreeLibrary */
 }
 ```
 
@@ -3132,6 +3183,7 @@ TEST(LingoFuseTest, LoaderRaiiContract) {
 | LF-DATA-001 | Forgetting `FreeData` | Memory growth | Use `DataHandle` RAII |
 | LF-DATA-004 | Reading a payload without `#0` | Reads all remaining (correct) | No action needed |
 | LF-DATA-005 | Expecting `writeRaw` to append `#0` | Boundary error | `write` appends; `writeRaw` does not |
+| LF-DATA-008 | Using `createPermanent` for one-shot handles | Pool safety net lost | Use `DataHandle(name)` instead |
 | LF-CHK-001 | `checkApi` false immediately | 3-second broadcast delay | Retry 3× with 200 ms |
 | LF-CALL-001 | Checking `LF_Call` for NULL | NULL check fails | Check `size == 0` |
 | LF-XLANG-002 | CJK through `string` relay | Garbled | Write UTF-8 bytes directly |
@@ -3144,7 +3196,7 @@ TEST(LingoFuseTest, LoaderRaiiContract) {
 | C++-NEW-006 | Reading from `output` | Undefined behaviour | `output` is write-only |
 | C++-NEW-007 | Letting an exception cross a callback | Crash | Must try/catch |
 | C++-NEW-008 | Sharing a `DataHandle` across threads for writes | Data race | Per-thread handles |
-| **C++-NEW-009** | **Calling any `LF_*` before `LF_LoadLibrary`** | **Null-pointer deref; no visible effect** | **§0.7 / Chapter 22** |
+| **C++-NEW-009** | **Calling any `LF_*` before `LF_LoadLibrary`** | **Null-pointer deref; silent no-op or crash** | **§0.7 / Chapter 22** |
 | Bridge-001 | `call_timeout` < HTTP timeout | Empty response | `call_timeout >= (http+5)*1000` |
 | Bridge-002 | Treating empty repair as failure | Misjudged | Empty string is a valid success |
 | Bridge-003 | Treating envelope as the remote response | Parse error | Remote response is in `body` |
@@ -3155,27 +3207,27 @@ TEST(LingoFuseTest, LoaderRaiiContract) {
 
 ## Chapter 20 — API Quick Reference
 
-### 20.1 C ABI Exports (36)
+### 20.1 C ABI Exports (37)
 
-**Data handle**: `LF_CreateData`, `LF_FreeData`, `LF_GetBuffer`, `LF_WriteBuffer`, `LF_ReadBuffer`, `LF_GetPos`, `LF_SetPos`, `LF_GetSize`, `LF_SetSize`
+**Data handle (10)**: `LF_CreateData`, `LF_CreateData_Permanent`, `LF_FreeData`, `LF_GetBuffer`, `LF_WriteBuffer`, `LF_ReadBuffer`, `LF_GetPos`, `LF_SetPos`, `LF_GetSize`, `LF_SetSize`
 
-**App handle**: `LF_CreateApp`, `LF_FreeApp`, `LF_Generate_AppName`, `LF_Get_AppName`, `LF_BindApp`
+**App handle (5)**: `LF_CreateApp`, `LF_FreeApp`, `LF_Generate_AppName`, `LF_Get_AppName`, `LF_BindApp`
 
-**Registration**: `LF_RegisterCall`, `LF_RegisterNotify`, `LF_Unregister`
+**Registration (3)**: `LF_RegisterCall`, `LF_RegisterNotify`, `LF_Unregister`
 
-**Local execution**: `LF_LocalCall`, `LF_LocalNotify`
+**Local execution (2)**: `LF_LocalCall`, `LF_LocalNotify`
 
-**Network preparation**: `LF_PrepareService`, `LF_PrepareClient`, `LF_ResetPrepare`, `LF_PrepareDone`, `LF_ExitMainThread`
+**Network preparation (5)**: `LF_PrepareService`, `LF_PrepareClient`, `LF_ResetPrepare`, `LF_PrepareDone`, `LF_ExitMainThread`
 
-**Remote invocation**: `LF_Call`, `LF_Notify`, `LF_Sequenced_Notify`
+**Remote invocation (3)**: `LF_Call`, `LF_Notify`, `LF_Sequenced_Notify`
 
-**Options and diagnostics**: `LF_SetOption`, `LF_GetStatusCount`, `LF_GetStatus`, `LF_PostStatus`, `LF_CheckMainThread`, `LF_CheckApp`, `LF_CheckApi`
+**Options and diagnostics (7)**: `LF_SetOption`, `LF_GetStatusCount`, `LF_GetStatus`, `LF_PostStatus`, `LF_CheckMainThread`, `LF_CheckApp`, `LF_CheckApi`
 
-**Shutdown**: `LF_Shutdown`
+**Shutdown (1)**: `LF_Shutdown`
 
-**Network events**: `LF_Set_Network_Event`
+**Network events (1)**: `LF_Set_Network_Event`
 
-**Loader (implemented in the C wrapper, not exported from the DLL)**: `LF_LoadLibrary`, `LF_FreeLibrary`
+**Loader (C wrapper, not exported from the DLL)**: `LF_LoadLibrary`, `LF_FreeLibrary`
 
 ### 20.2 C Wrapper Helpers
 
@@ -3205,7 +3257,7 @@ TEST(LingoFuseTest, LoaderRaiiContract) {
 | Symbol | Description |
 |---|---|
 | `LibraryLoader` | RAII library loader; ref-counted; calls `LF_LoadLibrary` / `LF_FreeLibrary` |
-| `DataHandle` | RAII data handle |
+| `DataHandle` | RAII data handle (auto-recycled constructor + `createPermanent` factory) |
 | `App` | RAII app handle |
 | `NetworkEventListener` | Base class for network events |
 | `Error` / `ErrorCode` | Unified exception |
@@ -3281,10 +3333,12 @@ TEST(LingoFuseTest, LoaderRaiiContract) {
 | 14 | Exact auto-reconnect delay under network partitions | ⏳ |
 | 15 | Bridge HTTP client library (dependency) | 🟡 |
 | 16 | Behaviour of `LF_LoadLibrary` when the runtime library has already been loaded by another module | 🟡 |
+| 17 | Interaction between `createPermanent` handles and `LF_ExitMainThread` beyond the documented flush | ⏳ |
+| 18 | Precise idle-timeout refresh granularity for auto-recycled handles in high-frequency accessor patterns | 🟡 |
 
 ---
 
-## Chapter 22 — Generated-Code Pitfalls (NEW in v6.0)
+## Chapter 22 — Generated-Code Pitfalls
 
 ### 22.1 Context
 
@@ -3457,6 +3511,8 @@ If any case produces an exit code 0 without the corresponding `[OK]`/`[FATAL]` l
 | Term | Definition |
 |---|---|
 | **DataHnd** | Data handle: binary buffer + API name |
+| **Auto-recycled handle** | Data handle created by `LF_CreateData`; added to the global pool; reclaimed after 10 min idle |
+| **Permanent handle** | Data handle created by `LF_CreateData_Permanent`; not added to the pool; never auto-reclaimed |
 | **AppHnd** | App handle: a set of registered APIs |
 | **Service** | Listening endpoint; maintains registry; broadcasts API info |
 | **Client** | Connects to a Service; exposes App/API |
@@ -3471,6 +3527,8 @@ If any case produces an exit code 0 without the corresponding `[OK]`/`[FATAL]` l
 | **Bridge** | HTTP bridge; standalone process providing HTTP/JSON services |
 | **LingoFuse-Tools** | Code-generation system producing cross-language bindings |
 | **ABI loading contract** | `LF_LoadLibrary()` before any other `LF_*` call; `LF_FreeLibrary()` after `LF_Shutdown` |
+| **Secondary memory pool** | `LF_DataMemory`, caches `TLF_Data` records to reduce `New`/`Dispose` churn |
+| **calling counter** | `TLF_Data.calling___`, protects an input handle from reclamation while a call is in flight |
 
 ## Appendix B — Pascal LF-* Numbering Cross-Reference
 
@@ -3490,6 +3548,7 @@ If any case produces an exit code 0 without the corresponding `[OK]`/`[FATAL]` l
 | Explicit handle release | LF-DATA-001 | §3.3 |
 | NUL fault-tolerant read | LF-DATA-004 | §4.4 / §5.5 |
 | `write` appends NUL | LF-DATA-005 | §4.4 / §5.4 |
+| Permanent handle | LF-DATA-008 | §6.3 / §14.8 |
 | `checkApi` delay | LF-CHK-001 | §1.4 |
 | `LF_Call` timeout is not NULL | LF-CALL-001 | §3.5.1 |
 | UTF-8 pass-through | LF-XLANG-002 | §8.3 |
@@ -3504,11 +3563,12 @@ If any case produces an exit code 0 without the corresponding `[OK]`/`[FATAL]` l
 | v2.0 | 2026-09 | Network events, JSON pitfalls merged |
 | v3.0 | 2026-09-19 | Multi-node, options table, exception system, read/write guide |
 | v5.0 | 2026-09-25 | Complete knowledge-system rebuild: concepts, callback contract, call chain, bridge, cross-language comparison, Z framework integration, testing |
-| **v6.0** | **2026-09-25** | **English rebuild. Added §0.7 "ABI Loading Contract" and Chapter 22 "Generated-Code Pitfalls". Updated the "Iron Rules" table, the `LF_LoadLibrary` / `LF_FreeLibrary` section, the RAII `LibraryLoader` section, the loading-contract test (§18.6), the anti-pattern table (C++-NEW-009, GEN-ABI-001..006), and Appendix B (GEN-ABI-001). Cross-referenced against `LingoFuse_Pascal_Complete_Guide.md`.** |
+| v6.0 | 2026-09-25 | English rebuild. Added §0.7 "ABI Loading Contract" and Chapter 22 "Generated-Code Pitfalls". |
+| **v7.0** | **2026-10-01** | **Synchronised with the Pascal-side API changes**: export count 36 → 37 (`LF_CreateData_Permanent`); data-handle idle reclamation 5 → 10 minutes; new RAII factory `DataHandle::createPermanent()`; promoted `LF_LoadLibrary` requirement to iron rule #6; strengthened Chapter 22 with observed production failures; added `LF-DATA-008` pitfall; updated cross-language comparison, Z framework table, and quick reference. |
 
 ---
 
-**Document version**: v6.0 (English rebuild)
+**Document version**: v7.0 (English rebuild, synchronised with Pascal v3.09)
 **Coverage**: `LingoFuse.h`, `LingoFuse.c`, `lf_io.hpp`, `LingoFuse.hpp`, `lf_http_bridge_client.hpp`; cross-checked with `LingoFuse_Pascal_Complete_Guide.md`
 **Promise**: This file is the only self-contained reference needed for the LingoFuse C++ interface. Any AI reading this file alone can write correct, complete, production-grade LingoFuse C++ programs.
 **Maintenance rule**: Any C++ interface change must update this file in the same commit.

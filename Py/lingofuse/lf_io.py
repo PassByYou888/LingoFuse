@@ -71,6 +71,31 @@ otherwise drift across files:
      UTF-8 bytes via cstr(), instead of relying on CPython's hidden
      NUL inside bytes objects.
 
+{!!!!!  DATA HANDLE KINDS - ONE I/O PATH FOR BOTH  !!!!!}
+The library provides two kinds of data handles:
+
+  1. AUTO-RECYCLED (created by DataHandle(api_name) in lingofuse.core):
+       - Added to the library's idle pool.
+       - Reclaimed after 10 minutes of idle time (scanned every 5 s).
+       - LF_FreeData only marks the handle for later release.
+
+  2. PERMANENT (created by DataHandle.create_permanent(api_name) in
+     lingofuse.core):
+       - NOT added to the idle pool; never auto-reclaimed.
+       - LF_FreeData releases the record synchronously.
+
+Both kinds support the EXACT same set of LF_* operations
+(LF_GetBuffer, LF_WriteBuffer, LF_ReadBuffer, LF_GetPos, LF_SetPos,
+LF_GetSize, LF_SetSize). Therefore the entire public API of this
+module -- dumps_json, write_string, write_string_bytes, write_json,
+read_string, read_string_bytes, read_json, read_json_or_bytes,
+cstr -- is fully compatible with both kinds of handles with no
+difference in behaviour.
+
+This module does NOT create or destroy handles. Handle creation and
+lifetime are owned by lingofuse.core.DataHandle. See the module
+docstring of lingofuse.core for the full contract of the two kinds.
+
 {!!!!!  UNIFIED JSON REPAIR PREPROCESSING  !!!!!}
 As of this revision, both JSON read paths in this module route the
 decoded text through lingofuse.json_repair_preprocess.repair_json_text
@@ -254,6 +279,11 @@ def dumps_json(obj: Any) -> str:
 # LF_WriteBuffer, LF_ReadBuffer, LF_GetBuffer, LF_GetPos, LF_GetSize,
 # and LF_SetPos for payload I/O. Everything else must go through the
 # public API below.
+#
+# All three helpers accept ANY kind of DataHnd -- auto-recycled or
+# permanent -- because the underlying C primitives are identical for
+# both. See the module docstring section "DATA HANDLE KINDS" for the
+# full contract.
 
 def _write_bytes(hnd: DataHnd, data: bytes) -> None:
     """
@@ -360,6 +390,10 @@ def write_string(hnd: DataHnd, value: str) -> None:
 
     `None` is treated as the empty string, so callers do not need a
     separate check for optional values.
+
+    The `hnd` may be either an auto-recycled or a permanent handle.
+    Both kinds accept the same I/O primitives; see the module
+    docstring section "DATA HANDLE KINDS".
     """
     if value is None:
         value = ""

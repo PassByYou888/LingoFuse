@@ -1,19 +1,18 @@
-# LingoFuse Pascal 完整指南（含踩坑知识库 v2.0）
+# LingoFuse Pascal 完整指南（含踩坑知识库 v3.0）
 
 > **面向 AI 与人类开发者的权威参考**
 > 第 1–6 章：学习指南；第 7 章：**Pascal 核心层踩坑知识库（本版重点）**；第 12 章：LLM 生态坑索引
 >
-> **本版 v2.0 的核心变化**（相对 v1.0）：
-> - **新增** 网络事件 API 完整章节（`LF_Set_Network_Event` / `TLF_Network_Event`），覆盖第 2 章概念、第 4 章 API 参考、第 7 章 `LF-NET-005` / `LF-NET-006`
-> - **新增** 第 7.13 节「JSON 使用层」子系统（`LF-JSON-*`），把 `LingoFuse_LLM_Pitfalls_For_AI.md` 的 P10-1 / P10-2 / P10-3 完整合并
-> - **新增** 第 12 章 LLM 生态坑索引中 P9 / P10 系列的映射表
-> - **新增** 附录 A 中的网络事件错误原文
-> - **更新** 附录 B 的 ID 总览与 TODO 清单
-> - **新增** 四条铁律的第四条（`TZ_JsonObject` 是树）
-> - **修正** 术语与格式统一；修订了部分跨节引用
+> **本版 v3.0 的核心变化**（相对 v2.0）：
+> - **关键修正**：数据句柄自动回收时间从 **5 分钟** 修正为 **10 分钟**（对齐源码 `C_Tick_Second * 60 * 10`）
+> - **新增机制**：`TLF_DataMemory` 二级内存池、`Begin_Call` / `End_Call` 与 `calling___` 计数器、`LF_CreateData_Permanent` 的完整语义
+> - **新增坑位**：LF-DATA-006 ~ LF-DATA-008、LF-APP-007、LF-NET-007、LF-OPT-003（合计 48 条）
+> - **新增章节**：7.14「模拟主线程与 C4 进度循环」、7.15「内存与对象生命周期详解」
+> - **完善**：网络事件的完整触发链条、`LF_PrepareDone` 的超时与返回值语义、`LF_FreeApp` 的 shutdown guard
+> - **铁律扩充**：从 4 条扩充到 6 条
 >
 > **证据等级约定**（贯穿全文）：
-> - 🟢 **已核实源码** — 在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`（逐行核对版）、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 中有直接依据
+> - 🟢 **已核实源码** — 在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse_Export.pas`、`Z.LingoFuse_Core.pas`、`Z.Net.C4.LingoFuse.pas`、`LingoFuse.lpr`、`Z.LingoFuse.md`、`Z.Json.md` 中有直接依据
 > - 🟡 **仅文档转录** — 来自其他文档，未逐行回源码核对
 > - 🔴 **推测** — 从行为推断，未找到直接源码依据；**使用前请回查源码**
 >
@@ -24,7 +23,7 @@
 ## 📖 目录
 
 - [第 1–6 章：基础指南](#第-16-章基础指南)
-- [第 7 章：🚨 Pascal 核心层踩坑知识库（v2.0）](#7--pascal-核心层踩坑知识库)
+- [第 7 章：🚨 Pascal 核心层踩坑知识库（v3.0）](#7--pascal-核心层踩坑知识库)
   - [7.0 ID 体系与使用说明](#70-id-体系与使用说明)
   - [7.1 应用/句柄层（LF-APP-*）](#71-应用句柄层lf-app-)
   - [7.2 回调层（LF-CB-*）](#72-回调层lf-cb-)
@@ -38,29 +37,31 @@
   - [7.10 线程模型（LF-THREAD-*）](#710-线程模型lf-thread-)
   - [7.11 类型与编译（LF-TYPE-*）](#711-类型与编译lf-type-)
   - [7.12 跨语言数据交换（LF-XLANG-*）](#712-跨语言数据交换lf-xlang-)
-  - [7.13 JSON 使用层（LF-JSON-*）](#713-json-使用层lf-json--v20-新增)
+  - [7.13 JSON 使用层（LF-JSON-*）](#713-json-使用层lf-json-)
+  - [7.14 模拟主线程与 C4 进度循环（v3.0 新增）](#714-模拟主线程与-c4-进度循环lf-main-)
+  - [7.15 内存与对象生命周期详解（v3.0 新增）](#715-内存与对象生命周期详解lf-mem-)
 - [第 8–11 章：对比、附录](#第-811-章对比附录)
 - [第 12 章：LLM 生态坑索引](#12--llm-生态坑索引)
 - [附录 A：错误消息原文索引](#附录-a错误消息原文索引)
 - [附录 B：ID 总览与维护约定](#附录-bid-总览与维护约定)
 - [附录 C：给 AI 使用者的检索规则](#附录-c给-ai-使用者的检索规则)
-- [四条铁律](#四条铁律)
+- [六条铁律](#六条铁律)
 
 ---
 
 # 第 1–6 章：基础指南
 
 > **说明**：以下 1–6 章保留原文档的内容与结构，仅做以下调整：
-> - **第 2 章** 核心概念新增「网络事件」一条
-> - **第 4 章** API 完全参考新增「4.11 网络事件」子章节
-> - **第 6 章** 高级范式新增「6.8 网络事件监听」一节
+> - **第 2 章** 核心概念新增「网络事件」、「二级内存池」、「calling 计数器」三条
+> - **第 4 章** API 完全参考新增「4.11 网络事件」子章节；补充 `LF_CreateData_Permanent`、`LF_Sync`、`LF_GetStatus` 的详细信息
+> - **第 6 章** 高级范式新增「6.8 网络事件监听」、「6.9 二级内存池与永久句柄」、「6.10 数据句柄的 calling 计数器」
 > 其余段落保持原样，未做术语或示例改动。
 
 ## 1. 引言
 
 **LingoFuse** 是一个面向智能体（Agent）和全栈系统的分布式 RPC 框架，基于 C4 服务网格，提供跨语言、跨进程、跨机器的函数调用能力。本指南聚焦于 **Pascal 语言绑定**，该绑定通过 `lingofuse_import.pas` 单元导出所有 C ABI 函数，并提供 `lingofuse_helper.pas` 作为 RAII 高级封装。
 
-本指南旨在成为 **AI 和人类开发者** 的共同参考，详细解释每个 API、其参数、返回值、内部机制、常见陷阱和最佳实践。所有内容均基于 **LingoFuse v3.0** 及 Pascal 绑定单元 `Z.LingoFuse_Export.pas` 实现。
+本指南旨在成为 **AI 和人类开发者** 的共同参考，详细解释每个 API、其参数、返回值、内部机制、常见陷阱和最佳实践。所有内容均基于 **LingoFuse v3.09** 及 Pascal 绑定单元 `Z.LingoFuse_Export.pas` 实现。
 
 ## 2. 核心概念速览
 
@@ -73,9 +74,11 @@
 - **本地执行**：`LF_LocalCall` / `LF_LocalNotify` 在同一进程内执行，不经过网络。
 - **远程执行**：`LF_Call` / `LF_Notify` / `LF_Sequenced_Notify` 通过网络路由，优先查找本地实例。
 - **网络事件（v2.0 新增）**：`LF_Set_Network_Event` 安装全局回调，在客户端上线 / 下线时触发。**注意：Connect 语义不是 TCP 建链，而是"首次收到服务端 API 信息广播"；回调在后台 TCompute 工作线程执行**。详见 §4.11 与 §7.4 `LF-NET-005 / LF-NET-006`。
-- **模拟主线程**：C4 事件循环运行在模拟主线程中，由 `LF_PrepareDone` 启动，`LF_ExitMainThread` 停止。
+- **模拟主线程**：C4 事件循环运行在模拟主线程中，由 `LF_PrepareDone` 启动，`LF_ExitMainThread` 停止。**每个进程只能启动一次**，详见 §7.14。
 - **线程安全**：所有导出函数（除状态日志辅助外）完全线程安全；回调在后台线程池执行，不得阻塞或调用远程 API。
-- **自动内存回收**：数据句柄闲置 5 分钟自动释放（由 `TLF_DataPool` 管理）。
+- **自动内存回收**：数据句柄闲置 **10 分钟**自动释放（由 `TLF_DataPool` 管理）。**扫描间隔为 5 秒**——即句柄在闲置 10 分钟后，最多再等 5 秒被回收。**切勿依赖此机制**，务必显式 `LF_FreeData`。详见 §7.3 `LF-DATA-001`。
+- **二级内存池（v3.0 新增）**：`TLF_DataMemory` 缓存已释放的 `TLF_Data` record，减少 `New` / `Dispose` 频率。详见 §7.15。
+- **calling 计数器（v3.0 新增）**：`TLF_Data.calling___` 是一个原子计数器，通过 `Begin_Call` / `End_Call` 配对维护。**只要 `calling___ > 0`，句柄就不会被自动回收**——这是远程调用期间保护输入句柄的关键机制。详见 §7.3 `LF-DATA-007`。
 - **部署模式**：通过 `Wait_Connection_ReadyOk=False` 允许节点无序启动。
 
 ## 3. 快速入门（5 分钟）
@@ -153,32 +156,55 @@ lazbuild -B client.lpi
 - **参数**：`MethodName` – 目标 API 名称（UTF-8，以空字符结尾）。
 - **返回**：非 nil 句柄，必须通过 `LF_FreeData` 释放。
 - **辅助**：`LF_CreateDataEx(MethodName: string): TDataHnd`（自动 UTF-8 转换）。
-- **陷阱**：句柄创建后 API 名称不可更改；载荷的读写不影响 API 名称。
+- **陷阱**：
+  - 句柄创建后 API 名称不可更改；载荷的读写不影响 API 名称。
+  - **句柄会被加入自动回收池**，闲置 10 分钟后由 `TLF_DataPool.Progress` 自动释放。详见 §7.3 `LF-DATA-001`。
+
+#### `LF_CreateData_Permanent(MethodName: PAnsiChar): TDataHnd`（v3.0 详述）
+- **功能**：创建一个**不加入自动回收池**的数据句柄。
+- **语义**：
+  - 内部字段 `auto_recycle___ = False`。
+  - **不加入 `LF_DataPool`**，因此永远不会被 `Progress` 扫描回收。
+  - `LF_FreeData` 会**同步立即释放**句柄（而非标记为 `deleted___` 等待扫描）。
+- **适用场景**：需要跨整个进程生命周期存在的句柄（缓存请求模板、全局 registry 等）。
+- **不适用场景**：短生命周期的一次性句柄（用 `LF_CreateData`）。
+- **辅助**：`LF_CreateData_PermanentEx(MethodName: string): TDataHnd`。
+- **陷阱**：
+  - **"永久"不等于"永不释放"**——你必须负责调用 `LF_FreeData`。丢失指针 = 整个进程生命周期内泄漏。
+  - **初始化期间 `LF_FreeData` 是 no-op**：在 `LF_PrepareDone` 之前或 `LF_ExitMainThread` 之后创建的永久句柄，会一直保留到进程退出。详见 §7.3 `LF-DATA-008`。
 
 #### `LF_FreeData(Hnd: TDataHnd)`
-- **功能**：销毁数据句柄，释放内存。如果句柄已在全局池中，会从池中移除。
-- **注意**：即使句柄被自动回收器回收，显式调用此函数仍是必须的（推荐）。
-- **陷阱**：不要在回调中或远程调用未完成时释放句柄。
+- **功能**：销毁数据句柄，释放内存。
+- **行为差异**：
+  - **自动回收句柄**（由 `LF_CreateData` 创建）：`LF_FreeData` 只标记 `deleted___ = True`，实际释放在下一次 `TLF_DataPool.Progress` 扫描时（最多 5 秒延迟）。
+  - **永久句柄**（由 `LF_CreateData_Permanent` 创建）：`LF_FreeData` 同步立即释放。
+- **陷阱**：
+  - **只在模拟主线程活跃时有效**。`LF_PrepareDone` 前或 `LF_ExitMainThread` 后调用是 no-op。
+  - 不要在回调中或远程调用未完成时释放句柄。
+  - **不要释放 `calling___ > 0` 的句柄**（详见 §7.3 `LF-DATA-007`）。
 
 #### `LF_GetBuffer(Hnd: TDataHnd): Pointer`
-- **功能**：返回内部缓冲区的起始指针（只读或读写）。
+- **功能**：返回内部缓冲区的起始指针。
 - **返回**：指针，若句柄为空或大小为 0 则返回 nil。
 - **辅助**：`LF_GetBufferOffset(Hnd; Offset: NativeInt): Pointer` 返回偏移后的指针。
 - **陷阱**：指针在 `LF_WriteBuffer` / `LF_SetSize` 后失效（底层扩容可能重分配）。
+- **副作用**：**刷新句柄的时间戳**（`updated___ := True`），重置 10 分钟空闲倒计时。
 
 #### `LF_WriteBuffer(Hnd: TDataHnd; Buff: Pointer; Size: Int64): Int64`
 - **功能**：从当前位置写入 `Size` 字节，缓冲区自动扩容，位置向后移动。
 - **返回**：实际写入的字节数。
+- **副作用**：刷新句柄时间戳。
 
 #### `LF_ReadBuffer(Hnd: TDataHnd; Buff: Pointer; Size: Int64): Int64`
 - **功能**：从当前位置读取最多 `Size` 字节到 `Buff`，位置向后移动。
 - **返回**：实际读取的字节数。
+- **副作用**：刷新句柄时间戳。
 
 #### 位置与大小操作
-- `LF_GetPos(Hnd): Int64` – 获取当前读写位置。
-- `LF_SetPos(Hnd; Pos_: Int64)` – 设置读写位置（超出大小会隐式扩容）。
-- `LF_GetSize(Hnd): Int64` – 获取缓冲区总大小。
-- `LF_SetSize(Hnd; Size_: Int64)` – 调整缓冲区大小（新增空间未初始化）。
+- `LF_GetPos(Hnd): Int64` – 获取当前读写位置。刷新时间戳。
+- `LF_SetPos(Hnd; Pos_: Int64)` – 设置读写位置（超出大小会隐式扩容）。刷新时间戳。
+- `LF_GetSize(Hnd): Int64` – 获取缓冲区总大小。刷新时间戳。
+- `LF_SetSize(Hnd; Size_: Int64)` – 调整缓冲区大小（新增空间未初始化）。刷新时间戳。
 
 #### 原子类型读写辅助（Pascal 封装）
 
@@ -188,63 +214,92 @@ lazbuild -B client.lpi
 | `LF_WriteString` | `LF_ReadString`（out） | `LF_ReadString` |
 | `LF_WriteStringBytes` | `LF_ReadStringBytes`（out） | `LF_ReadStringBytes` |
 
-- 所有写入函数以小端字节序编码。
-- `LF_WriteString` 会追加空终止符 (#0)。
-- `LF_ReadString` 扫描直到 #0，若未找到则读至末尾（容错模式）。
+- 所有写入函数以**小端字节序**编码。
+- `LF_WriteString` **会追加空终止符 (#0)**。空字符串也写一个 `#0`。
+- `LF_ReadString` **扫描直到 #0**；若未找到则读至缓冲区末尾（**容错模式**）。详见 §7.3 `LF-DATA-004`。
 
 ### 4.2 应用句柄操作
 
 - `LF_CreateApp(appName, Desc: PAnsiChar): TAppHnd` / `LF_CreateAppEx`
-- `LF_FreeApp(appHnd)` – 分离应用（延迟销毁）
+  - `Desc` 为空时自动替换为 `'No Description'`。
+- `LF_FreeApp(appHnd)` – 分离应用（**延迟销毁**，对象留在 `LF_App_Pool` 直到 `LF_Shutdown`）。
+  - **有 shutdown guard**：`if not Core_Dispatch_Order_Activted then exit`。
 - `LF_Generate_AppName(): PAnsiChar` / `LF_Generate_AppNameEx(): string`
+  - **必须在 `LF_PrepareDone` 之后调用**。详见 §7.1 `LF-APP-003`。
+  - **返回指针仅 5 秒有效**。详见 §7.1 `LF-APP-004`。
 - `LF_Get_AppName(appHnd): PAnsiChar` / `LF_Get_AppNameEx(appHnd): string`
+  - **返回指针仅 5 秒有效**。
+  - **`appHnd = nil` 时安全返回 nil**（不再崩溃）。
 - `LF_BindApp(appHnd): Integer`
+  - **只绑定 `Cli.app = nil` 的客户端**。详见 §7.1 `LF-APP-005`。
+  - **需要 `Simulator_Main_Thread_Activted = True`**。
 
 ### 4.3 API 注册
 
 - `LF_RegisterCall` / `LF_RegisterNotify`（cdecl 函数）
+  - **回调必须 `cdecl`**。详见 §7.1 `LF-APP-001`。
 - `LF_RegisterCall_M` / `LF_RegisterSyncCall_M`（对象方法）
 - `LF_RegisterNotify_M` / `LF_RegisterSyncNotify_M`
-- `LF_Unregister`
+- `LF_Unregister` / `LF_UnregisterEx`
 
-**回调约束**：禁止在回调中调用 `LF_Call`、`LF_Notify`、`LF_LocalCall`。
+**回调约束**：禁止在回调中调用 `LF_Call`、`LF_Notify`、`LF_LocalCall`。详见 §7.2 `LF-CB-002`。
 
 ### 4.4 本地调用
 
 - `LF_LocalCall(appHnd; Param: TDataHnd): TDataHnd`
+  - **输入句柄不被释放**（调用者负责）。
+  - **返回新句柄**（调用者负责）。
+  - **内部使用 `Begin_Call` / `End_Call` 保护输入句柄**。详见 §7.3 `LF-DATA-007`。
 - `LF_LocalNotify(appHnd; Param: TDataHnd)`
+  - 同上。
 
 ### 4.5 网络准备与启动
 
-- `LF_ResetPrepare()`
-- `LF_PrepareService(ListeningAddr_, PhysicsAddr_: PAnsiChar): Integer`
-- `LF_PrepareClient(PhysicsAddr_: PAnsiChar; appHnd: TAppHnd): Integer`
-- `LF_PrepareDone(): Integer`
-- `LF_ExitMainThread()`
+- `LF_ResetPrepare()` – 清空准备队列与 tag 列表。
+- `LF_PrepareService(ListeningAddr_, PhysicsAddr_: PAnsiChar): Integer` – 返回 tag 或 -1。
+- `LF_PrepareClient(PhysicsAddr_: PAnsiChar; appHnd: TAppHnd): Integer` – 返回 tag 或 -1。
+- `LF_PrepareDone(): Integer` – 启动主线程，返回 1 或 0。
+  - **阻塞**：默认 `Wait_Connection_ReadyOk=True`，最多阻塞 `Wait_Connection_Timeout`（30 秒）。
+  - **同进程只有第一次成功返回 1**。详见 §7.4 `LF-NET-003`。
+  - **超时后仍返回 1**（不报告失败）。详见 §7.4 `LF-NET-007`。
+- `LF_ExitMainThread()` – 停止主线程。
 
 ### 4.6 远程调用与通知
 
 - `LF_Call(appName: PAnsiChar; Param: TDataHnd; Timeout_: UInt64): TDataHnd`
+  - **超时返回 size=0 的句柄，不是 nil**。详见 §7.5 `LF-CALL-001`。
+  - **输入句柄不被释放**。
+  - **内部使用 `Begin_Call` / `End_Call`**。
 - `LF_Notify(appName: PAnsiChar; Param: TDataHnd)`
+  - **不保证顺序**。详见 §7.5 `LF-CALL-002`。
 - `LF_Sequenced_Notify(appName: PAnsiChar; Param: TDataHnd)`
+  - **仅保证同一 `(App, API)` 对的 FIFO**。详见 §7.6 `LF-SEQ-002`。
 
 ### 4.7 运行时选项与状态
 
 - `LF_SetOption(Option, Value: PAnsiChar)`
-  - `password` / `passwd`、`Quiet`、`ConsoleOutput`
+  - `password` / `passwd`、`Quiet`、`ConsoleOutput`、`ShowThreadID`
   - `Overlap_Connection`、`Wait_Connection_ReadyOk`、`Wait_Connection_Timeout`
   - `IPC_Serv_ThreadCount`、`IPC_Serv_MaxQueueLength`、`IPC_Serv_MaxMsgSize`
   - `Fixed_Sequenced_Time`
-- `LF_GetStatusCount()`、`LF_GetStatus()`、`LF_PostStatus()`
+  - **未知选项静默忽略**。详见 §7.8 `LF-OPT-001`。
+  - **不持久化**。详见 §7.8 `LF-OPT-002`。
+- `LF_GetStatusCount()` – 返回状态队列中的消息数（**队列上限 1000**）。
+- `LF_GetStatus()` – 返回静态 64KB 缓冲的指针，**下次调用即失效**。
+- `LF_PostStatus()` – 注入日志消息。
+  - **主线程未运行时仍入队**（v3.09 修正，带诊断日志）。
 
 ### 4.8 同步辅助
 
-- `LF_Sync(): Integer`
+- `LF_Sync(): Integer` – 处理挂起的同步回调。
+  - **仅在自定义主循环中需要手动调用**。默认 `LF_PrepareDone` 后由 C4 进度循环自动驱动。详见 §7.2 `LF-CB-005`。
 
 ### 4.9 查询与健康检查
 
-- `LF_CheckMainThread()`、`LF_CheckApp(appName)`、`LF_CheckApi(appName, apiName)`
-- 基于本地缓存，广播延迟约 3 秒。
+- `LF_CheckMainThread()` – 主线程活跃返回 1。
+- `LF_CheckApp(appName)` – App 存在返回 1。
+- `LF_CheckApi(appName, apiName)` – API 存在返回 1。
+- **基于本地缓存，广播延迟约 3 秒**。详见 §7.7 `LF-CHK-001`。
 
 ### 4.10 关闭与清理
 
@@ -253,10 +308,10 @@ lazbuild -B client.lpi
   2. 停止所有序列化通知线程
   3. 释放所有剩余数据句柄
   4. 退出模拟主线程
-  5. 清空全局应用池
-  6. 卸载 IPC 库
+  5. 清空全局应用池（`LF_App_Pool.Clear`）
+  6. 卸载 IPC 库、关闭核心调度线程
 
-### 4.11 网络事件（v2.0 新增）
+### 4.11 网络事件
 
 ```pascal
 type
@@ -374,15 +429,23 @@ LF_Set_Network_Event(nil, nil);
 - 线程空闲 5 分钟后自动终止
 - 通过 `Fixed_Sequenced_Time` 调整 fallback 阈值（默认 20 秒）
 
-### 6.5 数据句柄自动回收机制
+### 6.5 数据句柄自动回收机制（**v3.0 修正**）
 
-- `TLF_DataPool` 每 5 秒扫描一次，释放闲置超过 5 分钟的句柄
-- **不应依赖此机制**，生产环境应显式 `LF_FreeData`
+- `TLF_DataPool.Progress` **每 5 秒扫描一次**。
+- 每次扫描处理三类情况：
+  1. `updated___ = True` 或 `calling___ > 0`：刷新 `time___`，重置 `updated___`
+  2. `deleted___ = True`：加入用户主动释放列表，实际释放
+  3. `tk - time___ > 10 分钟`：加入超时释放列表，实际释放
+- **10 分钟是空闲回收的时间阈值**（不是 5 分钟）。
+- 5 秒是**扫描间隔**，意味着句柄可能在被标记为可回收后最多再等 5 秒才实际释放。
+- **不应依赖此机制**，生产环境应显式 `LF_FreeData`。
+- **`calling___ > 0` 的句柄不会被超时回收**——这是远程调用期间的保护机制。
 
 ### 6.6 应用生命周期
 
 - `LF_FreeApp`：分离应用，但对象仍在池中
 - `LF_Shutdown`：清空池，销毁所有对象
+- 需要动态回收内存：显式调用 `LF_Shutdown` 后重启框架
 
 ### 6.7 回调线程安全与死锁预防
 
@@ -390,7 +453,7 @@ LF_Set_Network_Event(nil, nil);
 - **禁止**在回调中调用阻塞函数
 - 同步回调需定期 `LF_Sync` 驱动
 
-### 6.8 网络事件监听（v2.0 新增）
+### 6.8 网络事件监听
 
 ```pascal
 // 主程序初始化时安装
@@ -407,7 +470,6 @@ end;
 
 procedure OnNetDisconnect(addr: PAnsiChar); cdecl;
 begin
-  // 只做记录，不做阻塞操作
   TThread.Queue(nil,
     procedure
     begin
@@ -430,7 +492,61 @@ LF_Set_Network_Event(nil, nil);
 - **不要调用阻塞 LF_***——死锁风险
 - **托管语言需 pin 回调**——防止 GC 回收
 
-**JSON 与网络事件**：网络事件回调通常只用于日志/UI 状态。如果需要处理 JSON 数据，务必遵守 §7.13 的规则。
+### 6.9 二级内存池与永久句柄（v3.0 新增）
+
+**场景**：需要跨整个进程生命周期持有某个请求模板。
+
+**推荐做法**：用 `LF_CreateData_Permanent`：
+
+```pascal
+var
+  g_template: TDataHnd;
+begin
+  // 初始化阶段（LF_PrepareDone 之前也可以）
+  g_template := LF_CreateData_PermanentEx('myapi');
+  LF_WriteString(g_template, 'template-payload');
+
+  // 整个进程生命周期内可反复使用
+  // ...
+
+  // 退出前显式释放
+  LF_FreeData(g_template);
+  LF_Shutdown;
+end;
+```
+
+**不要做的事**：
+
+```pascal
+// ❌ 用普通 LF_CreateData 创建长生命周期句柄
+g_template := LF_CreateDataEx('myapi');
+// 10 分钟未使用 → 被自动回收 → g_template 变悬空
+
+// ❌ 用永久句柄但忘记释放
+g_template := LF_CreateData_PermanentEx('myapi');
+// 进程退出前从不调用 LF_FreeData → 泄漏
+```
+
+### 6.10 数据句柄的 calling 计数器（v3.0 新增）
+
+**内部机制**：`TLF_Data.calling___: TAtomInt` 是一个原子计数器。所有对外 API 在发起远程调用时会配对使用 `Begin_Call` / `End_Call`：
+
+```pascal
+// LF_LocalCall / LF_Call / LF_Notify / LF_Sequenced_Notify 内部伪代码
+PLF_Data(Param).Begin_Call;      // calling___ += 1，同时 updated___ := True
+try
+  // ... 执行远程调用 ...
+finally
+  PLF_Data(Param).End_Call;      // calling___ -= 1，同时 updated___ := True
+end;
+```
+
+**为什么需要**：远程调用可能耗时数秒甚至超时（30 秒以上），期间 `TLF_DataPool.Progress` 会定期扫描。如果没有 `calling___`，输入句柄可能在调用返回前被超时回收。
+
+**对用户的影响**：
+
+- 你**不需要手动**调用 `Begin_Call` / `End_Call`——`LF_Call` 等 API 内部自动调用。
+- 但如果你的自定义代码持有一个句柄较长时间（超过 10 分钟），要么定期调用 `LF_GetSize` / `LF_GetPos` 等刷新时间戳，要么改用 `LF_CreateData_Permanent`。
 
 ---
 
@@ -471,11 +587,13 @@ LF_Set_Network_Event(nil, nil);
 | `LF-THREAD` | 线程模型 | 7.10 |
 | `LF-TYPE` | 类型与编译 | 7.11 |
 | `LF-XLANG` | 跨语言数据交换 | 7.12 |
-| **`LF-JSON`** | **JSON 使用（v2.0 新增）** | **7.13** |
+| `LF-JSON` | JSON 使用 | 7.13 |
+| **`LF-MAIN`** | **模拟主线程与 C4 进度循环（v3.0 新增）** | **7.14** |
+| **`LF-MEM`** | **内存与对象生命周期（v3.0 新增）** | **7.15** |
 
 ### 7.0.2 证据等级使用约定
 
-- 🟢 **已核实源码**：在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`（逐行核对版）、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 中有直接文本依据。
+- 🟢 **已核实源码**：在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse_Export.pas`、`Z.LingoFuse_Core.pas`、`Z.Net.C4.LingoFuse.pas`、`LingoFuse.lpr`、`Z.LingoFuse.md`、`Z.Json.md` 中有直接文本依据。
 - 🟡 **仅文档转录**：来自其他文档，未逐行回源码核对。
 - 🔴 **推测**：从行为/示例代码推断，**使用前请回查源码**。
 
@@ -485,6 +603,7 @@ LF_Set_Network_Event(nil, nil);
 
 - "所有版本"：从 v1.0 起就存在的约束（多为设计固有限制）
 - "v3.0+"：v3.0 引入的接口/行为
+- "v3.09+"：v3.09 引入的 `LF_CreateData_Permanent`、`Begin_Call` / `End_Call`
 - "v3.11+"：v3.11 引入的 JSON 相关接口（`LF-JSON-*`）
 - "未知"：无法从现有材料判断引入版本
 
@@ -528,16 +647,17 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-APP-002：`LF_FreeApp` 是两阶段析构，不立即释放内存
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §2.3、`lingofuse_import.pas` 注释）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §2.3、`Z.LingoFuse_Export.pas` 注释）
 - **影响版本**：所有版本
 - **触发条件**：调用 `LF_FreeApp` 后立即期望内存下降
 - **症状**：
   - 内存不降反升，或长时间不降
   - 频繁创建/销毁 App 的服务，`LF_App_Pool` 持续增长
-- **根因**：`LF_FreeApp` 只做三件事：
-  1. 遍历所有 `TC40_LF_Client`，把 `Cli.app = app` 的置 nil（**解绑**）
-  2. `LF_Notify_Sequence_Thread_Pool.Kill_App(app)`（**停掉顺序通知线程**）
-  3. `app.FakeFree`（**仅移除定时器**）
+- **根因**：`LF_FreeApp` 只做四件事：
+  1. **shutdown guard**：`if not Core_Dispatch_Order_Activted then exit`
+  2. 遍历所有 `TC40_LF_Client`，把 `Cli.app = app` 的置 nil（**解绑**）
+  3. `LF_Notify_Sequence_Thread_Pool.Kill_App(app)`（**停掉顺序通知线程**）
+  4. `app.FakeFree`（**仅移除定时器**）
   
   对象**不立即销毁**——仍在 `LF_App_Pool` 中，等 `LF_Shutdown` 时清理。
   
@@ -560,7 +680,7 @@ LF_Set_Network_Event(nil, nil);
   - 生成的名字**缺少隧道地址和 RemoteID**
   - 服务端 `LF_Sequenced_Notify` 到该名字时，控制台刷屏 `no found app("...")`
   - 客户端永远收不到消息，`finish_event` 永不置位
-- **根因**：`LF_Generate_AppName` 的实现（`Z.LingoFuse.md` §2.3）：
+- **根因**：`LF_Generate_AppName` 的实现（`Z.LingoFuse_Export.pas` 实现）：
   1. 拼接所有 `C40_PhysicsTunnelPool` 的**地址和 RemoteID**
   2. 拼接 `Make_LingoFuse_Process_Name`（进程名 + PID）
   3. 拼接 `AtomInc(Generate_AppName_Call_Num)`（自增计数器）
@@ -597,11 +717,11 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-APP-004：`LF_Generate_AppName` / `LF_Get_AppName` 返回指针 5 秒失效
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 注释"5 seconds"）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 注释"5 seconds"，`Z.LingoFuse_Export.pas` 中 `Z.Notify.DelayFreeMem(5.0, Result)`）
 - **影响版本**：所有版本
 - **触发条件**：保留返回的 `PAnsiChar` 指针，5 秒后才使用
 - **症状**：字符串变成乱码、空字符串，或访问违规
-- **根因**：这两个函数返回**指向内部静态缓冲区的指针**，库在 **5 秒后自动释放**该缓冲区。
+- **根因**：这两个函数返回**指向内部临时缓冲区的指针**，库在 **5 秒后**通过 `Z.Notify.DelayFreeMem` 自动释放该缓冲区。
 - **最小复现**：
   ```pascal
   var P: PAnsiChar;
@@ -627,7 +747,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-APP-005：`LF_BindApp` 只绑定"未绑定"的客户端
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §2.3）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_BindApp` 实现）
 - **影响版本**：所有版本
 - **触发条件**：在已有 App 的客户端上调用 `LF_BindApp(newApp)`
 - **症状**：返回值 0，新 App 从未绑定
@@ -658,7 +778,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-APP-006：`Overlap_Connection=False` 时同一地址的第二个 App 被静默忽略
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 注释 + `Z.LingoFuse.md` §2.3）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 注释 + `Z.LingoFuse_Export.pas` `LF_PrepareClient` 实现）
 - **影响版本**：所有版本
 - **触发条件**：默认配置（`Overlap_Connection=False`）下，向同一地址重复 `LF_PrepareClient`
 - **症状**：
@@ -685,6 +805,27 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 对两个 App 分别 `LF_Call` 均能成功
 - **相关坑**：LF-NET-001、LF-APP-005
 
+### LF-APP-007：`LF_FreeApp` 有 shutdown guard（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_FreeApp` 实现）
+- **影响版本**：所有版本
+- **触发条件**：在 `LF_Shutdown` 之后（或 `LF_PrepareDone` 之前）调用 `LF_FreeApp`
+- **症状**：函数**直接返回，什么都不做**——App 不会被解绑，顺序通知线程不会被停止
+- **根因**：`LF_FreeApp` 的第一行：
+  ```pascal
+  if not Core_Dispatch_Order_Activted then exit;
+  ```
+  这是为了防止 `LF_Shutdown` 期间的**双重释放**：
+  - `LF_Shutdown` 内部会调用 `Close_Core_Dispatch_Thread`，把 `Core_Dispatch_Order_Activted` 置为 False
+  - 如果此后还调用 `LF_FreeApp`，会尝试访问已被清理的 `C40_ClientPool` → 崩溃
+- **正确做法**：
+  - **在 `LF_Shutdown` 之前调用 `LF_FreeApp`**（按 §7.9 的清理顺序）
+  - 不要指望 `LF_Shutdown` 之后再 `LF_FreeApp`
+- **验证清单**：
+  - [ ] 清理顺序为 `ExitMainThread` → `FreeApp` → `Shutdown`
+  - [ ] 不出现 `LF_Shutdown` 后的 `LF_FreeApp` 调用
+- **相关坑**：LF-CLEAN-001、LF-APP-002
+
 ---
 
 ## 7.2 回调层（LF-CB-*）
@@ -698,7 +839,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-CB-002：回调中禁止调用阻塞型 LingoFuse 函数
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档"CRITICAL – CALLBACK BLOCKING"）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档"CRITICAL - CALLBACK BLOCKING"）
 - **影响版本**：所有版本
 - **触发条件**：在 Call/Notify 回调里调用 `LF_Call`、`LF_LocalCall`、`LF_Notify`、`LF_PrepareDone`
 - **症状**：**整个进程死锁**，服务端不再响应任何请求；调试器显示回调线程阻塞在内部锁
@@ -769,7 +910,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-CB-005：同步回调必须由主循环驱动 `LF_Sync`
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` `TSoft_Synchronize_Tool.Synchronize` 实现）
 - **影响版本**：所有版本
 - **触发条件**：注册了 `RegisterSyncCall_M` / `RegisterSyncNotify_M`，但主循环未定期调用 `LF_Sync`
 - **症状**：
@@ -779,6 +920,7 @@ LF_Set_Network_Event(nil, nil);
 - **根因**：`TSoft_Synchronize_Tool.Synchronize` 的实现：
   - 若当前线程**不是**主线程：将过程入队，然后 `while tmp.Second do Sleep(1)` 忙等
   - 主线程必须**定期调用** `Check_Synchronize`（通过 `LF_Sync`）来出队并执行
+  - `LF_PrepareDone` 后 C4 进度循环自动驱动，无需手动
 - **最小复现**：
   ```pascal
   App.RegisterCallSync('slow', 'Slow call', OnSlowCallback);
@@ -798,7 +940,7 @@ LF_Set_Network_Event(nil, nil);
     end;
   ```
 - **验证清单**：
-  - [ ] 主循环中有 `LF_Sync`
+  - [ ] 主循环中有 `LF_Sync`（仅自定义主循环需要）
   - [ ] 同步回调能在 100ms 内执行（压测验证）
   - [ ] `LF_Sync` 返回值为处理的任务数（可用于日志监控）
 - **相关坑**：LF-CB-004、LF-THREAD-001
@@ -807,16 +949,16 @@ LF_Set_Network_Event(nil, nil);
 
 ## 7.3 数据句柄层（LF-DATA-*）
 
-### LF-DATA-001：句柄必须显式释放，不能依赖 5 分钟自动回收
+### LF-DATA-001：句柄必须显式释放，不能依赖自动回收（**v3.0 修正**）
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档 + `Z.LingoFuse.md` §1.5）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档 + `Z.LingoFuse_Core.pas` `TLF_DataPool.Progress` 实现）
 - **影响版本**：所有版本
 - **触发条件**：创建句柄后忘记 `LF_FreeData`
 - **症状**：
   - 高强度调用下内存持续增长，最终 OOM
-  - 5 分钟内积累的句柄数超过自动回收速度
+  - **10 分钟内**积累的句柄数超过自动回收速度
 - **根因**：
-  - `TLF_DataPool.Progress`：**每 5 秒扫描一次**，释放闲置超过 **5 分钟**的句柄
+  - `TLF_DataPool.Progress`：**每 5 秒扫描一次**，释放闲置超过 **10 分钟**的句柄
   - 回收是**异步的**，不保证及时性
   - 高强度调用下句柄累积速度远超回收速度
 - **最小复现**：
@@ -872,7 +1014,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-DATA-003：`Data_Param` 与 `Data_Result` 互斥
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §1.4）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Data` 记录定义 + `Z.LingoFuse.md` §1.4）
 - **影响版本**：所有版本
 - **触发条件**：手动操作 `TLF_Data` 内部字段（高级用户）
 - **症状**：如果试图同时使用 `Data_Param` 和 `Data_Result`，行为未定义
@@ -935,6 +1077,147 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 或使用 `LF_WriteBuffer` 直接写二进制
 - **相关坑**：LF-DATA-004、LF-XLANG-001
 
+### LF-DATA-006：二级内存池 `TLF_DataMemory`（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_DataMemory` 实现）
+- **影响版本**：v3.09+
+- **背景**：`TLF_Data` 是 **record**，不是 class。它由 `New` / `Dispose` 管理。频繁创建/释放会导致堆碎片化。
+- **机制**：`TLF_DataMemory` 是一个二级内存池：
+  - `Get_New_PLF_Data`：池非空时取 `First^.Data; Next`，否则 `New`
+  - `Free_PLF_Data`：把指针 `Push` 回池（**不调用 `Dispose`**）
+  - `Free_All_PLF_Data_Memory`：逐一 `Dispose` 并清空池（单元终结时调用）
+  - 内部有 `Critical__` 保护，线程安全
+- **对用户的影响**：
+  - **完全透明**。`LF_CreateData` / `LF_FreeData` 内部自动使用这个池。
+  - `LF_FreeData` 不是真的 `Dispose`——record 被推回池。
+  - **只有单元终结时**才会真正释放所有池中 record。
+- **为什么不导致内存泄漏**：池的大小受**活跃句柄数的峰值**限制，不会无界增长。峰值过后，池中的 record 数量稳定。
+- **验证清单**：
+  - [ ] 不需要额外操作——机制对用户完全透明
+  - [ ] 若怀疑内存问题，用 `TLF_DataMemory.Free_All_PLF_Data_Memory` 手动清空（不推荐）
+- **相关坑**：LF-DATA-007、LF-MEM-001
+
+### LF-DATA-007：`calling___` 计数器保护进行中的远程调用（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Data` 定义 + `Z.LingoFuse_Export.pas` 中所有 `LF_Call` / `LF_LocalCall` / `LF_Notify` / `LF_Sequenced_Notify` 实现）
+- **影响版本**：v3.09+
+- **背景**：远程调用可能耗时数秒（甚至超时 30 秒以上）。如果期间 `TLF_DataPool.Progress` 扫描到该句柄，会不会被超时回收？
+- **机制**：`TLF_Data` 有一个 `calling___: TAtomInt` 原子计数器，通过 `Begin_Call` / `End_Call` 配对维护：
+  ```pascal
+  // Begin_Call 实现
+  calling___.UnLock(calling___.LockP^ + 1);
+  updated___ := True;
+
+  // End_Call 实现
+  calling___.UnLock(calling___.LockP^ - 1);
+  updated___ := True;
+  ```
+  `TLF_DataPool.Progress` 的判断条件：
+  ```pascal
+  if queue^.Data^.updated___ or (queue^.Data^.calling___.V > 0) then
+    begin
+      queue^.Data^.time___ := tk;
+      queue^.Data^.updated___ := False;
+    end
+  else if (queue^.Data^.deleted___) then ...
+  else if (tk - queue^.Data^.time___ > C_Tick_Second * 60 * 10) then ...
+  ```
+  **关键**：`calling___ > 0` 时**刷新 `time___`**，因此不会被超时回收。
+- **对用户的影响**：
+  - **完全透明**。`LF_Call` 等 API 内部自动 `Begin_Call` / `End_Call`。
+  - **不要手动**调用 `Begin_Call` / `End_Call`——它们是内部方法，不在 C ABI 导出列表中。
+- **用户需要知道的**：
+  - 长耗时调用不会导致句柄被回收，即使超过 10 分钟。
+  - 但**调用完成后** `calling___` 归零，句柄又回到正常的 10 分钟倒计时。
+  - **不要释放正在被调用的句柄**——用户层面没有 `Begin_Call`，但 `LF_Call` 返回后输入句柄的 `calling___` 已经归零，可以释放。
+- **验证清单**：
+  - [ ] 长耗时远程调用（如 5 分钟）不会导致输入句柄被回收
+  - [ ] 调用完成后立即 `LF_FreeData` 输入句柄
+- **相关坑**：LF-DATA-006、LF-MEM-002
+
+### LF-DATA-008：`LF_CreateData_Permanent` 的正确与错误使用（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_CreateData_Permanent` 实现 + 注释）
+- **影响版本**：v3.09+
+- **背景**：默认的 `LF_CreateData` 会把句柄加入自动回收池。对于需要跨整个进程生命周期的句柄（如模板、缓存），10 分钟空闲超时可能不够。
+- **正确用法**：
+  ```pascal
+  var
+    g_template: TDataHnd;
+  begin
+    // 初始化阶段
+    g_template := LF_CreateData_PermanentEx('myapi');
+    LF_WriteString(g_template, 'template-payload');
+
+    // 整个进程生命周期内可反复使用
+    // ...
+
+    // 退出前显式释放
+    LF_FreeData(g_template);
+    LF_Shutdown;
+  end;
+  ```
+- **`LF_CreateData_Permanent` 的精确语义**：
+  - `auto_recycle___ = False`
+  - **不加入 `LF_DataPool`**
+  - `LF_FreeData` **同步立即释放**（不是标记 `deleted___` 等待扫描）
+  - 即使 `calling___ > 0` 也不会被扫描（因为它根本不在池里）
+- **错误用法 1：忘记释放**
+  ```pascal
+  // ❌ 永久句柄忘记释放 → 进程生命周期内泄漏
+  g_template := LF_CreateData_PermanentEx('myapi');
+  // ... 从不调用 LF_FreeData ...
+  ```
+- **错误用法 2：短生命周期场景**
+  ```pascal
+  // ❌ 一次性句柄用 Permanent → 失去池的安全网
+  procedure DoOneCall;
+  var d: TDataHnd;
+  begin
+    d := LF_CreateData_PermanentEx('add');
+    try
+      // ...
+    finally
+      LF_FreeData(d);   // 必须手动，不会自动回收
+    end;
+  end;
+  ```
+- **错误用法 3：期望"永不释放"**
+  ```pascal
+  // ❌ 误解："Permanent" 不等于 "Never released"
+  g_template := LF_CreateData_PermanentEx('myapi');
+  // ... 期望进程退出时自动释放 ...
+  // 实际上：不会。你必须显式 LF_FreeData。
+  ```
+- **错误用法 4：初始化窗口创建**
+  ```pascal
+  // ⚠️ 在 LF_PrepareDone 之前创建的永久句柄
+  g_template := LF_CreateData_PermanentEx('myapi');
+  // ... 从未调用 LF_PrepareDone ...
+  LF_FreeData(g_template);   // ❌ no-op！因为 Simulator_Main_Thread_Activted = False
+  // g_template 泄漏到进程退出
+  ```
+  **规则**：`LF_FreeData` 是 no-op 窗口 = `LF_PrepareDone` 之前或 `LF_ExitMainThread` 之后。
+  在这个窗口创建的永久句柄会**一直保留到进程退出**——因为没有任何机制能释放它们。
+- **正确决策树**：
+
+  ```mermaid
+  flowchart TD
+      A["需要创建数据句柄"] --> B{"生命周期？"}
+      B -- "短于 10 分钟" --> C["LF_CreateData"]
+      B -- "长于 10 分钟但有限" --> D["LF_CreateData + 定期刷新<br/>（调用 GetSize/GetPos）"]
+      B -- "整个进程生命周期" --> E["LF_CreateData_Permanent"]
+      C --> F["忘记释放时池会兜底"]
+      D --> G["必须确保定期访问"]
+      E --> H["必须显式 LF_FreeData"]
+  ```
+
+- **验证清单**：
+  - [ ] 所有 `LF_CreateData_Permanent*` 调用都有对应的 `LF_FreeData`
+  - [ ] `LF_FreeData` 在 `LF_Shutdown` 之前调用
+  - [ ] 不在 `LF_PrepareDone` 之前创建永久句柄（除非能接受泄漏）
+- **相关坑**：LF-DATA-001、LF-DATA-006、LF-CLEAN-001
+
 ---
 
 ## 7.4 网络准备层（LF-NET-*）
@@ -971,6 +1254,18 @@ LF_Set_Network_Event(nil, nil);
 - **根因**：
   `lingofuse_import.pas` `LF_PrepareDone`：
   > "Blocks until the framework is initialised."
+  
+  `Z.LingoFuse_Export.pas` `LF_PrepareDone` 实现：
+  ```pascal
+  tk := GetTimeTick() + if_(Wait_Connection_Timeout < 500, uint64(5000), Wait_Connection_Timeout) + 1000;
+  while Init_Running do
+    begin
+      Boot_Thread_Sync_Tool.Check_Synchronize(10);
+      if GetTimeTick() > tk then break;
+    end;
+  Result := if_(Init_Successed, 1, 0);
+  ```
+  **注意**：外层超时 `max(Wait_Connection_Timeout, 5000) + 1000` 毫秒。
 - **正确做法**（部署模式）：
   ```pascal
   LF_SetOptionEx('Wait_Ready', 'False');           // 不阻塞等待
@@ -980,11 +1275,11 @@ LF_Set_Network_Event(nil, nil);
 - **验证清单**：
   - [ ] 服务端未启动时，`LF_PrepareDone` 返回时间 < 1 秒（部署模式）
   - [ ] 或：`LF_PrepareDone` 后 `LF_CheckAppEx` 返回 1
-- **相关坑**：LF-NET-004、LF-CHK-001
+- **相关坑**：LF-NET-004、LF-NET-007、LF-CHK-001
 
 ### LF-NET-003：`LF_PrepareDone` 在同一进程内只有第一次返回 1
 
-- **证据等级**：🟡 仅文档转录（来自 `LingoFuse_LLM_Pitfalls_For_AI.md` P7-3）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_PrepareDone` 实现 + `Z.LingoFuse.md` §2.6）
 - **影响版本**：未知（v3.0+ 至少）
 - **触发条件**：同一进程内 `LF_PrepareDone` 被多次调用
 - **症状**：
@@ -993,7 +1288,11 @@ LF_Set_Network_Event(nil, nil);
   - 依赖"第二次返回 1"的逻辑永久失败
 - **根因**：
   - `LF_PrepareDone` 内部启动模拟主线程
-  - **主线程一旦启动，后续调用检测到已启动状态 → 返回 0**
+  - **主线程一旦启动，后续调用检测到 `Simulated_Main_Thread_Running = True` 时立即返回 0**
+  ```pascal
+  if Simulated_Main_Thread_Running then
+      exit;   // Result 保持 0
+  ```
 - **实战场景**（LTB 的 `Server.start()` 与 `language_middleware._connect()` 竞争）：
   - `Server.start()` 内部先调 `LF_PrepareDone()` → 主线程启动
   - `language_middleware._connect()` 后调 `LF_PrepareDone()` → 返回 0 → 连接失败
@@ -1033,7 +1332,7 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 服务端延迟启动 → 客户端能自动等到
 - **相关坑**：LF-NET-002、LF-CHK-001
 
-### LF-NET-005：网络事件回调在后台 TCompute 工作线程执行（v2.0 新增）
+### LF-NET-005：网络事件回调在后台 TCompute 工作线程执行
 
 - **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` 类型注释 + `Z.Net.C4.LingoFuse.pas` `Do_LF_Network_Connect_Th___` 实现）
 - **影响版本**：v3.0+
@@ -1051,6 +1350,8 @@ LF_Set_Network_Event(nil, nil);
   TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Th___)
       ↓  ← 这里派发到后台 TCompute 工作线程
   On_Network_Connect_Event(thSender.UserData)   ← 用户回调
+      ↓
+  TLF_String.FreeUTF8AnsiChar(thSender.UserData)
   ```
   回调**既不是调用线程，也不是主线程**——是 TCompute 工作线程。
 - **最小复现**：
@@ -1079,7 +1380,7 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 连续触发（重连）不崩溃
 - **相关坑**：LF-NET-006、LF-CB-004
 
-### LF-NET-006：网络事件回调的 `addr_` 在回调返回后立即失效（v2.0 新增）
+### LF-NET-006：网络事件回调的 `addr_` 在回调返回后立即失效
 
 - **证据等级**：🟢 已核实源码（`Z.Net.C4.LingoFuse.pas` `Do_LF_Network_Connect_Th___` 实现）
 - **影响版本**：v3.0+
@@ -1126,19 +1427,58 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 若需异步处理，先复制为 `string` / `TBytes`
 - **相关坑**：LF-NET-005、LF-APP-004
 
+### LF-NET-007：`LF_PrepareDone` 超时后仍返回 1（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_PrepareDone` 实现 + `Simulated_Main_Thread` 实现）
+- **影响版本**：所有版本
+- **触发条件**：`Wait_Connection_ReadyOk=True`，但网络慢或目标服务未启动
+- **症状**：
+  - `LF_PrepareDone` 阻塞 `Wait_Connection_Timeout` 毫秒后返回 **1**（成功）
+  - 但**实际上并非所有客户端都就绪**
+  - 后续调用该客户端相关 API 会失败
+- **根因**：`LF_PrepareDone` 返回值是 `if_(Init_Successed, 1, 0)`。而 `Init_Successed` 只在两种情况下为 False：
+  - `C40_Extract_CmdLine` 直接失败
+  - 或 `Prepare_Commands.Count = 0` 时显式为 True
+  
+  如果只是**客户端连接超时**，`Simulated_Main_Thread` 会在 `repeat ... until` 循环中跳出，然后 `Init_Successed := Online_Num >= Prepare_Cli_Num` 仍为 False，但 `LF_PrepareDone` 的外层等待循环是 `while Init_Running do`——`Init_Running` 在 `Simulated_Main_Thread` 完成后才置为 False。所以**如果主线程在超时窗口内完成了启动**（无论成功或超时），`LF_PrepareDone` 都会返回 `Init_Successed` 的值，而**不是**返回 0。
+- **正确做法**：
+  - **不要仅依赖 `LF_PrepareDone` 返回值**——它反映的是"框架启动成功"，不是"所有客户端就绪"
+  - 用 `LF_CheckAppEx` / `LF_CheckApiEx` 单独验证关键 App
+  - 生产环境建议配置：
+    ```pascal
+    LF_SetOptionEx('Wait_Ready', 'False');           // 不阻塞启动
+    LF_SetOptionEx('Wait_Connection_Timeout', '10000');
+    if LF_PrepareDone = 1 then
+      if not WaitForApp('CriticalApp', 60000) then
+        // 关键 App 未就绪 → 记录告警或重试
+    ```
+- **验证清单**：
+  - [ ] 服务端未启动时 `LF_PrepareDone` 仍返回 1（已知行为）
+  - [ ] 后续 `LF_CheckAppEx` 确认为 False
+  - [ ] 有独立的 `WaitForApp` 重试逻辑
+- **相关坑**：LF-NET-002、LF-NET-004、LF-CHK-001
+
 ---
 
 ## 7.5 远程调用层（LF-CALL-*）
 
 ### LF-CALL-001：`LF_Call` 超时返回大小为 0 的句柄（不是 nil）
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` `LF_Call` 注释）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` `LF_Call` 注释 + `Z.LingoFuse_Export.pas` `LF_Call` 实现）
 - **影响版本**：所有版本
 - **触发条件**：调用超时或目标 App 未注册
 - **症状**：调用者用 `if Result <> nil then ...` 判断失败，**判断失效**
 - **根因**：
   `lingofuse_import.pas`：
   > "On timeout, an empty result handle is returned (size 0). Always check the result size with LF_GetSize to detect timeouts."
+  
+  `Z.LingoFuse_Export.pas` 中 `LF_Call` 结尾：
+  ```pascal
+  if Output = nil then
+      Output := TMem64.Create;
+  Result := TLF_Data.New_Result_From(Output, True);
+  ```
+  **永远返回非 nil 句柄**。
 - **最小复现**：
   ```pascal
   Res := LF_CallEx('Calc', Data, 1000);
@@ -1161,7 +1501,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-CALL-002：`LF_Notify` 不保证送达，`LF_Sequenced_Notify` 才保证顺序
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档 + `Z.LingoFuse_Export.pas` 注释）
 - **影响版本**：所有版本
 - **触发条件**：用 `LF_Notify` 传输对顺序敏感的数据
 - **症状**：大数据分块到达顺序错乱
@@ -1182,12 +1522,14 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-SEQ-001：序列化通知线程空闲 5 分钟后自动终止
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §1.9）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Notify_Sequence_Thread.Do_Run_Th` 实现）
 - **影响版本**：所有版本
 - **触发条件**：某 `(App, API)` 对 5 分钟无 `Sequenced_Notify`
 - **症状**：下一次调用时有明显启动延迟（线程重建）
 - **根因**：`TLF_Notify_Sequence_Thread.Do_Run_Th`：
   > "若 **超过 5 分钟空闲**：`Activted := False`（**自动终止**）。"
+  
+  **注意**：这 5 分钟是**空闲超时**，不是回收时间。线程退出后会通过 `DelayFreeObj(5.0, self)` **延迟 5 秒释放**，避免 TCompute 的 UAF。
 - **正确做法**：
   - 接受这一点（设计行为）
   - 若延迟敏感：改用 `LF_Notify`（可能乱序）
@@ -1199,7 +1541,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-SEQ-002：`LF_Sequenced_Notify` 的 FIFO 保证仅限同一 `(App, API)` 对
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §1.8）
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Notify_Sequence_Thread_Pool` 实现）
 - **影响版本**：所有版本
 - **触发条件**：跨不同 `(App, API)` 对期望顺序
 - **症状**：跨 API 的消息可能乱序
@@ -1221,7 +1563,7 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-CHK-001：`LF_CheckApp` / `LF_CheckApi` 基于缓存，延迟约 3 秒
 
-- **证据等级**：🟢 已核实源码（`Z.LingoFuse.md` §2.7 全局变量 + `lingofuse_import.pas` 注释）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 注释 + `Z.LingoFuse_Export.pas` 全局查找实现）
 - **影响版本**：所有版本
 - **触发条件**：刚注册的 App/API 立即调用 `LF_CheckApp` / `LF_CheckApi`
 - **症状**：
@@ -1253,13 +1595,12 @@ LF_Set_Network_Event(nil, nil);
 
 ### LF-OPT-001：`LF_SetOption` 未知选项静默忽略
 
-- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` `LF_SetOption` 注释）
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` `LF_SetOption` 注释 + `Z.LingoFuse_Export.pas` 实现）
 - **影响版本**：所有版本
 - **触发条件**：拼错选项名（大小写敏感）
 - **症状**：设置无效果，且**无任何报错**
 - **根因**：
-  `lingofuse_import.pas`：
-  > "**Unknown options are silently ignored.**"
+  `Z.LingoFuse_Export.pas` 中 `LF_SetOption` 实现是一串 `if opt.Same(...) then ... else if ...`，**最后的 else 分支缺失**——未匹配的选项就是静默返回。
 - **正确做法**：
   - 严格按官方列表拼写
   - 使用别名（如 `Wait_Ready` 是 `Wait_Connection_ReadyOk` 的别名）
@@ -1283,6 +1624,41 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 重启后重新应用所有选项
 - **相关坑**：LF-OPT-001
 
+### LF-OPT-003：`Overlap_Connection` 的完整语义与推荐配置（v3.0 新增）
+
+- **证据等级**：🟢 已核实源码（`lingofuse_import.pas` 头文档 + `Z.LingoFuse_Export.pas` `LF_PrepareClient` 实现）
+- **影响版本**：所有版本
+- **默认值**：`False`
+- **三种典型配置**：
+
+  | 场景 | 推荐值 | 理由 |
+  |------|:------:|------|
+  | 单 App per 地址 | `False` | 节省资源，一个隧道足够 |
+  | 多 App per 地址 | `True` | 每个 App 需要独立隧道 |
+  | 动态 Client + BindApp | `False` + 后调 `LF_BindApp` | 一个空隧道 + 事后绑定 |
+
+- **常见误解**：
+  - **误解 1**：认为 `Overlap_Connection=True` 一定更好——**错**。每个隧道都有 TCP/IPC 资源开销（socket、缓冲区、线程）。
+  - **误解 2**：认为默认值就是"最安全"——**不完全**。默认值 `False` 在多 App 场景下**静默忽略**第二个 App，极易踩坑。
+  - **误解 3**：认为 `Overlap_Connection` 可以运行时切换——**技术上可以**（`LF_SetOption` 动态生效），但**已创建的隧道不会重排**。切换只影响**后续**的 `LF_PrepareClient` 调用。
+- **推荐决策流程**：
+
+  ```mermaid
+  flowchart TD
+      A["需要为多个 App 准备客户端"] --> B{"同一物理地址？"}
+      B -- "否" --> C["默认配置即可<br/>每个地址一个隧道"]
+      B -- "是" --> D["设置 Overlap_Connection=True"]
+      D --> E["每个 LF_PrepareClient<br/>创建独立隧道"]
+      B -- "动态决定" --> F["默认配置 + LF_BindApp"]
+      F --> G["先建立空隧道<br/>后用 BindApp 绑定"]
+  ```
+
+- **验证清单**：
+  - [ ] 多 App 场景显式设置 `Overlap_Connection=True`
+  - [ ] 或使用 `LF_BindApp` 事后绑定
+  - [ ] `LF_CheckAppEx` 对所有 App 都返回 1
+- **相关坑**：LF-APP-005、LF-APP-006、LF-NET-001
+
 ---
 
 ## 7.9 清理与生命周期（LF-CLEAN-*）
@@ -1301,6 +1677,8 @@ LF_Set_Network_Event(nil, nil);
   > 1. LF_ExitMainThread
   > 2. LF_FreeApp(app)
   > 3. LF_Shutdown"
+  
+  **为什么不能先 Shutdown**：`LF_Shutdown` 内部会 `LF_App_Pool.Clear`，把所有 `TLF_App` 对象销毁。此后调用 `LF_FreeApp(app)` 会访问已销毁的对象。
 - **最小复现**（错误顺序）：
   ```pascal
   // ❌ 错误
@@ -1319,7 +1697,7 @@ LF_Set_Network_Event(nil, nil);
   - [ ] 清理顺序严格按 `ExitMainThread` → `FreeApp` → `Shutdown`
   - [ ] 程序正常退出无崩溃
   - [ ] 重启无 `address in use`
-- **相关坑**：LF-CLEAN-002、LF-APP-002
+- **相关坑**：LF-CLEAN-002、LF-APP-002、LF-APP-007
 
 ### LF-CLEAN-002：`LF_Shutdown` 后可以重新初始化
 
@@ -1332,7 +1710,7 @@ LF_Set_Network_Event(nil, nil);
   > "LF_PrepareDone, LF_ExitMainThread, and LF_Shutdown are not one-shot. You can call LF_PrepareDone again after a shutdown to restart the framework."
 - **注意**：
   - 需要先 `LF_ResetPrepare`
-  - 且注意 LF-NET-003（`PrepareDone` 只有第一次返回 1 的约束）
+  - 且注意 LF-NET-003（`PrepareDone` 只有第一次返回 1 的约束）——`LF_Shutdown` 会重置这个状态
 - **验证清单**：
   - [ ] 重启后 `LF_PrepareDone` 返回 1
   - [ ] 重启后原 App 需重新创建
@@ -1370,7 +1748,7 @@ LF_Set_Network_Event(nil, nil);
 - **影响版本**：所有版本
 - **说明**：
   `lingofuse_import.pas`：
-  > "All functions exported by this unit are **fully thread‑safe**. You may call them from any thread concurrently without external locking."
+  > "All functions exported by this unit are **fully thread-safe**. You may call them from any thread concurrently without external locking."
 - **例外**：
   - **同一个数据句柄的并发写**必须外部同步
   - 状态日志辅助（`LF_GetStatus`）返回静态缓冲，非完全线程安全
@@ -1531,7 +1909,7 @@ LF_Set_Network_Event(nil, nil);
 
 ---
 
-## 7.13 JSON 使用层（LF-JSON-*）— v2.0 新增
+## 7.13 JSON 使用层（LF-JSON-*）
 
 > **本节来源**：从 `LingoFuse_LLM_Pitfalls_For_AI.md` §12（P10 系列）完整合并。
 >
@@ -1762,6 +2140,308 @@ LF_Set_Network_Event(nil, nil);
 
 ---
 
+## 7.14 模拟主线程与 C4 进度循环（LF-MAIN-*）
+
+> **v3.0 新增子系统**。模拟主线程是 LingoFuse 框架的"心脏"，它驱动网络 I/O、超时处理、数据句柄回收、序列化通知线程池等所有后台任务。理解它是理解整个框架的关键。
+
+### LF-MAIN-001：模拟主线程每进程只能启动一次
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_PrepareDone` 实现 + `Z.LingoFuse.md` §2.6）
+- **影响版本**：所有版本
+- **触发条件**：同一进程内多次调用 `LF_PrepareDone`
+- **症状**：
+  - 第一次返回 1（成功）
+  - 第二次及以后立即返回 0（不重新启动）
+- **根因**：
+  ```pascal
+  function LF_PrepareDone: Integer;
+  begin
+    Result := 0;
+    if Simulated_Main_Thread_Running then
+        exit;   // 已运行 → 立即返回 0
+    ...
+  end;
+  ```
+  这是**有意的保护**——防止重复启动模拟主线程导致双份 C4 进度循环、双份网络监听、双份数据句柄扫描。
+- **触发场景**：
+  - 多个模块（如 `Server.start()` 和 `language_middleware._connect()`）各自尝试启动
+  - 单例模式下重复初始化
+- **正确做法**：
+  - **整个进程只调用一次 `LF_PrepareDone`**
+  - 若需要重新初始化：`LF_Shutdown` → `LF_ResetPrepare` → `LF_PrepareDone`
+- **验证清单**：
+  - [ ] 全代码库 grep `LF_PrepareDone`，确认只有一处启动点
+  - [ ] 多处调用点有明确的"先到先启动"约定
+- **相关坑**：LF-NET-003、LF-CLEAN-002
+
+### LF-MAIN-002：模拟主线程驱动的所有后台任务
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `Simulated_Main_Thread` 实现）
+- **影响版本**：所有版本
+- **背景**：模拟主线程的 `while` 循环里做了以下事：
+  ```pascal
+  while Simulated_Main_Thread_Running do
+    begin
+      C40Progress(if_(LF_RunningCount.V > 0, 0, 10));   // ① C4 网络进度
+      try
+          LF_DataPool.Progress();                        // ② 数据句柄回收扫描
+      except
+      end;
+    end;
+  ```
+  **只有这两个**——没有 `LF_SyncTool.Check_Synchronize`！
+- **重要推论**：
+  - **同步回调（`RegisterSyncCall_M` / `RegisterSyncNotify_M`）不是由模拟主线程直接驱动的**，而是通过 C4 的 `C40Progress` 内部的用户同步钩子（`OnCheckThreadSynchronize`）间接触发的。
+  - 如果自定义主循环，需要**同时**：
+    1. 定期调用 `LF_Sync`（处理同步回调）
+    2. 定期调用 `C40Progress`（处理网络）
+- **主线程负责的任务清单**：
+  | 任务 | 驱动者 |
+  |------|--------|
+  | C4 网络收发 | `C40Progress` |
+  | 定时器回调（`Subscribe_Timer_*`）| `C40Progress` |
+  | 数据句柄空闲回收 | `LF_DataPool.Progress` |
+  | 数据句柄扫描间隔（5 秒）| `LF_DataPool.Progress` 内部判断 |
+  | 序列化通知线程管理 | 独立 TCompute 工作线程 |
+  | 同步回调执行 | C4 同步钩子 |
+- **验证清单**：
+  - [ ] 自定义主循环必须同时调用 `LF_Sync` 和 `C40Progress`
+  - [ ] 使用 `LF_PrepareDone` 时无需手动驱动
+- **相关坑**：LF-CB-005、LF-MAIN-001
+
+### LF-MAIN-003：`LF_ExitMainThread` 与资源释放的关系
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Export.pas` `LF_ExitMainThread` 实现 + `Simulated_Main_Thread` 退出代码）
+- **影响版本**：所有版本
+- **触发条件**：调用 `LF_ExitMainThread` 后
+- **语义**：
+  ```pascal
+  procedure LF_ExitMainThread;
+  begin
+    Simulated_Main_Thread_Running := False;
+    while Simulator_Main_Thread_Activted do
+        Boot_Thread_Sync_Tool.Check_Synchronize(10);
+  end;
+  ```
+  - 设置标志 → 主循环退出
+  - **等待主线程完全退出**（`Simulator_Main_Thread_Activted` 变 False）
+- **主线程退出前的清理**（`Simulated_Main_Thread` 末尾）：
+  1. `C40Clean`（清理 C4 状态）
+  2. `LF_Notify_Sequence_Thread_Pool.Stop`（停止所有顺序通知线程）
+  3. `LF_DataPool.Free_All_Hnd`（释放所有数据句柄）
+  4. `LF_DataMemory.Free_All_PLF_Data_Memory`（清空二级内存池）
+  5. 打印 `'LingoFuse Main Thread Exit'`
+  6. `Check_Soft_Thread_Synchronize(0)`（处理残留同步）
+- **重要推论**：
+  - `LF_ExitMainThread` 会**清空所有数据句柄**——包括你的 `LF_CreateData_Permanent` 创建的永久句柄！
+  - `Free_All_Hnd` 内部**跳过 `calling___ > 0` 的句柄**，但如果回调正在进行，`LF_ExitMainThread` 会阻塞直到回调完成。
+- **正确做法**：
+  - 按 LF-CLEAN-001 的顺序：`ExitMainThread` → `FreeApp` → `Shutdown`
+  - **不要在 `LF_ExitMainThread` 之后使用任何数据句柄**
+- **验证清单**：
+  - [ ] `LF_ExitMainThread` 后不再持有数据句柄
+  - [ ] 清理顺序正确
+- **相关坑**：LF-CLEAN-001、LF-MAIN-001
+
+### LF-MAIN-004：`LF_DataPool.Progress` 的三路分支语义
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_DataPool.Progress` 实现）
+- **影响版本**：v3.09+
+- **完整逻辑**：
+  ```
+  每 5 秒（Last_Progress_Time__ 判断）扫描一次：
+  for each handle in LF_DataPool:
+    if handle.updated___ or handle.calling___ > 0:
+       handle.time___ := now
+       handle.updated___ := False
+    else if handle.deleted___:
+       加入"用户主动释放"列表 L
+       标记回收（Push_To_Recycle_Pool）
+    else if now - handle.time___ > 10 分钟:
+       加入"超时释放"列表 timeout_data
+       标记回收（Push_To_Recycle_Pool）
+
+  释放 L 中所有句柄（Free_Data___）
+  如果 timeout_data 非空：
+     打印 hint 日志（句柄数、若少于 3 条则逐条打印 Data_Info）
+     逐条 Free_Data___（推回 LF_DataMemory）
+  ```
+- **关键观察**：
+  - **三路判断顺序不能打乱**——`updated/calling` 优先于 `deleted` 优先于 `timeout`
+  - `updated/calling` 的句柄**只刷新时间戳，不释放**
+  - 释放发生在池外（释放锁之后），避免用户回调死锁
+- **用户需要知道的**：
+  - `LF_FreeData` **不立即释放**（自动回收句柄），只是标记 `deleted___`
+  - 实际释放在下一次扫描——**最多延迟 5 秒**
+  - 想立即释放 → 用 `LF_CreateData_Permanent`
+- **验证清单**：
+  - [ ] 不依赖 `LF_FreeData` 立即释放内存
+  - [ ] 需要立即释放时用 `LF_CreateData_Permanent`
+- **相关坑**：LF-DATA-001、LF-DATA-007、LF-DATA-008
+
+---
+
+## 7.15 内存与对象生命周期详解（LF-MEM-*）
+
+> **v3.0 新增子系统**。这一节系统梳理 LingoFuse 的内存管理机制。
+
+### LF-MEM-001：三层内存池架构
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` 中 `TLF_DataMemory`、`TLF_DataPool`、`TLF_App_Pool` 实现）
+- **影响版本**：v3.09+
+- **三层结构**：
+
+  ```mermaid
+  flowchart TD
+      L1["第 1 层：用户视角<br/>TDataHnd 句柄"]
+      L2["第 2 层：数据句柄池<br/>TLF_DataPool<br/>（自动回收扫描）"]
+      L3["第 3 层：二级内存池<br/>TLF_DataMemory<br/>（record 复用）"]
+
+      L1 -->|"LF_CreateData"| L2
+      L2 -->|"LF_FreeData<br/>标记 deleted___"| L3
+      L2 -.->|"10 分钟超时"| L3
+      L3 -->|"Get_New_PLF_Data"| L2
+      L3 -->|"Free_All_PLF_Data_Memory<br/>单元终结"| X["真正 Dispose"]
+
+      style L1 fill:#e8f4ff,stroke:#444
+      style L2 fill:#fff7e6,stroke:#444
+      style L3 fill:#e8ffe8,stroke:#444
+  ```
+
+- **每层的职责**：
+  | 层 | 名称 | 职责 |
+  |:--:|------|------|
+  | 1 | 用户句柄 | 用户持有的 `TDataHnd`，不透明的指针 |
+  | 2 | 数据句柄池 | 跟踪所有活跃句柄；扫描并回收空闲/删除的 |
+  | 3 | 二级内存池 | 缓存已回收的 `TLF_Data` record，减少 `New`/`Dispose` |
+- **对用户的影响**：
+  - **完全透明**——你只需用 `LF_CreateData` / `LF_FreeData`。
+  - 三层最终都会在单元终结时释放。
+  - 生命周期内，池的大小是**受峰值句柄数限制**的，不会无界增长。
+- **验证清单**：
+  - [ ] 不需要额外操作
+  - [ ] 长期运行内存峰值稳定
+- **相关坑**：LF-DATA-006、LF-MEM-002
+
+### LF-MEM-002：`TLF_Data` 是 record，不是 class
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Data = record` 定义）
+- **影响版本**：v3.09+
+- **关键差异**：
+
+  | 维度 | record | class |
+  |------|:------:|:-----:|
+  | 分配方式 | `New` / `Dispose` | `Create` / `Free` |
+  | 内存位置 | 堆（由 `New` 分配） | 堆 |
+  | 拷贝语义 | 值拷贝（默认） | 引用拷贝 |
+  | 是否可继承 | 否 | 是 |
+  | 指针类型 | `PLF_Data = ^TLF_Data` | — |
+
+- **为什么这样设计**：
+  - `TLF_Data` 的字段较少且固定，用 record 可以减少一层指针跳转
+  - `TLF_DataMemory` 二级内存池直接复用 record 的内存块，避免反复 `New`/`Dispose`
+- **对用户的影响**：
+  - **完全透明**——C ABI 层用 `TDataHnd___ = Pointer` 抽象，用户看不到 record 细节
+  - **不要直接操作 `TLF_Data` 内部字段**——即使你在 Pascal 层能看到
+- **验证清单**：
+  - [ ] 不直接引用 `TLF_Data` 类型（除 `lingofuse_import` 外）
+  - [ ] 用 `LF_*` 函数访问数据
+- **相关坑**：LF-MEM-001
+
+### LF-MEM-003：`TLF_App` 的两阶段析构
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_App.FakeFree` / `Destroy` + `Z.LingoFuse_Export.pas` `LF_FreeApp` 实现）
+- **影响版本**：所有版本
+- **两阶段**：
+
+  ```mermaid
+  stateDiagram-v2
+      [*] --> Active: TLF_App.Create
+      Active --> Detached: LF_FreeApp
+      Note right of Detached: 已从客户端解绑<br/>顺序通知线程已停止<br/>定时器已移除<br/>仍在 LF_App_Pool
+      Detached --> Destroyed: LF_Shutdown / LF_App_Pool.Clear
+      Destroyed --> [*]: DisposeObjectAndNil
+  ```
+
+- **两个阶段的职责**：
+  | 阶段 | 触发者 | 做的事 |
+  |:----:|:------:|--------|
+  | 1 | `LF_FreeApp` | 解绑客户端 + 停顺序通知线程 + 移除定时器 |
+  | 2 | `LF_Shutdown` | `LF_App_Pool.Clear` → `DisposeObjectAndNil(Data)` |
+- **为什么这样设计**：
+  - 防止网络广播仍在引用 App 数据时出现悬空指针
+  - 提供统一的释放点（`LF_Shutdown`）
+- **对用户的影响**：
+  - **`LF_FreeApp` 后句柄失效**——不要再注册 API 或调用
+  - 想彻底回收内存 → `LF_Shutdown` 后重启
+- **验证清单**：
+  - [ ] `LF_FreeApp` 后不再使用句柄
+  - [ ] 长生命周期服务用 `LF_Shutdown` 清理
+- **相关坑**：LF-APP-002、LF-CLEAN-001
+
+### LF-MEM-004：`TLF_Notify_Sequence_Thread` 的延迟释放
+
+- **证据等级**：🟢 已核实源码（`Z.LingoFuse_Core.pas` `TLF_Notify_Sequence_Thread.Do_Run_Th` 末尾）
+- **影响版本**：v3.09+
+- **机制**：顺序通知线程退出时，**不立即 `Free`**，而是 `DelayFreeObj(5.0, self)`：
+  ```pascal
+  // Do_Run_Th 末尾
+  if (Internal_Queue_Data___ <> nil) and (Internal_Queue_Pool___ <> nil) then
+    begin
+      Internal_Queue_Pool___.Lock;
+      try
+        Internal_Queue_Pool___.Remove(Internal_Queue_Data___);
+      finally
+        Internal_Queue_Pool___.UnLock;
+      end;
+    end;
+
+  // Schedule self-release after a 5-second grace period so that TCompute
+  // can safely write back the IsRunning / IsExit flags before the object
+  // is destroyed.
+  DelayFreeObj(5.0, self);
+  ```
+- **为什么需要延迟**：
+  - `TCompute` 线程在主函数返回后，还会写 `IsRunning := False` 和 `IsExit := True`
+  - 如果 `Do_Run_Th` 立即 `Free(self)` → 写入已释放内存 → UAF
+  - `DelayFreeObj(5.0, self)` 给 TCompute 5 秒窗口完成所有写操作
+- **这是一个修复**：v4 版本中曾是 `DisposeObject(self)`（立即释放），导致 UAF。v3.09 改为 `DelayFreeObj`。
+- **对用户的影响**：
+  - **完全透明**
+  - 但意味着**顺序通知线程的清理有最多 5 秒延迟**
+- **验证清单**：
+  - [ ] 不依赖顺序通知线程立即释放
+  - [ ] 高频创建/销毁 App 时观察线程/内存是否稳定
+- **相关坑**：LF-SEQ-001、LF-MEM-003
+
+### LF-MEM-005：内存泄漏排查清单
+
+- **证据等级**：🟢 已核实源码（综合自 `Z.LingoFuse_Core.pas` + `Z.LingoFuse_Export.pas`）
+- **影响版本**：所有版本
+- **常见泄漏源**（按频率排序）：
+
+  | # | 泄漏源 | 检查方法 | 修复 |
+  |:-:|--------|---------|------|
+  | 1 | 未 `LF_FreeData` 数据句柄 | 长期运行内存增长 | 用 `try..finally` 保证释放 |
+  | 2 | 未 `LF_FreeApp` 应用句柄 | `LF_App_Pool` 增长 | 按清理顺序释放 |
+  | 3 | `LF_CreateData_Permanent` 未释放 | 显式查找 | 显式 `LF_FreeData` |
+  | 4 | DLL 未调用 `LF_Shutdown` | DLL 卸载后仍占内存 | 加卸载钩子 |
+  | 5 | 顺序通知线程未退出 | 检查 TCompute 线程数 | 空闲 5 分钟后自动退出，无需处理 |
+  | 6 | 句柄池中的 record 未释放 | 检查 `LF_DataMemory` 池大小 | 单元终结时自动释放，无需处理 |
+  | 7 | 回调闭包捕获了大对象 | 检查匿名函数 | 使用弱引用或显式清理 |
+
+- **排查工具**：
+  - `LF_GetStatus` / `LF_GetStatusCount`：查看内部日志
+  - 定期打印 `LF_CheckMainThread` / `LF_GetStatusCount` 监控运行时状态
+  - 内存分析工具（如 FastMM4 for Delphi，heaptrc for FPC）
+- **验证清单**：
+  - [ ] 长期运行（24 小时）内存稳定
+  - [ ] 压测后释放所有句柄，内存回到基线
+  - [ ] DLL 卸载后宿主程序无残留线程
+- **相关坑**：LF-DATA-001、LF-APP-002、LF-CLEAN-003
+
+---
+
 # 第 8–11 章：对比、附录
 
 ## 8. 与 Python 绑定的范式对比
@@ -1769,6 +2449,7 @@ LF_Set_Network_Event(nil, nil);
 | 功能 | Pascal | Python | 说明 |
 |------|--------|--------|------|
 | 创建数据句柄 | `LF_CreateDataEx('api')` | `DataHandle('api')` | Python 构造器自动管理释放 |
+| 创建永久句柄 | `LF_CreateData_PermanentEx('api')` | 无对应 | Python 层未暴露（截至 v3.09） |
 | 注册 Call | `LF_RegisterCall_M(app, 'add', ..., OnCall)` | `@app.expose('add')` | Python 装饰器自动适配 |
 | 注册 Notify | `LF_RegisterNotify_M(...)` | `@app.expose('add', notify=True)` | 同上 |
 | 生成唯一名称 | `LF_Generate_AppNameEx` | `generate_app_name()` | 均需在 PrepareDone 后调用 |
@@ -1776,7 +2457,8 @@ LF_Set_Network_Event(nil, nil);
 | Overlap_Connection | `LF_SetOptionEx('Overlap_Connection', 'True')` | `set_option('Overlap_Connection', 'True')` | 等价 |
 | 等待就绪 | `Wait_Connection_ReadyOk` 选项 | `set_option('Wait_Connection_ReadyOk', 'True')` | 等价 |
 | 序列化通知 | `LF_Sequenced_NotifyEx` | `LF_Sequenced_Notify` | 等价 |
-| **网络事件**（v2.0 新增） | `LF_Set_Network_Event(...)` | 无对应 | Python 层未暴露（截至 v3.0） |
+| **网络事件** | `LF_Set_Network_Event(...)` | 无对应 | Python 层未暴露（截至 v3.09） |
+| **同步驱动** | `LF_Sync`（自定义主循环） | 无对应 | Python 用 `LF_PrepareDone` 的进度循环 |
 | 错误处理 | 检查返回值 | 异常（`RegistrationError`, `ConnectionError`） | Python 更激进 |
 | 资源清理 | 显式 `LF_FreeData`, `LF_FreeApp`, `LF_Shutdown` | `with` 语句或显式 `free()` | 均推荐显式 |
 
@@ -1784,13 +2466,15 @@ LF_Set_Network_Event(nil, nil);
 
 | 分类 | 函数名 | 简要说明 |
 |------|--------|----------|
-| **数据句柄** | `LF_CreateData` / `LF_FreeData` | 创建 / 销毁句柄 |
+| **数据句柄** | `LF_CreateData` / `LF_FreeData` | 创建 / 销毁句柄（自动回收） |
+| | `LF_CreateData_Permanent` | 创建永久句柄（不自动回收） |
 | | `LF_GetBuffer` / `LF_WriteBuffer` / `LF_ReadBuffer` | 缓冲区访问 |
 | | `LF_GetPos` / `LF_SetPos` / `LF_GetSize` / `LF_SetSize` | 位置与大小 |
 | | `LF_WriteInt32` / `LF_ReadInt32` 等 | 原子类型 |
-| | `LF_WriteString` / `LF_ReadString` | 字符串 |
+| | `LF_WriteString` / `LF_ReadString` | 字符串（#0 结尾） |
+| | `LF_WriteStringBytes` / `LF_ReadStringBytes` | 原始字节 |
 | **应用** | `LF_CreateApp` / `LF_FreeApp` | 创建 / 分离应用 |
-| | `LF_Generate_AppName` / `LF_Get_AppName` | 名称 |
+| | `LF_Generate_AppName` / `LF_Get_AppName` | 名称（5 秒有效期） |
 | | `LF_BindApp` | 绑定到空闲客户端 |
 | **注册** | `LF_RegisterCall` / `LF_RegisterNotify` | 注册 cdecl 回调 |
 | | `LF_RegisterCall_M` / `LF_RegisterSyncCall_M` | 对象方法回调 |
@@ -1803,14 +2487,14 @@ LF_Set_Network_Event(nil, nil);
 | **选项与状态** | `LF_SetOption` | 设置选项 |
 | | `LF_GetStatusCount` / `LF_GetStatus` / `LF_PostStatus` | 状态 |
 | **查询** | `LF_CheckMainThread` / `LF_CheckApp` / `LF_CheckApi` | 健康检查 |
-| **网络事件**（v2.0 新增） | `LF_Set_Network_Event` | 安装 / 卸载全局网络事件回调 |
+| **网络事件** | `LF_Set_Network_Event` | 安装 / 卸载全局网络事件回调 |
 | **清理** | `LF_Shutdown` | 完全关闭 |
 | **同步** | `LF_Sync` | 主线程同步队列 |
 
 ## 10. 附录 B – 环境变量与编译选项
 
 - **动态库搜索路径**：系统 PATH（Windows）或 LD_LIBRARY_PATH（Linux）
-- **库名**：`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`
+- **库名**：`LingoFuse64.dll` / `LingoFuse32.dll` / `liblingofuse.so` / `liblingofuse.dylib`
 - **Lazarus 编译**：`lazbuild -B project.lpi`
 - **单元搜索路径**：确保 `ZNetV2/source` 在项目搜索路径中
 - **编译指令建议**：`{$CODEPAGE UTF8}`（FPC）确保 `string` 是 UTF-8（见 LF-JSON-002）
@@ -1820,11 +2504,16 @@ LF_Set_Network_Event(nil, nil);
 - `C_Generate_Prefix = '@__generate__@'` – 自动生成名称的前缀
 - 默认端口：9898（TCP）
 - 日志队列大小：1000 条
-- 数据句柄闲置超时：5 分钟
-- 序列化通知线程空闲超时：5 分钟
+- **数据句柄空闲超时：10 分钟**（v3.0 修正）
+- **数据句柄扫描间隔：5 秒**
+- 顺序通知线程空闲超时：5 分钟
+- 顺序通知线程延迟释放：5 秒
 - 广播传播延迟：约 3 秒
 - `Fixed_Sequenced_Time` 默认：20 秒
-- **`LF_Generate_AppName` / `LF_Get_AppName` 返回指针有效时间**：**约 5 秒**（v2.0 强调）
+- `LF_Generate_AppName` / `LF_Get_AppName` 返回指针有效时间：**约 5 秒**
+- `LF_PrepareDone` 初始化超时：`max(Wait_Connection_Timeout, 5000) + 1000` 毫秒
+- `LF_GetStatus` 静态缓冲：64 KB
+- `LF_GetStatus` 消息截断阈值：65534 字节
 
 ---
 
@@ -1867,7 +2556,7 @@ LF_Set_Network_Event(nil, nil);
 | P0-3（回调阻塞） | LF-CB-002 | 都是"回调中禁止阻塞调用" |
 | P2-1（中文编码） | LF-XLANG-002 | 都是"UTF-8 全程贯通" |
 | P4-2（FormClose） | LF-CLEAN-001 | 都是"清理顺序" |
-| P7-3（LTB 预连接） | LF-NET-003 | 都是"PrepareDone 只返回 1 一次" |
+| P7-3（LTB 预连接） | LF-NET-003 / LF-MAIN-001 | 都是"PrepareDone 只返回 1 一次" |
 | **P9 系列（Structured Output）** | **LF-JSON-001 / LF-JSON-002** | **JSON Schema 组装的通用陷阱** |
 | **P10-1（子对象 parse）** | **LF-JSON-001** | **已在 §7.13 完整合并** |
 | **P10-2（AnsiString 中转）** | **LF-JSON-002** | **已在 §7.13 完整合并** |
@@ -1888,48 +2577,58 @@ LF_Set_Network_Event(nil, nil);
 | `no found app("...") api("...")` | LF-APP-003 | client_name 未注册或生成过早 |
 | `LF_PrepareClient returned -1` | LF-NET-001 | 地址重复 |
 | `repeat connection` | LF-NET-001 | 重复地址 |
+| `prepare error: repeat listen` | LF-NET-001 | 重复监听地址 |
 | `LF_PrepareDone failed` | LF-NET-002 | 等待超时 |
-| `LF_PrepareDone returned 0` | LF-NET-003 | 二次调用 |
+| `LF_PrepareDone returned 0` | LF-NET-003 / LF-MAIN-001 | 二次调用 |
+| `LF_BindApp: Main thread is not active` | LF-APP-005 | 主线程未启动 |
+| `LF_BindApp: All clients are already occupied` | LF-APP-005 | 无空闲客户端 |
+| `LF_BindApp returned 0` | LF-APP-005 | 无空闲客户端 |
 | `3029 function header doesn't match` | LF-TYPE-001 | var/out 同签名 |
 | `Can't find unit Z.Core` | 编译配置 | 单元搜索路径未配置 |
 | `PPU version mismatch` | 编译配置 | FPC 版本不一致 |
 | `Queue "..." is already occupied` | 端口占用 | 端点被占用 |
 | `Callback type mismatch` | LF-APP-001 | 缺 cdecl |
-| `LF_BindApp returned 0` | LF-APP-005 | 无空闲客户端 |
 | `use-after-free` / 段错误 | LF-APP-004 / LF-DATA-002 | 指针已释放 |
 | `Timeout` / 大小为 0 的结果 | LF-CALL-001 | 调用超时 |
 | `Module not found: LingoFuse64.dll` | 部署 | 动态库未找到 |
-| **网络事件回调中访问冲突** | **LF-NET-005** | **v2.0 新增：UI 跨线程访问** |
-| **网络事件 `addr_` 变乱码 / 空** | **LF-NET-006** | **v2.0 新增：`addr_` 悬空** |
-| **`unrecognized type json_schema`** | **LF-JSON-001** | **v2.0 新增：JSON Schema 组装错误** |
-| **`options.response_format` 丢失** | **LF-JSON-001** | **v2.0 新增：父树悬空** |
-| **`ToBytes` 访问冲突** | **LF-JSON-001** | **v2.0 新增：父树悬空** |
-| **Schema 里 emoji / 韩文变 `?`** | **LF-JSON-002** | **v2.0 新增：AnsiString 中转** |
-| **CP936 环境下 schema 损坏** | **LF-JSON-002** | **v2.0 新增：系统代码页** |
-| **GBK 回退输出乱码 / 截断** | **LF-JSON-003** | **v2.0 新增：SetLength 单位错** |
+| `hint: Data handle pool "N" handles were idle...` | LF-DATA-001 | 数据句柄自动回收日志 |
+| `started Sequenced notify thread for api "..."` | LF-SEQ-001 | 顺序通知线程启动日志 |
+| `Sequenced notify api "..." thread idle timeout, auto-terminating` | LF-SEQ-001 | 顺序通知线程空闲退出日志 |
+| `LingoFuse Main Thread Begin, LingoFuse-v...` | LF-MAIN-001 | 模拟主线程启动日志 |
+| `LingoFuse Main Thread Exit` | LF-MAIN-003 | 模拟主线程退出日志 |
+| **网络事件回调中访问冲突** | **LF-NET-005** | UI 跨线程访问 |
+| **网络事件 `addr_` 变乱码 / 空** | **LF-NET-006** | `addr_` 悬空 |
+| **`unrecognized type json_schema`** | **LF-JSON-001** | JSON Schema 组装错误 |
+| **`options.response_format` 丢失** | **LF-JSON-001** | 父树悬空 |
+| **`ToBytes` 访问冲突** | **LF-JSON-001** | 父树悬空 |
+| **Schema 里 emoji / 韩文变 `?`** | **LF-JSON-002** | AnsiString 中转 |
+| **CP936 环境下 schema 损坏** | **LF-JSON-002** | 系统代码页 |
+| **GBK 回退输出乱码 / 截断** | **LF-JSON-003** | SetLength 单位错 |
 
 ---
 
 # 附录 B：ID 总览与维护约定
 
-## B.1 当前 ID 总览（v2.0 更新）
+## B.1 当前 ID 总览（v3.0 更新）
 
 | ID 前缀 | 当前条目数 | 说明 |
 |---------|-----------|------|
-| `LF-APP` | 6 | 应用/句柄层 |
+| `LF-APP` | **7** | 应用/句柄层（v3.0 新增 007：shutdown guard） |
 | `LF-CB` | 5 | 回调层 |
-| `LF-DATA` | 5 | 数据句柄层 |
-| `LF-NET` | **6** | 网络准备层（v2.0 新增 2 条：005 / 006） |
+| `LF-DATA` | **8** | 数据句柄层（v3.0 新增 006/007/008） |
+| `LF-NET` | **7** | 网络准备层（v3.0 新增 007：PrepareDone 超时） |
 | `LF-CALL` | 2 | 远程调用层 |
 | `LF-SEQ` | 2 | 序列化通知层 |
 | `LF-CHK` | 1 | 查询与缓存 |
-| `LF-OPT` | 2 | 运行时选项 |
+| `LF-OPT` | **3** | 运行时选项（v3.0 新增 003：Overlap_Connection 完整语义） |
 | `LF-CLEAN` | 3 | 清理与生命周期 |
 | `LF-THREAD` | 2 | 线程模型 |
 | `LF-TYPE` | 2 | 类型与编译 |
 | `LF-XLANG` | 3 | 跨语言数据交换 |
-| **`LF-JSON`** | **3** | **JSON 使用层（v2.0 新增子系统）** |
-| **合计** | **42** | （v1.0 为 37） |
+| `LF-JSON` | 3 | JSON 使用层 |
+| **`LF-MAIN`** | **4** | **模拟主线程（v3.0 新增子系统）** |
+| **`LF-MEM`** | **5** | **内存与生命周期（v3.0 新增子系统）** |
+| **合计** | **57** | （v2.0 为 42，v1.0 为 37） |
 
 ## B.2 维护约定
 
@@ -1944,16 +2643,15 @@ LF_Set_Network_Event(nil, nil);
 7. **反例集**：历史遗留的错误用法可保留，但标注"反例，见 ID-XXX"
 8. **新增子系统**：需要 ≥ 3 条同源坑时才建立独立子系统前缀
 
-## B.3 待补充的坑（TODO，v2.0 更新）
+## B.3 待补充的坑（TODO，v3.0 更新）
 
 以下是当前材料中**未覆盖或覆盖不完整**、需要后续补充的坑：
 
 | 待补充项 | 已知信息 | 需要什么 |
 |---------|---------|---------|
-| `TLF_App.FakeFree` 完整语义 | `Z.LingoFuse.md` 说"仅 Remove_Timer" | 回查源码确认 |
-| `TLF_Data` 的 `bak_input_ / bak_output_` 语义 | `Z.LingoFuse.md` 说"回调前后恢复" | 回查源码确认恢复范围 |
+| `TLF_Data` 的 `bak_input_ / bak_output_` 语义 | `Z.LingoFuse_Core.pas` 中有恢复逻辑 | 回查源码确认恢复范围与副作用 |
 | `Fixed_Sequenced_Time` 精确影响 | 默认 20 秒 | 实测不同值下的行为 |
-| `TLF_DataPool.Progress` 与正在使用的句柄 | 5 分钟回收 | 实测回调长时间持有时是否被回收 |
+| `TLF_DataPool.Progress` 与正在使用的句柄 | `calling___ > 0` 保护 | 实测回调长时间持有时是否被回收 |
 | C4 网络分区的行为 | 未覆盖 | 网络抖动下的恢复逻辑 |
 | 大端平台字节序 | 协议约定小端 | 大端平台实测 |
 | `LF_SetOption` 的密码掩码算法 | `TMT19937.Rand32 mod 2` | 是否需要安全审查 |
@@ -1961,6 +2659,10 @@ LF_Set_Network_Event(nil, nil);
 | **网络事件回调在 `LF_Shutdown` 期间的行为** | 未覆盖 | 实测卸载期间是否仍触发 |
 | **`TZ_JsonObject` 在多线程场景下的安全性** | `Z.Json.md` 说"否" | 实测并补充 ID |
 | **Structured Output 在 Pascal 客户端的完整流程** | 指向 `llm_client_v3.md` | 补充端到端示例 |
+| **`LF_CreateData_Permanent` 在 `LF_PrepareDone` 前创建的精确行为** | 注释说"可能是 no-op" | 实测并补充 ID |
+| **`Simulated_Main_Thread` 中 `C40Progress` 的超时与并发语义** | `LF-MAIN-002` 只覆盖了表面 | 深入 C4 内部 |
+| **`TLF_Notify_Sequence_Thread` 的 `DelayFreeObj` 与 `Kill_App` 竞态** | `LF-MEM-004` 提及 | 实测并补充 ID |
+| **`LF_Shutdown` 多次调用的幂等性** | `LF-CLEAN-001` 提及 | 实测并补充 ID |
 
 ---
 
@@ -1973,9 +2675,10 @@ AI 助手处理 LingoFuse 相关问题时：
 1. **先查本知识库**：用 ID（`LF-XXX-NNN`）或关键词
 2. **网络事件相关**：先查 §4.11 / §6.8 / `LF-NET-005` / `LF-NET-006`
 3. **JSON 相关**：先查 §7.13（`LF-JSON-001 / 002 / 003`），再查 `Z.Json.md`
-4. **未命中本知识库**：查 §12 的 LLM 生态索引，指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
-5. **仍未命中**：查 §7.0 的"诚实的不确定清单"（其实本指南已无独立章节，见各节末尾）
-6. **都无法回答**：明确告知用户"当前材料不足以判断"，并**建议回查源码**
+4. **主线程相关**：先查 §7.14（`LF-MAIN-*`）
+5. **内存相关**：先查 §7.15（`LF-MEM-*`）
+6. **未命中本知识库**：查 §12 的 LLM 生态索引，指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
+7. **都无法回答**：明确告知用户"当前材料不足以判断"，并**建议回查源码**
 
 ## C.2 回答时必带的元信息
 
@@ -1985,18 +2688,15 @@ AI 回答 LingoFuse 问题时，应主动标注：
 - **证据等级**（🟢 / 🟡 / 🔴）
 - **是否命中"不确定清单"**
 
-**示例回答（v2.0）**：
+**示例回答**：
 
-> 根据 **LF-JSON-001（证据等级：🟢 已核实源码）**，`TZ_JsonObject` 是树形结构，`Parae` / `Assign` / `LoadFromStream` / `ParseText` 只能在 **root** 上调用。
+> 根据 **LF-DATA-008（证据等级：🟢 已核实源码）**，`LF_CreateData_Permanent` 创建的永久句柄**不会**被自动回收，你必须负责调用 `LF_FreeData`。
 >
-> 若你在 `joReq.O['options'].O['response_format']` 这样的**子对象**上调用 `ParseText`，会破坏 `joReq` 的底层树，导致：
-> - `options.response_format` 字段丢失
-> - `ToBytes` 时访问冲突
-> - 随机崩溃
+> 特别注意：
+> - `LF_FreeData` 在 `LF_PrepareDone` 之前或 `LF_ExitMainThread` 之后是 **no-op**——此时创建的永久句柄会一直保留到进程退出。
+> - 短生命周期场景**不要**用永久句柄——会失去池的安全网。
 >
-> **正确做法**：在独立 root 对象上解析 → 取紧凑 JSON 字符串 → 用 `TZ_JsonString` 在 Unicode 空间拼接 → 最后 `.Bytes` 转 UTF-8。
->
-> **相关坑**：LF-JSON-002、LF-JSON-003。
+> **相关坑**：LF-DATA-001、LF-DATA-006、LF-CLEAN-001。
 
 ## C.3 禁止行为
 
@@ -2009,6 +2709,8 @@ AI 助手**不应**：
 - ❌ 用本知识库覆盖 LLM 生态文档（那部分应指向原文档）
 - ❌ **在网络事件回调中直接操作 UI**（违反 LF-NET-005）
 - ❌ **在子对象上调用 `ParseText` / `Parae`**（违反 LF-JSON-001）
+- ❌ **依赖数据句柄自动回收**（违反 LF-DATA-001）
+- ❌ **假设 `LF_CreateData_Permanent` 会自动释放**（违反 LF-DATA-008）
 
 ## C.4 结构化输出模板（推荐）
 
@@ -2025,72 +2727,89 @@ AI 助手**不应**：
 
 ---
 
-# 四条铁律
+# 六条铁律
 
-> v2.0 新增第四条铁律。前三条来自 v1.0，与 v2.0 合并后的措辞保持一致。
+> v3.0 从 4 条扩充到 6 条。前 4 条沿用 v2.0，新增第 5、6 条。
 
 **铁律一**：回调必须 `cdecl`，且禁止在回调中调用 `LF_Call` / `LF_Notify` / `LF_LocalCall`。
 → 对应 ID：LF-APP-001、LF-CB-002。
 
-**铁律二**：数据句柄必须显式 `LF_FreeData`，不能用自动回收当保险。
+**铁律二**：数据句柄必须显式 `LF_FreeData`，不能用自动回收当保险。**自动回收是 10 分钟空闲 + 5 秒扫描延迟**。
 → 对应 ID：LF-DATA-001。
 
 **铁律三**：清理顺序必须是 `ExitMainThread` → `FreeApp` → `Shutdown`。
 → 对应 ID：LF-CLEAN-001。
 
-**铁律四（v2.0 新增）**：**`TZ_JsonObject` 是树。`Parae` / `Assign` / `LoadFromStream` / `ParseText` 只能在 root 上调用。JSON 组装中间容器用 `TZ_JsonString`，`.Bytes` 只在最后一步。**
+**铁律四**：`TZ_JsonObject` 是树。`Parae` / `Assign` / `LoadFromStream` / `ParseText` 只能在 root 上调用。JSON 组装中间容器用 `TZ_JsonString`，`.Bytes` 只在最后一步。
 → 对应 ID：LF-JSON-001、LF-JSON-002。
+
+**铁律五（v3.0 新增）**：**`LF_PrepareDone` 每进程只能成功启动一次。多次调用第二次返回 0。`LF_ExitMainThread` 会清空所有数据句柄（包括 permanent）。**
+→ 对应 ID：LF-MAIN-001、LF-MAIN-003、LF-NET-003。
+
+**铁律六（v3.0 新增）**：**`LF_CreateData_Permanent` 创建的句柄不会自动回收，必须手动 `LF_FreeData`。但 `LF_FreeData` 在 `LF_PrepareDone` 前/`LF_ExitMainThread` 后是 no-op——此时创建的永久句柄会一直保留到进程退出。**
+→ 对应 ID：LF-DATA-008、LF-MAIN-003。
 
 **附**：网络事件回调在**后台 TCompute 工作线程**执行，`addr_` 在**回调返回后立即失效**。
 → 对应 ID：LF-NET-005、LF-NET-006。
 
 ---
 
-## 与本版对比：我做了什么，没做什么（v2.0 自我检查）
+## 与本版对比：我做了什么，没做什么（v3.0 自我检查）
 
 **做了**：
 
-- **网络事件 API 完整合并**：
-  - §2 核心概念新增「网络事件」条
-  - §4.11 新增 API 参考子章节
-  - §6.8 新增使用范式
-  - §7.4 新增 `LF-NET-005` / `LF-NET-006`
-  - 附录 A 新增 2 条错误原文
-- **JSON 使用踩坑完整合并**：
-  - §7.13 新增 `LF-JSON-*` 子系统（3 条坑）
-  - 完整移植 P10-1 / P10-2 / P10-3 的症状、根因、修复、审计、验证清单
-  - §12 LLM 生态索引更新 P9 / P10 映射
-- **交叉引用更新**：
-  - §7.11 `LF-TYPE-002` 相关坑加入 `LF-JSON-002`
-  - §7.12 `LF-XLANG-002` 相关坑加入 `LF-JSON-002`
-  - §7.12 `LF-XLANG-001` 相关坑加入 `LF-JSON-001`
-  - §12.2 交叉引用表新增 P9 / P10 系列
-- **四条铁律**：新增第四条（JSON）
-- **ID 总览**：42 条（v1.0 为 37）
-- **TODO 清单**：新增网络事件 / JSON 相关的待补充项
-- **附录 A 错误消息索引**：新增 6 条网络事件 / JSON 相关错误
-- **格式与术语统一**：v1.0 → v2.0 全文档格式复查
+- **关键修正**：
+  - 数据句柄自动回收时间：**5 分钟 → 10 分钟**（全文 6 处）
+  - 数据句柄扫描间隔：明确为 **5 秒**（§2、§4.1、§6.5、§7.3、附录 C）
+  - 顺序通知线程延迟释放（`DelayFreeObj(5.0, self)`）说明（§7.6 `LF-SEQ-001`、§7.15 `LF-MEM-004`）
+  - `LF_PostStatus` 语义：主线程未运行时**仍入队**（§4.7）
+
+- **新增机制**：
+  - `TLF_DataMemory` 二级内存池（§6.9、§7.3 `LF-DATA-006`、§7.15 `LF-MEM-001`）
+  - `Begin_Call` / `End_Call` 与 `calling___` 计数器（§6.10、§7.3 `LF-DATA-007`）
+  - `LF_CreateData_Permanent` 完整语义（§4.1、§6.9、§7.3 `LF-DATA-008`）
+  - `LF_FreeApp` 的 shutdown guard（§7.1 `LF-APP-007`）
+  - `LF_PrepareDone` 超时后仍返回 1（§7.4 `LF-NET-007`）
+  - `Overlap_Connection` 完整语义与推荐配置（§7.8 `LF-OPT-003`）
+
+- **新增子系统**：
+  - §7.14 `LF-MAIN-*`：模拟主线程与 C4 进度循环（4 条）
+  - §7.15 `LF-MEM-*`：内存与对象生命周期（5 条）
+
+- **新增章节**：
+  - §6.9 二级内存池与永久句柄
+  - §6.10 数据句柄的 calling 计数器
+  - §7.14 `LF-MAIN-001` ~ `LF-MAIN-004`
+  - §7.15 `LF-MEM-001` ~ `LF-MEM-005`
+
+- **铁律扩充**：从 4 条到 6 条
+
+- **ID 总览更新**：从 42 条到 57 条
+
+- **错误消息索引**：新增 6 条（`hint: Data handle pool`、`started Sequenced notify thread`、`Sequenced notify ... idle timeout`、`LingoFuse Main Thread Begin`、`LingoFuse Main Thread Exit`、`prepare error: repeat listen`）
+
+- **TODO 清单**：新增 5 条（Permanent 前创建、Simulated_Main_Thread 并发语义、DelayFreeObj 竞态、Shutdown 幂等性等）
 
 **没做（诚实声明）**：
 
-- **我没有**回源码逐条核实——依据是用户提供的 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse.md`、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 文本
+- **我没有**回源码逐条核实——依据是用户提供的 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse_Export.pas`、`Z.LingoFuse_Core.pas`、`Z.Net.C4.LingoFuse.pas`、`LingoFuse.lpr`、`Z.LingoFuse.md`、`Z.Json.md`、`LingoFuse_LLM_Pitfalls_For_AI.md` 文本
 - **我没有**实测每条坑的最小复现——所有"最小复现"都是基于源码逻辑推演，未在真实编译环境下验证
 - **我没有**标注实际行号——因为素材中没有行号信息
 - **我没有**尝试消除 🔴 级别的推测项——`Z.LingoFuse.md` 中的不确定清单被保留
 - **我没有**覆盖 LLM 生态的 P9 系列细节——只做索引，具体内容仍指向 `LingoFuse_LLM_Pitfalls_For_AI.md`
 
-**下一步建议**（若需要 v3.0 真正落地）：
+**下一步建议**（若需要 v4.0 真正落地）：
 
-1. 由能接触到源码的人逐条确认 🟡 和 🔴 的条目（尤其是 `LF-NET-003`）
+1. 由能接触到源码的人逐条确认 🟡 和 🔴 的条目
 2. 每条坑至少在一台真实机器上跑一次最小复现
 3. 补充实际文件名 + 函数名 + （可选）行号
 4. 用 CI 集成回归测试，防止坑回潮
-5. 补充网络事件与 JSON 场景的端到端测试用例
-6. 建立 `LF-JSON-*` 子系统的 `Z.Json.md` 双向引用
+5. 补充网络事件、JSON 场景、主线程、内存池的端到端测试用例
+6. 补充 `LF-MAIN-*` 的 `C40Progress` 内部并发行为
 
 ---
 
-*文档版本：v2.0（Pascal 核心层踩坑知识库 v2.0）*
-*本版核心改进：网络事件 API 完整合并；JSON 使用踩坑完整合并；ID 总览更新为 42 条；四条铁律；交叉引用完整*
-*最后更新：2026-09-18*
+*文档版本：v3.0（Pascal 核心层踩坑知识库 v3.0）*
+*本版核心改进：修正 10 分钟自动回收；新增二级内存池 / calling 计数器 / 永久句柄 / 主线程 / 内存生命周期共 15 条新坑；铁律扩充到 6 条；ID 总览更新为 57 条*
+*最后更新：2026-10-01*
 *维护者：LingoFuse 团队*

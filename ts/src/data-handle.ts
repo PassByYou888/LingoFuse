@@ -7,11 +7,39 @@
 //  dispose(). Provides byte-level, atomic-type, and NUL-framed string
 //  I/O on top of the underlying buffer.
 //
+//  Two kinds of handles:
+//
+//      AUTO-RECYCLED  created by the public constructor
+//          - Backed by LF_CreateData.
+//          - Added to the library's idle pool.
+//          - The pool scans every 5 seconds and frees any handle idle
+//            (no accessor call) for more than 10 minutes.
+//          - dispose() only marks the handle as deleted; the actual
+//            release happens on the next pool scan (at most 5 seconds
+//            later).
+//          - Recommended for the vast majority of use cases.
+//
+//      PERMANENT      created by DataHandle.createPermanent()
+//          - Backed by LF_CreateData_Permanent.
+//          - NOT added to the library's idle pool.
+//          - The automatic idle-timeout reclaimer will NEVER free it,
+//            no matter how long it has been idle.
+//          - dispose() releases it IMMEDIATELY (synchronously).
+//          - Recommended for handles that must survive for the entire
+//            process lifetime (cached request templates, long-lived
+//            scratch buffers, global registries).
+//
+//  Both kinds are released by framework.shutdown() when the process
+//  terminates, and both kinds must be explicitly disposed to avoid
+//  leaks.
+//
 //  Ownership:
-//      owning     created by the public constructor; dispose() calls
-//                 LF_FreeData on the native handle.
-//      borrowing  created by fromRaw(raw, false); dispose() is a no-op;
-//                 the native layer owns the underlying resource.
+//      owning     created by the public constructor or by
+//                 createPermanent(); dispose() calls LF_FreeData on
+//                 the native handle.
+//      borrowing  created by fromRaw(raw, false); dispose() is a
+//                 no-op; the native layer owns the underlying
+//                 resource and releases it when the callback returns.
 //
 //  String contract:
 //      writeString always appends a single trailing NUL byte.
@@ -30,7 +58,12 @@
 import type { TDataHnd } from "./types";
 import type { Binding } from "./binding";
 import { getBinding } from "./binding";
-import { LingoFuseError, LingoFuseIoError, LingoFuseObjectDisposedError, ErrorCode } from "./errors";
+import {
+    LingoFuseError,
+    LingoFuseIoError,
+    LingoFuseObjectDisposedError,
+    ErrorCode,
+} from "./errors";
 
 /** Convert a Koffi int64 result to a plain Number. */
 function toNumber(v: number | bigint): number {
@@ -77,23 +110,35 @@ export class DataHandle {
     #disposed: boolean;
 
     /**
-     * Create a new data handle bound to the given API name. The
-     * underlying buffer starts empty.
+     * Create a new AUTO-RECYCLED data handle bound to the given API
+     * name. The underlying buffer starts empty.
+     *
+     * The handle is added to the library's idle pool. The pool frees
+     * it after 10 minutes of idle time (scanned every 5 seconds).
+     *
+     * The optional `internal` argument is an implementation detail
+     * used by the static factories fromRaw() and createPermanent().
+     * User code must never pass it.
      *
      * @throws {LingoFuseError} When the native library fails to
      *         allocate the handle.
      */
-    public constructor(apiName: string, internal?: { handle: TDataHnd; owned: boolean }) {
+    public constructor(
+        apiName: string,
+        internal?: { handle: TDataHnd; owned: boolean },
+    ) {
         const binding = getBinding();
         this.#binding = binding;
         this.#disposed = false;
 
+        // Internal construction path: wrap an existing native handle.
         if (internal !== undefined) {
             this.#handle = internal.handle;
             this.#owned = internal.owned;
             return;
         }
 
+        // Public construction path: allocate a new auto-recycled handle.
         if (typeof apiName !== "string") {
             throw new TypeError("DataHandle: apiName must be a string.");
         }
@@ -109,9 +154,72 @@ export class DataHandle {
         this.#handle = raw;
     }
 
-    /** Wrap an existing raw handle. For internal use. */
+    /**
+     * Wrap an existing raw handle. For internal use.
+     *
+     * @param raw    Raw pointer value as returned by the native layer.
+     * @param owned  When true, dispose() will call LF_FreeData. When
+     *               false, dispose() is a no-op and the native layer
+     *               retains ownership.
+     */
     public static fromRaw(raw: TDataHnd, owned: boolean): DataHandle {
         return new DataHandle("", { handle: raw, owned: Boolean(owned) });
+    }
+
+    /**
+     * Create a new PERMANENT data handle bound to the given API name.
+     *
+     * The underlying handle is created with LF_CreateData_Permanent.
+     *
+     * Difference from the regular constructor:
+     *   - NOT added to the library's idle pool.
+     *   - The automatic idle-timeout reclaimer will NEVER free it,
+     *     no matter how long it has been idle.
+     *   - On dispose(), LF_FreeData releases it IMMEDIATELY
+     *     (synchronously), rather than marking it for a later pool
+     *     scan.
+     *
+     * When to use:
+     *   - Handles that must survive for the entire lifetime of the
+     *     process, or for an unbounded period (cached request
+     *     templates, long-lived scratch buffers, global registries).
+     *
+     * When NOT to use:
+     *   - Short-lived or one-shot handles. Use the regular constructor
+     *     for those, so the pool can reclaim any handle you forget to
+     *     dispose.
+     *
+     * [PITFALL - NO-OP WINDOW]
+     *   The underlying LF_FreeData is a no-op while the simulated main
+     *   thread is not active (before framework.prepareDone() or after
+     *   framework.exitMainThread()). Permanent handles created in that
+     *   window stay allocated until the process terminates, or until
+     *   framework.shutdown() runs.
+     *
+     * [PITFALL - LIFETIME]
+     *   "Permanent" means "not automatically reclaimed", NOT "never
+     *   released". You are fully responsible for calling dispose().
+     *   Losing the reference leaks the handle for the lifetime of the
+     *   process.
+     *
+     * @throws {TypeError} When apiName is not a string.
+     * @throws {LingoFuseError} When the native library fails to
+     *         allocate the handle.
+     */
+    public static createPermanent(apiName: string): DataHandle {
+        if (typeof apiName !== "string") {
+            throw new TypeError(
+                "DataHandle.createPermanent: apiName must be a string.");
+        }
+        const binding = getBinding();
+        const raw = binding.funcs.LF_CreateData_Permanent(apiName);
+        if (raw === null || raw === undefined) {
+            throw new LingoFuseError(
+                `Failed to create a permanent data handle for API '${apiName}'.`,
+                ErrorCode.Generic,
+            );
+        }
+        return new DataHandle("", { handle: raw, owned: true });
     }
 
     /** Raw native pointer. Null after an owning handle has been disposed. */
@@ -132,9 +240,18 @@ export class DataHandle {
     /**
      * Release the native handle when ownership applies.
      *
-     * Owning handles: calls LF_FreeData, sets the disposed flag
-     * (subsequent operations throw), and is idempotent. Borrowing
-     * handles: no-op.
+     * Owning auto-recycled handles (created by the public constructor):
+     * LF_FreeData marks the handle for release; the actual release
+     * happens on the next idle-pool scan (at most 5 seconds later).
+     *
+     * Owning permanent handles (created by createPermanent): LF_FreeData
+     * releases the record synchronously.
+     *
+     * Borrowing handles: dispose() is a no-op. The wrapper state is
+     * unchanged, so a callback body that accidentally calls dispose()
+     * can still read the input handle for the rest of its execution.
+     *
+     * Idempotent.
      */
     public dispose(): void {
         if (this.#disposed) return;
@@ -217,7 +334,8 @@ export class DataHandle {
         if (count === 0) return new Uint8Array(0);
 
         const buffer = new Uint8Array(count);
-        const got = toNumber(this.#binding.funcs.LF_ReadBuffer(this.#handle, buffer, count));
+        const got = toNumber(
+            this.#binding.funcs.LF_ReadBuffer(this.#handle, buffer, count));
         if (got === count) return buffer;
         if (got <= 0) return new Uint8Array(0);
         return buffer.slice(0, got);
@@ -243,7 +361,9 @@ export class DataHandle {
     }
 
     /** Non-throwing counterpart of readBytesExact. */
-    public tryReadBytes(count: number): { ok: true; value: Uint8Array } | { ok: false } {
+    public tryReadBytes(
+        count: number,
+    ): { ok: true; value: Uint8Array } | { ok: false } {
         if (!Number.isInteger(count) || count < 0) {
             throw new RangeError("Count must be a non-negative integer.");
         }
@@ -391,7 +511,8 @@ export class DataHandle {
 
         const remaining = total - start;
         const raw = new Uint8Array(remaining);
-        const got = toNumber(this.#binding.funcs.LF_ReadBuffer(this.#handle, raw, remaining));
+        const got = toNumber(
+            this.#binding.funcs.LF_ReadBuffer(this.#handle, raw, remaining));
         if (got <= 0) return "";
 
         let nulIndex = -1;

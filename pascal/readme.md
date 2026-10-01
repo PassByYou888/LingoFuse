@@ -1,6 +1,6 @@
 # LingoFuse Pascal 开发套件
 
-> **“让 Pascal 老代码一夜之间变成微服务架构的 C 位担当。”**  
+> **"让 Pascal 老代码一夜之间变成微服务架构的 C 位担当。"**
 > —— 某 Delphi 老司机跑通 LingoFuse 后的朋友圈
 
 
@@ -10,7 +10,7 @@
 
 说白了，就是让你用 **Pascal（Delphi / FPC）** 写出来的函数，能被 **Python、Go、Rust、Java、C#、Node.js、PHP、浏览器 JavaScript** 等十几种语言随便调——反过来，你的 Pascal 代码也能像调本地函数一样调它们。
 
-**不需要写 IDL，不需要生成桩代码，不需要搭 HTTP 服务**——你只需要在项目里引用一个单元，然后你的老代码就“全栈通杀”了。
+**不需要写 IDL，不需要生成桩代码，不需要搭 HTTP 服务**——你只需要在项目里引用一个单元，然后你的老代码就"全栈通杀"了。
 
 > **LingoFuse 不是又一个 RPC 框架，而是一个让所有编程语言平等对话的智能体通讯操作系统。**
 
@@ -62,7 +62,7 @@ flowchart TB
     Core --> Nodes
 ```
 
-**看懂这张图了吗？** 你的 Pascal 服务在左下角（Nodes），全世界的客户端在左上角（Clients），中间是 LingoFuse 核心——**不管客户端用什么语言、走什么协议，最终都能调到你写的 Pascal 函数。**
+**看懂这张图了吗？** 你的 Pascal 服务在右下角（Nodes），全世界的客户端在左上角（Clients），中间是 LingoFuse 核心——**不管客户端用什么语言、走什么协议，最终都能调到你写的 Pascal 函数。**
 
 
 ## ⚡ 性能：比 gRPC 快，比 REST 稳，比 MQ 更直接
@@ -87,6 +87,7 @@ flowchart TB
 2. **二进制协议**：没有 JSON/Protobuf 的编解码开销。
 3. **C 层线程池调度**：回调在 C 线程池执行，不受 GIL 限制。
 4. **C4 持久化网格**：长连接复用，无 TCP 握手和 TLS 开销。
+5. **二级内存池**（v3.09 新增）：`TLF_DataMemory` 复用已释放的数据句柄记录，减少 `New` / `Dispose` 频率。
 
 
 ## 🏭 标准化 HTTP POST 桥接：让 Web 生态一键接入
@@ -223,6 +224,11 @@ sequenceDiagram
 
 **这招有多稳？** 即使网络把包发得七零八落，服务端也能给你整整齐齐地拼回去——**比快递公司还靠谱。**
 
+**关键机制**：
+- **FIFO 粒度是 `(App, API)` 对**——不同 API 之间没有顺序保证。
+- **每个 `(App, API)` 对拥有一个专用线程**，空闲 5 分钟后自动终止。
+- **线程终止后延迟 5 秒释放**（避免 TCompute 的 UAF，v3.09 修复）。
+
 
 ## 🐝 Cross Demo：多语言负载均衡可视化
 
@@ -264,7 +270,9 @@ flowchart LR
     N4 -.-> S1
 ```
 
-**一个调用端，N 个节点，请求自动均匀分发——这叫做“真·分布式”。**
+**一个调用端，N 个节点，请求自动均匀分发——这叫做"真·分布式"。**
+
+**注意**：应用名和 API 名的匹配是**大小写不敏感**的（源码使用 `Same` 比较）。但为了可维护性，建议统一使用小写。
 
 
 ## 🧩 接口便利性：比 gRPC 简单，比 REST 更直观
@@ -285,7 +293,7 @@ App.RegisterCall('add', 'Add two ints', nil, @do_add_Call);
 
 **接口变更零成本：** 改完服务端，客户端只需要改一下参数顺序或类型，**不用重新生成任何代码，不用重新编译其他语言的模块。**
 
-> **“以前改个接口要拉 3 个群，现在改完直接上线。”** —— 某团队 Tech Lead 的原话
+> **"以前改个接口要拉 3 个群，现在改完直接上线。"** —— 某团队 Tech Lead 的原话
 
 
 ## 🏗️ 接口代码生成体系：结构化生成，而非 AI 瞎猜
@@ -338,7 +346,7 @@ flowchart LR
 - **AI 直接生成代码** → 经常有 bug，需要反复测试、调试、验收，**失败风险高**。
 - **AI 解析成结构体** → 结构体是确定的、可验证的，然后由**确定性代码生成器**输出目标语言代码 → **一次生成，直接投入使用，零调试成本**。
 
-**“以前写跨语言接口要 2 天，现在 2 分钟。”** —— 某团队 Tech Lead 的原话
+**"以前写跨语言接口要 2 天，现在 2 分钟。"** —— 某团队 Tech Lead 的原话
 
 这套体系已经在多个生产项目中验证，生成的代码**零手工修改**，直接编译运行。
 
@@ -347,7 +355,7 @@ flowchart LR
 
 **LingoFuse 的所有代码都有详细注释。** 真的，不骗你。
 
-打开 `lingofuse_import.pas`，你会发现从 `LF_CreateData` 到 `LF_Shutdown`，每一个函数都有完整的中英文注释，包括参数说明、返回值含义、使用示例、踩坑提醒——**注释比代码还多**。
+打开 `lingofuse_import.pas`，你会发现从 `LF_CreateData` 到 `LF_Shutdown`，每一个函数都有完整的英文注释，包括参数说明、返回值含义、使用示例、踩坑提醒——**注释比代码还多**。
 
 ```mermaid
 flowchart LR
@@ -362,10 +370,10 @@ flowchart LR
     end
 
     subgraph Tasks["📋 你能让 AI 做的事"]
-        T1["“用 Go 调用 add API”"]
-        T2["“生成 Python echo 服务端”"]
-        T3["“这段回调为什么没触发？”"]
-        T4["“生成多语言客户端代码”"]
+        T1[""用 Go 调用 add API""]
+        T2[""生成 Python echo 服务端""]
+        T3[""这段回调为什么没触发？""]
+        T4[""生成多语言客户端代码""]
     end
 
     subgraph Output["📤 AI 产出"]
@@ -397,7 +405,11 @@ flowchart LR
 | 📦 **零拷贝传输** | 直接访问内部缓冲区，无二次复制 |
 | 🎯 **双调用模式** | 同步 Call（请求-响应）+ 异步 Notify（单向通知） |
 | 🔗 **序列化通知（Sequenced Notify）** | FIFO 有序交付，支持大数据分片流式传输 |
-| 🧹 **自动内存回收** | 数据句柄闲置 5 分钟自动释放，7×24 小时不重启 |
+| 🧹 **自动内存回收** | 数据句柄闲置 **10 分钟** 自动释放（每 5 秒扫描一次），7×24 小时不重启 |
+| 🧠 **二级内存池**（v3.09 新增） | `TLF_DataMemory` 复用 record，减少 `New`/`Dispose` 频率 |
+| 🔒 **calling 计数器保护**（v3.09 新增） | 长耗时远程调用期间，输入句柄不会被误回收 |
+| 🎯 **永久句柄**（v3.09 新增） | `LF_CreateData_Permanent` 跳过自动回收，适合缓存/模板场景 |
+| 🌐 **全局网络事件** | `LF_Set_Network_Event` 监听客户端上线/下线（连接建立、链路丢失） |
 | 🔧 **部署模式（Wait_Ready）** | 允许服务端和客户端无序启动，弹性伸缩零协调 |
 | 🆔 **唯一化 AppName** | `LF_Generate_AppName` 生成全局唯一标识，点对点通信零冲突 |
 | 📊 **可观测性** | `LF_CheckApp` / `LF_CheckApi` 主动探活 + `LF_GetStatus` 程序化日志拉取 |
@@ -407,7 +419,7 @@ flowchart LR
 
 ## 🧠 灵活架构：几个参数让你玩出花
 
-LingoFuse 的设计哲学是 **“把复杂留给自己，把简单留给开发者”**。你只需要通过几个选项，就能切换不同的部署模式：
+LingoFuse 的设计哲学是 **"把复杂留给自己，把简单留给开发者"**。你只需要通过几个选项，就能切换不同的部署模式：
 
 - **部署模式**：设置 `Wait_Ready = False`，`PrepareDone` 不会等待所有客户端连接就绪，**服务端和节点可以任意顺序启动**，再也不怕启动顺序搞错。
 - **连接模式**：设置 `Overlap_Connection = True`，允许多个客户端连接到同一个物理地址，每个客户端拥有独立隧道，**多应用共存毫无压力**。
@@ -424,6 +436,7 @@ LingoFuse 的设计哲学是 **“把复杂留给自己，把简单留给开发�
 | 平台 | 核心库 | IPC 依赖 |
 |------|--------|----------|
 | Windows 64-bit | `LingoFuse64.dll` | `z_ipc_64.dll` |
+| Windows 32-bit | `LingoFuse32.dll` | `z_ipc_32.dll` |
 | Linux | `liblingofuse.so` | `libz_ipc.so` |
 | macOS | `liblingofuse.dylib` | `libz_ipc.dylib` |
 
@@ -496,7 +509,7 @@ end.
 
 ```
 pascal/
-├── lingofuse_import.pas         # 低级 C‑ABI 绑定（手动管理句柄，注释最全）
+├── lingofuse_import.pas         # 低级 C-ABI 绑定（手动管理句柄，注释最全）
 ├── lingofuse_helper.pas         # 高级 RAII 封装（推荐日常使用）
 ├── fpc_tester_for_LingoFuse.*   # 综合单元测试（跑一遍，环境全通）
 ├── LingoFuseBenchServer.*       # 20 个 API 的压测服务端
@@ -537,29 +550,53 @@ pascal/
 
 ## ❓ 常见问题（FAQ）
 
-**Q：编译时提示找不到 `Z.Core` 等单元？**  
-A：将 `ZNetV2/source` 目录添加到项目搜索路径（Lazarus：“项目选项”→“路径”→“其他单元文件”）。
+**Q：编译时提示找不到 `Z.Core` 等单元？**
+A：将 `ZNetV2/source` 目录添加到项目搜索路径（Lazarus："项目选项"→"路径"→"其他单元文件"）。
 
-**Q：运行示例时提示“无法加载 LingoFuse64.dll”？**  
+**Q：运行示例时提示"无法加载 LingoFuse64.dll"？**
 A：将动态库与可执行文件放在同一目录，或添加到系统 PATH。
 
-**Q：IPC 服务无法启动？**  
+**Q：IPC 服务无法启动？**
 A：Windows 下避免使用反斜杠路径；Linux/macOS 检查 `/tmp` 权限。示例：`ipc:my_service`。
 
-**Q：`Wait_Ready` 和 `Overlap_Connection` 具体影响什么？**  
-A：`Wait_Ready=False` 即部署模式，允许无序启动；`Overlap_Connection=True` 允许多个客户端共享同一地址，用于多应用共存。
+**Q：`Wait_Ready` 和 `Overlap_Connection` 具体影响什么？**
+A：`Wait_Ready=False` 即部署模式，允许无序启动；`Overlap_Connection=True` 允许多个客户端共享同一地址，用于多应用共存。注意默认值 `Overlap_Connection=False` 时，向同一地址第二次 `LF_PrepareClient` 传入**不同的 App** 会被**静默忽略**——见下面的"踩坑"。
 
-**Q：为什么我的回调没被触发？**  
-A：检查应用名和 API 名是否**大小写完全一致**（`demo` ≠ `Demo`）。
+**Q：为什么我的回调没被触发？**
+A：检查以下三点：
+1. 应用名和 API 名是否**拼写一致**（匹配是**大小写不敏感**的，但拼错字不行）。
+2. 目标 App 是否真的注册到网络上——用 `LF_CheckAppEx` 探活。
+3. `Overlap_Connection=False` 时，同一地址的第二个 App 会被静默忽略——显式设置 `Overlap_Connection=True`。
 
-**Q：能调 Python 写的服务吗？**  
+**Q：能调 Python 写的服务吗？**
 A：能！Python 绑定在 `../Py/lingofuse/`，两边用的同一个二进制协议，直接互调。
 
-**Q：HTTP POST 桥接怎么用？**  
+**Q：HTTP POST 桥接怎么用？**
 A：`bridge` 目录下有完整示例。启动 `bridge_service` + `bridge_compute`，然后运行 `python bridge.py`，浏览器打开 `web_demo.html` 就能体验——**全程不需要写一行代码。**
 
-**Q：听说代码注释很全，能喂给 AI？**  
-A：能。`lingofuse_import.pas` 每个函数都有完整注释，把全部代码喂给 AI，AI 能解析出结构化接口描述，然后由代码生成器一键产出多语言客户端——**比你手动写快 100 倍，还不会出错。**
+**Q：听说代码注释很全，能喂给 AI？**
+A：能。`lingofuse_import.pas` 每个函数都有完整**英文注释**，把全部代码喂给 AI，AI 能解析出结构化接口描述，然后由代码生成器一键产出多语言客户端——**比你手动写快 100 倍，还不会出错。**
+
+**Q：数据句柄多久会被自动回收？**
+A：**闲置 10 分钟** 后由 `TLF_DataPool.Progress` 自动释放（扫描间隔 5 秒）。**强烈建议显式 `LF_FreeData`**——自动回收只是安全网，不是依赖项。如果需要更长的生命周期，用 `LF_CreateData_Permanent`（v3.09 新增）。
+
+**Q：多个 App 想连到同一个 IPC 地址怎么办？**
+A：
+- 方案一：`LF_SetOption('Overlap_Connection', 'True')` 后重复 `LF_PrepareClient`。
+- 方案二：用 `LF_PrepareClient(endpoint, nil)` 建立空隧道，然后 `LF_BindApp(app)` 事后绑定。
+- **不要**用默认配置直接向同一地址 `LF_PrepareClient` 传不同 App——会被静默忽略。
+
+**Q：怎么监听客户端上线/下线？**
+A：用 `LF_Set_Network_Event` 安装全局回调。**注意**：
+- 回调在**后台 TCompute 工作线程**执行，不要直接操作 UI（用 `TThread.Queue` 编组）。
+- `addr_` 参数在**回调返回后立即失效**——必须立即复制。
+- **"Connect" 不是 TCP 建链**——是"首次收到服务端 API 广播"，这是最早能实际路由远程调用的时刻。
+
+**Q：为什么我调用了 `LF_PrepareDone` 第二次返回 0？**
+A：**每个进程只能成功启动一次模拟主线程**。第二次 `LF_PrepareDone` 返回 0 是**设计行为**，不是 bug。要重启框架，请先 `LF_Shutdown` → `LF_ResetPrepare` → `LF_PrepareDone`。
+
+**Q：`LF_FreeApp` 之后为什么内存没降？**
+A：**两阶段析构**。`LF_FreeApp` 只做"解绑客户端 + 停顺序通知线程 + 移除定时器"，对象仍在 `LF_App_Pool` 中。**真正的释放在 `LF_Shutdown` 时**（`LF_App_Pool.Clear`）。这是为了防止网络广播仍在引用 App 数据时出现悬空指针。
 
 
 ## 🌐 更多资源
@@ -573,8 +610,8 @@ A：能。`lingofuse_import.pas` 每个函数都有完整注释，把全部代�
 
 ## 🧓 关于作者
 
-**老张（QQ: 600585）**  
-看不惯跨语言调用要写一堆胶水代码，干脆撸了个 LingoFuse。  
+**老张（QQ: 600585）**
+看不惯跨语言调用要写一堆胶水代码，干脆撸了个 LingoFuse。
 欢迎技术交流、问题反馈、PR 砸脸——**Star 就是对我最大的支持。**
 
 
@@ -583,4 +620,4 @@ A：能。`lingofuse_import.pas` 每个函数都有完整注释，把全部代�
 **MIT 协议**，随便用，随便改，拿去卖钱也行，不用谢我。
 
 
-*本文档最后更新于 2026 年 9 月，随 LingoFuse v3.0 发布。如有疑问，请提交 Issue 或加 QQ 开喷。*
+*本文档最后更新于 2026 年 10 月，随 LingoFuse **v3.09** 发布。如有疑问，请提交 Issue 或加 QQ 开喷。*

@@ -1,15 +1,28 @@
 <#
 .SYNOPSIS
-    Builds every C# project in the LingoFuse C# binding.
+    Builds the LingoFuse C# binding solution.
 
 .DESCRIPTION
-    Recursively scans the repository for every C# project (*.csproj) and
-    runs `dotnet restore` and `dotnet build` on each one. The solution
-    file is not required: any project layout is supported, and new
-    projects are picked up automatically.
+    Locates lf_csharp.sln (in the same directory as this script) and
+    builds it. When -Project is given, builds only the specified .csproj
+    instead. When no solution file exists, falls back to recursively
+    discovering every *.csproj under the script directory.
 
     Optionally packs NuGet packages, runs test projects, and cleans
     before building.
+
+    The repository layout this script expects (documentation only; the
+    runtime logic is layout-independent):
+
+        lf_csharp.sln
+        CrossCall/CrossCall.csproj
+        CrossNode/CrossNode.csproj
+        crossService/crossService.csproj
+        src/LingoFuse_cs/LingoFuse_cs.csproj     (library)
+        test/test.csproj                         (test runner)
+
+    Only lf_csharp.sln and the recursive *.csproj scan are consulted at
+    run time; the list above is documentation, not configuration.
 
 .PARAMETER Configuration
     Build configuration. Accepts Debug (default) or Release.
@@ -17,7 +30,7 @@
 .PARAMETER Target
     What to do after building:
 
-      Build  (default)  Restore + build every project.
+      Build  (default)  Restore + build.
       Pack              Build + produce .nupkg files in artifacts/.
                         Pack failures for non-packable projects are
                         reported as warnings and do not abort the run.
@@ -37,7 +50,7 @@
 
 .EXAMPLE
     .\build.ps1
-    Debug build of every project in the repository.
+    Debug build of lf_csharp.sln.
 
 .EXAMPLE
     .\build.ps1 -Configuration Release -Target Pack
@@ -48,12 +61,19 @@
     Clean, then build and run every test project.
 
 .EXAMPLE
-    .\build.ps1 -Project .\src\LingoFuse\LingoFuse.csproj
-    Build only the LingoFuse library.
+    .\build.ps1 -Project .\src\LingoFuse_cs\LingoFuse_cs.csproj
+    Build only the LingoFuse binding library.
 
 .EXAMPLE
     .\build.ps1 -Verbose
-    Prints each project as it is processed.
+    Prints each build step in detail.
+
+.NOTES
+    IMPORTANT - PowerShell variable names are case-insensitive.
+    The -Target parameter and any loop variable must NOT share a
+    name even with different casing. In this script the build loop
+    uses $item, never $target, so the ValidateSet on $Target cannot
+    be triggered by an assignment inside the loop.
 #>
 
 [CmdletBinding()]
@@ -74,6 +94,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot     = $PSScriptRoot
 $ArtifactsDir = Join-Path $RepoRoot 'artifacts'
+$SolutionFile = Join-Path $RepoRoot 'lf_csharp.sln'
 
 # ---------------------------------------------------------------------------
 # Header
@@ -81,7 +102,7 @@ $ArtifactsDir = Join-Path $RepoRoot 'artifacts'
 
 Write-Host ''
 Write-Host '=== LingoFuse C# binding - build ===' -ForegroundColor Cyan
-Write-Host "Repository root : $RepoRoot"
+Write-Host "Script dir      : $RepoRoot"
 Write-Host "Configuration   : $Configuration"
 Write-Host "Target          : $Target"
 if ($Project) {
@@ -103,36 +124,51 @@ Write-Host ("dotnet SDK      : " + (& dotnet --version)) -ForegroundColor DarkGr
 Write-Host ''
 
 # ---------------------------------------------------------------------------
-# Discover projects
+# Determine the build target(s)
 # ---------------------------------------------------------------------------
+#
+# Priority:
+#   1. -Project <path>      -> build that single .csproj
+#   2. lf_csharp.sln        -> build the solution
+#   3. recursive *.csproj   -> build every project found under $RepoRoot
+#
+# NOTE: the loop variable used everywhere below is $item, NOT $target.
+# PowerShell treats variable names case-insensitively, so using $target
+# here would overwrite the -Target parameter and trigger its ValidateSet
+# on the first assignment.
+
+$buildTargets = @()
+$useSolution  = $false
 
 if ($Project) {
-    # Single-project mode.
     $resolved = Resolve-Path -LiteralPath $Project -ErrorAction SilentlyContinue
     if (-not $resolved) {
         Write-Host "ERROR: project file not found: $Project" -ForegroundColor Red
         exit 1
     }
-    $projects = @($resolved.Path)
-    Write-Host "Single-project mode: $(Split-Path -Leaf $projects[0])" -ForegroundColor DarkGray
-} else {
-    # Discover every *.csproj under the repository root, excluding bin/obj.
-    $projects = @(
+    $buildTargets = @($resolved.Path)
+    Write-Host "Single-project mode: $(Split-Path -Leaf $buildTargets[0])" -ForegroundColor DarkGray
+}
+elseif (Test-Path -LiteralPath $SolutionFile) {
+    $buildTargets = @($SolutionFile)
+    $useSolution  = $true
+    Write-Host "Solution mode: $(Split-Path -Leaf $SolutionFile)" -ForegroundColor DarkGray
+}
+else {
+    $buildTargets = @(
         Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.csproj' `
             -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
             Sort-Object FullName |
             ForEach-Object { $_.FullName }
     )
-
-    if ($projects.Count -eq 0) {
-        Write-Host 'ERROR: no .csproj files found under the repository root.' -ForegroundColor Red
+    if ($buildTargets.Count -eq 0) {
+        Write-Host 'ERROR: no solution and no .csproj file found.' -ForegroundColor Red
         exit 1
     }
-
-    Write-Host "Found $($projects.Count) project(s):" -ForegroundColor DarkGray
-    foreach ($proj in $projects) {
-        $rel = $proj.Substring($RepoRoot.Length).TrimStart('\', '/')
+    Write-Host "Found $($buildTargets.Count) project(s):" -ForegroundColor DarkGray
+    foreach ($item in $buildTargets) {
+        $rel = $item.Substring($RepoRoot.Length).TrimStart('\', '/')
         Write-Host "  - $rel" -ForegroundColor DarkGray
     }
 }
@@ -146,12 +182,12 @@ if ($Clean) {
     $cleanScript = Join-Path $RepoRoot 'clean.ps1'
     if (Test-Path -LiteralPath $cleanScript) {
         Write-Host '[0/3] Running clean.ps1...' -ForegroundColor Yellow
+        # clean.ps1 sets $ErrorActionPreference = 'Stop' and uses
+        # Remove-Item, so a real failure terminates this script. There
+        # is no $LASTEXITCODE to check for a PowerShell script call.
         & $cleanScript -Configuration $Configuration
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host 'ERROR: clean.ps1 reported a failure.' -ForegroundColor Red
-            exit $LASTEXITCODE
-        }
-    } else {
+    }
+    else {
         Write-Host '[0/3] clean.ps1 not found; skipping.' -ForegroundColor DarkYellow
     }
 }
@@ -169,19 +205,19 @@ $verbosity = if ($VerbosePreference -eq 'Continue') { 'detailed' } else { 'minim
 if (-not $NoRestore) {
     Write-Host '[1/3] Restoring NuGet packages...' -ForegroundColor Yellow
 
-    foreach ($proj in $projects) {
-        $name = Split-Path -Leaf $proj
+    foreach ($item in $buildTargets) {
+        $name = Split-Path -Leaf $item
         Write-Host "  Restoring: $name" -ForegroundColor DarkGray
 
-        & dotnet restore "$proj"
+        & dotnet restore "$item"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: dotnet restore failed for $name" -ForegroundColor Red
             exit $LASTEXITCODE
         }
     }
-
     Write-Host '  Restore completed.' -ForegroundColor Green
-} else {
+}
+else {
     Write-Host '[1/3] Skipping restore (-NoRestore).' -ForegroundColor DarkGray
 }
 
@@ -191,11 +227,11 @@ if (-not $NoRestore) {
 
 Write-Host '[2/3] Building...' -ForegroundColor Yellow
 
-foreach ($proj in $projects) {
-    $name = Split-Path -Leaf $proj
+foreach ($item in $buildTargets) {
+    $name = Split-Path -Leaf $item
     Write-Host "  Building: $name" -ForegroundColor DarkGray
 
-    & dotnet build "$proj" `
+    & dotnet build "$item" `
         -c $Configuration `
         --no-restore `
         -v $verbosity `
@@ -206,7 +242,6 @@ foreach ($proj in $projects) {
         exit $LASTEXITCODE
     }
 }
-
 Write-Host '  Build completed.' -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
@@ -226,13 +261,28 @@ switch ($Target) {
             New-Item -ItemType Directory -Path $ArtifactsDir | Out-Null
         }
 
-        foreach ($proj in $projects) {
+        # A .sln cannot be packed directly. In solution mode we fall
+        # back to packing every discovered .csproj; in single-project
+        # or recursive mode we already have the list.
+        if ($useSolution) {
+            $packTargets = @(
+                Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.csproj' `
+                    -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
+                    Sort-Object FullName |
+                    ForEach-Object { $_.FullName }
+            )
+        }
+        else {
+            $packTargets = $buildTargets
+        }
+
+        foreach ($proj in $packTargets) {
             $name = Split-Path -Leaf $proj
             Write-Host "  Packing: $name" -ForegroundColor DarkGray
 
-            # Some projects (test executables, sample apps) are not
-            # packable. dotnet pack fails for them; treat that as a
-            # warning and continue.
+            # Some projects (exe / sample apps) are not packable;
+            # dotnet pack fails for them. Treat that as a warning.
             & dotnet pack "$proj" `
                 -c $Configuration `
                 --no-build `
@@ -249,13 +299,13 @@ switch ($Target) {
             Get-ChildItem -LiteralPath $ArtifactsDir -File -Filter '*.nupkg' `
                 -ErrorAction SilentlyContinue
         )
-
         if ($packages.Count -gt 0) {
             Write-Host '  Produced package(s):' -ForegroundColor Green
             foreach ($pkg in $packages) {
                 Write-Host "    - $($pkg.Name)" -ForegroundColor Green
             }
-        } else {
+        }
+        else {
             Write-Host '  WARNING: no .nupkg was produced.' -ForegroundColor DarkYellow
         }
     }
@@ -266,39 +316,52 @@ switch ($Target) {
         # A project is treated as a test project when:
         #   - its leaf name contains "test" or "spec", or
         #   - its directory path contains a "test" or "tests" segment.
+        #
+        # In single-project mode we only consider that one project.
+        if ($Project) {
+            $allProjects = $buildTargets
+        }
+        else {
+            $allProjects = @(
+                Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.csproj' `
+                    -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
+                    ForEach-Object { $_.FullName }
+            )
+        }
+
         $testProjects = @(
-            $projects |
-                Where-Object {
-                    $leaf = Split-Path -Leaf $_
-                    $dir  = Split-Path -Parent $_
-                    ($leaf -match '(?i)(test|spec)') -or
-                    ($dir  -match '(?i)[\\/](tests?)[\\/]')
-                }
+            $allProjects | Where-Object {
+                $leaf = Split-Path -Leaf $_
+                $dir  = Split-Path -Parent $_
+                ($leaf -match '(?i)(test|spec)') -or
+                ($dir  -match '(?i)[\\/](tests?)[\\/]')
+            }
         )
 
         if ($testProjects.Count -eq 0) {
             Write-Host '  No test projects found.' -ForegroundColor DarkYellow
-            exit 0
         }
+        else {
+            Write-Host "  Found $($testProjects.Count) test project(s)." -ForegroundColor DarkGray
 
-        Write-Host "  Found $($testProjects.Count) test project(s)." -ForegroundColor DarkGray
+            foreach ($proj in $testProjects) {
+                $name = Split-Path -Leaf $proj
+                Write-Host "  Testing: $name" -ForegroundColor DarkGray
 
-        foreach ($proj in $testProjects) {
-            $name = Split-Path -Leaf $proj
-            Write-Host "  Testing: $name" -ForegroundColor DarkGray
+                & dotnet test "$proj" `
+                    -c $Configuration `
+                    --no-restore `
+                    -v $verbosity
 
-            & dotnet test "$proj" `
-                -c $Configuration `
-                --no-restore `
-                -v $verbosity
-
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "ERROR: tests failed for $name." -ForegroundColor Red
-                exit $LASTEXITCODE
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "ERROR: tests failed for $name." -ForegroundColor Red
+                    exit $LASTEXITCODE
+                }
             }
-        }
 
-        Write-Host '  All tests passed.' -ForegroundColor Green
+            Write-Host '  All tests passed.' -ForegroundColor Green
+        }
     }
 }
 

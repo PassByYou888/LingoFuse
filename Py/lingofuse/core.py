@@ -12,21 +12,52 @@ It is an RAII object: freeing the Python object calls LF_FreeData.
 Important notes from the wire protocol contract:
 - Always free DataHandle objects explicitly (or use `with` / context manager)
   to release resources promptly. The library has an automatic idle-timeout
-  reclaimer (5 minutes), but it is not immediate.
+  reclaimer (10 minutes, scanned every 5 seconds), but it is not immediate.
 - Do not free a handle while it is being used in a callback or while
   a remote call is pending.
 - Concurrent writes to the same handle must be serialised externally;
   reads are safe.
 
+=========================== TWO KINDS OF DATA HANDLE ============================
+The library exposes two flavours of data handles, both wrapped by this
+Python class:
+
+  1. AUTO-RECYCLED (created by `DataHandle(api_name)`):
+
+       - Backed by `LF_CreateData`.
+       - Added to the library's idle pool.
+       - The pool scans every 5 seconds and frees any handle that has
+         been idle (no accessor call) for more than 10 minutes.
+       - Any accessor (get_size, get_pos, read_*, write_*) refreshes
+         the idle timestamp.
+       - The wrapper's destructor calls LF_FreeData, which only marks
+         the handle for release; the actual release happens on the
+         next pool scan (at most 5 seconds later).
+       - Recommended for the vast majority of use cases.
+
+  2. PERMANENT (created by `DataHandle.create_permanent(api_name)`):
+
+       - Backed by `LF_CreateData_Permanent`.
+       - NOT added to the library's idle pool.
+       - The automatic idle-timeout reclaimer will NEVER free it,
+         no matter how long it has been idle.
+       - The wrapper's destructor calls LF_FreeData, which releases
+         the record IMMEDIATELY (synchronously).
+       - Recommended for handles that must survive for the entire
+         process lifetime (cached request templates, long-lived
+         scratch buffers, global registries, etc.).
+
+Both kinds are released when LF_Shutdown is called at process exit.
+
 String handling rules (critical for cross-language compatibility):
-- write_string() always appends a null terminator (\\0) to match
+- write_string() always appends a null terminator (\0) to match
   the standard wire protocol for string framing. This is required
   for the other side to correctly read the string with the
   corresponding read primitive.
-- read_string() is fault-tolerant: it scans for a \\0 and returns
-  the content before it. If no \\0 is found, it returns the entire
+- read_string() is fault-tolerant: it scans for a \0 and returns
+  the content before it. If no \0 is found, it returns the entire
   remaining buffer as a string (consuming all data). This handles
-  both null-terminated and raw data (e.g., plain JSON without \\0).
+  both null-terminated and raw data (e.g., plain JSON without \0).
 
 Atomic read/write methods (write_int32, read_int32, etc.) use little-endian
 byte order, which matches the cross-language convention.
@@ -126,7 +157,7 @@ from typing import Any, Optional, Callable
 
 from ._lf_native import (
     DataHnd, AppHnd,
-    LF_CreateData, LF_FreeData,
+    LF_CreateData, LF_CreateData_Permanent, LF_FreeData,
     LF_WriteBuffer, LF_ReadBuffer,
     LF_GetSize, LF_SetPos,
     LF_GetBuffer, LF_GetPos,
@@ -235,6 +266,16 @@ class DataHandle:
     library's idle-timeout reclaimer. However, you should still free
     handles explicitly when they are no longer needed.
 
+    {!!!!!  TWO CONSTRUCTION PATHS  !!!!!}
+    Two factory paths are available:
+
+        DataHandle(api_name)              auto-recycled handle
+        DataHandle.create_permanent(...)  permanent handle
+
+    See the module docstring section "TWO KINDS OF DATA HANDLE" for
+    the precise difference in lifetime, reclamation, and release
+    timing.
+
     {!!!!!  INITIALIZATION ORDER  !!!!!}
     All instance attributes are initialized to safe defaults BEFORE any
     native call that might fail. This ensures __del__ / free() can run
@@ -250,10 +291,14 @@ class DataHandle:
                  serializer: Optional[Callable] = None,
                  deserializer: Optional[Callable] = None):
         """
-        Create a new data handle for the given API name.
+        Create a new AUTO-RECYCLED data handle for the given API name.
 
         The API name is stored internally and will be used as the
         MethodName in the wire protocol. The buffer is initially empty.
+
+        The underlying handle is created with LF_CreateData, which adds
+        it to the library's idle pool. The pool frees it after 10
+        minutes of idle time (scanned every 5 seconds).
 
         If `data` is provided, it is serialized using the default
         serializer (JSON) and written to the buffer immediately.
@@ -285,6 +330,71 @@ class DataHandle:
 
         if data is not None:
             self.write(data)
+
+    @classmethod
+    def create_permanent(cls, api_name: str, data: Any = None,
+                         serializer: Optional[Callable] = None,
+                         deserializer: Optional[Callable] = None):
+        """
+        Create a new PERMANENT data handle for the given API name.
+
+        The underlying handle is created with LF_CreateData_Permanent.
+        Difference from the regular DataHandle(api_name) constructor:
+
+          - NOT added to the library's idle pool.
+          - The automatic idle-timeout reclaimer will NEVER free it,
+            no matter how long it has been idle.
+          - On destruction, LF_FreeData releases it IMMEDIATELY
+            (synchronously), rather than marking it for a later pool
+            scan.
+
+        When to use:
+          - Handles that must survive for the entire lifetime of the
+            process, or for an unbounded period (cached request
+            templates, long-lived scratch buffers, global registries,
+            etc.).
+
+        When NOT to use:
+          - Short-lived or one-shot handles. Use the regular constructor
+            for those, so the pool can reclaim any handle you forget
+            to free.
+
+        [PITFALL - NO-OP WINDOW]
+          The underlying LF_FreeData is a no-op while the simulated
+          main thread is not active (before LF_PrepareDone or after
+          LF_ExitMainThread). Permanent handles created in that window
+          stay allocated until the process terminates. In practice
+          this is safe: the OS reclaims the process memory on exit.
+
+        Args:
+            api_name: Name of the target API (UTF-8).
+            data: Optional object to serialize and write.
+            serializer: Callable that converts object to bytes
+                (default JSON).
+            deserializer: Callable that converts bytes to object
+                (default JSON).
+
+        Returns:
+            A new DataHandle instance wrapping a permanent handle.
+        """
+        obj = cls.__new__(cls)
+        obj._hnd = None
+        obj._owned = False
+        obj._serializer = serializer or default_serializer
+        obj._deserializer = deserializer or default_deserializer
+
+        obj._hnd = LF_CreateData_Permanent(cstr(api_name))
+        if not obj._hnd:
+            raise LingoFuseError(
+                f"Failed to create permanent DataHandle for API "
+                f"'{api_name}'"
+            )
+        obj._owned = True
+
+        if data is not None:
+            obj.write(data)
+
+        return obj
 
     @classmethod
     def _from_raw(cls, hnd: DataHnd, owned: bool = True,
@@ -327,6 +437,15 @@ class DataHandle:
     def free(self):
         """
         Free the underlying handle if owned.
+
+        Behaviour depends on how the handle was created:
+
+          - Auto-recycled handles (created by the regular constructor):
+            LF_FreeData only marks the handle for release; the actual
+            release happens on the next pool scan (at most 5 seconds
+            later).
+          - Permanent handles (created by create_permanent):
+            LF_FreeData releases the record immediately.
 
         Safe to call multiple times. Safe to call on instances whose
         __init__ never ran or failed partway through: all attribute

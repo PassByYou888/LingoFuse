@@ -11,7 +11,7 @@
  * RESPONSIBILITY
  * ============================================================================
  *   1. Locate and load the platform-specific LingoFuse shared library.
- *   2. Declare all 36 exported C functions with correct signatures.
+ *   2. Declare all 37 exported C functions with correct signatures.
  *   3. Provide opaque handle types (DataHnd, AppHnd).
  *   4. Declare callback prototypes for Call, Notify, and Network events.
  *   5. Expose a clean, synchronous API surface for the RAII layer.
@@ -309,7 +309,7 @@ const LfNetworkEventFunc = koffi.proto(
 // ============================================================================
 
 /**
- * Declares all 36 exported LingoFuse functions and returns an object
+ * Declares all 37 exported LingoFuse functions and returns an object
  * holding them.
  *
  * @param {object} library  The Koffi library object.
@@ -319,11 +319,59 @@ function declareFunctions(library) {
   const f = {};
 
   // --------------------------------------------------------------------
-  // Data handle operations (9)
+  // Data handle operations (10)
   // --------------------------------------------------------------------
 
+  /**
+   * LF_CreateData
+   * Creates a new AUTO-RECYCLED data handle bound to the given API
+   * name. The handle is added to the library's idle pool; the pool
+   * scans every 5 seconds and frees any handle that has been idle for
+   * more than 10 minutes.
+   */
   f.LF_CreateData = library.func("LF_CreateData", DataHnd, ["str"]);
+
+  /**
+   * LF_CreateData_Permanent
+   * Creates a new PERMANENT data handle bound to the given API name.
+   *
+   * Difference from LF_CreateData:
+   *   - NOT added to the library's idle pool.
+   *   - The automatic idle-timeout reclaimer will NEVER free it.
+   *   - LF_FreeData releases it synchronously.
+   *
+   * Use this for handles that must survive for the entire process
+   * lifetime (cached templates, long-lived scratch buffers, global
+   * registries). Do NOT use it for short-lived handles; the pool
+   * safety net is lost.
+   *
+   * [PITFALL - NO-OP WINDOW]
+   *   LF_FreeData is a no-op while the simulated main thread is not
+   *   active (before LF_PrepareDone or after LF_ExitMainThread).
+   *   Permanent handles created in that window stay allocated until
+   *   the process terminates. LF_Shutdown releases any permanent
+   *   handle still alive at teardown.
+   */
+  f.LF_CreateData_Permanent = library.func(
+    "LF_CreateData_Permanent",
+    DataHnd,
+    ["str"]
+  );
+
+  /**
+   * LF_FreeData
+   * Releases a data handle. Passing a null handle is safe and ignored.
+   *
+   * For an auto-recycled handle this only marks the handle as deleted;
+   * the actual release happens on the next pool scan (at most 5
+   * seconds later). For a permanent handle the release is synchronous.
+   *
+   * [PITFALL] This call is a NO-OP while the simulated main thread is
+   * not active. Permanent handles created in that window stay
+   * allocated until the process terminates or LF_Shutdown runs.
+   */
   f.LF_FreeData = library.func("LF_FreeData", "void", [DataHnd]);
+
   f.LF_GetBuffer = library.func("LF_GetBuffer", koffi.pointer("void"), [DataHnd]);
   f.LF_WriteBuffer = library.func("LF_WriteBuffer", "int64", [
     DataHnd,
@@ -346,8 +394,20 @@ function declareFunctions(library) {
 
   f.LF_CreateApp = library.func("LF_CreateApp", AppHnd, ["str", "str"]);
   f.LF_FreeApp = library.func("LF_FreeApp", "void", [AppHnd]);
+
+  /**
+   * LF_Generate_AppName
+   * Returns a pointer to a temporary buffer valid for ~5 seconds.
+   * Koffi copies the string immediately into a JavaScript string.
+   */
   f.LF_Generate_AppName = library.func("LF_Generate_AppName", "str", []);
+
+  /**
+   * LF_Get_AppName
+   * Same 5-second validity rule as LF_Generate_AppName.
+   */
   f.LF_Get_AppName = library.func("LF_Get_AppName", "str", [AppHnd]);
+
   f.LF_BindApp = library.func("LF_BindApp", "int", [AppHnd]);
 
   // --------------------------------------------------------------------
@@ -415,7 +475,17 @@ function declareFunctions(library) {
   f.LF_SetOption = library.func("LF_SetOption", "void", ["str", "str"]);
   f.LF_GetStatusCount = library.func("LF_GetStatusCount", "int", []);
   f.LF_GetStatus = library.func("LF_GetStatus", "str", []);
+
+  /**
+   * LF_PostStatus
+   * Injects a custom log message into the status queue.
+   *
+   * The message is queued even when the simulated main thread is not
+   * running. The queue is bounded at 1000 entries; older entries are
+   * dropped when the buffer is full.
+   */
   f.LF_PostStatus = library.func("LF_PostStatus", "void", ["str"]);
+
   f.LF_CheckMainThread = library.func("LF_CheckMainThread", "int", []);
   f.LF_CheckApp = library.func("LF_CheckApp", "int", ["str"]);
   f.LF_CheckApi = library.func("LF_CheckApi", "int", ["str", "str"]);

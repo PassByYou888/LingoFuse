@@ -4,7 +4,7 @@
  *
  * This file provides:
  *   - Platform-specific dynamic library loading (LoadLibraryA / dlopen).
- *   - Resolution of all 36 exported LF_* symbols into static function
+ *   - Resolution of all 37 exported LF_* symbols into static function
  *     pointers, with cleanup on partial failure.
  *   - Thin forwarding wrappers with defensive null checks.
  *   - Helper functions (LF_WriteInt8 / LF_ReadString / LF_ReadStringBytes /
@@ -31,9 +31,9 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* ============================================================================
- * Platform-specific dynamic loading
- * ============================================================================ */
+ /* ============================================================================
+  * Platform-specific dynamic loading
+  * ============================================================================ */
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -77,160 +77,162 @@
 #  endif
 #endif
 
-/* ============================================================================
- * Global state
- * ============================================================================ */
+  /* ============================================================================
+   * Global state
+   * ============================================================================ */
 
-static LIB_HANDLE g_hDll   = NULL;
+static LIB_HANDLE g_hDll = NULL;
 static int        g_loaded = 0;
 
 /* ============================================================================
- * Function-pointer typedefs for the 36 exported functions
+ * Function-pointer typedefs for the 37 exported functions
  * ============================================================================ */
 
-typedef TDataHnd    (LF_CDECL *fnLF_CreateData)       (const char*);
-typedef void        (LF_CDECL *fnLF_FreeData)         (TDataHnd);
-typedef void*       (LF_CDECL *fnLF_GetBuffer)        (TDataHnd);
-typedef int64_t     (LF_CDECL *fnLF_WriteBuffer)      (TDataHnd, const void*, int64_t);
-typedef int64_t     (LF_CDECL *fnLF_ReadBuffer)       (TDataHnd, void*, int64_t);
-typedef int64_t     (LF_CDECL *fnLF_GetPos)           (TDataHnd);
-typedef void        (LF_CDECL *fnLF_SetPos)           (TDataHnd, int64_t);
-typedef int64_t     (LF_CDECL *fnLF_GetSize)          (TDataHnd);
-typedef void        (LF_CDECL *fnLF_SetSize)          (TDataHnd, int64_t);
+typedef TDataHnd(LF_CDECL* fnLF_CreateData)          (const char*);
+typedef TDataHnd(LF_CDECL* fnLF_CreateData_Permanent)(const char*);
+typedef void        (LF_CDECL* fnLF_FreeData)            (TDataHnd);
+typedef void* (LF_CDECL* fnLF_GetBuffer)           (TDataHnd);
+typedef int64_t(LF_CDECL* fnLF_WriteBuffer)         (TDataHnd, const void*, int64_t);
+typedef int64_t(LF_CDECL* fnLF_ReadBuffer)          (TDataHnd, void*, int64_t);
+typedef int64_t(LF_CDECL* fnLF_GetPos)              (TDataHnd);
+typedef void        (LF_CDECL* fnLF_SetPos)              (TDataHnd, int64_t);
+typedef int64_t(LF_CDECL* fnLF_GetSize)             (TDataHnd);
+typedef void        (LF_CDECL* fnLF_SetSize)             (TDataHnd, int64_t);
 
-typedef TAppHnd     (LF_CDECL *fnLF_CreateApp)        (const char*, const char*);
-typedef void        (LF_CDECL *fnLF_FreeApp)          (TAppHnd);
-typedef const char* (LF_CDECL *fnLF_Generate_AppName) (void);
-typedef const char* (LF_CDECL *fnLF_Get_AppName)      (TAppHnd);
-typedef int         (LF_CDECL *fnLF_BindApp)          (TAppHnd);
+typedef TAppHnd(LF_CDECL* fnLF_CreateApp)           (const char*, const char*);
+typedef void        (LF_CDECL* fnLF_FreeApp)             (TAppHnd);
+typedef const char* (LF_CDECL* fnLF_Generate_AppName)    (void);
+typedef const char* (LF_CDECL* fnLF_Get_AppName)         (TAppHnd);
+typedef int         (LF_CDECL* fnLF_BindApp)             (TAppHnd);
 
-typedef int         (LF_CDECL *fnLF_RegisterCall)     (TAppHnd, const char*,
-                                                       const char*, void*,
-                                                       LF_CallFunc);
-typedef int         (LF_CDECL *fnLF_RegisterNotify)   (TAppHnd, const char*,
-                                                       const char*, void*,
-                                                       LF_NotifyFunc);
-typedef int         (LF_CDECL *fnLF_Unregister)       (TAppHnd, const char*);
+typedef int         (LF_CDECL* fnLF_RegisterCall)        (TAppHnd, const char*,
+    const char*, void*,
+    LF_CallFunc);
+typedef int         (LF_CDECL* fnLF_RegisterNotify)      (TAppHnd, const char*,
+    const char*, void*,
+    LF_NotifyFunc);
+typedef int         (LF_CDECL* fnLF_Unregister)          (TAppHnd, const char*);
 
-typedef TDataHnd    (LF_CDECL *fnLF_LocalCall)        (TAppHnd, TDataHnd);
-typedef void        (LF_CDECL *fnLF_LocalNotify)      (TAppHnd, TDataHnd);
+typedef TDataHnd(LF_CDECL* fnLF_LocalCall)           (TAppHnd, TDataHnd);
+typedef void        (LF_CDECL* fnLF_LocalNotify)         (TAppHnd, TDataHnd);
 
-typedef int         (LF_CDECL *fnLF_PrepareService)   (const char*, const char*);
-typedef int         (LF_CDECL *fnLF_PrepareClient)    (const char*, TAppHnd);
-typedef void        (LF_CDECL *fnLF_ResetPrepare)     (void);
-typedef int         (LF_CDECL *fnLF_PrepareDone)      (void);
-typedef void        (LF_CDECL *fnLF_ExitMainThread)   (void);
+typedef int         (LF_CDECL* fnLF_PrepareService)      (const char*, const char*);
+typedef int         (LF_CDECL* fnLF_PrepareClient)       (const char*, TAppHnd);
+typedef void        (LF_CDECL* fnLF_ResetPrepare)        (void);
+typedef int         (LF_CDECL* fnLF_PrepareDone)         (void);
+typedef void        (LF_CDECL* fnLF_ExitMainThread)      (void);
 
-typedef TDataHnd    (LF_CDECL *fnLF_Call)             (const char*, TDataHnd, uint64_t);
-typedef void        (LF_CDECL *fnLF_Notify)           (const char*, TDataHnd);
-typedef void        (LF_CDECL *fnLF_Sequenced_Notify) (const char*, TDataHnd);
+typedef TDataHnd(LF_CDECL* fnLF_Call)                (const char*, TDataHnd, uint64_t);
+typedef void        (LF_CDECL* fnLF_Notify)              (const char*, TDataHnd);
+typedef void        (LF_CDECL* fnLF_Sequenced_Notify)    (const char*, TDataHnd);
 
-typedef void        (LF_CDECL *fnLF_SetOption)        (const char*, const char*);
+typedef void        (LF_CDECL* fnLF_SetOption)           (const char*, const char*);
 
-typedef int         (LF_CDECL *fnLF_GetStatusCount)   (void);
-typedef const char* (LF_CDECL *fnLF_GetStatus)        (void);
-typedef void        (LF_CDECL *fnLF_PostStatus)       (const char*);
-typedef int         (LF_CDECL *fnLF_CheckMainThread)  (void);
-typedef int         (LF_CDECL *fnLF_CheckApp)         (const char*);
-typedef int         (LF_CDECL *fnLF_CheckApi)         (const char*, const char*);
+typedef int         (LF_CDECL* fnLF_GetStatusCount)      (void);
+typedef const char* (LF_CDECL* fnLF_GetStatus)           (void);
+typedef void        (LF_CDECL* fnLF_PostStatus)          (const char*);
+typedef int         (LF_CDECL* fnLF_CheckMainThread)     (void);
+typedef int         (LF_CDECL* fnLF_CheckApp)            (const char*);
+typedef int         (LF_CDECL* fnLF_CheckApi)            (const char*, const char*);
 
-typedef void        (LF_CDECL *fnLF_Shutdown)         (void);
+typedef void        (LF_CDECL* fnLF_Shutdown)            (void);
 
-typedef void        (LF_CDECL *fnLF_Set_Network_Event)(LF_NetworkEventFunc,
-                                                       LF_NetworkEventFunc);
+typedef void        (LF_CDECL* fnLF_Set_Network_Event)   (LF_NetworkEventFunc,
+    LF_NetworkEventFunc);
 
 /* ============================================================================
  * Static function pointers
  * ============================================================================ */
 
-static fnLF_CreateData        pLF_CreateData        = NULL;
-static fnLF_FreeData          pLF_FreeData          = NULL;
-static fnLF_GetBuffer         pLF_GetBuffer         = NULL;
-static fnLF_WriteBuffer       pLF_WriteBuffer       = NULL;
-static fnLF_ReadBuffer        pLF_ReadBuffer        = NULL;
-static fnLF_GetPos            pLF_GetPos            = NULL;
-static fnLF_SetPos            pLF_SetPos            = NULL;
-static fnLF_GetSize           pLF_GetSize           = NULL;
-static fnLF_SetSize           pLF_SetSize           = NULL;
+static fnLF_CreateData          pLF_CreateData = NULL;
+static fnLF_CreateData_Permanent pLF_CreateData_Permanent = NULL;
+static fnLF_FreeData            pLF_FreeData = NULL;
+static fnLF_GetBuffer           pLF_GetBuffer = NULL;
+static fnLF_WriteBuffer         pLF_WriteBuffer = NULL;
+static fnLF_ReadBuffer          pLF_ReadBuffer = NULL;
+static fnLF_GetPos              pLF_GetPos = NULL;
+static fnLF_SetPos              pLF_SetPos = NULL;
+static fnLF_GetSize             pLF_GetSize = NULL;
+static fnLF_SetSize             pLF_SetSize = NULL;
 
-static fnLF_CreateApp         pLF_CreateApp         = NULL;
-static fnLF_FreeApp           pLF_FreeApp           = NULL;
-static fnLF_Generate_AppName  pLF_Generate_AppName  = NULL;
-static fnLF_Get_AppName       pLF_Get_AppName       = NULL;
-static fnLF_BindApp           pLF_BindApp           = NULL;
+static fnLF_CreateApp           pLF_CreateApp = NULL;
+static fnLF_FreeApp             pLF_FreeApp = NULL;
+static fnLF_Generate_AppName    pLF_Generate_AppName = NULL;
+static fnLF_Get_AppName         pLF_Get_AppName = NULL;
+static fnLF_BindApp             pLF_BindApp = NULL;
 
-static fnLF_RegisterCall      pLF_RegisterCall      = NULL;
-static fnLF_RegisterNotify    pLF_RegisterNotify    = NULL;
-static fnLF_Unregister        pLF_Unregister        = NULL;
+static fnLF_RegisterCall        pLF_RegisterCall = NULL;
+static fnLF_RegisterNotify      pLF_RegisterNotify = NULL;
+static fnLF_Unregister          pLF_Unregister = NULL;
 
-static fnLF_LocalCall         pLF_LocalCall         = NULL;
-static fnLF_LocalNotify       pLF_LocalNotify       = NULL;
+static fnLF_LocalCall           pLF_LocalCall = NULL;
+static fnLF_LocalNotify         pLF_LocalNotify = NULL;
 
-static fnLF_PrepareService    pLF_PrepareService    = NULL;
-static fnLF_PrepareClient     pLF_PrepareClient     = NULL;
-static fnLF_ResetPrepare      pLF_ResetPrepare      = NULL;
-static fnLF_PrepareDone       pLF_PrepareDone       = NULL;
-static fnLF_ExitMainThread    pLF_ExitMainThread    = NULL;
+static fnLF_PrepareService      pLF_PrepareService = NULL;
+static fnLF_PrepareClient       pLF_PrepareClient = NULL;
+static fnLF_ResetPrepare        pLF_ResetPrepare = NULL;
+static fnLF_PrepareDone         pLF_PrepareDone = NULL;
+static fnLF_ExitMainThread      pLF_ExitMainThread = NULL;
 
-static fnLF_Call              pLF_Call              = NULL;
-static fnLF_Notify            pLF_Notify            = NULL;
-static fnLF_Sequenced_Notify  pLF_Sequenced_Notify  = NULL;
+static fnLF_Call                pLF_Call = NULL;
+static fnLF_Notify              pLF_Notify = NULL;
+static fnLF_Sequenced_Notify    pLF_Sequenced_Notify = NULL;
 
-static fnLF_SetOption         pLF_SetOption         = NULL;
+static fnLF_SetOption           pLF_SetOption = NULL;
 
-static fnLF_GetStatusCount    pLF_GetStatusCount    = NULL;
-static fnLF_GetStatus         pLF_GetStatus         = NULL;
-static fnLF_PostStatus        pLF_PostStatus        = NULL;
-static fnLF_CheckMainThread   pLF_CheckMainThread   = NULL;
-static fnLF_CheckApp          pLF_CheckApp          = NULL;
-static fnLF_CheckApi          pLF_CheckApi          = NULL;
+static fnLF_GetStatusCount      pLF_GetStatusCount = NULL;
+static fnLF_GetStatus           pLF_GetStatus = NULL;
+static fnLF_PostStatus          pLF_PostStatus = NULL;
+static fnLF_CheckMainThread     pLF_CheckMainThread = NULL;
+static fnLF_CheckApp            pLF_CheckApp = NULL;
+static fnLF_CheckApi            pLF_CheckApi = NULL;
 
-static fnLF_Shutdown          pLF_Shutdown          = NULL;
+static fnLF_Shutdown            pLF_Shutdown = NULL;
 
-static fnLF_Set_Network_Event pLF_Set_Network_Event = NULL;
+static fnLF_Set_Network_Event   pLF_Set_Network_Event = NULL;
 
 /* ============================================================================
  * Helper macros
  * ============================================================================ */
 
-/*
- * RESOLVE: resolve one exported symbol into its static pointer.
- * On failure, releases the library handle and returns 0 from the enclosing
- * function (LF_LoadLibrary).
- */
-#define RESOLVE(func)                                                       \
-    do {                                                                    \
-        pLF_##func = (fnLF_##func)GET_PROC_ADDRESS(g_hDll, "LF_" #func);    \
-        if (!pLF_##func) {                                                  \
-            fprintf(stderr,                                                 \
-                    "LingoFuse: Failed to resolve symbol LF_" #func "\n");  \
-            FREE_LIBRARY(g_hDll);                                           \
-            g_hDll = NULL;                                                  \
-            return 0;                                                       \
-        }                                                                   \
+ /*
+  * RESOLVE: resolve one exported symbol into its static pointer.
+  * On failure, releases the library handle and returns 0 from the enclosing
+  * function (LF_LoadLibrary).
+  */
+#define RESOLVE(func)                                                        \
+    do {                                                                     \
+        pLF_##func = (fnLF_##func)GET_PROC_ADDRESS(g_hDll, "LF_" #func);     \
+        if (!pLF_##func) {                                                   \
+            fprintf(stderr,                                                  \
+                    "LingoFuse: Failed to resolve symbol LF_" #func "\n");   \
+            FREE_LIBRARY(g_hDll);                                            \
+            g_hDll = NULL;                                                   \
+            return 0;                                                        \
+        }                                                                    \
     } while (0)
 
-/* ZERO: reset one static pointer to NULL. */
+  /* ZERO: reset one static pointer to NULL. */
 #define ZERO(func) pLF_##func = NULL
 
 /* CHECK_LOADED_RET: guard for functions that return a value. */
-#define CHECK_LOADED_RET(func, ret)                                         \
-    do {                                                                    \
-        if (!g_loaded || !pLF_##func) {                                     \
-            fprintf(stderr,                                                 \
-                    "LingoFuse: " #func " called before LF_LoadLibrary\n"); \
-            return ret;                                                     \
-        }                                                                   \
+#define CHECK_LOADED_RET(func, ret)                                          \
+    do {                                                                     \
+        if (!g_loaded || !pLF_##func) {                                      \
+            fprintf(stderr,                                                  \
+                    "LingoFuse: " #func " called before LF_LoadLibrary\n");  \
+            return ret;                                                      \
+        }                                                                    \
     } while (0)
 
 /* CHECK_LOADED_VOID: guard for functions that return void. */
-#define CHECK_LOADED_VOID(func)                                             \
-    do {                                                                    \
-        if (!g_loaded || !pLF_##func) {                                     \
-            fprintf(stderr,                                                 \
-                    "LingoFuse: " #func " called before LF_LoadLibrary\n"); \
-            return;                                                         \
-        }                                                                   \
+#define CHECK_LOADED_VOID(func)                                              \
+    do {                                                                     \
+        if (!g_loaded || !pLF_##func) {                                      \
+            fprintf(stderr,                                                  \
+                    "LingoFuse: " #func " called before LF_LoadLibrary\n");  \
+            return;                                                          \
+        }                                                                    \
     } while (0)
 
 /* ============================================================================
@@ -249,7 +251,7 @@ static int GetExeDirectory(char* out_dir, size_t out_size) {
 #if defined(_WIN32)
     {
         DWORD n = GetModuleFileNameA(NULL, full_path,
-                                     (DWORD)(sizeof(full_path) - 1));
+            (DWORD)(sizeof(full_path) - 1));
         if (n == 0 || n >= (DWORD)sizeof(full_path)) return 0;
         full_path[n] = '\0';
     }
@@ -273,7 +275,7 @@ static int GetExeDirectory(char* out_dir, size_t out_size) {
          * readlink does not append a NUL byte, so we must do it manually.
          */
         ssize_t n = readlink("/proc/self/exe",
-                             full_path, sizeof(full_path) - 1);
+            full_path, sizeof(full_path) - 1);
         if (n <= 0) return 0;
         full_path[n] = '\0';
     }
@@ -321,7 +323,7 @@ int LF_LoadLibrary(void) {
          */
 #if defined(_WIN32)
         dll_name = (sizeof(void*) == 8) ? "LingoFuse64.dll"
-                                        : "LingoFuse32.dll";
+            : "LingoFuse32.dll";
 #elif defined(__APPLE__)
         dll_name = "liblingofuse.dylib";
 #else
@@ -334,7 +336,7 @@ int LF_LoadLibrary(void) {
          * modifying the system search path.
          */
         if (GetExeDirectory(exe_dir, sizeof(exe_dir))) {
-            size_t dirlen  = strlen(exe_dir);
+            size_t dirlen = strlen(exe_dir);
             size_t namelen = strlen(dll_name);
 
             if (dirlen + 1 + namelen + 1 <= sizeof(dll_path)) {
@@ -356,10 +358,11 @@ int LF_LoadLibrary(void) {
         }
     }
 
-    /* ---- Resolve all 36 exported functions ---- */
+    /* ---- Resolve all 37 exported functions ---- */
 
     /* Data handle */
     RESOLVE(CreateData);
+    RESOLVE(CreateData_Permanent);
     RESOLVE(FreeData);
     RESOLVE(GetBuffer);
     RESOLVE(WriteBuffer);
@@ -426,6 +429,7 @@ void LF_FreeLibrary(void) {
 
     /* Clear all function pointers to prevent use-after-unload. */
     ZERO(CreateData);
+    ZERO(CreateData_Permanent);
     ZERO(FreeData);
     ZERO(GetBuffer);
     ZERO(WriteBuffer);
@@ -485,6 +489,15 @@ TDataHnd LF_CreateData(const char* method_name) {
     }
     CHECK_LOADED_RET(CreateData, NULL);
     return pLF_CreateData(method_name);
+}
+
+TDataHnd LF_CreateData_Permanent(const char* method_name) {
+    if (method_name == NULL) {
+        fprintf(stderr, "LingoFuse: LF_CreateData_Permanent: NULL method_name\n");
+        return NULL;
+    }
+    CHECK_LOADED_RET(CreateData_Permanent, NULL);
+    return pLF_CreateData_Permanent(method_name);
 }
 
 void LF_FreeData(TDataHnd hnd) {
@@ -567,10 +580,10 @@ int LF_BindApp(TAppHnd app_hnd) {
  * ============================================================================ */
 
 int LF_RegisterCall(TAppHnd app_hnd,
-                    const char* method_name,
-                    const char* desc,
-                    void* trigger,
-                    LF_CallFunc on_call) {
+    const char* method_name,
+    const char* desc,
+    void* trigger,
+    LF_CallFunc on_call) {
     if (method_name == NULL) {
         fprintf(stderr, "LingoFuse: LF_RegisterCall: NULL method_name\n");
         return 0;
@@ -581,10 +594,10 @@ int LF_RegisterCall(TAppHnd app_hnd,
 }
 
 int LF_RegisterNotify(TAppHnd app_hnd,
-                      const char* method_name,
-                      const char* desc,
-                      void* trigger,
-                      LF_NotifyFunc on_notify) {
+    const char* method_name,
+    const char* desc,
+    void* trigger,
+    LF_NotifyFunc on_notify) {
     if (method_name == NULL) {
         fprintf(stderr, "LingoFuse: LF_RegisterNotify: NULL method_name\n");
         return 0;
@@ -758,7 +771,7 @@ void LF_Shutdown(void) {
  * ============================================================================ */
 
 void LF_Set_Network_Event(LF_NetworkEventFunc on_connect,
-                          LF_NetworkEventFunc on_disconnect) {
+    LF_NetworkEventFunc on_disconnect) {
     CHECK_LOADED_VOID(Set_Network_Event);
     pLF_Set_Network_Event(on_connect, on_disconnect);
 }
@@ -772,7 +785,7 @@ void LF_Set_Network_Event(LF_NetworkEventFunc on_connect,
  * All integer helpers use little-endian byte order.
  * ============================================================================ */
 
-/* ---- Buffer offset ---- */
+ /* ---- Buffer offset ---- */
 
 void* LF_GetBufferOffset(TDataHnd hnd, int64_t offset) {
     unsigned char* base;
@@ -966,7 +979,7 @@ int LF_ReadString(TDataHnd hnd, char* buf, size_t buf_size) {
     }
 
     start = pLF_GetPos(hnd);
-    size  = pLF_GetSize(hnd);
+    size = pLF_GetSize(hnd);
     if (start < 0 || start >= size) {
         buf[0] = '\0';
         return 0;
@@ -1029,7 +1042,7 @@ int64_t LF_ReadStringBytes(TDataHnd hnd, void* buf, int64_t buf_size) {
     }
 
     start = pLF_GetPos(hnd);
-    size  = pLF_GetSize(hnd);
+    size = pLF_GetSize(hnd);
     if (start < 0 || start >= size) {
         return -1;
     }

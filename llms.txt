@@ -11,20 +11,20 @@
 - Status: Active development (project started 2026)
 - Core engine: C4 service mesh (Pascal core, pure C ABI)
 - IPC latency: < 1 ms
-- Throughput: 12k+ calls/s
-- Compared to gRPC: 5-8x faster latency
-- Compared to REST: 10-20x faster latency
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
 - First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
 - Code generator: LingoFuse-Tools — https://github.com/PassByYou888/LingoFuse-Tools
 
+## Stability first, concurrency secondary
+
+LingoFuse places application **stability** as the top priority; concurrency performance is deliberately deprioritized. This is not a temporary trade-off but a trend the project will maintain in all future versions. A communication layer that occasionally crashes, drops messages, or deadlocks under high concurrency is useless no matter how low its latency is. Therefore, this project does not include horizontal performance comparisons in the main README. For actual measured data under concurrency and stress, refer to the `test/` directory.
+
 ## Core capabilities
 
 - Cross-language function calls without IDL or stub generation
 - Sub-1ms same-machine IPC latency
-- 5-8x faster than gRPC, 10-20x faster than REST
 - Built-in service discovery, load balancing, and FIFO ordering
 - Streaming RPC support (Notify)
 - Automatic reconnection
@@ -32,14 +32,6 @@
 - HTTP bridge for browser / Node.js / PHP integration
 - Deterministic code generation via LingoFuse-Tools
 - AI-ready knowledge base system for interface takeover
-
-## Performance comparison
-
-| Solution | IPC latency | Throughput | Service discovery | Load balancing | Ordering |
-|---|---|---|---|---|---|
-| **LingoFuse** | **< 1 ms** | **12k+/s** | ✅ Built-in | ✅ Built-in | ✅ FIFO |
-| gRPC | ~5-8 ms | ~3k/s | ❌ Needs etcd | ❌ Needs LB | ❌ |
-| REST | ~10-20 ms | ~1k/s | ❌ Needs Nginx | ❌ Needs Nginx | ❌ |
 
 ## Language support matrix
 
@@ -62,54 +54,42 @@
 | **Rust / Go / Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator |
 | **aarch64 / loongarch64 / RISC-V** | Edge device porting planned |
 
-## Quick start
+## Building the dynamic library
 
-### Install (Python)
+`src/` is the entry point for building the LingoFuse core dynamic library. Prepare a Pascal compilation environment (FPC / Lazarus), then one-click build.
 
-```bash
-pip install -e .
-```
+| Document | Content |
+|---|---|
+| [`src/CONTRIBUTING.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/CONTRIBUTING.md) | Build environment setup and workflow |
+| [`src/CONTRIBUTING_lazbuild.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/CONTRIBUTING_lazbuild.md) | One-click build with lazbuild CLI |
+| [`src/FPC_3.3.1_Package_Info.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/FPC_3.3.1_Package_Info.md) | FPC 3.3.1 environment package info |
+| [`src/Lazarus_Change_FPC.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/Lazarus_Change_FPC.md) | Switching FPC version in Lazarus |
 
-### Server (Python, 7 lines)
+## Testing & verification: `test/` is the source of truth
 
-```python
-from lingofuse import Server
-app = Server("Calc")
+For any uncertainty about the README — latency, ordering, stability, behavior under concurrency — **do not guess. Go to `test/` and find physical verification.**
 
-@app.expose("add")
-def add(a, b):
-    return a + b
+### Why `test/` contains documents and executables instead of GitHub Actions
 
-app.start_multi(["ipc:calc", "0.0.0.0:9898"])
-input("Press Enter to exit...\n")
-```
+GitHub's automated CI has many limitations. LingoFuse supports **multiple languages and platforms** — Pascal, Python, C++, C#, TypeScript, JavaScript, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
 
-### Client (Pascal, 3 lines)
+So LingoFuse's approach is: **deliver testing capability directly to the user.** `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting **real data from your own hardware**.
 
-```pascal
-LF.PrepareClient('ipc:calc', nil);
-if LF.PrepareDone then
-  WriteLn('10 + 20 = ', LF.CallApp('Calc', Data, 3000).ReadInt32);
-```
+**All CI tests are C++ code.** Source code can be found under `cpp/`:
 
-### Client (TypeScript)
+- `cpp/test/` — Functional tests (`test_lingofuse.cpp` / `test_lingofuse_json.cpp`)
+- `cpp/Stress/` — Stress tests (`StressService.cpp` / `StressClient.cpp` / `StressMonitor.cpp`)
+- `cpp/Conc/` — Concurrent Notify tests (`ConcService.cpp` / `ConcClient.cpp`)
 
-```typescript
-import { Framework } from 'lingofuse-ts';
+You can use the pre-compiled executables in `test/test.zip` for quick verification, or enter the `cpp/` directory to compile, reproduce, and modify yourself. Each subdirectory has `CMakeLists.txt` and one-click CI scripts.
 
-const lf = new Framework();
-lf.prepareClient('127.0.0.1:9898');
-const result = lf.call('Calc', 'add', Buffer.from([5, 0, 0, 0, 7, 0, 0, 0]), 5000);
-console.log('5 + 7 =', result.readInt32LE(0));
-```
+### Test documents & executables
 
-### Clone with submodules (required)
-
-```bash
-git clone --recursive https://github.com/PassByYou888/LingoFuse.git
-# If already cloned without --recursive:
-git submodule update --init --recursive
-```
+| Document | Content | Executables |
+|---|---|---|
+| [`LingoFuse_Functional_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md) | **Functional tests**: 82 tests covering C++ RAII layer and serialization layer, verifying every public API contract. 100% pass in CI mode. | `test.zip` contains `test_lingofuse` / `test_lingofuse_json` |
+| [`LingoFuse_Stress_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md) | **Stress tests**: One-click self-evaluation for Call / Notify / mixed modes, producing throughput, latency, and stability data on your own machine. | `test.zip` contains `StressService` / `StressClient` / `StressMonitor` |
+| [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | **Concurrent Notify**: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
 
 ## Code generator system
 
@@ -146,7 +126,25 @@ These branches demonstrate that the LingoFuse communication foundation is genera
 
 ### Related projects
 
-- **[zIPC](https://github.com/PassByYou888/zIPC)** — The same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh. Use LingoFuse for cross-language RPC, service discovery, load balancing, and agent communication.
+- **[zIPC](https://github.com/PassByYou888/zIPC)** — The same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh.
+
+## Dependencies
+
+Core dynamic libraries are located in `Binary/`:
+
+| Platform | Core library | IPC dependency | Memory allocator |
+|---|---|---|---|
+| Windows 64 | `LingoFuse64.dll` | `z_ipc_64.dll` | `mimalloc64.dll` |
+| Windows 32 | `LingoFuse32.dll` | `z_ipc_32.dll` | `mimalloc32.dll` |
+| Linux | `liblingofuse.so` | `libz_ipc.so` | `libmimalloc.so` (optional) |
+| macOS | `liblingofuse.dylib` | `libz_ipc.dylib` | `libmimalloc.dylib` (optional) |
+
+**Deployment**: Add the `Binary/` directory to system `PATH`, or copy the dynamic libraries to the executable's directory.
+
+On Windows, install the **VC++ 2015-2022 Redistributable**:
+- Download page: [Latest supported Visual C++ Redistributable downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
+- x64 direct link: [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- x86 direct link: [vc_redist.x86.exe](https://aka.ms/vs/17/release/vc_redist.x86.exe)
 
 ## Documentation map
 
@@ -158,10 +156,9 @@ These branches demonstrate that the LingoFuse communication foundation is genera
 - [JavaScript README](https://github.com/PassByYou888/LingoFuse/blob/main/js/readme.md): JavaScript developers
 - [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
 - [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
-- [LLM Service CLI Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/LingoFuse_LLM_Service_guide.md): Local LLM deployment
-- [Streaming LLM Service Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/LingoFuse_Python_Streaming_LLM_Guide.md): LLM service development
-- [llama-cpp-python Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/llm-service/llama_cpp_python_guide.md): Dependency installation
-- [Migration & Work Summary](https://github.com/PassByYou888/LingoFuse/blob/main/Py/LingoFuse_Python_Binding_Migration_Record.md): Internal implementation details
+- [Functional Test Guide](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md): API contract verification
+- [Stress Test Guide](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md): Throughput & stability self-evaluation
+- [Concurrent Notify Demo](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md): Notify reliability & completion barrier
 
 ## Links
 
@@ -176,4 +173,4 @@ These branches demonstrate that the LingoFuse communication foundation is genera
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, C ABI, FFI, streaming RPC, HTTP bridge, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, pasAgent, cppAgent, csharpAgent, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, C ABI, FFI, streaming RPC, HTTP bridge, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, pasAgent, cppAgent, csharpAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一

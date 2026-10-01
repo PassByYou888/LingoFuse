@@ -95,6 +95,12 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 对 readme 中的任何描述拿不准——延迟、顺序、稳定性、并发下的行为——**不要去猜，去 `test/` 目录找实物印证。**
 
+`test/` 提供了 **PoC（Proof of Concept）概念验证**的一部分工作。如果需要在产品中使用 LingoFuse 体系，请注意以下几点：
+
+1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC，验证 LF 在自身业务场景下的表现。
+2. **用户需要明白，除了使用 LF，还需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新——这一切都是对用户而言的。
+3. **各个语言原则上都会有自己的 test、CI 体系。** 就目前来说，Pascal、C#、C++、JS、TS、Py 都有各自能跑的 test，但 **CI 只有 C++ 的**。
+
 ### 为什么 test 目录是一堆文档和可执行文件
 
 GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。

@@ -1,0 +1,39 @@
+name: lingofuse
+description: Dart FFI bindings for the LingoFuse cross-language RPC framework.
+version: 0.1.0
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  ffi: ^2.1.0
+  path: ^1.9.0
+
+dev_dependencies:
+  ffigen: ^14.0.0
+  test: ^1.25.0
+
+# ------------------------------------------------------------------
+# ffigen configuration
+# Parses headers/LingoFuse.h and generates lib/src/bindings_generated.dart
+# ------------------------------------------------------------------
+ffigen:
+  name: LingoFuseBindings
+  description: Auto-generated FFI bindings for LingoFuse.h
+  output: 'lib/src/bindings_generated.dart'
+  llvm-path:
+    - 'C:\LLVM'
+    - 'C:\LLVM\bin'
+  headers:
+    entry-points:
+      - 'headers/LingoFuse.h'
+    include-directives:
+      - 'headers/LingoFuse.h'
+  compiler-opts:
+    - '-Iheaders'
+  preamble: |
+    // AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
+    // Regenerate with: dart run ffigen
+  comments:
+    style: any
+    length: full

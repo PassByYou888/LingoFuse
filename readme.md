@@ -116,55 +116,6 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 
 你可以直接使用 `test/test.zip` 里的预编译可执行文件快速验证，也可以进入 `cpp/` 目录自己编译、自己复现、自己改。每个子目录都有 `CMakeLists.txt` 和一键 CI 脚本。
 
-### 测试文档与可执行文件
-
-| 文档 | 内容 | 可执行文件 |
-|------|------|------------|
-| [`LingoFuse_Functional_Test_Guide.md`](test/LingoFuse_Functional_Test_Guide.md) | **功能测试**：82 项测试，覆盖 C++ RAII 层与序列化层，验证每一个公开 API 的契约。CI 模式下 100% 通过。 | `test.zip` 内 `test_lingofuse` / `test_lingofuse_json` |
-| [`LingoFuse_Stress_Test_Guide.md`](test/LingoFuse_Stress_Test_Guide.md) | **压力测试**：提供 Call / Notify / 混合模式一键自测工具，在自己的机器上跑出吞吐、延迟、稳定性数据。 | `test.zip` 内 `StressService` / `StressClient` / `StressMonitor` |
-| [`LingoFuse_Concurrent_Notify_Demo.md`](test/LingoFuse_Concurrent_Notify_Demo.md) | **并发 Notify**：验证高并发下 Notify 不丢失，演示"完成屏障"模式，20 批 × 10000 条实测零丢失。 | `test.zip` 内 `ConcService` / `ConcClient` |
-
-### Rust 测试体系
-
-Rust 绑定的测试分为四个层次，合计 **67 项测试**，全部通过：
-
-| 层次 | 命令 | 说明 |
-|------|------|------|
-| 单元测试 | `cargo test --lib` | 54 通过，11 忽略（并行安全） |
-| 忽略的单元测试 | `cargo test --lib -- --ignored --test-threads=1` | 11 通过（涉及进程级 native 状态） |
-| ABI 冒烟测试 | `cargo test --test abi_smoke` | 5 通过（原始 C ABI 层） |
-| 端到端集成测试 | `cargo test --test framework_e2e -- --ignored --test-threads=1` | 2 通过（完整调用 + 通知流程） |
-
-详细使用说明参见 [`rust/RUST_USER_GUIDE.md`](rust/RUST_USER_GUIDE.md)。
-
----
-
-## 仓库结构
-
-```
-LingoFuse/
-├── Binary/              # 预编译动态库（Win32 / Win64）
-├── cpp/                 # C++ 绑定、并发压力测试、跨语言 Demo
-│   ├── test/            # 功能测试源码
-│   ├── Stress/          # 压力测试源码
-│   └── Conc/            # 并发 Notify 测试源码
-├── csharp/              # C# / .NET 绑定、示例、测试程序
-├── ts/                  # TypeScript 绑定（源码 + 类型定义 + 示例 + 测试）
-├── js/                  # JavaScript 绑定（CommonJS + ESM 双入口）
-├── pascal/              # Pascal 绑定、示例、基准测试、桥接
-├── Py/                  # Python 绑定、桥接、跨语言 Demo
-├── rust/                # Rust 绑定（C ABI 层 + 安全 RAII 封装 + 测试）
-│   ├── src/             # 源码（含 sys 子模块）
-│   ├── tests/           # 集成测试
-│   ├── build.ps1        # 构建脚本
-│   ├── check.ps1        # 静态检查脚本
-│   ├── test.ps1         # 测试脚本
-│   ├── clean.ps1        # 清理脚本
-│   └── RUST_USER_GUIDE.md  # Rust 完整使用说明
-├── test/                # CI 测试接口：功能 / 压力 / 并发测试指南与可执行文件
-└── src/                 # Pascal 主库源码（编译动态库入口）
-```
-
 ---
 
 ## 依赖库

@@ -1,28 +1,25 @@
 <#
 .SYNOPSIS
-    Clean build artifacts and, optionally, the native library.
+    Clean build artifacts from the lingofuse Rust crate.
 
 .DESCRIPTION
-    Removes the target/ directory and, when -Native is given, also
-    removes any native library copied into the crate root during
-    testing.
+    Removes the target/ directory. With no arguments, only the debug
+    profile is removed. Use -Release to remove only the release
+    profile, or -AllProfiles to remove the entire target/ directory
+    (debug + release + incremental).
 
-    With no arguments, only the debug profile is removed. Use
-    -Release to remove only the release profile, or -AllProfiles to
-    remove both.
+    The script never touches the native LingoFuse library. If the
+    library happens to sit in the crate root, it is left alone; the
+    operator is responsible for its placement.
 
     This script lives in the crate root. It uses $PSScriptRoot to
     locate the crate.
 
 .PARAMETER AllProfiles
-    Remove the entire target/ directory (debug + release + incremental).
+    Remove the entire target/ directory.
 
 .PARAMETER Release
     Remove only target/release. Ignored if -AllProfiles is set.
-
-.PARAMETER Native
-    Also remove the native library from the crate root, if present.
-    Never touches a library found on the system loader path.
 
 .PARAMETER DryRun
     Print what would be removed without actually removing anything.
@@ -32,12 +29,15 @@
     Removes target/debug.
 
 .EXAMPLE
-    .\clean.ps1 -AllProfiles -Native
-    Removes the entire target directory and any native library in the
-    crate root.
+    .\clean.ps1 -Release
+    Removes target/release.
 
 .EXAMPLE
-    .\clean.ps1 -DryRun
+    .\clean.ps1 -AllProfiles
+    Removes the entire target directory.
+
+.EXAMPLE
+    .\clean.ps1 -AllProfiles -DryRun
     Prints the paths that would be removed.
 #>
 
@@ -45,7 +45,6 @@
 param(
     [switch]$AllProfiles,
     [switch]$Release,
-    [switch]$Native,
     [switch]$DryRun
 )
 
@@ -64,7 +63,6 @@ Write-Host "===============================================" -ForegroundColor Cy
 Write-Host " Crate root    : $CrateRoot"
 Write-Host " All profiles  : $AllProfiles"
 Write-Host " Release only  : $Release"
-Write-Host " Native library: $Native"
 Write-Host " Dry run       : $DryRun"
 Write-Host ""
 
@@ -86,20 +84,6 @@ if ($AllProfiles) {
     }
     if (Test-Path $profileDir) {
         $pathsToRemove += $profileDir
-    }
-}
-
-if ($Native) {
-    $nativeName = if ($IsWindows -or $env:OS -eq "Windows_NT") {
-        if ([IntPtr]::Size -eq 8) { "LingoFuse64.dll" } else { "LingoFuse32.dll" }
-    } elseif ($IsMacOS) {
-        "liblingofuse.dylib"
-    } else {
-        "liblingofuse.so"
-    }
-    $nativePath = Join-Path $CrateRoot $nativeName
-    if (Test-Path $nativePath) {
-        $pathsToRemove += $nativePath
     }
 }
 

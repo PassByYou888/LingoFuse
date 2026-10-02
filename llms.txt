@@ -13,7 +13,7 @@
 - IPC latency: < 1 ms
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
-- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust
+- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, and PHP (via HTTP bridge)
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
 - Code generator: LingoFuse-Tools — https://github.com/PassByYou888/LingoFuse-Tools
 
@@ -30,6 +30,7 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 - Automatic reconnection
 - Zero-copy data transfer
 - HTTP bridge for browser / Node.js / PHP integration
+- PHP integration via HTTP bridge (JSON over HTTP POST, PHP as caller)
 - Deterministic code generation via LingoFuse-Tools
 - AI-ready knowledge base system for interface takeover
 
@@ -46,13 +47,15 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 | **TypeScript** | Production-ready | ✅ | ✅ | Complete type definitions, source, build output, examples, tests |
 | **JavaScript** | Production-ready | ✅ | ✅ | CommonJS + ESM dual entry |
 | **Rust** | Production-ready | ✅ | ✅ | Safe RAII wrappers + full C ABI layer, 67 tests passing |
+| **Go** | Production-ready | ✅ | ✅ | Native Go bindings, full CGO wrapper, includes e2e / ABI smoke / data handle tests |
+| **PHP** | Production-ready | ❌ | ✅ | Via `bridge.py` HTTP gateway, JSON over HTTP POST, PHP as caller. Official PHP FFI cannot directly support C ABI. |
 
 ### Via code generator / bridge
 
 | Language / Platform | Method |
 |---|---|
-| **Node.js / PHP / Browser** | `bridge.py` HTTP gateway |
-| **Go / Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator |
+| **Node.js / Browser** | `bridge.py` HTTP gateway |
+| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator |
 | **aarch64 / loongarch64 / RISC-V** | Edge device porting planned |
 
 ## Building the dynamic library
@@ -72,7 +75,7 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 ### Why `test/` contains documents and executables instead of GitHub Actions
 
-GitHub's automated CI has many limitations. LingoFuse supports **multiple languages and platforms** — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
+GitHub's automated CI has many limitations. LingoFuse supports **multiple languages and platforms** — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
 
 So LingoFuse's approach is: **deliver testing capability directly to the user.** `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting **real data from your own hardware**.
 
@@ -105,6 +108,19 @@ The Rust binding ships with **67 tests** across four layers, all passing:
 
 See [`rust/RUST_USER_GUIDE.md`](https://github.com/PassByYou888/LingoFuse/blob/main/rust/RUST_USER_GUIDE.md) for full usage instructions.
 
+### Go test suite
+
+The Go binding ships with tests under `go/test/`:
+
+| Test file | Description |
+|---|---|
+| `abi_smoke_test.go` | ABI smoke test |
+| `data_handle_test.go` | Data handle test |
+| `e2e_test.go` | End-to-end test |
+| `errors_test.go` | Error handling test |
+
+Run with `go test ./...` from the `go/` directory. See [`go/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/go/README.md) for details.
+
 ## Code generator system
 
 LingoFuse-Tools solves the biggest pain point of cross-language RPC: writing bindings for each language by hand.
@@ -113,8 +129,8 @@ Give it a Pascal unit or C header file, and it automatically produces multi-lang
 
 | Tool | Target | Protocol | Target languages |
 |---|---|---|---|
-| **code_decl_to_abi** | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / **Rust** |
-| **code_decl_to_json_abi** | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript |
+| **code_decl_to_abi** | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / **Rust** / **Go** |
+| **code_decl_to_json_abi** | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript / **PHP** |
 | **code_decl_to_mcp** | MCP tool provider | Model Context Protocol | Pascal / Python / C++ / C# |
 
 Each tool has three entry points: GUI, CLI, and MCP API. Each tool comes with a self-contained knowledge base (Markdown) covering API contracts, wire protocol, type mapping, known pitfalls, debugging trees, and extension guides.
@@ -170,6 +186,8 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 - [TypeScript README](https://github.com/PassByYou888/LingoFuse/blob/main/ts/README.md): TypeScript developers
 - [JavaScript README](https://github.com/PassByYou888/LingoFuse/blob/main/js/readme.md): JavaScript developers
 - [Rust User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/rust/RUST_USER_GUIDE.md): Rust developers
+- [Go README](https://github.com/PassByYou888/LingoFuse/blob/main/go/README.md): Go developers
+- [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge)
 - [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
 - [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
 - [Functional Test Guide](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md): API contract verification
@@ -190,4 +208,4 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, C ABI, FFI, streaming RPC, HTTP bridge, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, PHP, C ABI, FFI, CGO, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一

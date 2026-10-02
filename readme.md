@@ -5,7 +5,7 @@
 > 任何语言写的函数，任何其他语言都能直接调。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/languages-9%20first--party%20%2B%2030%20via%20tools-blue)]()
+[![Languages](https://img.shields.io/badge/languages-10%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
 [![CI](https://img.shields.io/badge/CI-C%2B%2B%20only-orange)]()
 
@@ -55,7 +55,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 | 特性 | LingoFuse | gRPC | REST | HTTP POST |
 |------|-----------|------|------|-----------|
 | 跨机支持 | ✅ 原生 | ✅ 需网关 | ✅ 需网关 | ✅ 原生 |
-| 跨语言 | **9 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
+| 跨语言 | **10 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
 | 请求-响应 | ✅ Call | ✅ | ✅ | ✅ |
 | 流式 / 异步 | ✅ Notify | ⚠️ 需 stream | ❌ | ❌ |
 | 类型安全 | ✅ 强类型 | ✅ 需 IDL | ❌ | ❌ |
@@ -126,6 +126,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | [**JavaScript**](javascript/) | 🟢 生产就绪 | **127 项测试** | CommonJS + ESM 双入口，与 TS 字节级互通 |
 | [**Rust**](rust/) | 🟢 生产就绪 | **67 项测试** | 安全 RAII 封装 + 完整 C ABI 层。FFI 边界 `catch_unwind` 隔离 |
 | [**Go**](go/) | 🟢 生产就绪 | **18 项测试** | purego 无 cgo，交叉编译友好。含 e2e / ABI 冒烟 / 数据句柄测试 |
+| [**Dart**](dart/) | 🟢 生产就绪 | 完整测试套件 | Dart FFI + C 桥接 DLL。**完整 caller + server 能力**。支持 Flutter 移动端 |
 | [**PHP**](php/) | 🟡 调用者接入 | 无 FFI 测试 | 经 `bridge.py` HTTP 网关，**PHP 只能作为调用者** |
 
 > **关于 PHP 的明确说明**：PHP 官方 FFI 机制无法从外部 OS 线程进入 PHP 回调，无法注册 Call/Notify 服务端 API。因此 PHP 只能作为调用者接入。**需要 PHP 作为服务端时，LingoFuse 当前不满足。**
@@ -135,8 +136,36 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | 语言 / 平台 | 方式 | 成熟度 |
 |-------------|------|--------|
 | **Node.js / 浏览器** | `bridge.py` HTTP 网关 | 可用，非原生 |
-| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
+| **Java / Kotlin / Swift / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
 | **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划 | 持续推进中，未生产就绪 |
+
+---
+
+### 测试与 PoC 验证
+
+Dart 绑定提供完整的测试套件，位于 `test/` 和 `bin/` 目录：
+
+- `test/data_handle_test.dart` —— DataHandle 层测试
+- `test/io_test.dart` —— LfIo 层测试
+- `test/status_test.dart` —— 状态队列测试
+- `test/server_test.dart` —— 端到端集成测试
+- `bin/phase1_test.dart` ~ `bin/phase3_test.dart` —— 分阶段验证
+
+**官方明确说明**：Dart 绑定提供的测试是机制层测试，不是你的 App 层测试。在你的业务中使用 Dart 绑定之前，需要：
+
+1. **用你自己的业务场景构建 PoC**：模拟你的 App 层逻辑，验证 LingoFuse 在你的数据量、并发模式和错误处理下的表现
+2. **跨进程验证**：启动两个独立 Dart 进程（或 Dart + 另一种语言的进程），验证跨进程 IPC/TCP 调用
+3. **长时间运行稳定性**：让 Dart server 运行 24 小时以上，观察内存和线程稳定性
+
+**POC 建议场景**：
+
+| 场景 | 验证内容 |
+|------|----------|
+| Dart server + Pascal client | 跨语言互操作性（Dart 作为服务端） |
+| Dart client + Python server | 跨语言互操作性（Dart 作为调用端） |
+| 高并发 Call 请求 | C 桥接的串行化对性能的影响 |
+| 大数据传输（>100 MB） | 内存占用和传输稳定性 |
+| 断线重连 | 网络中断后的自动恢复 |
 
 ---
 
@@ -191,11 +220,11 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Py、Rust、Go 都有各自能跑的 test，但 **CI 只有 C++ 的**。
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Py、Rust、Go、Dart 都有各自能跑的 test，但 **CI 只有 C++ 的**。
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -239,13 +268,23 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **九语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / PHP（PHP 为调用者） |
+| **十语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
 | **CI 测试体系** | ⚠️ 仅 C++ | `test/` 提供指南与可执行文件，源码在 `cpp/` 下 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 | **Java 绑定** | ⏳ 接入中 | 欢迎贡献 |
+
+### 明确不推荐的使用场景
+
+- 需要成熟社区支持、大量第三方教程、Stack Overflow 问答的项目
+- 无法接受单人维护风险，且没有自行编译、自行维护能力的团队
+- 纯 TS/JS 项目，所有逻辑都可以用 TS/JS 重写，引入 LF 只会增加复杂度和故障点
+- 需要 PHP 作为服务端的场景（PHP 只能作为调用者）
+- 对并发性能有硬性要求，且不愿自行做 App 层 PoC 验证的团队
+- **Flutter Web 项目**（Dart FFI 不可用）
+- **32 位 Windows 项目**（Dart 绑定未测试）
 
 ---
 
@@ -278,6 +317,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | 构建 C++ 智能体 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) |
 | 构建 .NET 智能体 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) |
 | 只用同机 IPC，不需要完整 RPC | [zIPC](https://github.com/PassByYou888/zIPC) |
+| 面向大规模服务器端数据吞吐 | [ZNetV2](https://github.com/PassByYou888/ZNetV2) |
 
 ---
 

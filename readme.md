@@ -5,7 +5,7 @@
 > 任何语言写的函数，任何其他语言都能直接调。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/languages-7%20first--party%20%2B%2030%20via%20tools-blue)]()
+[![Languages](https://img.shields.io/badge/languages-9%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
 
 ---
@@ -27,7 +27,7 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 | 特性 | LingoFuse | gRPC | REST | HTTP POST | SendMessage |
 |------|-----------|------|------|-----------|-------------|
 | 跨机支持 | ✅ 原生 | ✅ 需网关 | ✅ 需网关 | ✅ 原生 | ❌ 仅同进程 |
-| 跨语言 | **7 种一方 + 30+ 种经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 | ❌ 系统绑定 |
+| 跨语言 | **9 种一方 + 30+ 种经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 | ❌ 系统绑定 |
 | 请求-响应 | ✅ Call | ✅ | ✅ | ✅ | ✅ 阻塞 |
 | 流式 / 异步 | ✅ Notify | ⚠️ 需 stream | ❌ | ❌ | ❌ |
 | 类型安全 | ✅ 强类型 | ✅ 需 IDL | ❌ | ❌ | ✅ 同进程 |
@@ -56,23 +56,27 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 | **TypeScript** | 🟢 生产就绪 | 完整类型定义 + 源码 + 编译产物 + 示例 + 测试 |
 | **JavaScript** | 🟢 生产就绪 | CommonJS + ESM 双入口 |
 | **Rust** | 🟢 生产就绪 | 安全 RAII 封装 + 完整 C ABI 层，67 项测试覆盖 |
+| **Go** | 🟢 生产就绪 | 原生 Go 绑定，完整 CGO 封装，含 e2e / ABI 冒烟 / 数据句柄测试 |
+| **PHP** | 🟢 生产就绪 | 经 `bridge.py` HTTP 网关接入，走 HTTP POST + JSON 数据交换，PHP 为调用者 |
+
+> **关于 PHP 的说明**：由于 PHP 官方 FFI 机制的限制，无法直接通过 C ABI 与 LingoFuse 原生库交互。因此 PHP 当前的支持路线是走 HTTP 桥接，通过 `bridge.py` 网关以 HTTP POST + JSON 格式交换数据，PHP 作为调用者接入 LingoFuse 生态。
 
 ### 经代码生成器 / 桥接支持
 
 | 语言 / 平台 | 方式 |
 |-------------|------|
-| **Node.js / PHP / 浏览器** | `bridge.py` HTTP 网关 |
-| **Go / Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | 经 LingoFuse-Tools 代码生成器接入 |
+| **Node.js / 浏览器** | `bridge.py` HTTP 网关 |
+| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | 经 LingoFuse-Tools 代码生成器接入 |
 | **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划，持续推进中 |
 
 ### 代码生成器体系
 
-**[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)** 解决"为每种语言手写绑定"的痛点。给一份 Pascal 单元或 C 头文件，它自动产出多语言服务端、调用端及配套 README 文档。
+**[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)** 解决“为每种语言手写绑定”的痛点。给一份 Pascal 单元或 C 头文件，它自动产出多语言服务端、调用端及配套 README 文档。
 
 | 工具 | 生成目标 | 协议 | 目标语言 |
 |------|----------|------|----------|
-| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / C# / **Rust** |
-| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / C# / JavaScript |
+| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / C# / **Rust** / **Go** |
+| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / C# / JavaScript / **PHP** |
 | **code_decl_to_mcp** | MCP 工具提供者 | Model Context Protocol | Pascal / Python / C++ / C# |
 
 每个工具都是**三入口**（GUI / CLI / MCP API），各自附带自包含知识库（Markdown），涵盖 API 契约、线协议、类型映射、已知陷阱、调试树。**把知识库喂给 AI，AI 即可全接管接口。**
@@ -93,11 +97,11 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC，验证 LF 在自身业务场景下的表现。
 2. **用户需要明白，除了使用 LF，还需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新——这一切都是对用户而言的。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 就目前来说，Pascal、C#、C++、JS、TS、Py、**Rust** 都有各自能跑的 test，但 **CI 只有 C++ 的**。
+3. **各个语言原则上都会有自己的 test、CI 体系。** 就目前来说，Pascal、C#、C++、JS、TS、Py、Rust、**Go** 都有各自能跑的 test，但 **CI 只有 C++ 的**。
 
 ### 为什么 test 目录是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。** `test/` 提供完整的测试指南（Markdown）和预编译的可执行文件（`test.zip`）。你在自己的机器上解压、运行、观察，得到的是**你自己硬件上的真实数据**。
 
@@ -157,13 +161,13 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **七语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust |
+| **九语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / PHP |
 | **HTTP 桥接** | ✅ 生产就绪 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，AI 接管成功率接近绝对 |
 | **CI 测试体系** | ✅ 已就绪 | `test/` 提供指南与可执行文件，源码在 `cpp/` 下，可自行编译复现 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
-| **Go / Java 绑定** | ⏳ 接入中 | 欢迎贡献 |
+| **Java 绑定** | ⏳ 接入中 | 欢迎贡献 |
 
 ---
 

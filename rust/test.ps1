@@ -12,10 +12,14 @@
       4. e2e     - End-to-end framework tests (tests/framework_e2e.rs;
                    serial).
 
-    By default the script checks for the native library first. If the
-    library is not found, it warns and still runs the tests, but every
-    integration test will print [SKIP] and return early. Pass
-    -RequireNative to make a missing library a hard failure.
+    The script never copies the native LingoFuse library. It checks
+    whether the library is discoverable through PATH (or sitting in
+    the crate root), and warns if it is not. A missing library makes
+    every integration test print [SKIP] and return early; the unit
+    tests that do not touch native code still run.
+
+    Pass -RequireNative to turn a missing native library into a hard
+    failure instead of a warning.
 
     This script lives in the crate root. It uses $PSScriptRoot to
     locate the crate.
@@ -26,7 +30,7 @@
     -Layer unit,abi.
 
 .PARAMETER RequireNative
-    Fail if the native library is not found. Default: warn only.
+    Fail if the native library is not discoverable. Default: warn.
 
 .PARAMETER NoCapture
     Pass --nocapture to the test harness. Useful for seeing [SKIP]
@@ -98,7 +102,7 @@ Write-Host " NoCapture     : $NoCapture"
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Native library presence check
+# Native library presence check (read-only; nothing is copied)
 # ---------------------------------------------------------------------------
 $nativeName = if ($IsWindows -or $env:OS -eq "Windows_NT") {
     if ([IntPtr]::Size -eq 8) { "LingoFuse64.dll" } else { "LingoFuse32.dll" }
@@ -108,22 +112,25 @@ $nativeName = if ($IsWindows -or $env:OS -eq "Windows_NT") {
     "liblingofuse.so"
 }
 
-$nativeInRoot = Test-Path (Join-Path $CrateRoot $nativeName)
 $nativeInPath = $null -ne (Get-Command $nativeName -ErrorAction SilentlyContinue)
-$haveNative = $nativeInRoot -or $nativeInPath
+$nativeInRoot = Test-Path (Join-Path $CrateRoot $nativeName)
+$haveNative = $nativeInPath -or $nativeInRoot
 
 if ($haveNative) {
-    $where = if ($nativeInRoot) { "crate root" } else { "system loader path" }
-    Write-Host "[INFO] Native library found ($where): $nativeName" -ForegroundColor Green
+    $location = if ($nativeInPath) { "PATH" } else { "crate root" }
+    Write-Host "[INFO] Native library discoverable via $location : $nativeName" -ForegroundColor Green
 } else {
     if ($RequireNative) {
         Write-Host "[FAIL] Native library '$nativeName' not found (required)." -ForegroundColor Red
-        Write-Host "       Place it in the crate root or add its directory to PATH." -ForegroundColor Red
+        Write-Host "       Add the LingoFuse Binary/ directory to PATH, or place" -ForegroundColor Red
+        Write-Host "       the library in the crate root." -ForegroundColor Red
+        Write-Host "       (This script does NOT copy the library for you.)" -ForegroundColor DarkGray
         exit 1
     }
     Write-Host "[WARN] Native library '$nativeName' not found." -ForegroundColor Yellow
     Write-Host "       Integration tests will print [SKIP] and return early." -ForegroundColor Yellow
     Write-Host "       Use -NoCapture to see the [SKIP] lines." -ForegroundColor Yellow
+    Write-Host "       (This script does NOT copy the library for you.)" -ForegroundColor DarkGray
 }
 Write-Host ""
 

@@ -1,0 +1,4 @@
+# LingoFuse tests touch process-wide native state (framework startup,
+# data handle pool, bridge host). Running multiple test files in
+# parallel would race on that state, so force serial execution.
+concurrency: 1

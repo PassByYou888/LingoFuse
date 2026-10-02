@@ -139,48 +139,6 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | **Java / Kotlin / Swift / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
 | **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划 | 持续推进中，未生产就绪 |
 
----
-
-### 测试与 PoC 验证
-
-Dart 绑定提供完整的测试套件，位于 `test/` 和 `bin/` 目录：
-
-- `test/data_handle_test.dart` —— DataHandle 层测试
-- `test/io_test.dart` —— LfIo 层测试
-- `test/status_test.dart` —— 状态队列测试
-- `test/server_test.dart` —— 端到端集成测试
-- `bin/phase1_test.dart` ~ `bin/phase3_test.dart` —— 分阶段验证
-
-**官方明确说明**：Dart 绑定提供的测试是机制层测试，不是你的 App 层测试。在你的业务中使用 Dart 绑定之前，需要：
-
-1. **用你自己的业务场景构建 PoC**：模拟你的 App 层逻辑，验证 LingoFuse 在你的数据量、并发模式和错误处理下的表现
-2. **跨进程验证**：启动两个独立 Dart 进程（或 Dart + 另一种语言的进程），验证跨进程 IPC/TCP 调用
-3. **长时间运行稳定性**：让 Dart server 运行 24 小时以上，观察内存和线程稳定性
-
-**POC 建议场景**：
-
-| 场景 | 验证内容 |
-|------|----------|
-| Dart server + Pascal client | 跨语言互操作性（Dart 作为服务端） |
-| Dart client + Python server | 跨语言互操作性（Dart 作为调用端） |
-| 高并发 Call 请求 | C 桥接的串行化对性能的影响 |
-| 大数据传输（>100 MB） | 内存占用和传输稳定性 |
-| 断线重连 | 网络中断后的自动恢复 |
-
----
-
-## 代码生成器体系
-
-**[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)** 解决“为每种语言手写绑定”的痛点。给一份 Pascal 单元或 C 头文件，它自动产出多语言服务端、调用端及配套 README 文档。
-
-| 工具 | 生成目标 | 协议 | 目标语言 |
-|------|----------|------|----------|
-| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / C# / Rust / Go |
-| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / C# / JavaScript / PHP |
-| **code_decl_to_mcp** | MCP 工具提供者 | Model Context Protocol | Pascal / Python / C++ / C# |
-
-每个工具都是**三入口**（GUI / CLI / MCP API），各自附带自包含知识库（Markdown），涵盖 API 契约、线协议、类型映射、已知陷阱、调试树。**把知识库喂给 AI，AI 可以辅助接管接口——生成代码仍需人工验证。**
-
 👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
 
 ---

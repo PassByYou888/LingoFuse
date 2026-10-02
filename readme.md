@@ -82,8 +82,8 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 **第一步：克隆仓库**
 
 ```bash
-git clone https://github.com/PassByYou888/LingoFuse.git
-cd LingoFuse
+git clone --recursive https://github.com/PassByYou888/LingoFuse.git
+# 然后将 LingoFuse/Binary 目录加入系统 PATH
 ```
 
 **第二步：阅读测试指南，运行预编译可执行文件**

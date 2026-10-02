@@ -2,11 +2,12 @@
 
 > **跨语言通讯地基。不写 IDL，不生成桩代码，不搭 HTTP 服务。**
 >
-> 任何语言写的函数，任何其他语言都能直接调。
+> 任何语言写的函数，任何其他语言都能直接调——**但请先读完“验证与边界”再决定是否采用。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Languages](https://img.shields.io/badge/languages-9%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
+[![CI](https://img.shields.io/badge/CI-C%2B%2B%20only-orange)]()
 
 ---
 
@@ -14,7 +15,9 @@
 
 LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承诺一句话：**任何语言写的函数，任何其他语言都能直接调。**
 
-不需要写 IDL，不需要生成桩代码，不需要搭 HTTP 服务。同机 IPC 延迟 < 1 ms，跨机原生支持，内置服务发现、负载均衡、FIFO 顺序保证和断线重连。
+不需要写 IDL，不需要生成桩代码，不需要搭 HTTP 服务。同机 IPC 延迟**声称** < 1 ms，跨机原生支持，内置服务发现、负载均衡、FIFO 顺序保证和断线重连。
+
+**但它不是万能胶。** 在决定采用之前，请务必阅读本文档的 [测试与验证](#测试与验证以-test-为准) 和 [项目状态与边界](#项目状态与边界) 部分。
 
 ---
 
@@ -22,7 +25,7 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 跨语言调用目前的现实：gRPC 要写 IDL、要生成桩代码、要搭网关；REST 延迟高、无流式、无服务发现；HTTP POST 天然跨机但无顺序保证、无服务发现；同进程调用延迟极低但不跨语言。
 
-**每一种方案都只覆盖了一部分场景。** LingoFuse 把长处合并，把短板补上。
+**每一种方案都只覆盖了一部分场景。** LingoFuse 试图把长处合并，把短板补上。
 
 | 特性 | LingoFuse | gRPC | REST | HTTP POST | SendMessage |
 |------|-----------|------|------|-----------|-------------|
@@ -39,35 +42,65 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 | IDL 依赖 | **无** | 必需 | 无（需文档） | 无 | 无 |
 | 桩代码生成 | **可选（自动）** | 必需 | 无 | 无 | 无 |
 
-> ⚠️ **稳定第一，并发次要。** LingoFuse 把应用的稳定性放在第一位，并发性能往后挪移。这不是临时取舍，而是项目未来所有版本都会坚持的趋势。一个在高并发下会偶发崩溃、丢消息或死锁的通讯层，延迟再低也没有意义。因此本项目不在主 readme 中做并发性能的横向对比，实测数据以 `test/` 目录为准。
+> ⚠️ **稳定第一，并发次要。** LingoFuse 把应用的稳定性放在第一位，并发性能往后挪移。这不是临时取舍，而是项目未来所有版本都会坚持的趋势。一个在高并发下会偶发崩溃、丢消息或死锁的通讯层，延迟再低也没有意义。因此本项目**不在主 readme 中做并发性能的横向对比**，实测数据以 `test/` 目录为准。
+
+---
+
+## 快速开始（最小验证路径）
+
+在投入任何生产开发之前，建议按以下顺序验证：
+
+1. **克隆仓库**
+   ```bash
+   git clone https://github.com/PassByYou888/LingoFuse.git
+   cd LingoFuse
+   ```
+
+2. **进入 `test/` 目录，阅读测试指南**
+   - `test/LingoFuse_Functional_Test_Guide.md` —— 功能测试
+   - `test/LingoFuse_Stress_Test_Guide.md` —— 压力测试
+   - `test/LingoFuse_Concurrent_Notify_Demo.md` —— 并发通知
+
+3. **解压 `test/test.zip`，运行预编译可执行文件**
+   在自己的机器上观察延迟、顺序、稳定性。**得到的是你自己硬件上的真实数据。**
+
+4. **如需深入，进入 `cpp/` 目录自行编译 CI 测试**
+   ```bash
+   cd cpp/test && cmake . && make && ./test_lingofuse
+   cd cpp/Stress && cmake . && make && ./StressService & ./StressClient
+   cd cpp/Conc && cmake . && make && ./ConcService & ./ConcClient
+   ```
+
+5. **用你自己的业务场景构建 PoC**
+   LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 App 层测试。你需要自己模拟自己的 App 层，验证 LF 在自身业务场景下的表现。
 
 ---
 
 ## 语言支持
 
-### 第一方绑定（仓库内，生产就绪）
+### 第一方绑定（仓库内）
 
-| 语言 | 状态 | 说明 |
-|------|------|------|
-| **Pascal** | 🟢 生产就绪 | 原生 FFI，完整绑定，核心引擎来源 |
-| **Python** | 🟢 生产就绪 | `pip install -e .` 即用 |
-| **C++** | 🟢 生产就绪 | 原生 C ABI，零开销，含并发压力测试 |
-| **C# / .NET** | 🟢 生产就绪 | 完整 .NET 绑定，服务端/调用端全支持 |
-| **TypeScript** | 🟢 生产就绪 | 完整类型定义 + 源码 + 编译产物 + 示例 + 测试 |
-| **JavaScript** | 🟢 生产就绪 | CommonJS + ESM 双入口 |
-| **Rust** | 🟢 生产就绪 | 安全 RAII 封装 + 完整 C ABI 层，67 项测试覆盖 |
-| **Go** | 🟢 生产就绪 | 原生 Go 绑定，完整 CGO 封装，含 e2e / ABI 冒烟 / 数据句柄测试 |
-| **PHP** | 🟢 生产就绪 | 经 `bridge.py` HTTP 网关接入，走 HTTP POST + JSON 数据交换，PHP 为调用者 |
+| 语言 | 状态 | 说明 | 测试现状 |
+|------|------|------|----------|
+| **Pascal** | 🟢 生产就绪 | 原生 FFI，完整绑定，核心引擎来源 | 有独立测试 |
+| **Python** | 🟢 生产就绪 | `pip install -e .` 即用 | 有独立测试 |
+| **C++** | 🟢 生产就绪 | 原生 C ABI，零开销 | **唯一有 GitHub CI 的语言**：功能 / 压力 / 并发三套测试 |
+| **C# / .NET** | 🟢 生产就绪 | 完整 .NET 绑定，服务端/调用端全支持 | 有独立测试 |
+| **TypeScript** | 🟢 生产就绪 | 完整类型定义 + 源码 + 编译产物 + 示例 + 测试 | 有独立测试（JS 侧 127 项） |
+| **JavaScript** | 🟢 生产就绪 | CommonJS + ESM 双入口 | 有独立测试（127 项） |
+| **Rust** | 🟢 生产就绪 | 安全 RAII 封装 + 完整 C ABI 层 | 有独立测试（67 项覆盖） |
+| **Go** | 🟢 生产就绪 | 原生 Go 绑定，完整 CGO 封装 | 有独立测试（18 项，含 e2e / ABI 冒烟 / 数据句柄） |
+| **PHP** | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，HTTP POST + JSON，**PHP 为调用者** | 无 FFI 测试；FFI 绑定因 PHP 限制已删除 |
 
-> **关于 PHP 的说明**：由于 PHP 官方 FFI 机制的限制，无法直接通过 C ABI 与 LingoFuse 原生库交互。因此 PHP 当前的支持路线是走 HTTP 桥接，通过 `bridge.py` 网关以 HTTP POST + JSON 格式交换数据，PHP 作为调用者接入 LingoFuse 生态。
+> **关于 PHP 的明确说明**：PHP 官方 FFI 机制无法从外部 OS 线程进入 PHP 回调，无法注册 Call/Notify 服务端 API。因此 PHP 当前的支持路线是走 HTTP 桥接，通过 `bridge.py` 网关以 HTTP POST + JSON 格式交换数据。**PHP 不能作为 LingoFuse 服务端**，只能作为调用者。如果你需要 PHP 作为服务端，LingoFuse 当前不满足。
 
 ### 经代码生成器 / 桥接支持
 
-| 语言 / 平台 | 方式 |
-|-------------|------|
-| **Node.js / 浏览器** | `bridge.py` HTTP 网关 |
-| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | 经 LingoFuse-Tools 代码生成器接入 |
-| **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划，持续推进中 |
+| 语言 / 平台 | 方式 | 成熟度 |
+|-------------|------|--------|
+| **Node.js / 浏览器** | `bridge.py` HTTP 网关 | 可用，但非原生 |
+| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，但需自行验证 |
+| **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划 | 持续推进中，未生产就绪 |
 
 ### 代码生成器体系
 
@@ -75,17 +108,11 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 | 工具 | 生成目标 | 协议 | 目标语言 |
 |------|----------|------|----------|
-| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / C# / **Rust** / **Go** |
-| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / C# / JavaScript / **PHP** |
+| **code_decl_to_abi** | ABI 服务端 / 调用端 | LingoFuse 二进制 ABI | Pascal / Python / C++ / C# / Rust / Go |
+| **code_decl_to_json_abi** | HTTP/JSON 服务端 / 调用端 | HTTP + JSON（经 bridge） | Pascal / Python / C++ / C# / JavaScript / PHP |
 | **code_decl_to_mcp** | MCP 工具提供者 | Model Context Protocol | Pascal / Python / C++ / C# |
 
-每个工具都是**三入口**（GUI / CLI / MCP API），各自附带自包含知识库（Markdown），涵盖 API 契约、线协议、类型映射、已知陷阱、调试树。**把知识库喂给 AI，AI 即可全接管接口。**
-
----
-
-## 编译动态库
-
-`src/` 目录是编译 LingoFuse 核心动态库的入口。准备好 Pascal 编译环境（FPC / Lazarus）后，一键编译即可。
+每个工具都是**三入口**（GUI / CLI / MCP API），各自附带自包含知识库（Markdown），涵盖 API 契约、线协议、类型映射、已知陷阱、调试树。**把知识库喂给 AI，AI 可以辅助接管接口——但生成代码仍需人工验证。**
 
 ---
 
@@ -97,7 +124,7 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC，验证 LF 在自身业务场景下的表现。
 2. **用户需要明白，除了使用 LF，还需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新——这一切都是对用户而言的。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 就目前来说，Pascal、C#、C++、JS、TS、Py、Rust、**Go** 都有各自能跑的 test，但 **CI 只有 C++ 的**。
+3. **各个语言原则上都会有自己的 test、CI 体系。** 就目前来说，Pascal、C#、C++、JS、TS、Py、Rust、Go 都有各自能跑的 test，但 **CI 只有 C++ 的**。
 
 ### 为什么 test 目录是一堆文档和可执行文件
 
@@ -148,7 +175,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 | [pasAgent v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | 🟢 已发布 | 多模态智能体，250+ 后端，双语言代码生成 |
 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🟢 已发布 | C++ 生态智能体接入 |
 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🟢 已发布 | .NET 智能体运行时 + LLM 客户端 SDK |
-| **tsAgent** | TypeScript | 🚧 即将发布 | TypeScript / JavaScript 生态智能体接入 |
+| **tsAgent** | TypeScript | 🚧 即将发布 | TypeScript / JavaScript 生态智能体接入。**当前尚未发布。** |
 
 ### 相关项目
 
@@ -156,18 +183,26 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ---
 
-## 项目状态
+## 项目状态与边界
 
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **九语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / PHP |
-| **HTTP 桥接** | ✅ 生产就绪 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
+| **九语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / PHP（PHP 为调用者） |
+| **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
-| **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，AI 接管成功率接近绝对 |
-| **CI 测试体系** | ✅ 已就绪 | `test/` 提供指南与可执行文件，源码在 `cpp/` 下，可自行编译复现 |
+| **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——**生成代码需人工验证** |
+| **CI 测试体系** | ⚠️ 仅 C++ | `test/` 提供指南与可执行文件，源码在 `cpp/` 下，可自行编译复现 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 | **Java 绑定** | ⏳ 接入中 | 欢迎贡献 |
+
+### 明确不推荐的使用场景
+
+- 需要成熟社区支持、大量第三方教程、Stack Overflow 问答的项目。
+- 无法接受单人维护风险，且没有自行编译、自行维护能力的团队。
+- 纯 TS/JS 项目，所有逻辑都可以用 TS/JS 重写，引入 LF 只会增加复杂度和故障点。
+- 需要 PHP 作为服务端的场景（PHP 只能作为调用者）。
+- 对并发性能有硬性要求，且不愿自行做 App 层 PoC 验证的团队。
 
 ---
 
@@ -192,3 +227,5 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 ---
 
 *项目始于 2026 年，持续进化中。有问题提 Issue，急事加 Q。*
+
+**采用前请务必：跑 `test/`，做 PoC，验证你自己的场景。**

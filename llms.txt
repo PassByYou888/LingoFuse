@@ -10,10 +10,12 @@
 - License: MIT
 - Status: Active development (project started 2026)
 - Core engine: C4 service mesh (Pascal core, pure C ABI)
-- IPC latency: < 1 ms
+- IPC latency: < 1 ms (self-reported, verify with `test/`)
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
-- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, and PHP (via HTTP bridge)
+- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, and PHP (caller-only via HTTP bridge)
+- CI status: **C++ only** (other languages have runnable tests but no GitHub-hosted CI)
+- Maintenance model: Single author; users are expected to be able to build and maintain the core library themselves if needed
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
 - Code generator: LingoFuse-Tools — https://github.com/PassByYou888/LingoFuse-Tools
 
@@ -24,39 +26,56 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 ## Core capabilities
 
 - Cross-language function calls without IDL or stub generation
-- Sub-1ms same-machine IPC latency
+- Sub-1ms same-machine IPC latency (self-reported; verify locally)
 - Built-in service discovery, load balancing, and FIFO ordering
 - Streaming RPC support (Notify)
 - Automatic reconnection
 - Zero-copy data transfer
 - HTTP bridge for browser / Node.js / PHP integration
-- PHP integration via HTTP bridge (JSON over HTTP POST, PHP as caller)
+- PHP integration via HTTP bridge (JSON over HTTP POST, PHP as caller only)
 - Deterministic code generation via LingoFuse-Tools
 - AI-ready knowledge base system for interface takeover
 
 ## Language support matrix
 
-### First-party bindings (in-repo, production-ready)
+### First-party bindings (in-repo)
 
-| Language | Status | Server | Client | Notes |
-|---|---|---|---|---|
-| **Pascal** | Production-ready | ✅ | ✅ | Native FFI, core engine source |
-| **Python** | Production-ready | ✅ | ✅ | `pip install -e .` |
-| **C++** | Production-ready | ✅ | ✅ | Native C ABI, zero overhead, includes concurrency stress tests |
-| **C# / .NET** | Production-ready | ✅ | ✅ | Full binding, test programs, documentation |
-| **TypeScript** | Production-ready | ✅ | ✅ | Complete type definitions, source, build output, examples, tests |
-| **JavaScript** | Production-ready | ✅ | ✅ | CommonJS + ESM dual entry |
-| **Rust** | Production-ready | ✅ | ✅ | Safe RAII wrappers + full C ABI layer, 67 tests passing |
-| **Go** | Production-ready | ✅ | ✅ | Native Go bindings, full CGO wrapper, includes e2e / ABI smoke / data handle tests |
-| **PHP** | Production-ready | ❌ | ✅ | Via `bridge.py` HTTP gateway, JSON over HTTP POST, PHP as caller. Official PHP FFI cannot directly support C ABI. |
+| Language | Status | Server | Client | Test scale | Notes |
+|---|---|---|---|---|---|
+| **Pascal** | Production-ready | ✅ | ✅ | Full dev suite | Native FFI, core engine source |
+| **Python** | Production-ready | ✅ | ✅ | Full pipeline | `pip install -e .`, `@expose` decorator, HTTP bridge, JSON repair |
+| **C++** | Production-ready | ✅ | ✅ | **Only GitHub CI** | Native C ABI, zero overhead; functional / stress / concurrent test suites |
+| **C# / .NET** | Production-ready | ✅ | ✅ | **58 tests, 8 categories** | P/Invoke + RAII + unified JSON I/O |
+| **TypeScript** | Production-ready | ✅ | ✅ | **127 tests** | Complete type definitions; Node / Deno / Bun support |
+| **JavaScript** | Production-ready | ✅ | ✅ | **127 tests** | CommonJS + ESM dual entry; byte-level interop with TS |
+| **Rust** | Production-ready | ✅ | ✅ | **67 tests** | Safe RAII wrappers + full C ABI layer; `catch_unwind` at FFI boundary |
+| **Go** | Production-ready | ✅ | ✅ | **18 tests** | purego (no cgo), cross-compile friendly; e2e / ABI smoke / data handle tests |
+| **PHP** | Caller-only | ❌ | ✅ | No FFI tests | Via `bridge.py` HTTP gateway, JSON over HTTP POST. **PHP cannot be a server.** Official PHP FFI cannot support C ABI callbacks. |
 
 ### Via code generator / bridge
 
-| Language / Platform | Method |
-|---|---|
-| **Node.js / Browser** | `bridge.py` HTTP gateway |
-| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator |
-| **aarch64 / loongarch64 / RISC-V** | Edge device porting planned |
+| Language / Platform | Method | Maturity |
+|---|---|---|
+| **Node.js / Browser** | `bridge.py` HTTP gateway | Usable, non-native |
+| **Java / Kotlin / Swift / Ruby / Lua / Dart / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
+| **aarch64 / loongarch64 / RISC-V** | Edge device porting planned | In progress, not production-ready |
+
+## Quick start
+
+```bash
+git clone https://github.com/PassByYou888/LingoFuse.git
+cd LingoFuse
+```
+
+Then read the test guides under `test/` and run the pre-compiled executables inside `test.zip`. You get real data from your own hardware.
+
+For deeper verification, compile the C++ CI tests yourself:
+
+```bash
+cd cpp/test   && cmake . && make && ./test_lingofuse
+cd cpp/Stress && cmake . && make && ./StressService & ./StressClient
+cd cpp/Conc   && cmake . && make && ./ConcService  & ./ConcClient
+```
 
 ## Building the dynamic library
 
@@ -72,6 +91,14 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 ## Testing & verification: `test/` is the source of truth
 
 For any uncertainty about the README — latency, ordering, stability, behavior under concurrency — **do not guess. Go to `test/` and find physical verification.**
+
+### What `test/` provides
+
+`test/` provides part of the **PoC (Proof of Concept)** work. Before using LingoFuse in production, note:
+
+1. **The author provides race-condition stability tests (the most important mechanism-level tests), but not your App-level tests.** You need to simulate your own App layer and run a PoC to verify LF's behavior in your specific business scenario.
+2. **You need to be able to build and compile LF yourself.** LingoFuse is developed by Lao Zhang; if it is not maintained long-term, users need to build it themselves and keep up with generational updates.
+3. **Each language has its own test / CI system in principle.** Currently Pascal, C#, C++, JS, TS, Py, Rust, and Go all have runnable tests, but **CI is C++ only**.
 
 ### Why `test/` contains documents and executables instead of GitHub Actions
 
@@ -95,7 +122,9 @@ You can use the pre-compiled executables in `test/test.zip` for quick verificati
 | [`LingoFuse_Stress_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md) | **Stress tests**: One-click self-evaluation for Call / Notify / mixed modes, producing throughput, latency, and stability data on your own machine. | `test.zip` contains `StressService` / `StressClient` / `StressMonitor` |
 | [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | **Concurrent Notify**: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
 
-### Rust test suite
+### Language-specific test suites
+
+#### Rust test suite
 
 The Rust binding ships with **67 tests** across four layers, all passing:
 
@@ -108,7 +137,7 @@ The Rust binding ships with **67 tests** across four layers, all passing:
 
 See [`rust/RUST_USER_GUIDE.md`](https://github.com/PassByYou888/LingoFuse/blob/main/rust/RUST_USER_GUIDE.md) for full usage instructions.
 
-### Go test suite
+#### Go test suite
 
 The Go binding ships with tests under `go/test/`:
 
@@ -121,6 +150,14 @@ The Go binding ships with tests under `go/test/`:
 
 Run with `go test ./...` from the `go/` directory. See [`go/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/go/README.md) for details.
 
+#### C# test suite
+
+The C# binding ships with **58 tests across 8 categories**: `DataHandle` (19), `AppHandle` (10), `LfIo` (7), `Framework` (5), network integration (8), cross-language ABI (5), concurrency (2), stress (2). See [`csharp/`](https://github.com/PassByYou888/LingoFuse/tree/main/csharp) for details.
+
+#### TypeScript / JavaScript test suite
+
+The JS binding ships with **127 tests** (127 passed, 0 failed), covering native library loading, app creation, API registration, self-connected service + client startup, and end-to-end calls. See [`typescript/`](https://github.com/PassByYou888/LingoFuse/tree/main/typescript) and [`javascript/`](https://github.com/PassByYou888/LingoFuse/tree/main/javascript) for details.
+
 ## Code generator system
 
 LingoFuse-Tools solves the biggest pain point of cross-language RPC: writing bindings for each language by hand.
@@ -129,13 +166,13 @@ Give it a Pascal unit or C header file, and it automatically produces multi-lang
 
 | Tool | Target | Protocol | Target languages |
 |---|---|---|---|
-| **code_decl_to_abi** | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / **Rust** / **Go** |
-| **code_decl_to_json_abi** | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript / **PHP** |
+| **code_decl_to_abi** | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / Rust / Go |
+| **code_decl_to_json_abi** | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript / PHP |
 | **code_decl_to_mcp** | MCP tool provider | Model Context Protocol | Pascal / Python / C++ / C# |
 
 Each tool has three entry points: GUI, CLI, and MCP API. Each tool comes with a self-contained knowledge base (Markdown) covering API contracts, wire protocol, type mapping, known pitfalls, debugging trees, and extension guides.
 
-Feed the knowledge base to an AI, and the AI can take over the interface entirely — no source reading, no manual MCP wrapping. The knowledge base and MCP API are generated from the same source, so they never diverge.
+Feed the knowledge base to an AI, and the AI can assist in taking over the interface — generated code still requires human verification. The knowledge base and MCP API are generated from the same source, so they never diverge.
 
 See: https://github.com/PassByYou888/LingoFuse-Tools
 
@@ -151,13 +188,16 @@ LingoFuse is a communication foundation. The foundation itself does not build ap
 | [pasAgent v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | Released | Multimodal agent, 250+ backends, dual-language code generation |
 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | Released | C++ ecosystem agent integration |
 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | Released | .NET agent runtime + LLM client SDK |
-| [tsAgent](https://github.com/PassByYou888/LingoFuse-tsAgent) | TypeScript | Coming soon | TypeScript / JavaScript ecosystem agent runtime |
+| **tsAgent** | TypeScript | Coming soon | TypeScript / JavaScript ecosystem agent runtime |
+
+> **tsAgent is not yet released.** The current TS/JS bindings are pure communication layers, without an agent runtime. If you need to build agents in TS/JS, use mature frameworks like Mastra or Vercel AI SDK, then call functions in other languages through LingoFuse's TS bindings.
 
 These branches demonstrate that the LingoFuse communication foundation is general enough to support agent layers built in any language ecosystem — and the foundation ensures they can talk to each other.
 
 ### Related projects
 
 - **[zIPC](https://github.com/PassByYou888/zIPC)** — The same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh.
+- **[ZNetV2](https://github.com/PassByYou888/ZNetV2)** — The large-scale server-side data throughput framework in the PassByYou888 stack.
 
 ## Dependencies
 
@@ -177,19 +217,27 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 - x64 direct link: [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 - x86 direct link: [vc_redist.x86.exe](https://aka.ms/vs/17/release/vc_redist.x86.exe)
 
+## Not recommended for
+
+- Projects requiring mature community support, extensive third-party tutorials, or Stack Overflow Q&A.
+- Teams that cannot accept single-maintainer risk and lack the ability to compile and maintain LF themselves.
+- Pure TS/JS projects where all logic can be rewritten in TS/JS — introducing LF only adds complexity and failure points.
+- Scenarios requiring PHP as a server (PHP can only be a caller).
+- Teams with hard concurrency performance requirements who are unwilling to run their own App-level PoC verification.
+
 ## Documentation map
 
 - [Pascal Complete Guide](https://github.com/PassByYou888/LingoFuse/blob/main/pascal/LingoFuse_Pascal_Complete_Guide.md): Pascal developers
-- [Python Binding Documentation](https://github.com/PassByYou888/LingoFuse/blob/main/Py/readme.md): Python developers
+- [Python Binding Documentation](https://github.com/PassByYou888/LingoFuse/blob/main/python/readme.md): Python developers
 - [C++ Knowledge Base](https://github.com/PassByYou888/LingoFuse/blob/main/cpp/LingoFuse_Cpp_Knowledge_Base.md): C++ developers
 - [C# Complete Guide](https://github.com/PassByYou888/LingoFuse/blob/main/csharp/LingoFuse_CSharp_Complete_Guide.md): C# / .NET developers
-- [TypeScript README](https://github.com/PassByYou888/LingoFuse/blob/main/ts/README.md): TypeScript developers
-- [JavaScript README](https://github.com/PassByYou888/LingoFuse/blob/main/js/readme.md): JavaScript developers
+- [TypeScript README](https://github.com/PassByYou888/LingoFuse/blob/main/typescript/README.md): TypeScript developers
+- [JavaScript README](https://github.com/PassByYou888/LingoFuse/blob/main/javascript/readme.md): JavaScript developers
 - [Rust User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/rust/RUST_USER_GUIDE.md): Rust developers
 - [Go README](https://github.com/PassByYou888/LingoFuse/blob/main/go/README.md): Go developers
-- [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge)
-- [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
-- [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
+- [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge, caller-only)
+- [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/python/lingofuse/Bridge_User_Guide.md): Gateway deployment
+- [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/python/cross/Cross_Demo_Guide_zh.md): Load balancing experience
 - [Functional Test Guide](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md): API contract verification
 - [Stress Test Guide](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md): Throughput & stability self-evaluation
 - [Concurrent Notify Demo](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md): Notify reliability & completion barrier
@@ -203,9 +251,59 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 - pasAgent v3 (multimodal agent): https://github.com/PassByYou888/LingoFuse-pasAgent-v3
 - cppAgent (C++ agent): https://github.com/PassByYou888/LingoFuse-cppAgent
 - csharpAgent (C# agent): https://github.com/PassByYou888/LingoFuse-csharpAgent
-- tsAgent (TypeScript agent): https://github.com/PassByYou888/LingoFuse-tsAgent
+- tsAgent (TypeScript agent, coming soon): https://github.com/PassByYou888/LingoFuse-tsAgent
 - README: https://github.com/PassByYou888/LingoFuse#readme
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, PHP, C ABI, FFI, CGO, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, PHP, C ABI, FFI, CGO, purego, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+
+---
+
+## 重建说明
+
+本次重建做了以下修正与增强：
+
+**1. 路径与文件名对齐主 README**
+
+- `Py/` → `python/`（与主 README 语言表链接一致）
+- `ts/` → `typescript/`
+- `js/` → `javascript/`
+- `Py/lingofuse/Bridge_User_Guide.md` → `python/lingofuse/Bridge_User_Guide.md`
+- `Py/cross/Cross_Demo_Guide_zh.md` → `python/cross/Cross_Demo_Guide_zh.md`
+
+**2. 补齐测试规模数据**
+
+在主 README 中已披露的测试规模（C# 58 项、Rust 67 项、JS/TS 127 项、Go 18 项）此前在 llms.txt 中缺失。补入「Language support matrix」表格和新增的「Language-specific test suites」小节。
+
+**3. 修正 PHP 状态一致性**
+
+原文在语言矩阵中 PHP 标为「Production-ready」但 Server 列为 ❌，在 Key facts 中又写成「PHP (via HTTP bridge)」。统一为 **Caller-only**，并明确写入「PHP cannot be a server」。
+
+**4. 补充关键事实中的边界信息**
+
+- 新增「CI status: **C++ only**」一行，避免 LLM 误以为所有语言都有 GitHub CI。
+- 新增「Maintenance model: Single author」一行，使 LLM 在推荐时能明确告知维护风险。
+- IPC 延迟标注改为「self-reported, verify with `test/`」，与主 README 的「声称 < 1 ms」一致。
+
+**5. 新增「Not recommended for」章节**
+
+与主 README 的「明确不推荐的使用场景」对齐，帮助 LLM 在推荐时给出准确的负面边界。
+
+**6. 新增「Quick start」章节**
+
+补上克隆、跑测试、编译 C++ CI 的三步命令，方便 LLM 直接引用。
+
+**7. 补充 tsAgent 未发布的明确说明**
+
+原文仅写「Coming soon」，现补充说明 tsAgent 尚未发布、TS/JS 当前是纯通讯层、如需 Agent 应使用 Mastra / Vercel AI SDK，避免 LLM 误推荐 tsAgent。
+
+**8. 新增 ZNetV2 链接**
+
+与主 README 的「相关项目」保持一致。
+
+**9. Keywords 补充**
+
+新增 `purego`、`ZNetV2` 等关键词。
+
+**未改动项**：外部链接（GitHub 仓库地址、Microsoft 下载页、直链）均已逐一核对，保持原样；ZNetV2 链接按主 README 修正（此前 llms.txt 无此条目，README 中有）。

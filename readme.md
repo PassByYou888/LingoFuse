@@ -83,13 +83,6 @@ LingoFuse 是一个跨语言、跨进程、跨机器的 RPC 框架。核心承�
 
 `src/` 目录是编译 LingoFuse 核心动态库的入口。准备好 Pascal 编译环境（FPC / Lazarus）后，一键编译即可。
 
-| 文档 | 内容 |
-|------|------|
-| [`src/CONTRIBUTING.md`](src/CONTRIBUTING.md) | 编译环境准备与构建流程 |
-| [`src/CONTRIBUTING_lazbuild.md`](src/CONTRIBUTING_lazbuild.md) | 使用 lazbuild 命令行一键编译 |
-| [`src/FPC_3.3.1_Package_Info.md`](src/FPC_3.3.1_Package_Info.md) | FPC 3.3.1 环境包信息 |
-| [`src/Lazarus_Change_FPC.md`](src/Lazarus_Change_FPC.md) | Lazarus 切换 FPC 版本说明 |
-
 ---
 
 ## 测试与验证：以 `test/` 为准

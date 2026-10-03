@@ -127,10 +127,10 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | **JavaScript** | [`js/`](js/) | 🟢 生产就绪 | **127 项测试**。CommonJS + ESM 双入口，与 TS 字节级互通 |
 | **Rust** | [`rust/`](rust/) | 🟢 生产就绪 | **67 项测试**。安全 RAII 封装 + 完整 C ABI 层。FFI 边界 `catch_unwind` 隔离 |
 | **Go** | [`go/`](go/) | 🟢 生产就绪 | **18 项测试**。purego 无 cgo，交叉编译友好。含 e2e / ABI 冒烟 / 数据句柄测试 |
-| **Dart** | [`dart/`](dart/) | 🟢 生产就绪 | 完整测试套件。Dart FFI + C 桥接 DLL。**完整 caller + server 能力**。支持 Flutter 移动端 |
+| **Dart** | [`dart/`](dart/) | 🟢 生产就绪 | 完整测试套件。Dart FFI + C 桥接 DLL。完整 caller + server 能力。支持 Flutter 移动端 |
 | **Java** | [`java/`](java/) | 🟢 生产就绪 | 基于 FFM API（JDK 22+），纯 Java 无 JNI。含 `DataHandle` / `AppHandle`、自动化测试、三进程 Demo。性能优化进行中 |
-| **Swift** | [`swift/`](swift/) | 🟢 生产就绪 | **128 项 XCTest，全部通过**。Clang importer + C target，RAII 句柄，统一 JSON I/O。**C++ ↔ Swift 双向字节级互调已验证**。Windows 已实测，macOS / Linux 待测 |
-| **PHP** | [`php/`](php/) | 🟡 调用者接入 | 无 FFI 测试。经 `bridge.py` HTTP 网关，**PHP 只能作为调用者** |
+| **Swift** | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，全部通过。Clang importer + C target，RAII 句柄，统一 JSON I/O。C++ ↔ Swift 双向字节级互调已验证。Windows 已实测，macOS / Linux 待测 |
+| **PHP** | [`php/`](php/) | 🟡 调用者接入 | 无 FFI 测试。经 `bridge.py` HTTP 网关，PHP 只能作为调用者 |
 
 > **关于 PHP 的明确说明**：PHP 官方 FFI 机制无法从外部 OS 线程进入 PHP 回调，无法注册 Call/Notify 服务端 API。因此 PHP 只能作为调用者接入。**需要 PHP 作为服务端时，LingoFuse 当前不满足。**
 >
@@ -145,8 +145,6 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | **Node.js / 浏览器** | `bridge.py` HTTP 网关 | 可用，非原生 |
 | **Kotlin / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
 | **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划 | 持续推进中，未生产就绪 |
-
-> Swift 此前在「代码生成器接入」清单中，现已升级为**第一方绑定**，不再经生成器接入。
 
 👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
 
@@ -187,7 +185,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、**Swift** 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
    - C++：`cpp/test/`、`cpp/Stress/`、`cpp/Conc/`
    - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`
    - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（128 项 XCTest）
@@ -202,7 +200,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、**Swift**、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -223,7 +221,7 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 | 语言 | 测试框架 | 测试数 | 平台验证 | CI |
 |------|----------|:------:|----------|:--:|
 | C++ | 自研 CI | 82 + 压测 + 并发 | Windows / Linux | ✅ GitHub |
-| **Swift** | **XCTest** | **128** | **Windows 已实测**，macOS / Linux 待测 | 本地 |
+| Swift | XCTest | 128 | Windows 已实测，macOS / Linux 待测 | 本地 |
 | TypeScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
 | JavaScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
 | Rust | cargo test | 67 | Windows / Linux / macOS | 本地 |
@@ -300,48 +298,13 @@ flowchart LR
 | Pascal | ✅ | ✅ | ✅ | [`pascal/cross_demo/`](pascal/cross_demo/) |
 | C++ | ✅ | ✅ | ✅ | [`cpp/CrossDemo/`](cpp/CrossDemo/) |
 | C# | ✅ | ✅ | ✅ | [`csharp/CrossService/`](csharp/CrossService/) [`csharp/CrossNode/`](csharp/CrossNode/) [`csharp/CrossCall/`](csharp/CrossCall/) |
-| **Swift** | ✅ | ✅ | ✅ | [`swift/Sources/CrossService/`](swift/Sources/CrossService/) [`swift/Sources/CrossNode/`](swift/Sources/CrossNode/) [`swift/Sources/CrossCall/`](swift/Sources/CrossCall/) |
+| Swift | ✅ | ✅ | ✅ | [`swift/Sources/CrossService/`](swift/Sources/CrossService/) [`swift/Sources/CrossNode/`](swift/Sources/CrossNode/) [`swift/Sources/CrossCall/`](swift/Sources/CrossCall/) |
 | Rust | ✅ | ✅ | ✅ | [`rust/examples/`](rust/examples/) |
 | Go | ✅ | ✅ | ✅ | [`go/cross/`](go/cross/) |
 | TS | ✅ | ✅ | ✅ | [`ts/cross/`](ts/cross/) |
 | JS | ✅ | ✅ | ✅ | [`js/cross/`](js/cross/) |
 | Python | ✅ | ✅ | ✅ | [`Py/cross/`](Py/cross/) |
 | Java | ✅ | ✅ | ✅ | [`java/src/main/java/lingofuse/demo/cross/`](java/src/main/java/lingofuse/demo/cross/) |
-
-### 统一线格式契约
-
-所有语言的 Cross 程序共享同一份**字节级契约**。只要某语言的 `CrossCall` 能正确读取另一个语言 `CrossNode` 写入的字节，这两个语言就完成了 100% 的多语言互调验证。
-
-```mermaid
-%%{init: {'theme':'base', 'themeVariables': {
-  'primaryColor':'#F3E5F5',
-  'primaryTextColor':'#4A148C',
-  'primaryBorderColor':'#7B1FA2',
-  'lineColor':'#455A64'
-}}}%%
-flowchart TB
-    subgraph API["📡 Cross Demo 双 API 契约"]
-        direction LR
-        A1["add<br/><br/>int32 a<br/>int32 b<br/><br/>→ int32"]
-        A2["inv_seri<br/><br/>uint8 → uint16<br/>uint16 → uint32<br/>uint32 → uint64<br/>uint64 → uint8<br/>string(NUL) → float<br/>float → string(NUL)"]
-    end
-
-    subgraph WIRE["🧬 跨语言线格式"]
-        direction LR
-        W1["字符串<br/>UTF-8 + NUL"]
-        W2["整数<br/>小端序"]
-        W3["浮点<br/>IEEE 754 小端"]
-    end
-
-    A1 ==> WIRE
-    A2 ==> WIRE
-
-    classDef api fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C
-    classDef wire fill:#FFF9C4,stroke:#F9A825,stroke-width:2px,color:#F57F17
-
-    class A1,A2 api
-    class W1,W2,W3 wire
-```
 
 ---
 
@@ -409,14 +372,12 @@ lazbuild LingoFuse.lpi
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **十二语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / **Swift** / PHP（PHP 为调用者） |
+| **十二语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
 | **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
-| **Java 绑定** | 🟢 生产就绪 | 功能完整，含 FFM 绑定、自动化测试、三进程 Demo；性能优化进行中 |
-| **Swift 绑定** | 🟢 生产就绪 | 128 项 XCTest 全通过；C++ ↔ Swift 双向互调已实测；Windows 已实测，macOS / Linux 待测 |
 
 ### 明确不推荐的使用场景
 

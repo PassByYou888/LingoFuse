@@ -343,50 +343,6 @@ flowchart TB
     class W1,W2,W3 wire
 ```
 
-### 多语言互调矩阵
-
-```mermaid
-%%{init: {'theme':'base', 'themeVariables': {
-  'primaryColor':'#E0F7FA',
-  'primaryTextColor':'#006064',
-  'primaryBorderColor':'#00838F',
-  'lineColor':'#455A64'
-}}}%%
-flowchart LR
-    subgraph BIND["🌐 第一方绑定 · Cross 实现"]
-        direction LR
-        B1["Pascal"]
-        B2["C++"]
-        B3["C#"]
-        B4["Swift"]
-        B5["Rust"]
-        B6["Go"]
-        B7["TS / JS"]
-        B8["Python"]
-        B9["Java"]
-        B10["Dart"]
-    end
-
-    subgraph C4["⚙️ C4 Service Mesh"]
-        direction TB
-        M1["服务发现"]
-        M2["负载均衡"]
-        M3["FIFO 保序"]
-        M4["断线重连"]
-    end
-
-    BIND ==>|"注册 App"| C4
-    C4 ==>|"路由与调度"| BIND
-
-    classDef bind fill:#E0F7FA,stroke:#00838F,stroke-width:2px,color:#006064
-    classDef mesh fill:#FCE4EC,stroke:#AD1457,stroke-width:2px,color:#880E4F
-
-    class B1,B2,B3,B4,B5,B6,B7,B8,B9,B10 bind
-    class M1,M2,M3,M4 mesh
-```
-
-C4 mesh 的路由基于 **App 名**，与语言无关。任意两种语言的 `CrossNode` 注册到同一个 App，流量由 `CrossCall` 自动均衡——**换语言不需要改任何一行调用代码**。
-
 ---
 
 ## 依赖库

@@ -13,15 +13,15 @@
 - IPC latency: < 1 ms (self-reported, verify with `test/`)
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
-- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, and PHP (caller-only via HTTP bridge)
-- CI status: **C++ only** (GitHub-hosted; other languages have runnable local tests but no GitHub-hosted CI)
+- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, and PHP (caller-only via HTTP bridge)
+- CI status: C++ only (GitHub-hosted; other languages have runnable local tests but no GitHub-hosted CI)
 - Maintenance model: Single author; users are expected to be able to build and maintain the core library themselves if needed
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
 - Code generator: LingoFuse-Tools — https://github.com/PassByYou888/LingoFuse-Tools
 
 ## Stability first, concurrency secondary
 
-LingoFuse places application **stability** as the top priority; concurrency performance is deliberately deprioritized. This is not a temporary trade-off but a trend the project will maintain in all future versions. A communication layer that occasionally crashes, drops messages, or deadlocks under high concurrency is useless no matter how low its latency is. Therefore, this project does not include horizontal performance comparisons in the main README. For actual measured data under concurrency and stress, refer to the `test/` directory.
+LingoFuse places application stability as the top priority; concurrency performance is deliberately deprioritized. This is not a temporary trade-off but a trend the project will maintain in all future versions. A communication layer that occasionally crashes, drops messages, or deadlocks under high concurrency is useless no matter how low its latency is. Therefore, this project does not include horizontal performance comparisons in the main README. For actual measured data under concurrency and stress, refer to the `test/` directory.
 
 ## Core capabilities
 
@@ -42,19 +42,22 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 
 | Language | Status | Server | Client | Test scale | Notes |
 |---|---|---|---|---|---|
-| **Pascal** | Production-ready | ✅ | ✅ | Full dev suite | Native FFI, core engine source |
-| **Python** | Production-ready | ✅ | ✅ | Full pipeline | `pip install -e .`, `@expose` decorator, HTTP bridge, JSON repair |
-| **C++** | Production-ready | ✅ | ✅ | **Only GitHub CI** | Native C ABI, zero overhead; functional / stress / concurrent test suites |
-| **C# / .NET** | Production-ready | ✅ | ✅ | **58 tests, 8 categories** | P/Invoke + RAII + unified JSON I/O |
-| **TypeScript** | Production-ready | ✅ | ✅ | **127 tests** | Complete type definitions; Node / Deno / Bun support |
-| **JavaScript** | Production-ready | ✅ | ✅ | **127 tests** | CommonJS + ESM dual entry; byte-level interop with TS |
-| **Rust** | Production-ready | ✅ | ✅ | **67 tests** | Safe RAII wrappers + full C ABI layer; `catch_unwind` at FFI boundary |
-| **Go** | Production-ready | ✅ | ✅ | **18 tests** | purego (no cgo), cross-compile friendly; e2e / ABI smoke / data handle tests |
-| **Dart** | Production-ready | ✅ | ✅ | Full test suite | Dart FFI + C bridge DLL; full caller + server capability; Flutter mobile support |
-| **Java** | Production-ready | ✅ | ✅ | Automated tests | FFM API (JDK 22+), pure Java no JNI; `DataHandle` / `AppHandle`, three-process Demo; performance optimization ongoing |
-| **PHP** | Caller-only | ❌ | ✅ | No FFI tests | Via `bridge.py` HTTP gateway, JSON over HTTP POST. **PHP cannot be a server.** Official PHP FFI cannot support C ABI callbacks. |
+| Pascal | Production-ready | ✅ | ✅ | Full dev suite | Native FFI, core engine source |
+| Python | Production-ready | ✅ | ✅ | Full pipeline | `pip install -e .`, `@expose` decorator, HTTP bridge, JSON repair |
+| C++ | Production-ready | ✅ | ✅ | 82 + stress + concurrent | Only GitHub CI; native C ABI, zero overhead |
+| C# / .NET | Production-ready | ✅ | ✅ | 58 tests, 8 categories | P/Invoke + RAII + unified JSON I/O |
+| TypeScript | Production-ready | ✅ | ✅ | 127 tests | Complete type definitions; Node / Deno / Bun support |
+| JavaScript | Production-ready | ✅ | ✅ | 127 tests | CommonJS + ESM dual entry; byte-level interop with TS |
+| Rust | Production-ready | ✅ | ✅ | 67 tests | Safe RAII wrappers + full C ABI layer; `catch_unwind` at FFI boundary |
+| Go | Production-ready | ✅ | ✅ | 18 tests | purego (no cgo), cross-compile friendly; e2e / ABI smoke / data handle tests |
+| Dart | Production-ready | ✅ | ✅ | Full test suite | Dart FFI + C bridge DLL; full caller + server capability; Flutter mobile support |
+| Java | Production-ready | ✅ | ✅ | Automated tests | FFM API (JDK 22+), pure Java no JNI; `DataHandle` / `AppHandle`, three-process Demo; performance optimization ongoing |
+| Swift | Production-ready | ✅ | ✅ | 128 XCTest | Clang importer + C target; RAII handles; unified JSON I/O; C++ ↔ Swift bidirectional byte-level interop verified; Windows verified, macOS / Linux untested |
+| PHP | Caller-only | ❌ | ✅ | No FFI tests | Via `bridge.py` HTTP gateway, JSON over HTTP POST. PHP cannot be a server. Official PHP FFI cannot support C ABI callbacks. |
 
 > **Java note**: Requires JDK 22+ (JDK 25 LTS recommended). Functionally complete, including cross-process RPC, cross-language ABI verification, and three-process Demo. Performance optimization is still in progress. GitHub-hosted CI currently covers C++ only; Java tests run locally via `java/run_test_ci.ps1` / `run_test_ci.sh`.
+
+> **Swift note**: Requires Swift 5.9+ (6.4 recommended). 128 XCTest cases cover all layers from C ABI to high-level wrappers. Cross-language Demo has verified byte-level bidirectional interop with C++ (integers, strings, floats). Windows fully verified; macOS / Linux C wrapper includes all three platform branches but is not yet tested.
 
 > **PHP note**: PHP can only act as a caller. If you need PHP as a server, LingoFuse currently does not satisfy that requirement.
 
@@ -62,9 +65,57 @@ LingoFuse places application **stability** as the top priority; concurrency perf
 
 | Language / Platform | Method | Maturity |
 |---|---|---|
-| **Node.js / Browser** | `bridge.py` HTTP gateway | Usable, non-native |
-| **Kotlin / Swift / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal** | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
-| **aarch64 / loongarch64 / RISC-V** | Edge device porting planned | In progress, not production-ready |
+| Node.js / Browser | `bridge.py` HTTP gateway | Usable, non-native |
+| Kotlin / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
+| aarch64 / loongarch64 / RISC-V | Edge device porting planned | In progress, not production-ready |
+
+> Swift was previously listed under code-generator / bridge integration. It has been promoted to a first-party binding and is no longer accessed via the code generator.
+
+## Cross-language interop (Cross Demo)
+
+LingoFuse's core promise is "functions written in any language can be called directly from any other language." To validate this, every first-party binding ships with a set of three Cross programs sharing the same wire-format contract.
+
+### Three-process roles
+
+| Program | Role | Description |
+|---|---|---|
+| `CrossService` | Coordinator (beacon) | Creates IPC endpoint `ipc:cross`; registers no APIs |
+| `CrossNode` | Worker node | Registers `demo` app with two APIs: `add` and `inv_seri` |
+| `CrossCall` | Load-test client | 32 threads × 10 seconds against the `demo` app |
+
+### Shared wire-format contract
+
+```
+add       (int32 a, int32 b)                       -> int32
+inv_seri  (uint8, uint16, uint32, uint64,
+           string(NUL), float)                     -> reversed types
+```
+
+String = UTF-8 + NUL; integers = little-endian; floats = IEEE 754 little-endian. Any language's `CrossCall` that correctly reads bytes written by another language's `CrossNode` proves 100% multi-language interop for those two languages. This is empirical validation, not theoretical inference.
+
+### Cross Demo locations per language
+
+| Language | Location |
+|---|---|
+| Pascal | `pascal/cross_demo/` |
+| C++ | `cpp/CrossDemo/` |
+| C# | `csharp/CrossService/`, `csharp/CrossNode/`, `csharp/CrossCall/` |
+| Swift | `swift/Sources/CrossService/`, `swift/Sources/CrossNode/`, `swift/Sources/CrossCall/` |
+| Rust | `rust/examples/` |
+| Go | `go/cross/` |
+| TypeScript | `ts/cross/` |
+| JavaScript | `js/cross/` |
+| Python | `Py/cross/` |
+| Java | `java/src/main/java/lingofuse/demo/cross/` |
+
+### Verified interop directions
+
+| Direction | Result |
+|---|---|
+| Swift ↔ C++ | ✅ Verified |
+| Pascal ↔ C++ | ✅ Verified |
+| C# ↔ C++ | ✅ Verified |
+| Rust ↔ C++ | ✅ Verified |
 
 ## Quick start
 
@@ -90,23 +141,43 @@ cd cpp/Conc   && cmake . && make && ./ConcService  & ./ConcClient
 | Document | Content |
 |---|---|
 | [`src/CONTRIBUTING.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/CONTRIBUTING.md) | Build environment setup and workflow |
-| [`src/CONTRIBUTING_lazbuild.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/CONTRIBUTING_lazbuild.md) | One-click build with lazbuild CLI |
+| [`src/CONTRIBUTING_lazbuild.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/CONTRIBUTING_lazbuild.md) | One-click build with lazbuild CLI; includes LoongArch64 manual Lazarus build steps |
 | [`src/FPC_3.3.1_Package_Info.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/FPC_3.3.1_Package_Info.md) | FPC 3.3.1 environment package info |
 | [`src/Lazarus_Change_FPC.md`](https://github.com/PassByYou888/LingoFuse/blob/main/src/Lazarus_Change_FPC.md) | Switching FPC version in Lazarus |
 
+### Core build files
+
+| File | Purpose |
+|---|---|
+| `src/build.bat` | Windows one-click build script |
+| `src/LingoFuse.lpi` | Lazarus project file |
+| `src/LingoFuse.lpr` | Project main program file |
+| `src/Z.LingoFuse_Core.pas` | Core engine implementation |
+| `src/Z.LingoFuse_Export.pas` | C ABI export layer |
+
+One-click build:
+
+```bash
+cd src
+lazbuild LingoFuse.lpi
+```
+
+> Note: FPC toolchain has version lock-in — all build machines must use the same FPC 3.3.1 build source, otherwise `PPU version mismatch` will occur. See `src/CONTRIBUTING.md`.
+
 ## Testing & verification: `test/` is the source of truth
 
-For any uncertainty about the README — latency, ordering, stability, behavior under concurrency — **do not guess. Go to `test/` and find physical verification.**
+For any uncertainty about the README — latency, ordering, stability, behavior under concurrency — do not guess. Go to `test/` and find physical verification.
 
 ### What `test/` provides
 
-`test/` provides part of the **PoC (Proof of Concept)** work. Before using LingoFuse in production, note:
+`test/` provides part of the PoC (Proof of Concept) work. Before using LingoFuse in production, note:
 
-1. **The author provides race-condition stability tests (the most important mechanism-level tests), but not your App-level tests.** You need to simulate your own App layer and run a PoC to verify LF's behavior in your specific business scenario.
-2. **You need to be able to build and compile LF yourself.** LingoFuse is developed by Lao Zhang; if it is not maintained long-term, users need to build it themselves and keep up with generational updates.
-3. **Each language has its own test / CI system in principle.** Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, and Java all have runnable tests, but **GitHub-hosted CI is C++ only**. Other languages provide local test scripts or projects:
+1. The author provides race-condition stability tests (the most important mechanism-level tests), but not your App-level tests. You need to simulate your own App layer and run a PoC to verify LF's behavior in your specific business scenario.
+2. You need to be able to build and compile LF yourself. LingoFuse is developed by Lao Zhang; if it is not maintained long-term, users need to build it themselves and keep up with generational updates.
+3. Each language has its own test / CI system in principle. Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, Java, and Swift all have runnable tests, but GitHub-hosted CI is C++ only. Other languages provide local test scripts or projects:
    - C++: `cpp/test/`, `cpp/Stress/`, `cpp/Conc/`
    - Java: `java/run_test_ci.ps1`, `java/run_test_ci.sh`
+   - Swift: `swift/test.ps1`, `swift/Tests/LingoFuseTests/`
    - Go: `go/test.ps1`, `go/dev_test.ps1`
    - Rust: `rust/test.ps1`
    - C#: `csharp/build.ps1`, `csharp/test/`
@@ -118,11 +189,11 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 ### Why `test/` contains documents and executables instead of GitHub Actions
 
-GitHub's automated CI has many limitations. LingoFuse supports **multiple languages and platforms** — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
+GitHub's automated CI has many limitations. LingoFuse supports multiple languages and platforms — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
 
-So LingoFuse's approach is: **deliver testing capability directly to the user.** `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting **real data from your own hardware**.
+So LingoFuse's approach is: deliver testing capability directly to the user. `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting real data from your own hardware.
 
-**All GitHub-hosted CI tests are C++ code.** Source code can be found under `cpp/`:
+All GitHub-hosted CI tests are C++ code. Source code can be found under `cpp/`:
 
 - `cpp/test/` — Functional tests (`test_lingofuse.cpp` / `test_lingofuse_json.cpp`)
 - `cpp/Stress/` — Stress tests (`StressService.cpp` / `StressClient.cpp` / `StressMonitor.cpp`)
@@ -134,15 +205,32 @@ Each subdirectory has `CMakeLists.txt` and one-click CI scripts.
 
 | Document | Content | Executables |
 |---|---|---|
-| [`LingoFuse_Functional_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md) | **Functional tests**: 82 tests covering C++ RAII layer and serialization layer, verifying every public API contract. 100% pass in CI mode. | `test.zip` contains `test_lingofuse` / `test_lingofuse_json` |
-| [`LingoFuse_Stress_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md) | **Stress tests**: One-click self-evaluation for Call / Notify / mixed modes, producing throughput, latency, and stability data on your own machine. | `test.zip` contains `StressService` / `StressClient` / `StressMonitor` |
-| [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | **Concurrent Notify**: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
+| [`LingoFuse_Functional_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Functional_Test_Guide.md) | Functional tests: 82 tests covering C++ RAII layer and serialization layer, verifying every public API contract. 100% pass in CI mode. | `test.zip` contains `test_lingofuse` / `test_lingofuse_json` |
+| [`LingoFuse_Stress_Test_Guide.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Stress_Test_Guide.md) | Stress tests: One-click self-evaluation for Call / Notify / mixed modes, producing throughput, latency, and stability data on your own machine. | `test.zip` contains `StressService` / `StressClient` / `StressMonitor` |
+| [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | Concurrent Notify: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
 
 ### Language-specific test suites
 
+#### Swift test suite
+
+The Swift binding ships with 128 XCTest cases across 8 suites, all passing:
+
+| Suite | Tests | Coverage |
+|---|---|---|
+| `CAbiTests` | 44 | Library loading, data handle lifecycle, atomic types, strings, AppHandle, callback prototypes |
+| `DataHandleTests` | 20 | RAII data handle: construction, lifecycle, byte I/O, scalar I/O, strings |
+| `LfIoTests` | 18 | Unified JSON I/O: encode / decode / string frames / byte frames / wire-format invariants |
+| `AppHandleTests` | 12 | RAII app handle: register / unregister / local call / callback lifecycle |
+| `FrameworkTests` | 14 | Process-level facade: options / network prepare / health check / remote call / shutdown |
+| `NetworkEventsTests` | 7 | Network events: install / clear / replace semantics |
+| `StatusTests` | 9 | Status queue: count / extract / inject / health check |
+| `IntegrationTests` | 4 | End-to-end IPC sessions: JSON call / long string / ABI channel / Notify |
+
+Run with `swift test` from the `swift/` directory. See [`swift/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/swift/README.md) for full usage instructions.
+
 #### Rust test suite
 
-The Rust binding ships with **67 tests** across four layers, all passing:
+The Rust binding ships with 67 tests across four layers, all passing:
 
 | Layer | Command | Notes |
 |---|---|---|
@@ -168,11 +256,11 @@ Run with `go test ./...` from the `go/` directory. See [`go/README.md`](https://
 
 #### C# test suite
 
-The C# binding ships with **58 tests across 8 categories**: `DataHandle` (19), `AppHandle` (10), `LfIo` (7), `Framework` (5), network integration (8), cross-language ABI (5), concurrency (2), stress (2). See [`csharp/`](https://github.com/PassByYou888/LingoFuse/tree/main/csharp) for details.
+The C# binding ships with 58 tests across 8 categories: `DataHandle` (19), `AppHandle` (10), `LfIo` (7), `Framework` (5), network integration (8), cross-language ABI (5), concurrency (2), stress (2). See [`csharp/`](https://github.com/PassByYou888/LingoFuse/tree/main/csharp) for details.
 
 #### TypeScript / JavaScript test suite
 
-The JS binding ships with **127 tests** (127 passed, 0 failed), covering native library loading, app creation, API registration, self-connected service + client startup, and end-to-end calls. See [`ts/`](https://github.com/PassByYou888/LingoFuse/tree/main/ts) and [`js/`](https://github.com/PassByYou888/LingoFuse/tree/main/js) for details.
+The JS binding ships with 127 tests (127 passed, 0 failed), covering native library loading, app creation, API registration, self-connected service + client startup, and end-to-end calls. See [`ts/`](https://github.com/PassByYou888/LingoFuse/tree/main/ts) and [`js/`](https://github.com/PassByYou888/LingoFuse/tree/main/js) for details.
 
 #### Java test suite
 
@@ -199,6 +287,22 @@ The Dart binding includes tests under `dart/test/`:
 
 See [`dart/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/dart/README.md) for details.
 
+### Test scale quick reference
+
+| Language | Framework | Test count | Platform verified | CI |
+|---|---|---|---|---|
+| C++ | Custom CI | 82 + stress + concurrent | Windows / Linux | ✅ GitHub |
+| Swift | XCTest | 128 | Windows verified; macOS / Linux untested | Local |
+| TypeScript | Node test | 127 | Windows / Linux / macOS | Local |
+| JavaScript | Node test | 127 | Windows / Linux / macOS | Local |
+| Rust | cargo test | 67 | Windows / Linux / macOS | Local |
+| C# | xUnit | 58 | Windows | Local |
+| Go | go test | 18 | Windows / Linux / macOS | Local |
+| Java | JUnit 5 | Automated tests | Windows / Linux | Local |
+| Dart | Dart test | Full suite | Windows / Linux / macOS | Local |
+| Python | pytest | Full pipeline | Windows / Linux / macOS | Local |
+| Pascal | Custom | Full dev suite | Windows / Linux | Local |
+
 ## Code generator system
 
 LingoFuse-Tools solves the biggest pain point of cross-language RPC: writing bindings for each language by hand.
@@ -207,9 +311,9 @@ Give it a Pascal unit or C header file, and it automatically produces multi-lang
 
 | Tool | Target | Protocol | Target languages |
 |---|---|---|---|
-| **code_decl_to_abi** | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / Rust / Go |
-| **code_decl_to_json_abi** | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript / PHP |
-| **code_decl_to_mcp** | MCP tool provider | Model Context Protocol | Pascal / Python / C++ / C# |
+| code_decl_to_abi | ABI server / client | LingoFuse binary ABI | Pascal / Python / C++ / C# / Rust / Go |
+| code_decl_to_json_abi | HTTP/JSON server / client | HTTP + JSON (via bridge) | Pascal / Python / C++ / C# / JavaScript / PHP |
+| code_decl_to_mcp | MCP tool provider | Model Context Protocol | Pascal / Python / C++ / C# |
 
 Each tool has three entry points: GUI, CLI, and MCP API. Each tool comes with a self-contained knowledge base (Markdown) covering API contracts, wire protocol, type mapping, known pitfalls, debugging trees, and extension guides.
 
@@ -229,16 +333,16 @@ LingoFuse is a communication foundation. The foundation itself does not build ap
 | [pasAgent v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | Released | Multimodal agent, 250+ backends, dual-language code generation |
 | [cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | Released | C++ ecosystem agent integration |
 | [csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | Released | .NET agent runtime + LLM client SDK |
-| **tsAgent** | TypeScript | Coming soon | TypeScript / JavaScript ecosystem agent runtime |
+| tsAgent | TypeScript | Coming soon | TypeScript / JavaScript ecosystem agent runtime |
 
-> **tsAgent is not yet released.** The current TS/JS bindings are pure communication layers, without an agent runtime. If you need to build agents in TS/JS, use mature frameworks like Mastra or Vercel AI SDK, then call functions in other languages through LingoFuse's TS bindings.
+> tsAgent is not yet released. The current TS/JS bindings are pure communication layers, without an agent runtime. If you need to build agents in TS/JS, use mature frameworks like Mastra or Vercel AI SDK, then call functions in other languages through LingoFuse's TS bindings.
 
 These branches demonstrate that the LingoFuse communication foundation is general enough to support agent layers built in any language ecosystem — and the foundation ensures they can talk to each other.
 
 ### Related projects
 
-- **[zIPC](https://github.com/PassByYou888/zIPC)** — The same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh.
-- **[ZNetV2](https://github.com/PassByYou888/ZNetV2)** — The large-scale server-side data throughput framework in the PassByYou888 stack.
+- [zIPC](https://github.com/PassByYou888/zIPC) — The same-machine IPC engine under LingoFuse. Use zIPC directly if you only need same-machine IPC without the full RPC mesh.
+- [ZNetV2](https://github.com/PassByYou888/ZNetV2) — The large-scale server-side data throughput framework in the PassByYou888 stack.
 
 ## Dependencies
 
@@ -253,9 +357,9 @@ Core dynamic libraries are located in `Binary/`:
 
 > The current `Binary/` directory mainly provides Windows 32/64-bit pre-compiled libraries. Linux / macOS libraries must be compiled according to the build documents under `src/`.
 
-**Deployment**: Add the `Binary/` directory to system `PATH`, or copy the dynamic libraries to the executable's directory.
+Deployment: Add the `Binary/` directory to system `PATH`, or copy the dynamic libraries to the executable's directory.
 
-On Windows, install the **VC++ 2015-2022 Redistributable**:
+On Windows, install the VC++ 2015-2022 Redistributable:
 - Download page: [Latest supported Visual C++ Redistributable downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
 - x64 direct link: [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 - x86 direct link: [vc_redist.x86.exe](https://aka.ms/vs/17/release/vc_redist.x86.exe)
@@ -267,9 +371,10 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 - Pure TS/JS projects where all logic can be rewritten in TS/JS — introducing LF only adds complexity and failure points.
 - Scenarios requiring PHP as a server (PHP can only be a caller).
 - Teams with hard concurrency performance requirements who are unwilling to run their own App-level PoC verification.
-- **Flutter Web projects** (Dart FFI unavailable).
-- **32-bit Windows projects** (Dart binding untested).
-- **Java binding requires JDK 22+**; cannot run directly on JDK 8 / 11 / 17 / 21.
+- Flutter Web projects (Dart FFI unavailable).
+- 32-bit Windows projects (Dart binding untested).
+- Java binding requires JDK 22+; cannot run directly on JDK 8 / 11 / 17 / 21.
+- Swift binding requires Swift 5.9+ (6.4 recommended); macOS / Linux deployment paths not yet tested.
 
 ## Documentation map
 
@@ -283,6 +388,7 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 - [Go README](https://github.com/PassByYou888/LingoFuse/blob/main/go/README.md): Go developers
 - [Dart README](https://github.com/PassByYou888/LingoFuse/blob/main/dart/README.md): Dart / Flutter developers
 - [Java README](https://github.com/PassByYou888/LingoFuse/blob/main/java/README.md): Java developers
+- [Swift README](https://github.com/PassByYou888/LingoFuse/blob/main/swift/README.md): Swift developers
 - [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge, caller-only)
 - [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
 - [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
@@ -304,4 +410,4 @@ On Windows, install the **VC++ 2015-2022 Redistributable**:
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, PHP, C ABI, FFI, FFM API, JDK 22+, CGO, purego, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, PHP, C ABI, FFI, FFM API, JDK 22+, Clang importer, C target, XCTest, Swift 5.9, Swift 6.4, CGO, purego, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一

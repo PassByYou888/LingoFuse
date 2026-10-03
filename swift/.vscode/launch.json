@@ -1,0 +1,64 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Debug CrossService",
+            "target": "CrossService",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug CrossService"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Release CrossService",
+            "target": "CrossService",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release CrossService"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Debug CrossNode",
+            "target": "CrossNode",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug CrossNode"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Release CrossNode",
+            "target": "CrossNode",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release CrossNode"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Debug CrossCall",
+            "target": "CrossCall",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug CrossCall"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift}",
+            "name": "Release CrossCall",
+            "target": "CrossCall",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release CrossCall"
+        }
+    ]
+}

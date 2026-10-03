@@ -110,28 +110,6 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 ---
 
-## 仓库速览
-
-| 目录 | 内容 |
-|---|---|
-| [`Binary/`](Binary/) | 预编译动态库：Windows 32/64 位 `LingoFuse`、`z_ipc`、`mimalloc` |
-| [`src/`](src/) | 核心 Pascal 引擎源码、Lazarus 工程、FPC 构建文档 |
-| [`test/`](test/) | 功能 / 压力 / 并发测试指南与预编译测试包 |
-| [`cpp/`](cpp/) | C++ 绑定、C ABI 头文件、功能 / 压力 / 并发 CI 测试源码 |
-| [`pascal/`](pascal/) | Pascal 原生绑定、完整 Demo、HTTP Bridge、计算网格、跨机示例 |
-| [`Py/`](Py/) | Python 绑定，`pip install -e .` 即用，含服务端与 HTTP 网关 |
-| [`csharp/`](csharp/) | C# / .NET 绑定，P/Invoke + RAII + JSON I/O |
-| [`ts/`](ts/) | TypeScript 绑定，完整类型定义与示例 |
-| [`js/`](js/) | JavaScript 绑定，CommonJS + ESM 双入口 |
-| [`rust/`](rust/) | Rust 绑定，安全 RAII 封装与 C ABI 层 |
-| [`go/`](go/) | Go 绑定，purego 无 cgo，交叉编译友好 |
-| [`dart/`](dart/) | Dart FFI 绑定与 C 桥接，支持 Flutter 移动端 |
-| [`java/`](java/) | Java 绑定，基于 FFM API（JDK 22+），纯 Java 无 JNI |
-| [`php/`](php/) | PHP 调用者接入说明，经 `bridge.py` HTTP 网关 |
-| [`llms.txt`](llms.txt) | AI 知识库入口，覆盖接口说明 |
-
----
-
 ## 语言支持
 
 ### 第一方绑定（仓库内）

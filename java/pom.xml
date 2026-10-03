@@ -22,6 +22,14 @@
         <junit.version>5.10.2</junit.version>
 
         <!--
+            JUnit Platform version. JUnit 5.10.2 corresponds to platform
+            1.10.2. Both versions must be kept in lockstep with the
+            JUnit Jupiter version above. See:
+            https://junit.org/junit5/docs/current/user-guide/#dependency-metadata-junit-platform
+        -->
+        <junit.platform.version>1.10.2</junit.platform.version>
+
+        <!--
             JDK 24+ requires explicit opt-in for native access. The
             flag is passed to both the test JVM and the exec plugin
             so that every entry point runs without the "restricted
@@ -30,6 +38,19 @@
             release will turn those into hard errors.
         -->
         <native.access.flag>--enable-native-access=ALL-UNNAMED</native.access.flag>
+
+        <!--
+            CI test mode. When true, the JUnit 5 CiTestListener emits
+            one JSON line per test plus a final summary line, matching
+            the format used by the C++ and C# harnesses. Enable from
+            the command line:
+
+                mvn test -Dlingofuse.ci=true
+
+            When false or absent, the listener is a no-op and the
+            test run is indistinguishable from a normal invocation.
+        -->
+        <lingofuse.ci>false</lingofuse.ci>
     </properties>
 
     <dependencies>
@@ -46,10 +67,38 @@
             <version>${jackson.version}</version>
         </dependency>
 
+        <!--
+            JUnit Jupiter: the test API, the engine, and the
+            parameterised-test support. This is what the existing
+            test classes (DataHandleSmokeTest, AppHandleSmokeTest)
+            compile and run against.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            JUnit Platform Launcher. Required at compile time by the
+            CiTestListener class, which implements
+            org.junit.platform.launcher.TestExecutionListener and
+            references TestPlan, TestIdentifier and
+            TestExecutionResult.
+
+            This dependency is NOT transitively pulled in by
+            junit-jupiter; it must be declared explicitly. At runtime
+            the JUnit Platform Launcher is already present because
+            maven-surefire-plugin bundles its own copy, but the
+            compiler needs the API on the compile classpath.
+
+            Versions: platform 1.10.2 pairs with Jupiter 5.10.2.
+        -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -74,6 +123,28 @@
                         on every test run.
                     -->
                     <argLine>${native.access.flag}</argLine>
+
+                    <!--
+                        Forward the CI flag to the test JVM. The
+                        CiTestListener reads it via
+                        System.getProperty("lingofuse.ci") to decide
+                        whether to emit machine-readable JSON Lines.
+                        The listener is discovered automatically
+                        through the ServiceLoader entry in
+                        src/test/resources/META-INF/services/.
+                    -->
+                    <systemPropertyVariables>
+                        <lingofuse.ci>${lingofuse.ci}</lingofuse.ci>
+                    </systemPropertyVariables>
+
+                    <!--
+                        Keep test stdout attached to the console so
+                        the CI harness can capture the JSON Lines
+                        stream from a single tee of the Maven output.
+                        Redirecting to a file would hide the lines
+                        from the orchestrator script.
+                    -->
+                    <redirectTestOutputToFile>false</redirectTestOutputToFile>
                 </configuration>
             </plugin>
 

@@ -11,3 +11,4 @@ rd /q /s .\dist
 rd /q /s .\__pycache__
 cd .\lingofuse
 call clear_.bat
+cd ..

@@ -5,7 +5,7 @@
 > 任何语言写的函数，任何其他语言都能直接调。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/languages-12%20first--party%20%2B%2030%20via%20tools-blue)]()
+[![Languages](https://img.shields.io/badge/languages-13%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
 [![CI](https://img.shields.io/badge/CI-C%2B%2B%20only-orange)]()
 
@@ -56,7 +56,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 | 特性 | LingoFuse | gRPC | REST | HTTP POST |
 |------|-----------|------|------|-----------|
 | 跨机支持 | ✅ 原生 | ✅ 需网关 | ✅ 需网关 | ✅ 原生 |
-| 跨语言 | **12 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
+| 跨语言 | **13 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
 | 请求-响应 | ✅ Call | ✅ | ✅ | ✅ |
 | 流式 / 异步 | ✅ Notify | ⚠️ 需 stream | ❌ | ❌ |
 | 类型安全 | ✅ 强类型 | ✅ 需 IDL | ❌ | ❌ |
@@ -119,32 +119,35 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 | 语言 | 目录 | 状态 | 测试规模 / 说明 |
 |------|------|------|------------------|
-| **Pascal** | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源。单测 / 压测 / 计算网格 / HTTP Bridge 全覆盖 |
-| **Python** | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用。含服务端 `@expose` 装饰器、HTTP 网关、JSON 修复预处理 |
-| **C++** | [`cpp/`](cpp/) | 🟢 生产就绪 | **唯一有 GitHub CI**。原生 C ABI，零开销。功能 / 压力 / 并发三套 CI 测试 |
-| **C# / .NET** | [`csharp/`](csharp/) | 🟢 生产就绪 | **58 项测试，8 分类**。完整 .NET 绑定，服务端 / 调用端全支持。P/Invoke + RAII + JSON I/O |
-| **TypeScript** | [`ts/`](ts/) | 🟢 生产就绪 | **127 项测试**。完整类型定义 + 源码 + 编译产物 + 示例。支持 Node / Deno / Bun |
-| **JavaScript** | [`js/`](js/) | 🟢 生产就绪 | **127 项测试**。CommonJS + ESM 双入口，与 TS 字节级互通 |
-| **Rust** | [`rust/`](rust/) | 🟢 生产就绪 | **67 项测试**。安全 RAII 封装 + 完整 C ABI 层。FFI 边界 `catch_unwind` 隔离 |
-| **Go** | [`go/`](go/) | 🟢 生产就绪 | **18 项测试**。purego 无 cgo，交叉编译友好。含 e2e / ABI 冒烟 / 数据句柄测试 |
-| **Dart** | [`dart/`](dart/) | 🟢 生产就绪 | 完整测试套件。Dart FFI + C 桥接 DLL。完整 caller + server 能力。支持 Flutter 移动端 |
-| **Java** | [`java/`](java/) | 🟢 生产就绪 | 基于 FFM API（JDK 22+），纯 Java 无 JNI。含 `DataHandle` / `AppHandle`、自动化测试、三进程 Demo。性能优化进行中 |
-| **Swift** | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，全部通过。Clang importer + C target，RAII 句柄，统一 JSON I/O。C++ ↔ Swift 双向字节级互调已验证。Windows 已实测，macOS / Linux 待测 |
-| **PHP** | [`php/`](php/) | 🟡 调用者接入 | 无 FFI 测试。经 `bridge.py` HTTP 网关，PHP 只能作为调用者 |
+| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源。单测 / 压测 / 计算网格 / HTTP Bridge 全覆盖 |
+| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用。含服务端 `@expose` 装饰器、HTTP 网关、JSON 修复预处理 |
+| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI。原生 C ABI，零开销。功能 / 压力 / 并发三套 CI 测试 |
+| C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | 58 项测试，8 分类。完整 .NET 绑定，服务端 / 调用端全支持。P/Invoke + RAII + JSON I/O |
+| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | 127 项测试。完整类型定义 + 源码 + 编译产物 + 示例。支持 Node / Deno / Bun |
+| JavaScript | [`js/`](js/) | 🟢 生产就绪 | 127 项测试。CommonJS + ESM 双入口，与 TS 字节级互通 |
+| Rust | [`rust/`](rust/) | 🟢 生产就绪 | 67 项测试。安全 RAII 封装 + 完整 C ABI 层。FFI 边界 `catch_unwind` 隔离 |
+| Go | [`go/`](go/) | 🟢 生产就绪 | 18 项测试。purego 无 cgo，交叉编译友好。含 e2e / ABI 冒烟 / 数据句柄测试 |
+| Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整测试套件。Dart FFI + C 桥接 DLL。完整 caller + server 能力。支持 Flutter 移动端 |
+| Java | [`java/`](java/) | 🟢 生产就绪 | 基于 FFM API（JDK 22+），纯 Java 无 JNI。含 `DataHandle` / `AppHandle`、自动化测试、三进程 Demo。性能优化进行中 |
+| Swift | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，全部通过。Clang importer + C target，RAII 句柄，统一 JSON I/O。C++ ↔ Swift 双向字节级互调已验证。Windows 已实测，macOS / Linux 待测 |
+| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 140 项测试（33 单元 + 35 ABI + 18 I/O + 43 JSON + 6 事件 + 5 状态）。手写 extern 声明 + RAII 句柄 + 统一 JSON I/O。与 C++ / C# / Rust / Go / Python / JavaScript 逐字节兼容。Windows x64 已实测，Linux / macOS / 32 位待测 |
+| PHP | [`php/`](php/) | 🟡 调用者接入 | 无 FFI 测试。经 `bridge.py` HTTP 网关，PHP 只能作为调用者 |
 
 > **关于 PHP 的明确说明**：PHP 官方 FFI 机制无法从外部 OS 线程进入 PHP 回调，无法注册 Call/Notify 服务端 API。因此 PHP 只能作为调用者接入。**需要 PHP 作为服务端时，LingoFuse 当前不满足。**
 >
 > **关于 Java 的明确说明**：Java 绑定使用 FFM API，需要 **JDK 22+**（推荐 JDK 25 LTS）。当前功能完整，含跨进程 RPC、跨语言 ABI 验证与三进程 Demo；性能优化仍在推进。GitHub 托管 CI 目前只覆盖 C++，Java 侧以 `java/run_test_ci.ps1` / `run_test_ci.sh` 本地运行为准。
 >
 > **关于 Swift 的明确说明**：Swift 绑定使用 Clang importer + C target，最低 Swift 5.9，推荐 Swift 6.4。128 项 XCTest 覆盖 C ABI 层到高级封装层全部路径。跨语言 Demo 已实测 C++ ↔ Swift 双向字节级互通，覆盖整数、字符串、浮点等全部基础类型。当前 Windows 平台已完整验证，macOS / Linux 平台 C wrapper 已包含三大平台分支，但尚未实测。
+>
+> **关于 Zig 的明确说明**：Zig 绑定锁定 Zig 0.17.0（该版本有多项破坏性 API 变更）。140 项测试覆盖 Zig 原生单元、C ABI 集成、统一 I/O、JSON 引擎、网络事件、状态队列六层。跨语言 Demo 已与 C++ / C# / Rust / Go / Python / JavaScript 完成逐字节兼容验证。当前 Windows x64 已完整验证，Linux / macOS / Windows 32 位待验证。
 
 ### 经代码生成器 / 桥接支持
 
 | 语言 / 平台 | 方式 | 成熟度 |
 |-------------|------|--------|
-| **Node.js / 浏览器** | `bridge.py` HTTP 网关 | 可用，非原生 |
-| **Kotlin / Ruby / Lua / Elixir / Julia / Zig / Nim / Crystal** | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
-| **aarch64 / loongarch64 / RISC-V** | 边缘设备移植计划 | 持续推进中，未生产就绪 |
+| Node.js / 浏览器 | `bridge.py` HTTP 网关 | 可用，非原生 |
+| Kotlin / Ruby / Lua / Elixir / Julia / Nim / Crystal | 经 [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 代码生成器接入 | 生成代码可用，需自行验证 |
+| aarch64 / loongarch64 / RISC-V | 边缘设备移植计划 | 持续推进中，未生产就绪 |
 
 👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
 
@@ -158,11 +161,11 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 | 项目 | 语言 | 状态 | 说明 |
 |------|------|------|------|
-| [**LingoFuse-pasAgent**](https://github.com/PassByYou888/LingoFuse-pasAgent) | Pascal | 🟢 已发布 | 纯文本智能体，129+ LLM 后端兼容 |
-| [**LingoFuse-pasAgent-v3**](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | 🟢 已发布 | 多模态智能体，250+ 后端，双语言代码生成 |
-| [**LingoFuse-cppAgent**](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🟢 已发布 | C++ 生态智能体接入 |
-| [**LingoFuse-csharpAgent**](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🟢 已发布 | .NET 智能体运行时 + LLM 客户端 SDK |
-| **LingoFuse-tsAgent** | TypeScript | 🚧 即将发布 | TypeScript / JavaScript 生态智能体接入 |
+| [LingoFuse-pasAgent](https://github.com/PassByYou888/LingoFuse-pasAgent) | Pascal | 🟢 已发布 | 纯文本智能体，129+ LLM 后端兼容 |
+| [LingoFuse-pasAgent-v3](https://github.com/PassByYou888/LingoFuse-pasAgent-v3) | Pascal | 🟢 已发布 | 多模态智能体，250+ 后端，双语言代码生成 |
+| [LingoFuse-cppAgent](https://github.com/PassByYou888/LingoFuse-cppAgent) | C++ | 🟢 已发布 | C++ 生态智能体接入 |
+| [LingoFuse-csharpAgent](https://github.com/PassByYou888/LingoFuse-csharpAgent) | C# / .NET | 🟢 已发布 | .NET 智能体运行时 + LLM 客户端 SDK |
+| LingoFuse-tsAgent | TypeScript | 🚧 即将发布 | TypeScript / JavaScript 生态智能体接入 |
 
 > **tsAgent 尚未发布。** 当前 TS/JS 绑定是纯通讯层，不含 Agent 运行时。如果需要在 TS/JS 中构建 Agent，请使用 Mastra、Vercel AI SDK 等成熟框架，再通过 LingoFuse 的 TS 绑定调用其他语言的函数。
 
@@ -185,10 +188,11 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
    - C++：`cpp/test/`、`cpp/Stress/`、`cpp/Conc/`
    - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`
    - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（128 项 XCTest）
+   - Zig：`zig/test.ps1`、`zig/tests/`、`zig/examples/`（140 项）
    - Go：`go/test.ps1`、`go/dev_test.ps1`
    - Rust：`rust/test.ps1`
    - C#：`csharp/build.ps1`、`csharp/test/`
@@ -200,7 +204,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -221,7 +225,8 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 | 语言 | 测试框架 | 测试数 | 平台验证 | CI |
 |------|----------|:------:|----------|:--:|
 | C++ | 自研 CI | 82 + 压测 + 并发 | Windows / Linux | ✅ GitHub |
-| Swift | XCTest | 128 | Windows 已实测，macOS / Linux 待测 | 本地 |
+| Zig | Zig test + 冒烟程序 | 140 | Windows x64；Linux / macOS / 32 位待测 | 本地 |
+| Swift | XCTest | 128 | Windows；macOS / Linux 待测 | 本地 |
 | TypeScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
 | JavaScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
 | Rust | cargo test | 67 | Windows / Linux / macOS | 本地 |
@@ -299,6 +304,7 @@ flowchart LR
 | C++ | ✅ | ✅ | ✅ | [`cpp/CrossDemo/`](cpp/CrossDemo/) |
 | C# | ✅ | ✅ | ✅ | [`csharp/CrossService/`](csharp/CrossService/) [`csharp/CrossNode/`](csharp/CrossNode/) [`csharp/CrossCall/`](csharp/CrossCall/) |
 | Swift | ✅ | ✅ | ✅ | [`swift/Sources/CrossService/`](swift/Sources/CrossService/) [`swift/Sources/CrossNode/`](swift/Sources/CrossNode/) [`swift/Sources/CrossCall/`](swift/Sources/CrossCall/) |
+| Zig | ✅ | ✅ | ✅ | [`zig/examples/`](zig/examples/)（`cross_service.zig` / `cross_node.zig` / `cross_call.zig`） |
 | Rust | ✅ | ✅ | ✅ | [`rust/examples/`](rust/examples/) |
 | Go | ✅ | ✅ | ✅ | [`go/cross/`](go/cross/) |
 | TS | ✅ | ✅ | ✅ | [`ts/cross/`](ts/cross/) |
@@ -331,39 +337,12 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 
 ---
 
-## 构建核心动态库
-
-`src/` 是 LingoFuse 核心动态库（`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`）的唯一构建入口。需要准备 Pascal 编译环境（FPC / Lazarus），然后一键构建。
-
 ### 构建文档
 
 | 文档 | 内容 |
 |------|------|
 | [**`src/CONTRIBUTING.md`**](src/CONTRIBUTING.md) | 构建环境搭建与工作流总览——第一次编译的入口 |
 | [**`src/CONTRIBUTING_lazbuild.md`**](src/CONTRIBUTING_lazbuild.md) | 使用 lazbuild CLI 一键构建；含 LoongArch64 手动构建 Lazarus 的完整步骤 |
-| [**`src/FPC_3.3.1_Package_Info.md`**](src/FPC_3.3.1_Package_Info.md) | FPC 3.3.1 全平台预编译包清单与获取方式 |
-| [**`src/Lazarus_Change_FPC.md`**](src/Lazarus_Change_FPC.md) | 在 Lazarus 中切换 FPC 版本的分步操作指南 |
-
-### 核心构建文件
-
-| 文件 | 作用 |
-|------|------|
-| [`src/build.bat`](src/build.bat) | Windows 一键构建脚本 |
-| [`src/LingoFuse.lpi`](src/LingoFuse.lpi) | Lazarus 工程文件 |
-| [`src/LingoFuse.lpr`](src/LingoFuse.lpr) | 项目主程序文件 |
-| [`src/Z.LingoFuse_Core.pas`](src/Z.LingoFuse_Core.pas) | 核心引擎实现 |
-| [`src/Z.LingoFuse_Export.pas`](src/Z.LingoFuse_Export.pas) | C ABI 导出层 |
-
-### 一键构建
-
-```bash
-cd src
-lazbuild LingoFuse.lpi
-```
-
-构建产物出现在 `src/` 或 `src/../Binary/` 下，与仓库预编译库同名。要替换 `Binary/` 中的预编译库时，直接覆盖即可。
-
-> **注意**：FPC 工具链存在版本锁定——所有参与编译的机器必须使用**同一构建源的 FPC 3.3.1**，否则会出现 `PPU version mismatch`。详见 [`src/CONTRIBUTING.md`](src/CONTRIBUTING.md)。
 
 ---
 
@@ -372,7 +351,7 @@ lazbuild LingoFuse.lpi
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **十二语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / PHP（PHP 为调用者） |
+| **十三语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
@@ -390,6 +369,7 @@ lazbuild LingoFuse.lpi
 - **32 位 Windows 项目**（Dart 绑定未测试）
 - **Java 绑定需要 JDK 22+**，无法在 JDK 8 / 11 / 17 / 21 上直接运行
 - **Swift 绑定需要 Swift 5.9+**（推荐 6.4），macOS / Linux 部署路径尚未实测
+- **Zig 绑定锁定 Zig 0.17.0**，升级到 0.18+ 前需重新评估破坏性 API 变更；Linux / macOS / 32 位平台尚未验证
 
 ---
 

@@ -117,29 +117,21 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 每个语言目录都有独立的 README、独立的测试体系、独立的示例。点击语言名进入对应目录。
 
-| 语言 | 目录 | 状态 | 测试规模 / 说明 |
-|------|------|------|------------------|
-| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源。单测 / 压测 / 计算网格 / HTTP Bridge 全覆盖 |
-| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用。含服务端 `@expose` 装饰器、HTTP 网关、JSON 修复预处理 |
-| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI。原生 C ABI，零开销。功能 / 压力 / 并发三套 CI 测试 |
-| C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | 58 项测试，8 分类。完整 .NET 绑定，服务端 / 调用端全支持。P/Invoke + RAII + JSON I/O |
-| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | 127 项测试。完整类型定义 + 源码 + 编译产物 + 示例。支持 Node / Deno / Bun |
-| JavaScript | [`js/`](js/) | 🟢 生产就绪 | 127 项测试。CommonJS + ESM 双入口，与 TS 字节级互通 |
-| Rust | [`rust/`](rust/) | 🟢 生产就绪 | 67 项测试。安全 RAII 封装 + 完整 C ABI 层。FFI 边界 `catch_unwind` 隔离 |
-| Go | [`go/`](go/) | 🟢 生产就绪 | 18 项测试。purego 无 cgo，交叉编译友好。含 e2e / ABI 冒烟 / 数据句柄测试 |
-| Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整测试套件。Dart FFI + C 桥接 DLL。完整 caller + server 能力。支持 Flutter 移动端 |
-| Java | [`java/`](java/) | 🟢 生产就绪 | 基于 FFM API（JDK 22+），纯 Java 无 JNI。含 `DataHandle` / `AppHandle`、自动化测试、三进程 Demo。性能优化进行中 |
-| Swift | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，全部通过。Clang importer + C target，RAII 句柄，统一 JSON I/O。C++ ↔ Swift 双向字节级互调已验证。Windows 已实测，macOS / Linux 待测 |
-| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 140 项测试（33 单元 + 35 ABI + 18 I/O + 43 JSON + 6 事件 + 5 状态）。手写 extern 声明 + RAII 句柄 + 统一 JSON I/O。与 C++ / C# / Rust / Go / Python / JavaScript 逐字节兼容。Windows x64 已实测，Linux / macOS / 32 位待测 |
-| PHP | [`php/`](php/) | 🟡 调用者接入 | 无 FFI 测试。经 `bridge.py` HTTP 网关，PHP 只能作为调用者 |
-
-> **关于 PHP 的明确说明**：PHP 官方 FFI 机制无法从外部 OS 线程进入 PHP 回调，无法注册 Call/Notify 服务端 API。因此 PHP 只能作为调用者接入。**需要 PHP 作为服务端时，LingoFuse 当前不满足。**
->
-> **关于 Java 的明确说明**：Java 绑定使用 FFM API，需要 **JDK 22+**（推荐 JDK 25 LTS）。当前功能完整，含跨进程 RPC、跨语言 ABI 验证与三进程 Demo；性能优化仍在推进。GitHub 托管 CI 目前只覆盖 C++，Java 侧以 `java/run_test_ci.ps1` / `run_test_ci.sh` 本地运行为准。
->
-> **关于 Swift 的明确说明**：Swift 绑定使用 Clang importer + C target，最低 Swift 5.9，推荐 Swift 6.4。128 项 XCTest 覆盖 C ABI 层到高级封装层全部路径。跨语言 Demo 已实测 C++ ↔ Swift 双向字节级互通，覆盖整数、字符串、浮点等全部基础类型。当前 Windows 平台已完整验证，macOS / Linux 平台 C wrapper 已包含三大平台分支，但尚未实测。
->
-> **关于 Zig 的明确说明**：Zig 绑定锁定 Zig 0.17.0（该版本有多项破坏性 API 变更）。140 项测试覆盖 Zig 原生单元、C ABI 集成、统一 I/O、JSON 引擎、网络事件、状态队列六层。跨语言 Demo 已与 C++ / C# / Rust / Go / Python / JavaScript 完成逐字节兼容验证。当前 Windows x64 已完整验证，Linux / macOS / Windows 32 位待验证。
+| 语言 | 目录 | 状态 | 一句话说明 |
+|------|------|------|------------|
+| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源 |
+| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关 |
+| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销 |
+| C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | 58 项测试，P/Invoke + RAII + 统一 JSON I/O |
+| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | 127 项测试，支持 Node / Deno / Bun |
+| JavaScript | [`js/`](js/) | 🟢 生产就绪 | 127 项测试，CommonJS + ESM 双入口，与 TS 字节级互通 |
+| Rust | [`rust/`](rust/) | 🟢 生产就绪 | 67 项测试，安全 RAII 封装，FFI 边界 `catch_unwind` 隔离 |
+| Go | [`go/`](go/) | 🟢 生产就绪 | 18 项测试，purego 无 cgo，交叉编译友好 |
+| Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整 caller + server 能力，支持 Flutter 移动端 |
+| Java | [`java/`](java/) | 🟢 生产就绪 | FFM API（JDK 22+），纯 Java 无 JNI |
+| Swift | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，C++ ↔ Swift 双向字节级互调已验证 |
+| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 140 项测试，与 C++ / C# / Rust / Go / Python / JavaScript 逐字节兼容 |
+| PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
 
 ### 经代码生成器 / 桥接支持
 
@@ -337,12 +329,15 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 
 ---
 
+## 构建核心动态库
+
+`src/` 是 LingoFuse 核心动态库（`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`）的唯一构建入口。需要准备 Pascal 编译环境（FPC / Lazarus），然后一键构建。
+
 ### 构建文档
 
 | 文档 | 内容 |
 |------|------|
 | [**`src/CONTRIBUTING.md`**](src/CONTRIBUTING.md) | 构建环境搭建与工作流总览——第一次编译的入口 |
-| [**`src/CONTRIBUTING_lazbuild.md`**](src/CONTRIBUTING_lazbuild.md) | 使用 lazbuild CLI 一键构建；含 LoongArch64 手动构建 Lazarus 的完整步骤 |
 
 ---
 

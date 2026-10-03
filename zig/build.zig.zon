@@ -1,0 +1,23 @@
+// =============================================================================
+//  build.zig.zon - Package manifest for the LingoFuse Zig binding.
+// -----------------------------------------------------------------------------
+//  Declares the package identity and the files that belong to it. The
+//  `fingerprint` value was produced by Zig during the first successful
+//  build attempt and is stable for this package name and contents.
+// =============================================================================
+.{
+    .name = .lingofuse,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0x335d88ce195df4cf,
+
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "c",
+        "tests",
+    },
+}

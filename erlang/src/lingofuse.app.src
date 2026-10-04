@@ -1,0 +1,24 @@
+%% src/lingofuse.app.src
+%%
+%% OTP application descriptor for the LingoFuse Erlang binding.
+%%
+%% The application is a thin wrapper around the NIF module. There is
+%% no long-running process and no supervision tree beyond an empty
+%% supervisor; the NIF itself is loaded on first use of the module
+%% and held for the lifetime of the VM.
+%%
+%% `applications` deliberately lists only kernel and stdlib. The NIF
+%% loads the LingoFuse shared library at runtime; that library is not
+%% an OTP application and must not appear here.
+
+{application, lingofuse, [
+    {description, "LingoFuse distributed RPC: Erlang NIF binding"},
+    {vsn, "0.1.0"},
+    {registered, [lingofuse_sup]},
+    {mod, {lingofuse_app, []}},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, []}
+]}.

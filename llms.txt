@@ -13,7 +13,7 @@
 - IPC latency: < 1 ms (self-reported, verify with `test/`)
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
-- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, and PHP (caller-only via HTTP bridge)
+- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, and PHP (caller-only via HTTP bridge)
 - CI status: C++ only (GitHub-hosted; other languages have runnable local tests but no GitHub-hosted CI)
 - Maintenance model: Single author; users are expected to be able to build and maintain the core library themselves if needed
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
@@ -55,6 +55,7 @@ LingoFuse places application stability as the top priority; concurrency performa
 | Swift | Production-ready | ✅ | ✅ | 128 XCTest | Clang importer + C target; RAII handles; unified JSON I/O; C++ ↔ Swift bidirectional byte-level interop verified; Windows verified, macOS / Linux untested |
 | Zig | Production-ready | ✅ | ✅ | 140 tests | Hand-written extern declarations; RAII handles; unified JSON I/O; byte-level compatible with C++ / C# / Rust / Go / Python / JavaScript; locks Zig 0.17.0; Windows x64 verified, Linux / macOS / 32-bit untested |
 | Erlang | Production-ready | ✅ | ✅ | 4 EUnit suites | NIF-based; all 37 C ABI functions wrapped in RAII-style resources; `lingofuse_json` enforces wire-format contract; async `register_call/4` and sync `register_call_sync/4` callback modes; cross-platform NIF build via `c_src/build.escript`; OTP 27+ with zero third-party runtime deps; Windows verified, Linux / macOS untested |
+| Ruby | Production-ready | ✅ | ✅ | 331 tests, 14 files | Fiddle bindings + native C extension for thread-safe callbacks; RAII `DataHandle` / `AppHandle`; unified `LfIo` JSON/string I/O; `NetworkEventQueue` for queue-based event consumption; OTP-free; Windows x64 verified, Linux / macOS untested |
 | PHP | Caller-only | ❌ | ✅ | No FFI tests | Via `bridge.py` HTTP gateway, JSON over HTTP POST. PHP cannot be a server. Official PHP FFI cannot support C ABI callbacks. |
 
 > **Java note**: Requires JDK 22+ (JDK 25 LTS recommended). Functionally complete, including cross-process RPC, cross-language ABI verification, and three-process Demo. Performance optimization is still in progress. GitHub-hosted CI currently covers C++ only; Java tests run locally via `java/run_test_ci.ps1` / `run_test_ci.sh`.
@@ -65,6 +66,8 @@ LingoFuse places application stability as the top priority; concurrency performa
 
 > **Erlang note**: Requires Erlang/OTP 27+ (verified on OTP 29). NIF-based binding; all 37 C ABI functions available with RAII-style resource types. Unified JSON I/O is enforced through `lingofuse_json` module. Two Call callback modes: `register_call/4` (async, delivers `{lf_call, Api, Payload}`) and `register_call_sync/4` (blocks native caller until `reply/2`). NIF built via `c_src/build.escript` on Windows / Linux / macOS / BSD, auto-selecting available C compiler (gcc / clang / cc / MSVC cl). Zero third-party runtime dependencies — uses OTP 27+ built-in `json` module. Windows verified; Linux / macOS untested.
 
+> **Ruby note**: Requires Ruby 4.0+ (x64-mingw-ucrt build) with DevKit. Uses `Fiddle` for the C ABI layer plus a small native C extension (`lingofuse_ext.so`) that bridges callbacks from native worker threads into a dedicated Ruby scheduler thread, avoiding the `[BUG] rb_thread_call_with_gvl()` deadlock that pure Fiddle would hit. 331 minitest cases across 14 files; no GitHub-hosted CI, run locally via `ruby/run_test_ci.ps1` (Windows) or `ruby/run_test_ci.sh` (Linux / macOS). Windows x64 fully verified; Linux / macOS not yet tested.
+
 > **PHP note**: PHP can only act as a caller. If you need PHP as a server, LingoFuse currently does not satisfy that requirement.
 
 ### Via code generator / bridge
@@ -72,10 +75,10 @@ LingoFuse places application stability as the top priority; concurrency performa
 | Language / Platform | Method | Maturity |
 |---|---|---|
 | Node.js / Browser | `bridge.py` HTTP gateway | Usable, non-native |
-| Kotlin / Ruby / Lua / Elixir / Julia / Nim / Crystal | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
+| Kotlin / Lua / Elixir / Julia / Nim / Crystal | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
 | aarch64 / loongarch64 / RISC-V | Edge device porting planned | In progress, not production-ready |
 
-> Swift, Zig, and Erlang were previously listed under code-generator / bridge integration. All three have been promoted to first-party bindings and are no longer accessed via the code generator.
+> Swift, Zig, Erlang, and Ruby were previously listed under code-generator / bridge integration. All four have been promoted to first-party bindings and are no longer accessed via the code generator.
 
 ## Cross-language interop (Cross Demo)
 
@@ -109,6 +112,7 @@ String = UTF-8 + NUL; integers = little-endian; floats = IEEE 754 little-endian.
 | Swift | `swift/Sources/CrossService/`, `swift/Sources/CrossNode/`, `swift/Sources/CrossCall/` |
 | Zig | `zig/examples/` (`cross_service.zig`, `cross_node.zig`, `cross_call.zig`) |
 | Erlang | `erlang/cross/` (`cross_service.escript`, `cross_node.escript`, `cross_call.escript`) |
+| Ruby | `ruby/cross/` (`cross_service.rb`, `cross_node.rb`, `cross_call.rb`) |
 | Rust | `rust/examples/` |
 | Go | `go/cross/` |
 | TypeScript | `ts/cross/` |
@@ -123,6 +127,7 @@ String = UTF-8 + NUL; integers = little-endian; floats = IEEE 754 little-endian.
 | Swift ↔ C++ | ✅ Verified |
 | Zig ↔ C++ / C# / Rust / Go / Python / JavaScript | ✅ Byte-level compatible |
 | Erlang ↔ C++ / C# / Python / JavaScript | ✅ Byte-level interoperable |
+| Ruby ↔ C++ / C# / Python / JavaScript | ✅ Byte-level compatible (shared wire-format contract; validated by test suite) |
 | Pascal ↔ C++ | ✅ Verified |
 | C# ↔ C++ | ✅ Verified |
 | Rust ↔ C++ | ✅ Verified |
@@ -184,12 +189,13 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 1. The author provides race-condition stability tests (the most important mechanism-level tests), but not your App-level tests. You need to simulate your own App layer and run a PoC to verify LF's behavior in your specific business scenario.
 2. You need to be able to build and compile LF yourself. LingoFuse is developed by Lao Zhang; if it is not maintained long-term, users need to build it themselves and keep up with generational updates.
-3. Each language has its own test / CI system in principle. Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, Java, Swift, Zig, and Erlang all have runnable tests, but GitHub-hosted CI is C++ only. Other languages provide local test scripts or projects:
+3. Each language has its own test / CI system in principle. Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, Java, Swift, Zig, Erlang, and Ruby all have runnable tests, but GitHub-hosted CI is C++ only. Other languages provide local test scripts or projects:
    - C++: `cpp/test/`, `cpp/Stress/`, `cpp/Conc/`
    - Java: `java/run_test_ci.ps1`, `java/run_test_ci.sh`
    - Swift: `swift/test.ps1`, `swift/Tests/LingoFuseTests/`
    - Zig: `zig/test.ps1`, `zig/tests/`, `zig/examples/`
    - Erlang: `erlang/test.ps1`, `erlang/test/`
+   - Ruby: `ruby/run_test_ci.ps1`, `ruby/run_test_ci.sh`, `ruby/test/`
    - Go: `go/test.ps1`, `go/dev_test.ps1`
    - Rust: `rust/test.ps1`
    - C#: `csharp/build.ps1`, `csharp/test/`
@@ -201,7 +207,7 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 ### Why `test/` contains documents and executables instead of GitHub Actions
 
-GitHub's automated CI has many limitations. LingoFuse supports multiple languages and platforms — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
+GitHub's automated CI has many limitations. LingoFuse supports multiple languages and platforms — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
 
 So LingoFuse's approach is: deliver testing capability directly to the user. `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting real data from your own hardware.
 
@@ -222,6 +228,29 @@ Each subdirectory has `CMakeLists.txt` and one-click CI scripts.
 | [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | Concurrent Notify: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
 
 ### Language-specific test suites
+
+#### Ruby test suite
+
+The Ruby binding ships with 331 minitest cases across 14 files, all passing:
+
+| Test file | Tests | Coverage |
+|---|---|---|
+| `test_errors.rb` | 23 | Exception hierarchy: base class, subclasses, fields, `rescue` polymorphism |
+| `test_callback_error_reporter.rb` | 10 | Handler installation, `report` dispatch, exception swallowing, concurrency safety |
+| `test_module_helpers.rb` | 20 | `VERSION` / `load_library` / `library_name` / `platform` / `cstr_ptr` / `read_cstr` |
+| `test_lf_io.rb` | 32 | Compact output, non-ASCII literals, round-trip, strict parse, `IoError` wrapping |
+| `test_lf_io_extra.rb` | 33 | Boundaries: `NUL_BYTE` / `ENCODING` / `cstr` / `peek` cursor / `read_all_bytes` / `try_read_json` |
+| `test_data_handle.rb` | 44 | Construction, position, size, byte I/O, 10 scalar types, NUL-framed strings, ownership, lifecycle, block form |
+| `test_data_handle_extra.rb` | 20 | Boundaries: write return value, multi-byte UTF-8, invalid UTF-8 replacement, large payload, `create_permanent` |
+| `test_app_handle.rb` | 33 | Construction, register Call/Notify, local call, duplicate registration, unregister, case-insensitive, callback exception isolation, callback lifecycle |
+| `test_app_handle_extra.rb` | 15 | Boundaries: `bind` without clients, unregistered API, registry key lowercase, non-standard exception, `local_call` argument validation |
+| `test_status.rb` | 17 | Status queue (count / get / drain / post), `check_main_thread` / `check_app` / `check_api` |
+| `test_network_events.rb` | 27 | `set` / `clear` / `installed?` / `set_listener`, `NetworkEventListener`, `NetworkEventQueue` |
+| `test_framework.rb` | 30 | `reset_prepare` / `prepare_service` / `prepare_client` / `prepare_done` / `set_option` / `generate_app_name` / `get_app_name` / `call` / `try_call` |
+| `test_network.rb` | 9 | `Overlap_Connection` two modes, `prepare_done` returns `true` only once, status queue round-trip |
+| `test_native_bridge_self_test.rb` | 18 | C extension API surface, trampoline addresses, `create_ref` / `free_ref`, queue empty `wait_for_work`, three trampolines, GVL routing, exception isolation, FIFO, concurrency |
+
+Run with `ruby test/test_errors.rb` (single file) or `ruby/run_test_ci.ps1` (full suite). See [`ruby/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/ruby/README.md) for full usage instructions, including C extension build steps.
 
 #### Erlang test suite
 
@@ -333,11 +362,12 @@ See [`dart/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/dart/
 
 | Language | Framework | Test count | Platform verified | CI |
 |---|---|---|---|---|
-| C++ | Custom CI | 82 + stress + concurrent | Windows / Linux | ✅ GitHub |
+| Ruby | minitest | 331 | Windows x64; Linux / macOS untested | Local |
 | Zig | Zig test + smoke programs | 140 | Windows x64; Linux / macOS / 32-bit untested | Local |
 | Swift | XCTest | 128 | Windows verified; macOS / Linux untested | Local |
 | TypeScript | Node test | 127 | Windows / Linux / macOS | Local |
 | JavaScript | Node test | 127 | Windows / Linux / macOS | Local |
+| C++ | Custom CI | 82 + stress + concurrent | Windows / Linux | ✅ GitHub |
 | Rust | cargo test | 67 | Windows / Linux / macOS | Local |
 | C# | xUnit | 58 | Windows | Local |
 | Erlang | EUnit | 4 suites | Windows verified; Linux / macOS untested | Local |
@@ -421,6 +451,7 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 - Swift binding requires Swift 5.9+ (6.4 recommended); macOS / Linux deployment paths not yet tested.
 - Zig binding locks Zig 0.17.0; before upgrading to 0.18+ the breaking API change list must be re-evaluated. Linux / macOS / 32-bit platforms not yet verified.
 - Erlang binding requires Erlang/OTP 27+; NIF crashes take down the BEAM node; never call blocking LingoFuse functions from callbacks.
+- Ruby binding requires Ruby 4.0+ (x64-mingw-ucrt) with DevKit for the native C extension; Linux / macOS not yet tested; CI not yet configured.
 
 ## Documentation map
 
@@ -437,6 +468,7 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 - [Swift README](https://github.com/PassByYou888/LingoFuse/blob/main/swift/README.md): Swift developers
 - [Zig README](https://github.com/PassByYou888/LingoFuse/blob/main/zig/README.md): Zig developers
 - [Erlang README](https://github.com/PassByYou888/LingoFuse/blob/main/erlang/README.md): Erlang developers
+- [Ruby README](https://github.com/PassByYou888/LingoFuse/blob/main/ruby/README.md): Ruby developers (full manual: C extension, RAII handles, network events, test suite)
 - [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge, caller-only)
 - [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
 - [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
@@ -458,4 +490,4 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, PHP, C ABI, FFI, FFM API, JDK 22+, Clang importer, C target, XCTest, Swift 5.9, Swift 6.4, Zig 0.17.0, extern declarations, RAII handles, nlohmann/json, lf_json, NIF, Erlang/OTP, OTP 27, EUnit, escript, rebar3, CGO, purego, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, PHP, C ABI, FFI, FFM API, JDK 22+, Clang importer, C target, XCTest, Swift 5.9, Swift 6.4, Zig 0.17.0, extern declarations, RAII handles, nlohmann/json, lf_json, NIF, Erlang/OTP, OTP 27, EUnit, escript, rebar3, CGO, purego, Ruby 4.0, x64-mingw-ucrt, DevKit, Fiddle, C extension, lingofuse_ext, GVL, rb_thread_call_with_gvl, minitest, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一

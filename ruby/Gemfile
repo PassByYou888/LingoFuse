@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+#
+# Gemfile — Bundler dependency declarations for the LingoFuse Ruby binding.
+#
+# All dependencies are also declared in lingofuse.gemspec. This Gemfile
+# exists so that `bundle install` can resolve and install them without
+# requiring a `gem install` step first.
+#
+# Usage:
+#
+#     bundle install
+#     bundle exec ruby check_env.rb
+#     bundle exec rake test
+#
+
+source 'https://rubygems.org'
+
+gemspec

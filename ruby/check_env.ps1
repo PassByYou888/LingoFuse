@@ -1,0 +1,430 @@
+# =============================================================================
+#  check_env.ps1 — Build-environment diagnostic for the LingoFuse Ruby
+#                  C extension (lingofuse_ext).
+# -----------------------------------------------------------------------------
+#  Run this AFTER installing RubyInstaller + DevKit, and BEFORE running
+#  `ruby extconf.rb` / `make` inside ext/lingofuse_ext/.
+#
+#  Usage:
+#
+#      powershell -ExecutionPolicy Bypass -File check_env.ps1
+#
+#  Exit code:
+#
+#      0   every required check passed; you can run `make` now
+#      1   at least one required check failed
+#
+#  The script never modifies anything persistent. It compiles two
+#  throwaway C programs into a temporary directory, then removes it.
+# =============================================================================
+
+$ErrorActionPreference = 'Continue'
+
+# -----------------------------------------------------------------------------
+# Reporter
+# -----------------------------------------------------------------------------
+
+$script:PassCount = 0
+$script:FailCount = 0
+$script:WarnCount = 0
+
+function Write-Section {
+    param([string]$Title)
+    Write-Host ''
+    Write-Host ('=' * 72)
+    Write-Host $Title
+    Write-Host ('=' * 72)
+}
+
+function Write-Ok {
+    param([string]$Message)
+    Write-Host "  [OK]   $Message"
+    $script:PassCount++
+}
+
+function Write-Fail {
+    param([string]$Message)
+    Write-Host "  [FAIL] $Message"
+    $script:FailCount++
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-Host "  [WARN] $Message"
+    $script:WarnCount++
+}
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "         $Message"
+}
+
+# =============================================================================
+# Section 1 — PowerShell and OS
+# =============================================================================
+
+Write-Section '1. PowerShell and OS'
+
+Write-Info "PowerShell version : $($PSVersionTable.PSVersion)"
+try {
+    $osName = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption
+} catch {
+    $osName = [System.Environment]::OSVersion.VersionString
+}
+Write-Info "OS                 : $osName"
+Write-Info "Architecture       : $env:PROCESSOR_ARCHITECTURE"
+Write-Info "Script directory   : $PSScriptRoot"
+Write-Info "Working directory  : $(Get-Location)"
+
+if ($PSVersionTable.PSVersion.Major -ge 5) {
+    Write-Ok "PowerShell $($PSVersionTable.PSVersion.Major) is supported."
+} else {
+    Write-Fail "PowerShell 5 or newer is required."
+}
+
+# =============================================================================
+# Section 2 — Ruby runtime
+# =============================================================================
+
+Write-Section '2. Ruby runtime'
+
+$rubyCmd = Get-Command ruby -ErrorAction SilentlyContinue
+if (-not $rubyCmd) {
+    Write-Fail 'ruby is not on PATH. Install RubyInstaller and reopen PowerShell.'
+} else {
+    Write-Info "Ruby executable    : $($rubyCmd.Source)"
+
+    $rubyVersion = (& ruby -v 2>&1) -join ' '
+    Write-Info "Ruby version       : $rubyVersion"
+
+    $rubyPlatform = (& ruby -e "puts RUBY_PLATFORM" 2>&1) -join ' '
+    Write-Info "Ruby platform      : $rubyPlatform"
+
+    $rubyHostOs = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['host_os']" 2>&1) -join ' '
+    Write-Info "RbConfig host_os   : $rubyHostOs"
+
+    $rubyArch = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['arch']" 2>&1) -join ' '
+    Write-Info "RbConfig arch      : $rubyArch"
+
+    $rubyBindir = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['bindir']" 2>&1) -join ' '
+    Write-Info "RbConfig bindir    : $rubyBindir"
+
+    if ($rubyPlatform -match 'mingw') {
+        Write-Ok 'Running under MinGW Ruby (x64-mingw-ucrt or similar).'
+    } else {
+        Write-Warn "Ruby platform is '$rubyPlatform', not a MinGW build."
+    }
+
+    if ($rubyVersion -match 'mingw') {
+        Write-Ok 'Ruby reports a MinGW build in its version string.'
+    }
+}
+
+# =============================================================================
+# Section 3 — Build toolchain (DevKit)
+# =============================================================================
+
+Write-Section '3. Build toolchain (DevKit)'
+
+# --- make ------------------------------------------------------------------
+
+$makeCmd = Get-Command make -ErrorAction SilentlyContinue
+if (-not $makeCmd) {
+    Write-Fail 'make is not on PATH. Install Ruby DevKit and open a NEW shell.'
+} else {
+    Write-Info "make path          : $($makeCmd.Source)"
+
+    $makeVersion = (& make --version 2>&1 | Select-Object -First 1) -join ' '
+    Write-Info "make version       : $makeVersion"
+
+    $makePath = $makeCmd.Source
+
+    if ($makePath -match 'Embarcadero|Borland|bcc32|CodeGear') {
+        Write-Fail 'make is Embarcadero / Borland Make, not GNU Make.'
+        Write-Info 'The Makefile generated by mkmf requires GNU Make.'
+        Write-Info 'Install Ruby DevKit and open a NEW PowerShell so that'
+        Write-Info 'its bin/ directory is at the FRONT of PATH.'
+    } elseif ($makeVersion -match 'GNU Make') {
+        Write-Ok 'GNU Make detected.'
+    } else {
+        Write-Warn 'make does not self-identify as GNU Make.'
+        Write-Info 'Run "make --version" manually and confirm it is GNU Make.'
+    }
+}
+
+# --- gcc -------------------------------------------------------------------
+
+$gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+if (-not $gccCmd) {
+    Write-Fail 'gcc is not on PATH. Install Ruby DevKit.'
+} else {
+    Write-Info "gcc path           : $($gccCmd.Source)"
+    $gccVersion = (& gcc --version 2>&1 | Select-Object -First 1) -join ' '
+    Write-Info "gcc version        : $gccVersion"
+    Write-Ok 'gcc is available.'
+}
+
+# --- optional: g++ ---------------------------------------------------------
+
+$gxxCmd = Get-Command g++ -ErrorAction SilentlyContinue
+if ($gxxCmd) {
+    Write-Info "g++ path           : $($gxxCmd.Source)"
+} else {
+    Write-Info 'g++ is not present (optional; the extension is pure C).'
+}
+
+# --- DevKit environment marker --------------------------------------------
+
+if ($env:RI_DEVKIT) {
+    Write-Ok "RI_DEVKIT is set: $env:RI_DEVKIT"
+} else {
+    Write-Info 'RI_DEVKIT is not set (fine when make/gcc come from the Ruby installer).'
+}
+
+# --- PATH sanity: is the DevKit bin ahead of any foreign make? -------------
+
+$pathEntries = $env:PATH -split ';'
+$foreignMake = $pathEntries | Where-Object {
+    $_ -and (Test-Path (Join-Path $_ 'make.exe')) -and ($_ -match 'Embarcadero|Borland')
+}
+if ($foreignMake) {
+    Write-Warn 'A foreign make.exe is still present on PATH:'
+    foreach ($p in $foreignMake) {
+        Write-Info "  $p"
+    }
+    Write-Info 'The DevKit bin directory must come BEFORE it. Reorder PATH.'
+}
+
+# =============================================================================
+# Section 4 — mkmf and C compilation
+# =============================================================================
+
+Write-Section '4. mkmf and C compilation'
+
+# --- mkmf availability -----------------------------------------------------
+
+$mkmfCheck = (& ruby -e "begin; require 'mkmf'; puts 'MKMK_OK'; rescue LoadError => e; puts 'MKMK_MISSING ' + e.message; end" 2>&1) -join ' '
+if ($mkmfCheck -match 'MKMK_OK') {
+    Write-Ok 'mkmf is available.'
+} else {
+    Write-Fail "mkmf is not available: $mkmfCheck"
+    Write-Info 'Install Ruby DevKit. mkmf ships with the Ruby standard'
+    Write-Info 'library but needs a working C toolchain for its checks.'
+}
+
+# --- real gcc compile-and-run ---------------------------------------------
+
+$tmpDir = Join-Path $env:TEMP ('lf_c_ext_test_' + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+try {
+    $testC   = Join-Path $tmpDir 'hello.c'
+    $testExe = Join-Path $tmpDir 'hello.exe'
+
+    @'
+#include <stdio.h>
+int main(void) {
+    printf("hello from C\n");
+    return 0;
+}
+'@ | Set-Content -Path $testC -Encoding ASCII
+
+    $compileOutput = (& gcc -o $testExe $testC 2>&1) -join "`n"
+
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $testExe)) {
+        Write-Ok 'gcc compiled and linked a test C program.'
+
+        $runOutput = (& $testExe 2>&1) -join ' '
+        if ($runOutput -match 'hello from C') {
+            Write-Ok 'The compiled test program runs and prints the expected output.'
+        } else {
+            Write-Warn "Test program ran but produced unexpected output: $runOutput"
+        }
+    } else {
+        Write-Fail 'gcc could not compile a test C program.'
+        if ($compileOutput) {
+            foreach ($line in ($compileOutput -split "`n")) {
+                Write-Info $line
+            }
+        }
+    }
+} finally {
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
+# =============================================================================
+# Section 5 — pthread and ruby/thread.h
+# =============================================================================
+
+Write-Section '5. pthread and ruby/thread.h'
+
+$tmpDir = Join-Path $env:TEMP ('lf_pthread_test_' + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+try {
+    # --- compile a pthread program -----------------------------------------
+
+    $testC   = Join-Path $tmpDir 'pthread_test.c'
+    $testExe = Join-Path $tmpDir 'pthread_test.exe'
+
+    @'
+#include <pthread.h>
+#include <stdio.h>
+
+static void* worker(void* arg) {
+    (void)arg;
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, worker, NULL) != 0) {
+        fprintf(stderr, "pthread_create failed\n");
+        return 1;
+    }
+    pthread_join(t, NULL);
+    printf("pthread OK\n");
+    return 0;
+}
+'@ | Set-Content -Path $testC -Encoding ASCII
+
+    $compileOutput = (& gcc -o $testExe $testC -lpthread 2>&1) -join "`n"
+
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $testExe)) {
+        Write-Ok 'pthread.h is present and libpthread links (-lpthread).'
+
+        $runOutput = (& $testExe 2>&1) -join ' '
+        if ($runOutput -match 'pthread OK') {
+            Write-Ok 'pthread runtime works.'
+        } else {
+            Write-Warn "pthread test program did not print the expected output: $runOutput"
+        }
+    } else {
+        Write-Warn 'pthread.h missing or libpthread did not link (-lpthread).'
+        Write-Info 'MinGW-w64 normally ships winpthreads; DevKit should provide it.'
+        if ($compileOutput) {
+            foreach ($line in ($compileOutput -split "`n")) {
+                Write-Info $line
+            }
+        }
+    }
+
+    # --- locate ruby/thread.h ---------------------------------------------
+
+    $rubyHdrDir     = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['rubyhdrdir']" 2>&1) -join ' '
+    $rubyArchHdrDir = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['rubyarchhdrdir']" 2>&1) -join ' '
+
+    Write-Info "rubyhdrdir         : $rubyHdrDir"
+    Write-Info "rubyarchhdrdir     : $rubyArchHdrDir"
+
+    if ($rubyHdrDir -and (Test-Path $rubyHdrDir)) {
+        $threadHdr = Join-Path $rubyHdrDir 'ruby/thread.h'
+        if (Test-Path $threadHdr) {
+            Write-Ok "ruby/thread.h is present."
+        } else {
+            Write-Fail "ruby/thread.h was not found under $rubyHdrDir."
+        }
+    } else {
+        Write-Warn 'Could not resolve rubyhdrdir from RbConfig.'
+    }
+} finally {
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
+# =============================================================================
+# Section 6 — LingoFuse native library
+# =============================================================================
+
+Write-Section '6. LingoFuse native library'
+
+# LINGOFUSE_LIB_PATH is OPTIONAL. The runtime binding
+# (lib/lingofuse/binding.rb) automatically searches several standard
+# locations, including the project's Binary/ directory. This check
+# therefore only reports what it finds; a missing variable does NOT
+# block the build.
+if ($env:LINGOFUSE_LIB_PATH) {
+    Write-Ok "LINGOFUSE_LIB_PATH is set: $env:LINGOFUSE_LIB_PATH"
+
+    $dllDir = $env:LINGOFUSE_LIB_PATH
+    if (Test-Path $dllDir) {
+        $expected = @('LingoFuse64.dll', 'z_ipc_64.dll', 'mimalloc64.dll')
+        foreach ($f in $expected) {
+            $p = Join-Path $dllDir $f
+            if (Test-Path $p) {
+                $size = (Get-Item $p).Length
+                Write-Ok "$f found ($size bytes)"
+            } else {
+                Write-Warn "$f not found in $dllDir"
+            }
+        }
+    } else {
+        Write-Warn "LINGOFUSE_LIB_PATH points to a directory that does not exist: $dllDir"
+    }
+} else {
+    Write-Info 'LINGOFUSE_LIB_PATH is not set in this shell.'
+    Write-Info 'This is OPTIONAL: binding.rb searches several standard'
+    Write-Info 'locations (including <project>/Binary) automatically.'
+    Write-Info 'Set it only if the library is stored elsewhere:'
+    Write-Info '    $env:LINGOFUSE_LIB_PATH = "D:\path\to\binary"'
+}
+
+# =============================================================================
+# Section 7 — Extension source tree
+# =============================================================================
+
+Write-Section '7. Extension source tree'
+
+$scriptDir = $PSScriptRoot
+
+$expected = @(
+    'ext/lingofuse_ext/extconf.rb',
+    'ext/lingofuse_ext/lingofuse_ext.c',
+    'lib/lingofuse/native_bridge.rb'
+)
+
+foreach ($rel in $expected) {
+    $abs = Join-Path $scriptDir $rel
+    if (Test-Path $abs) {
+        Write-Ok "Found: $rel"
+    } else {
+        Write-Fail "Missing: $rel"
+    }
+}
+
+$genMakefile = Join-Path $scriptDir 'ext/lingofuse_ext/Makefile'
+if (Test-Path $genMakefile) {
+    $mfHeader = (Get-Content $genMakefile -TotalCount 5 -ErrorAction SilentlyContinue) -join ' '
+    if ($mfHeader -match 'GNU Make|mkmf|RbConfig') {
+        Write-Info 'ext/lingofuse_ext/Makefile exists and looks like a mkmf output.'
+    } else {
+        Write-Warn 'ext/lingofuse_ext/Makefile exists but does not look like an mkmf output.'
+        Write-Info 'Delete it and re-run: ruby extconf.rb'
+    }
+    Write-Info 'If you change the source tree, delete Makefile before re-running extconf.rb.'
+}
+
+# =============================================================================
+# Section 8 — Report
+# =============================================================================
+
+Write-Section 'Report'
+
+Write-Host "  Passed : $script:PassCount"
+Write-Host "  Warned : $script:WarnCount"
+Write-Host "  Failed : $script:FailCount"
+Write-Host ''
+
+if ($script:FailCount -eq 0) {
+    Write-Host '  All required checks passed.'
+    Write-Host '  You may now build the C extension:'
+    Write-Host ''
+    Write-Host '      cd ext\lingofuse_ext'
+    Write-Host '      ruby extconf.rb'
+    Write-Host '      make'
+    Write-Host ''
+    exit 0
+} else {
+    Write-Host "  $script:FailCount required check(s) failed."
+    Write-Host '  Fix the issues above and run this script again.'
+    exit 1
+}

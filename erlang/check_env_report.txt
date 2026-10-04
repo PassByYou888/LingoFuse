@@ -1,0 +1,163 @@
+
+========================================================================
+  LingoFuse Erlang Binding - Environment Report
+========================================================================
+         Generated       : 2026-10-04 14:47:00
+         Script path     : D:\CoreLibrary\LingoFuse\erlang\check_env.ps1
+         Script dir      : D:\CoreLibrary\LingoFuse\erlang
+         Report file     : D:\CoreLibrary\LingoFuse\erlang\check_env_report.txt
+         Working dir     : D:\CoreLibrary\LingoFuse\erlang
+         
+         This report is designed to be pasted into an issue, an AI
+         conversation, or a chat with a human maintainer. Nothing in
+         this script modifies the system or the project.
+
+========================================================================
+  1. Operating system
+========================================================================
+         Platform        : Win32NT
+         Version string  : Microsoft Windows NT 10.0.20348.0
+         Version number  : 10.0.20348.0
+         OS architecture : X64
+         64-bit OS       : True
+         64-bit process  : True
+         Computer name   : HPC888
+         User name       : Administrator
+
+========================================================================
+  2. PowerShell runtime
+========================================================================
+         PowerShell      : 7.6.6
+         Edition         : Core
+         .NET runtime    : 10.0.12
+         pwsh path       : C:\Program Files\PowerShell\7\pwsh.exe
+         powershell path : C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+
+========================================================================
+  3. Erlang / OTP
+========================================================================
+  [OK]   erl found at C:\Program Files\Erlang OTP\bin\erl.exe
+         OTP release     : 29
+  [OK]   OTP version 29 satisfies the OTP 27 requirement
+         erts version    : 17.1
+         ERL root        : c:/Program Files/Erlang OTP
+  [OK]   erts include dir found at c:\Program Files\Erlang OTP\erts-17.1\include
+         erlc path       : C:\Program Files\Erlang OTP\bin\erlc.exe
+         escript path    : C:\Program Files\Erlang OTP\bin\escript.exe
+
+========================================================================
+  4. rebar3
+========================================================================
+  [OK]   rebar3.cmd found at D:\CoreLibrary\LingoFuse\erlang\rebar3.cmd
+  [OK]   rebar3 escript found at D:\CoreLibrary\LingoFuse\erlang\rebar3
+         rebar3 on PATH  : (not found; the local rebar3.cmd is used instead)
+
+========================================================================
+  5. C compilers
+========================================================================
+  [OK]   gcc found at D:\mingw64\bin\gcc.exe
+                   gcc.exe (x86_64-win32-seh-rev1, Built by MinGW-Builds project) 16.1.0
+  [OK]   clang found at C:\LLVM\bin\clang.exe
+                   clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb)
+  [OK]   cc found at D:\mingw64\bin\cc.exe
+                   cc.exe (x86_64-win32-seh-rev1, Built by MinGW-Builds project) 16.1.0
+  [SKIP] cl not found on PATH
+
+========================================================================
+  6. LingoFuse runtime library
+========================================================================
+  [OK]   2 runtime library file(s) found on PATH
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll  (2924032 bytes, 2026-10-01 14:14:02)
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse32.dll  (2278912 bytes, 2026-10-01 14:13:47)
+  [OK]   2 IPC dependency file(s) found on PATH
+         D:\CoreLibrary\LingoFuse\Binary\z_ipc_64.dll  (258048 bytes, 2026-08-26 22:40:32)
+         D:\CoreLibrary\LingoFuse\Binary\z_ipc_32.dll  (235520 bytes, 2026-08-26 22:42:44)
+         2 mimalloc file(s) found on PATH (optional)
+
+========================================================================
+  7. Project layout
+========================================================================
+  [OK]   rebar.config present
+  [OK]   rebar.lock present
+  [OK]   rebar3 escript present
+  [OK]   rebar3.cmd (Windows launcher) present
+  [OK]   src/ present
+  [OK]   test/ present
+  [OK]   c_src/ present
+  [OK]   cross/ present
+  [OK]   priv/ present
+  [OK]   _build/ present
+
+========================================================================
+  8. Source files
+========================================================================
+         src/*.erl        : 5
+                             lingofuse_app.erl
+                             lingofuse_json.erl
+                             lingofuse_nif.erl
+                             lingofuse_sup.erl
+                             lingofuse.erl
+         test/*.erl       : 4
+                             lingofuse_abi_tests.erl
+                             lingofuse_json_tests.erl
+                             lingofuse_network_tests.erl
+                             lingofuse_sync_tests.erl
+         c_src/*.c        : 2
+                             lf_loader.c
+                             lingofuse_nif.c
+         c_src/*.h        : 2
+                             lf_bindings.h
+                             lf_loader.h
+         cross/*.escript  : 4
+                             check_escript.escript
+                             cross_call.escript
+                             cross_node.escript
+                             cross_service.escript
+
+========================================================================
+  9. NIF build state
+========================================================================
+  [OK]   NIF present: D:\CoreLibrary\LingoFuse\erlang\priv\lingofuse_nif.dll  (69262 bytes, 2026-10-04 14:37:50)
+  [OK]   _build ebin present with 5 .beam file(s)
+         Dialyzer PLT    : not built yet
+         dialyzer warnings file exists: D:\CoreLibrary\LingoFuse\erlang\_build\default\29.1.1.dialyzer_warnings
+
+========================================================================
+  10. Environment variables
+========================================================================
+         (no LingoFuse-specific environment variables set)
+         
+         PATH entries    : 76
+           [0] C:\Program Files\PowerShell\7
+           [1] c:\Users\Administrator\.vscode\extensions\vadimcn.vscode-lldb-1.12.2\bin
+           [2] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\debugCommand
+           [3] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\copilotCli
+           [4] C:\Ruby40-x64\bin
+           ... and 71 more
+
+========================================================================
+  11. Summary
+========================================================================
+
+  Checks passed   : 21
+  Warnings        : 0
+  Failures        : 0
+  Skipped         : 1
+
+  Result: environment is ready.
+
+========================================================================
+  12. How to share this report
+========================================================================
+
+  When asking for help, include the entire report file. It
+  contains every piece of information a maintainer or an AI
+  needs to diagnose a build or load failure:
+
+      D:\CoreLibrary\LingoFuse\erlang\check_env_report.txt
+
+  If you are pasting into an issue or an AI conversation, the
+  file can be attached as-is. No further context is required
+  for the tooling sections; only the specific symptom (which
+  command you ran and what it printed) needs to be described
+  separately.

@@ -1,0 +1,25 @@
+# Erlang / rebar3 build artifacts
+/_build/
+/ebin/
+*.beam
+*.plt
+*.dump
+rebar.lock
+
+# Native build artifacts
+/priv/*.so
+/priv/*.dll
+/priv/*.dylib
+/c_src/*.o
+/c_src/*.obj
+/c_src/*.d
+
+# rebar3 binary: do NOT commit. See README for installation.
+/rebar3
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

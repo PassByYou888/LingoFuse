@@ -5,7 +5,7 @@
 > 任何语言写的函数，任何其他语言都能直接调。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/languages-13%20first--party%20%2B%2030%20via%20tools-blue)]()
+[![Languages](https://img.shields.io/badge/languages-14%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
 [![CI](https://img.shields.io/badge/CI-C%2B%2B%20only-orange)]()
 
@@ -57,7 +57,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 | 特性 | LingoFuse | gRPC | REST | HTTP POST |
 |------|-----------|------|------|-----------|
 | 跨机支持 | ✅ 原生 | ✅ 需网关 | ✅ 需网关 | ✅ 原生 |
-| 跨语言 | **13 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
+| 跨语言 | **14 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
 | 请求-响应 | ✅ Call | ✅ | ✅ | ✅ |
 | 流式 / 异步 | ✅ Notify | ⚠️ 需 stream | ❌ | ❌ |
 | 类型安全 | ✅ 强类型 | ✅ 需 IDL | ❌ | ❌ |
@@ -132,6 +132,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | Java | [`java/`](java/) | 🟢 生产就绪 | FFM API（JDK 22+），纯 Java 无 JNI |
 | Swift | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，C++ ↔ Swift 双向字节级互调已验证 |
 | Zig | [`zig/`](zig/) | 🟢 生产就绪 | 140 项测试，与 C++ / C# / Rust / Go / Python / JavaScript 逐字节兼容 |
+| Erlang | [`erlang/`](erlang/) | 🟢 生产就绪 | 37 个 C ABI 函数完整封装，NIF 跨平台构建，OTP 27+ 零运行时依赖 |
 | PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
 
 ### 经代码生成器 / 桥接支持
@@ -181,11 +182,12 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig、Erlang 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
    - C++：`cpp/test/`、`cpp/Stress/`、`cpp/Conc/`
    - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`
    - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（128 项 XCTest）
    - Zig：`zig/test.ps1`、`zig/tests/`、`zig/examples/`（140 项）
+   - Erlang：`erlang/test.ps1`、`erlang/test/`（四个 EUnit 套件）
    - Go：`go/test.ps1`、`go/dev_test.ps1`
    - Rust：`rust/test.ps1`
    - C#：`csharp/build.ps1`、`csharp/test/`
@@ -197,7 +199,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、Erlang、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -224,6 +226,7 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 | JavaScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
 | Rust | cargo test | 67 | Windows / Linux / macOS | 本地 |
 | C# | xUnit | 58 | Windows | 本地 |
+| Erlang | EUnit | 四个套件 | Windows；Linux / macOS 待测 | 本地 |
 | Go | go test | 18 | Windows / Linux / macOS | 本地 |
 | Java | JUnit 5 | 自动化测试 | Windows / Linux | 本地 |
 | Dart | Dart test | 完整套件 | Windows / Linux / macOS | 本地 |
@@ -289,22 +292,6 @@ flowchart LR
 | `CrossNode` | 🟢 工作节点 | 注册 `demo` 应用的 `add` / `inv_seri` 两个 API |
 | `CrossCall` | 🔵 负载测试客户端 | 32 线程 × 10 秒压测 `demo` 应用 |
 
-### 各语言 Cross 三程序位置
-
-| 语言 | CrossService | CrossNode | CrossCall | 位置 |
-|------|:------------:|:---------:|:---------:|------|
-| Pascal | ✅ | ✅ | ✅ | [`pascal/cross_demo/`](pascal/cross_demo/) |
-| C++ | ✅ | ✅ | ✅ | [`cpp/CrossDemo/`](cpp/CrossDemo/) |
-| C# | ✅ | ✅ | ✅ | [`csharp/CrossService/`](csharp/CrossService/) [`csharp/CrossNode/`](csharp/CrossNode/) [`csharp/CrossCall/`](csharp/CrossCall/) |
-| Swift | ✅ | ✅ | ✅ | [`swift/Sources/CrossService/`](swift/Sources/CrossService/) [`swift/Sources/CrossNode/`](swift/Sources/CrossNode/) [`swift/Sources/CrossCall/`](swift/Sources/CrossCall/) |
-| Zig | ✅ | ✅ | ✅ | [`zig/examples/`](zig/examples/)（`cross_service.zig` / `cross_node.zig` / `cross_call.zig`） |
-| Rust | ✅ | ✅ | ✅ | [`rust/examples/`](rust/examples/) |
-| Go | ✅ | ✅ | ✅ | [`go/cross/`](go/cross/) |
-| TS | ✅ | ✅ | ✅ | [`ts/cross/`](ts/cross/) |
-| JS | ✅ | ✅ | ✅ | [`js/cross/`](js/cross/) |
-| Python | ✅ | ✅ | ✅ | [`Py/cross/`](Py/cross/) |
-| Java | ✅ | ✅ | ✅ | [`java/src/main/java/lingofuse/demo/cross/`](java/src/main/java/lingofuse/demo/cross/) |
-
 ---
 
 ## 依赖库
@@ -347,7 +334,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **十三语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / PHP（PHP 为调用者） |
+| **十四语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / Erlang / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
@@ -366,6 +353,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 - **Java 绑定需要 JDK 22+**，无法在 JDK 8 / 11 / 17 / 21 上直接运行
 - **Swift 绑定需要 Swift 5.9+**（推荐 6.4），macOS / Linux 部署路径尚未实测
 - **Zig 绑定锁定 Zig 0.17.0**，升级到 0.18+ 前需重新评估破坏性 API 变更；Linux / macOS / 32 位平台尚未验证
+- **Erlang 绑定需要 Erlang/OTP 27+**，NIF 崩溃会拖垮 BEAM 节点；回调中不得调用阻塞型 LingoFuse 函数
 
 ---
 
@@ -395,7 +383,7 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 
 手记中记录的都是真实细节：在 VS 2022 中逐行翻阅 71 KB 的 `NativeMethods.cs`、C++ 绑定构建后 14 个项目 0 警告的输出、压测面板上累计 46,515 次调用和 100.00% 成功率、Dart 环境装了快两个小时但测试 8 秒跑完、有些环境装到凌晨才发现是版本问题。
 
-**AI 是工具，不是作者。** 这个项目从第一行 Pascal 核心代码到第十二个语言绑定，背后是一个真实人类的判断、试错和坚持。
+**AI 是工具，不是作者。** 这个项目从第一行 Pascal 核心代码到第十四个语言绑定，背后是一个真实人类的判断、试错和坚持。
 
 欢迎来撩、来喷、来 PR——**Star 是最好的催更。**
 
@@ -405,7 +393,7 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 
 | 你想做什么 | 去哪里 |
 |---|---|
-| 看作者怎么亲手跑通十三种语言 | [十四语言实测手记](https://zpascal.net/imhuman.html) |
+| 看作者怎么亲手跑通十四种语言 | [十四语言实测手记](https://zpascal.net/imhuman.html) |
 | 自己编译 LingoFuse 核心库 | [`src/CONTRIBUTING.md`](src/CONTRIBUTING.md) / [`src/CONTRIBUTING_lazbuild.md`](src/CONTRIBUTING_lazbuild.md) |
 | 配置 FPC 3.3.1 环境 | [`src/FPC_3.3.1_Package_Info.md`](src/FPC_3.3.1_Package_Info.md) / [`src/Lazarus_Change_FPC.md`](src/Lazarus_Change_FPC.md) |
 | 用代码生成器自动产出多语言绑定 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |

@@ -1,0 +1,184 @@
+# frozen_string_literal: true
+#
+# Rakefile — Build and test tasks for the LingoFuse Ruby binding.
+#
+# Canonical usage:
+#
+#     rake test          # run every test file in dependency order
+#     rake check         # run the environment diagnostic
+#     rake test_all      # check, then test
+#     rake default       # same as test_all
+#
+# Individual test tasks are also exposed, so a single file can be
+# re-run without launching the whole suite:
+#
+#     rake test:errors
+#     rake test:lf_io
+#     rake test:data_handle
+#     rake test:app_handle
+#     rake test:status
+#     rake test:network_events
+#     rake test:framework
+#     rake test:network
+#
+# ============================================================================
+# TEST ORDER
+# ============================================================================
+# Files are run in dependency order: tests that do not need the native
+# library first, tests that partially need it next, tests that fully
+# need it last. This makes a failure point at the layer where it
+# actually occurred.
+#
+# Every test file is a standalone Minitest script that sets up its own
+# $LOAD_PATH. Running them from Rake is equivalent to running each one
+# with `ruby test/xxx.rb` directly.
+#
+# ============================================================================
+
+require 'rake/testtask'
+
+# The full ordered list. Keep it in sync with run_tests.ps1,
+# run_test_ci.ps1, and run_test_ci.sh.
+TEST_FILES = %w[
+  test/test_errors.rb
+  test/test_callback_error_reporter.rb
+  test/test_module_helpers.rb
+  test/test_lf_io.rb
+  test/test_lf_io_extra.rb
+  test/test_data_handle.rb
+  test/test_data_handle_extra.rb
+  test/test_app_handle.rb
+  test/test_app_handle_extra.rb
+  test/test_status.rb
+  test/test_network_events.rb
+  test/test_framework.rb
+  test/test_network.rb
+].freeze
+
+# ----------------------------------------------------------------------------
+# Default task — run the diagnostic, then the whole suite.
+# ----------------------------------------------------------------------------
+
+task default: :test_all
+
+desc 'Run check_env.rb then the full test suite'
+task test_all: %i[check test]
+
+# ----------------------------------------------------------------------------
+# check_env.rb — environment diagnostic
+# ----------------------------------------------------------------------------
+
+desc 'Run the environment diagnostic (check_env.rb)'
+task :check do
+  ruby 'check_env.rb'
+end
+
+# ----------------------------------------------------------------------------
+# Full test suite in dependency order
+# ----------------------------------------------------------------------------
+
+desc 'Run every test file in dependency order'
+task :test do
+  failures = []
+  TEST_FILES.each do |file|
+    puts
+    puts '=' * 72
+    puts "Running #{file}"
+    puts '=' * 72
+    unless system('ruby', file)
+      failures << file
+      # Stop at the first failure. Every later file would likely fail
+      # for the same underlying reason, and a cascading dump is harder
+      # to read than a single precise one.
+      break
+    end
+  end
+
+  unless failures.empty?
+    abort "\n[FAIL] #{failures.first} reported failures."
+  end
+
+  puts
+  puts '=' * 72
+  puts "All #{TEST_FILES.size} test files passed."
+  puts '=' * 72
+end
+
+# ----------------------------------------------------------------------------
+# Namespace with per-file tasks
+# ----------------------------------------------------------------------------
+
+namespace :test do
+  # Group 1 — no native library required
+  namespace :pure do
+    desc 'Exception hierarchy'
+    task :errors do
+      ruby 'test/test_errors.rb'
+    end
+
+    desc 'CallbackErrorReporter'
+    task :callback_error_reporter do
+      ruby 'test/test_callback_error_reporter.rb'
+    end
+
+    desc 'Top-level module helpers'
+    task :module_helpers do
+      ruby 'test/test_module_helpers.rb'
+    end
+  end
+
+  # Group 2 — partial (JSON policy runs without native; handle I/O is skipped)
+  desc 'LfIo JSON policy and string I/O'
+  task :lf_io do
+    ruby 'test/test_lf_io.rb'
+  end
+
+  desc 'LfIo boundary and peek/read_all cases'
+  task :lf_io_extra do
+    ruby 'test/test_lf_io_extra.rb'
+  end
+
+  # Group 3 — full native library required
+  desc 'DataHandle core'
+  task :data_handle do
+    ruby 'test/test_data_handle.rb'
+  end
+
+  desc 'DataHandle boundary cases'
+  task :data_handle_extra do
+    ruby 'test/test_data_handle_extra.rb'
+  end
+
+  desc 'AppHandle core'
+  task :app_handle do
+    ruby 'test/test_app_handle.rb'
+  end
+
+  desc 'AppHandle boundary cases'
+  task :app_handle_extra do
+    ruby 'test/test_app_handle_extra.rb'
+  end
+
+  desc 'Status queue and health checks'
+  task :status do
+    ruby 'test/test_status.rb'
+  end
+
+  desc 'Network events and NetworkEventQueue'
+  task :network_events do
+    ruby 'test/test_network_events.rb'
+  end
+
+  desc 'Framework facade'
+  task :framework do
+    ruby 'test/test_framework.rb'
+  end
+
+  desc 'Network integration (safe subset)'
+  task :network do
+    ruby 'test/test_network.rb'
+  end
+
+  desc 'Alias: run the pure-Ruby group'
+  task pure: %i[pure:errors pure:callback_error_reporter pure:module_helpers]
+end

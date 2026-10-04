@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [    
+    {
+      "type": "rdbg",
+      "name": "Debug current file",
+      "request": "launch",
+      "script": "${file}",
+      "args": [],
+      "useBundler": false
+    },
+    {
+      "type": "rdbg",
+      "name": "Debug cross_service.rb",
+      "request": "launch",
+      "script": "${workspaceFolder}/cross/cross_service.rb",
+      "args": [],
+      "useBundler": false
+    },
+    {
+      "type": "rdbg",
+      "name": "Debug cross_node.rb",
+      "request": "launch",
+      "script": "${workspaceFolder}/cross/cross_node.rb",
+      "args": [],
+      "useBundler": false
+    },
+    {
+      "type": "rdbg",
+      "name": "Debug cross_call.rb",
+      "request": "launch",
+      "script": "${workspaceFolder}/cross/cross_call.rb",
+      "args": [],
+      "useBundler": false
+    }
+  ]
+}

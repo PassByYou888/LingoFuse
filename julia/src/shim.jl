@@ -3,19 +3,25 @@
 # See the original header comment in git history for the full design
 # rationale. This revision:
 #
-#   1. Adds the three payload accessors introduced by the payload-
-#      snapshot revision of the C shim:
+#   1. Replaces the hard-coded relative search with a two-stage
+#      resolver: (a) the platform library search path, then
+#      (b) the in-tree build directories relative to this source
+#      file. The shim is a build artefact of the Julia package, so
+#      the in-tree locations ship with the package and the entire
+#      julia/ directory can be relocated without any configuration
+#      change.
+#
+#   2. Keeps the three payload accessors introduced by the
+#      payload-snapshot revision of the C shim:
 #          shim_event_input_data
 #          shim_event_input_len
 #          shim_set_output
 #      These are the ONLY way the consumer may interact with the
 #      event payload; they never touch a native data handle.
 #
-#   2. Adds a convenience helper shim_read_input that returns a
+#   3. Keeps the convenience helper shim_read_input that returns a
 #      Julia-owned Vector{UInt8} copy of the input snapshot in one
-#      call. Copying here, next to the ccall, avoids the
-#      unsafe_wrap signature differences across Julia versions and
-#      keeps the consumer code free of pointer arithmetic.
+#      call.
 
 const LF_SHIM_EVENT_CALL               = Cint(0)
 const LF_SHIM_EVENT_NOTIFY             = Cint(1)
@@ -38,6 +44,25 @@ else
     "liblf_shim_mock.so"
 end
 
+# Resolve the C shim library path.
+#
+# Search order:
+#
+#   1. LINGOFUSE_SHIM override, when set. Must name an existing
+#      file.
+#   2. Every directory on the platform's library search path (see
+#      loader.jl for the exact list per platform). This allows the
+#      shim to be installed system-wide alongside the runtime.
+#   3. The in-tree build directories, relative to this source file:
+#      <julia>/c_ext/real/ and <julia>/c_ext/. These ship with the
+#      package, so the entire julia/ directory can be relocated
+#      without any configuration change.
+#   4. Alongside the current program, if any.
+#
+# When no directory on the search path contains the shim, the empty
+# string is returned and shim_available() reports false. The caller
+# (start_callback_consumer) will then raise a diagnostic error that
+# names the missing file and the ways to provide it.
 function _candidate_shim_paths()::Vector{String}
     candidates = String[]
 
@@ -46,33 +71,37 @@ function _candidate_shim_paths()::Vector{String}
         push!(candidates, override)
     end
 
+    for dir in _library_search_directories()
+        push!(candidates, joinpath(dir, _SHIM_REAL_NAME))
+    end
+
     here      = @__DIR__
     julia_dir = normpath(joinpath(here, ".."))
     c_ext_dir = joinpath(julia_dir, "c_ext")
 
     push!(candidates, joinpath(c_ext_dir, "real", _SHIM_REAL_NAME))
     push!(candidates, joinpath(c_ext_dir, _SHIM_REAL_NAME))
-    push!(candidates, joinpath(c_ext_dir, _SHIM_MOCK_NAME))
 
     if !isempty(Base.PROGRAM_FILE)
         push!(candidates,
               joinpath(dirname(Base.PROGRAM_FILE), _SHIM_REAL_NAME))
     end
 
-    push!(candidates, _SHIM_REAL_NAME)
-
     return candidates
 end
 
+# Walk the candidate list and return the first entry that resolves to
+# an existing file. The bare library name is not a candidate here:
+# the shim is a build artefact of this package and its absence is a
+# deployment error that should be surfaced rather than papered over.
 function _find_shim_library()::String
     for p in _candidate_shim_paths()
         if isabspath(p)
             if isfile(p)
                 trace("shim: found " * p)
                 return p
-            else
-                trace("shim: not present " * p)
             end
+            trace("shim: not present " * p)
         end
     end
     return ""
@@ -93,9 +122,11 @@ function _require_shim()
     if !shim_available()
         throw(LingoFuseLoadError(
             _SHIM_REAL_NAME,
-            "C callback shim not found. Build it with " *
+            "C callback shim not found. It must be built once with " *
             "c_ext/real/build.ps1 (Windows) or c_ext/real/build.sh " *
-            "(POSIX), or set LINGOFUSE_SHIM to its full path."
+            "(POSIX). Alternatively, place the shared library on " *
+            "the system library search path, or set LINGOFUSE_SHIM " *
+            "to its full path."
         ))
     end
     return
@@ -177,8 +208,6 @@ function shim_wait_event(timeout_ms::Integer)::Ptr{Cvoid}
     _require_shim()
     e = ccall((:lf_shim_wait_event, LINGOFUSE_SHIM_PATH),
               Ptr{Cvoid}, (Cint,), Cint(timeout_ms))
-    # Only emit a trace line when an event was actually retrieved;
-    # the zero-timeout poll path is otherwise extremely noisy.
     e != C_NULL && trace("shim: wait_event returned an event pointer")
     return e
 end

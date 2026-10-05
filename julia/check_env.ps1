@@ -8,17 +8,10 @@
     LingoFuse project layout, runtime libraries, and build artifacts.
     Produces an actionable summary at the end.
 
-    Target layout (relative to this script):
-
-        <repo>/julia/
-            check_env.ps1          <- this script
-            c_ext/                 <- C shim + mock LingoFuse
-                build.ps1
-                build.sh
-                lf_shim.h / lf_shim.c
-                mock_lf.h / mock_lf.c
-                test_shim.jl
-        <repo>/Binary/             <- LingoFuse runtime DLLs
+    The runtime library (LingoFuse64.dll) is resolved through the same
+    mechanism the OS dynamic loader uses: PATH on Windows, and an
+    explicit LINGOFUSE_LIBRARY override takes precedence over the
+    search path. No hard-coded directories are consulted.
 
 .NOTES
     Run this script from a PowerShell terminal. No admin privileges are
@@ -331,7 +324,7 @@ if (Test-Path $cExtDir -PathType Container) {
     }
 } else {
     Write-Status "FAIL" "c_ext directory NOT found at: $cExtDir"
-    Write-Status "INFO" "Expected layout: <repo>/julia/check_env.ps1 + <repo>/julia/c_ext/..."
+    Write-Status "INFO" "Expected layout: <julia>/check_env.ps1 + <julia>/c_ext/..."
 }
 Write-Host ""
 
@@ -340,68 +333,86 @@ Write-Host ""
 # =====================================================================
 Write-Host "--- 7. LingoFuse Runtime Library ---" -ForegroundColor White
 
-$runtimeCandidates = @(
-    (Join-Path $repoRoot "Binary"),
-    (Join-Path $repoRoot "cpp\Binary"),
-    (Join-Path (Split-Path -Parent $repoRoot) "Binary"),
-    (Join-Path (Split-Path -Parent $repoRoot) "LingoFuse\Binary")
-)
+# Resolution strategy
+# ------------------
+# The Julia binding resolves the runtime through the same mechanism
+# the OS dynamic loader uses. On Windows that is PATH. An explicit
+# LINGOFUSE_LIBRARY override takes precedence over the search path
+# and is checked first. No hard-coded directories are consulted.
 
-$runtimeDir = $null
-foreach ($cand in $runtimeCandidates) {
-    if (Test-Path $cand -PathType Container) {
-        if ((Test-Path (Join-Path $cand "LingoFuse64.dll") -PathType Leaf) -or
-            (Test-Path (Join-Path $cand "LingoFuse32.dll") -PathType Leaf)) {
-            $runtimeDir = $cand
-            break
+$override        = $env:LINGOFUSE_LIBRARY
+$runtimeFullPath = $null
+
+if ($override -and $override.Length -gt 0) {
+    if (Test-Path $override -PathType Leaf) {
+        $runtimeFullPath = $override
+        Write-Status "PASS" "LINGOFUSE_LIBRARY override is set and valid."
+        Write-Status "INFO" "    $runtimeFullPath"
+    } else {
+        Write-Status "FAIL" "LINGOFUSE_LIBRARY is set but does not name an existing file."
+        Write-Status "INFO" "    $override"
+    }
+} else {
+    $libNames    = @("LingoFuse64.dll", "LingoFuse32.dll")
+    $pathEntries = ($env:PATH -split ';') | Where-Object { $_ -ne '' }
+    foreach ($dir in $pathEntries) {
+        foreach ($lib in $libNames) {
+            $cand = Join-Path $dir $lib
+            if (Test-Path $cand -PathType Leaf) {
+                $runtimeFullPath = $cand
+                break
+            }
         }
+        if ($runtimeFullPath) { break }
+    }
+    if ($runtimeFullPath) {
+        Write-Status "PASS" "LingoFuse runtime found on PATH."
+        Write-Status "INFO" "    $runtimeFullPath"
+    } else {
+        Write-Status "FAIL" "LingoFuse runtime not found on PATH and LINGOFUSE_LIBRARY is not set."
+        Write-Status "INFO" "Add the directory that contains LingoFuse64.dll to PATH, or"
+        Write-Status "INFO" "set LINGOFUSE_LIBRARY to the full DLL path."
     }
 }
 
-if ($runtimeDir) {
-    Write-Status "PASS" "LingoFuse runtime directory found: $runtimeDir"
+if ($runtimeFullPath) {
+    $runtimeDir = Split-Path -Parent $runtimeFullPath
 
-    $mainDll = Join-Path $runtimeDir "LingoFuse64.dll"
-    $ipcDll  = Join-Path $runtimeDir "z_ipc_64.dll"
-    $mmDll   = Join-Path $runtimeDir "mimalloc64.dll"
+    $mainName = Split-Path -Leaf $runtimeFullPath
+    $mainSize = (Get-Item $runtimeFullPath).Length
+    Write-Status "PASS" "$mainName  ($([math]::Round($mainSize/1KB,1)) KB)"
 
-    if (Test-Path $mainDll -PathType Leaf) {
-        $size = (Get-Item $mainDll).Length
-        Write-Status "PASS" "LingoFuse64.dll  ($([math]::Round($size/1KB,1)) KB)"
+    # Dependencies expected next to the runtime library.
+    $ipcName = "z_ipc_64.dll"
+    $mmName  = "mimalloc64.dll"
+    $ipcFull = Join-Path $runtimeDir $ipcName
+    $mmFull  = Join-Path $runtimeDir $mmName
+
+    if (Test-Path $ipcFull -PathType Leaf) {
+        $size = (Get-Item $ipcFull).Length
+        Write-Status "PASS" "$ipcName  ($([math]::Round($size/1KB,1)) KB)  [required dependency]"
     } else {
-        Write-Status "FAIL" "LingoFuse64.dll NOT found in $runtimeDir"
+        Write-Status "FAIL" "$ipcName NOT found next to $mainName. LingoFuse64.dll will fail to load."
     }
 
-    if (Test-Path $ipcDll -PathType Leaf) {
-        $size = (Get-Item $ipcDll).Length
-        Write-Status "PASS" "z_ipc_64.dll     ($([math]::Round($size/1KB,1)) KB)  [required dependency]"
+    if (Test-Path $mmFull -PathType Leaf) {
+        $size = (Get-Item $mmFull).Length
+        Write-Status "PASS" "$mmName  ($([math]::Round($size/1KB,1)) KB)  [optional allocator]"
     } else {
-        Write-Status "FAIL" "z_ipc_64.dll NOT found. LingoFuse64.dll will fail to load."
+        Write-Status "WARN" "$mmName not found (optional; LingoFuse falls back to the system allocator)."
     }
 
-    if (Test-Path $mmDll -PathType Leaf) {
-        $size = (Get-Item $mmDll).Length
-        Write-Status "PASS" "mimalloc64.dll   ($([math]::Round($size/1KB,1)) KB)  [optional allocator]"
-    } else {
-        Write-Status "WARN" "mimalloc64.dll not found (optional; LingoFuse falls back to system allocator)."
-    }
-
+    # Whether the runtime directory is reachable by the dynamic loader.
     $pathEntries = ($env:PATH -split ';') | Where-Object { $_ -ne '' }
-    $onPath = $pathEntries -contains $runtimeDir
-    if ($onPath) {
-        Write-Status "PASS" "Runtime directory is on PATH."
+    if ($pathEntries -contains $runtimeDir) {
+        Write-Status "PASS" "The runtime directory is on PATH."
     } else {
-        Write-Status "WARN" "Runtime directory is NOT on PATH. Julia's dlopen will not find the DLL."
-        Write-Status "INFO" "Fix (current session): `$env:PATH += ';$runtimeDir'"
+        Write-Status "INFO" "The runtime directory is not directly on PATH, but the"
+        Write-Status "INFO" "resolution above shows the runtime is discoverable."
     }
 } else {
-    Write-Status "WARN" "LingoFuse runtime directory not found in the expected locations."
-    Write-Status "INFO" "Expected one of:"
-    foreach ($c in $runtimeCandidates) {
-        Write-Status "INFO" "    $c"
-    }
-    Write-Status "INFO" "This is OK for c_ext development (mock_lf.c substitutes the real library)."
-    Write-Status "INFO" "It becomes REQUIRED when moving to Step 2 (real ABI integration)."
+    Write-Status "INFO" "This check is OK for c_ext development (mock_lf.c substitutes the real library)."
+    Write-Status "INFO" "It becomes REQUIRED when running the acceptance tests against the real runtime."
 }
 Write-Host ""
 
@@ -411,38 +422,30 @@ Write-Host ""
 Write-Host "--- 8. C Extension Build Artifacts ---" -ForegroundColor White
 
 if (Test-Path $cExtDir -PathType Container) {
-    $shimDll = Join-Path $cExtDir "lf_shim_mock.dll"
+    $mockShim = Join-Path $cExtDir "lf_shim_mock.dll"
+    $realShim = Join-Path $cExtDir "real\lf_shim_real.dll"
 
-    if (Test-Path $shimDll -PathType Leaf) {
-        $info = Get-Item $shimDll
-        $age  = (Get-Date) - $info.LastWriteTime
-        Write-Status "PASS" "Built shim found: lf_shim_mock.dll"
+    if (Test-Path $mockShim -PathType Leaf) {
+        $info = Get-Item $mockShim
+        Write-Status "PASS" "Mock shim found: lf_shim_mock.dll"
         Write-Status "INFO" "  Size    : $([math]::Round($info.Length/1KB,1)) KB"
         Write-Status "INFO" "  Built at: $($info.LastWriteTime)"
+    } else {
+        Write-Status "INFO" "Mock shim not built: $mockShim"
+    }
 
-        if ($age.TotalHours -gt 24) {
-            Write-Status "WARN" "Artifact is more than 24 hours old. Rebuild if sources have changed."
-        }
-
-        $newestSource = $null
-        foreach ($f in @("lf_shim.c","lf_shim.h","mock_lf.c","mock_lf.h")) {
-            $p = Join-Path $cExtDir $f
-            if (Test-Path $p) {
-                $t = (Get-Item $p).LastWriteTime
-                if (-not $newestSource -or $t -gt $newestSource) {
-                    $newestSource = $t
-                }
-            }
-        }
-        if ($newestSource -and $newestSource -gt $info.LastWriteTime) {
-            Write-Status "WARN" "Source is newer than the built DLL. Run build.ps1 to rebuild."
+    if (Test-Path $realShim -PathType Leaf) {
+        $info = Get-Item $realShim
+        Write-Status "PASS" "Real shim found: lf_shim_real.dll"
+        Write-Status "INFO" "  Size    : $([math]::Round($info.Length/1KB,1)) KB"
+        Write-Status "INFO" "  Built at: $($info.LastWriteTime)"
+        if (-not $runtimeFullPath) {
+            Write-Status "WARN" "Real shim is present but the LingoFuse runtime was not located."
+            Write-Status "INFO" "Runtime usage will fail until the runtime is discoverable."
         }
     } else {
-        Write-Status "INFO" "No compiled shim found at: $shimDll"
-        Write-Status "INFO" "Build it with: cd `"$cExtDir`"; .\build.ps1"
-        if (-not $cCompiler) {
-            Write-Status "FAIL" "Cannot build: no C compiler available (see section 5)."
-        }
+        Write-Status "INFO" "Real shim not built: $realShim"
+        Write-Status "INFO" "Build it with: cd `"$cExtDir\real`"; .\build.ps1"
     }
 } else {
     Write-Status "INFO" "Skipped (c_ext directory not found)."
@@ -460,8 +463,10 @@ Write-Host ""
 Write-Host "Next steps for the LingoFuse Julia binding:" -ForegroundColor White
 Write-Host ""
 
-Write-Host "  [Step 1]  Build the C shim" -ForegroundColor Gray
+Write-Host "  [Step 1]  Build the C shims" -ForegroundColor Gray
 Write-Host "            cd `"$cExtDir`"" -ForegroundColor DarkGray
+Write-Host "            .\build.ps1" -ForegroundColor DarkGray
+Write-Host "            cd `"$cExtDir\real`"" -ForegroundColor DarkGray
 Write-Host "            .\build.ps1" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -485,9 +490,11 @@ if ($executionPolicy -eq "Restricted") {
     Write-Host ""
 }
 
-Write-Host "  For runtime dlopen issues, ensure these are on PATH:" -ForegroundColor Gray
-Write-Host "    * The Julia bin directory" -ForegroundColor DarkGray
-Write-Host "    * The LingoFuse runtime directory (LingoFuse64.dll + z_ipc_64.dll)" -ForegroundColor DarkGray
+Write-Host "  The LingoFuse runtime is resolved through the same search path" -ForegroundColor Gray
+Write-Host "  the OS dynamic loader uses. Make the directory that contains" -ForegroundColor Gray
+Write-Host "  LingoFuse64.dll reachable in one of these ways:" -ForegroundColor Gray
+Write-Host "    * Append the directory to PATH." -ForegroundColor DarkGray
+Write-Host "    * Set `$env:LINGOFUSE_LIBRARY to the full DLL path." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Restart VS Code after changing settings.json or PATH." -ForegroundColor Gray
 Write-Host ""

@@ -3,8 +3,16 @@
     Fortran development environment checker for Windows.
 
 .DESCRIPTION
-    Scans the local machine for everything needed to build, debug and edit
-    Fortran code with VS Code.
+    Scans the local machine for everything needed to build, debug and
+    edit Fortran code with VS Code, and verifies that the LingoFuse
+    runtime library can be discovered by the C bridge.
+
+    The runtime DLL search follows the same order as LingoFuse.c:
+        1. LINGOFUSE_LIBRARY environment variable.
+        2. The script directory itself.
+        3. Walking up from the script directory, checking
+           "<dir>\Binary\LingoFuse64.dll" at each level.
+        4. The system PATH.
 
 .PARAMETER Quiet
     Suppress per-item detail blocks and print only the summary.
@@ -79,7 +87,6 @@ function Write-Sub {
     Write-Host ("               " + $Text) -ForegroundColor DarkGray
 }
 
-# Shorten a long string for display only (never used for logic)
 function Format-Short {
     param([string]$Text, [int]$Max = 110)
     if (-not $Text) { return "" }
@@ -156,7 +163,7 @@ Test-Tool -Category "Compiler" -Name "ifx"   -VersionArg "--version" -Optional |
 Test-Tool -Category "Compiler" -Name "ifort" -VersionArg "--version" -Optional | Out-Null
 
 # =====================================================================
-#  2. Companion toolchain
+#  2. Companion build / debug toolchain
 # =====================================================================
 Show-Section "2. Companion Build / Debug Toolchain"
 
@@ -164,15 +171,13 @@ Test-Tool -Category "Toolchain" -Name "gcc"  | Out-Null
 Test-Tool -Category "Toolchain" -Name "g++"  | Out-Null
 Test-Tool -Category "Toolchain" -Name "gdb"  | Out-Null
 
-# Warn if make.exe is not GNU make (Borland/Embarcadero make is incompatible)
 $makeCmd = Test-Tool -Category "Toolchain" -Name "make" -Optional
 if ($makeCmd) {
     try {
         $makeVer = (& $makeCmd.Source --version 2>&1 | Out-String)
         if ($makeVer -notmatch "GNU Make") {
             Write-Line WARN "make is NOT GNU make (Makefiles may not work)"
-            Write-Sub "detected: $(Format-Short ($makeVer.Trim().Split([Environment]::NewLine)[0]) 100)"
-            Write-Sub "consider CMake, or install mingw32-make into D:\mingw64\bin"
+            Write-Sub "consider installing mingw32-make instead"
             Add-Result "Toolchain" "make (non-GNU)" "WARN" "not GNU make; Makefiles may break"
         }
     } catch {}
@@ -182,63 +187,23 @@ Test-Tool -Category "Toolchain" -Name "cmake" -Optional | Out-Null
 Test-Tool -Category "Toolchain" -Name "ninja" -Optional | Out-Null
 
 # =====================================================================
-#  3. Python + fortls
+#  3. Python + fortls (optional)
 # =====================================================================
-Show-Section "3. Python & Fortran Language Server (fortls)"
+Show-Section "3. Python & Fortran Language Server (fortls, optional)"
 
-$pyCmd = Test-Tool -Category "Python" -Name "python" -VersionArg "--version"
-Test-Tool -Category "Python" -Name "pip" -VersionArg "--version" | Out-Null
-
-# Note about Python version compatibility for fortls
-if ($pyCmd) {
-    try {
-        $pyVerRaw = (& $pyCmd.Source --version 2>&1 | Out-String).Trim()
-        if ($pyVerRaw -match "Python\s+(\d+)\.(\d+)") {
-            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-            if ($maj -ge 3 -and $min -ge 14) {
-                Write-Line WARN ("Python {0}.{1} is very new; fortls dependencies may not have wheels yet" -f $maj, $min)
-                Add-Result "Python" "version" "WARN" ("Python $maj.$min may lack fortls-compatible wheels")
-            }
-        }
-    } catch {}
-}
+Test-Tool -Category "Python" -Name "python" -VersionArg "--version" -Optional | Out-Null
+Test-Tool -Category "Python" -Name "pip"    -VersionArg "--version" -Optional | Out-Null
 
 $fortlsCmd = Get-Command fortls -ErrorAction SilentlyContinue | Select-Object -First 1
-
 if ($fortlsCmd) {
     $v = ""
     try { $v = (& $fortlsCmd.Source --version 2>&1 | Select-Object -First 1).Trim() } catch {}
     Write-Line OK ("fortls       {0}" -f $v)
     Write-Sub ("path: " + $fortlsCmd.Source)
     Add-Result "fortls" "fortls" "OK" ("$v | " + $fortlsCmd.Source)
-}
-else {
-    # fortls is often installed into a user/global Python Scripts dir but not on PATH
-    $searchRoots = @(
-        $env:APPDATA,
-        (Join-Path $env:LOCALAPPDATA "Programs\Python"),
-        "C:\Python314",
-        "C:\Python313",
-        "C:\Python312"
-    ) | Where-Object { $_ -and (Test-Path $_) }
-
-    $found = @()
-    foreach ($root in $searchRoots) {
-        $found += @(Get-ChildItem -Path $root -Recurse -Filter "fortls.exe" -ErrorAction SilentlyContinue -Depth 4)
-    }
-
-    if ($found.Count -gt 0) {
-        Write-Line WARN "fortls installed but NOT on PATH:"
-        foreach ($f in $found) { Write-Sub $f.FullName }
-        Write-Sub "Add its folder to PATH, or set fortran.fortls.path in VS Code settings."
-        Add-Result "fortls" "fortls" "WARN" ("installed but not in PATH: " + $found[0].FullName)
-    }
-    else {
-        Write-Line MISSING "fortls not found (install with: pip install fortls)"
-        Write-Sub "If pip fails on Python 3.14, try: pip install --upgrade pip"
-        Write-Sub "If it still fails, install Python 3.12/3.13 and pip install fortls there."
-        Add-Result "fortls" "fortls" "MISSING" "run: pip install fortls"
-    }
+} else {
+    Write-Line MISSING "fortls not found (install with: pip install fortls)"
+    Add-Result "fortls" "fortls" "MISSING" "run: pip install fortls"
 }
 
 # =====================================================================
@@ -258,8 +223,7 @@ $codePath = $null
 $c = Get-Command code -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($c) {
     $codePath = $c.Source
-}
-else {
+} else {
     $codeCandidates = @(
         (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd"),
         "C:\Program Files\Microsoft VS Code\bin\code.cmd",
@@ -284,7 +248,6 @@ if ($codePath) {
 
     $exts = @()
     try {
-        # Guard against the CLI hanging (has been observed on some setups)
         $job = Start-Job -ScriptBlock {
             param($p)
             & $p --list-extensions 2>&1
@@ -309,15 +272,13 @@ if ($codePath) {
             if ($exts -contains $id) {
                 Write-Line OK ("extension    {0}  ({1})" -f $id, $meta.Name)
                 Add-Result ("VSCode-" + $meta.Group) $id "OK" $meta.Name
-            }
-            else {
+            } else {
                 Write-Line MISSING ("extension    {0}  ({1}) not installed" -f $id, $meta.Name)
                 Add-Result ("VSCode-" + $meta.Group) $id "MISSING" ("code --install-extension " + $id)
             }
         }
     }
-}
-else {
+} else {
     Write-Line MISSING "code CLI not found in PATH or default install locations"
     Add-Result "VSCode" "code" "MISSING" "VS Code CLI not found"
 }
@@ -333,46 +294,152 @@ $relevant = @($pathEntries | Where-Object { $_ -match "msys|mingw|gcc|fortran|Py
 if ($relevant.Count -gt 0) {
     foreach ($r in $relevant) {
         Write-Line INFO (Format-Short $r 110)
-
-        # Malformed entry: multiple drive prefixes glued together (no separator)
-        # e.g. "...\noConfigScriptsC:\Users\...\noConfigScripts"
         $driveMatches = [regex]::Matches($r, '[A-Za-z]:[\\/]')
         if ($driveMatches.Count -gt 1) {
             Write-Line WARN ("  ^ malformed entry: {0} drive prefixes without separators" -f $driveMatches.Count)
-            Write-Sub "This usually means an installer wrote PATH without a ';'."
-            Write-Sub "Fix it via System Properties -> Environment Variables -> Path."
             Add-Result "PATH" "malformed entry" "WARN" ("$($driveMatches.Count) drive prefixes glued: " + (Format-Short $r 80))
         }
     }
-}
-else {
+} else {
     Write-Line WARN "no compiler / Python related entries detected in PATH"
 }
 
-# Duplicate entries (very common source of 'wrong compiler' bugs)
 $dupes = @($pathEntries | Group-Object | Where-Object { $_.Count -gt 1 })
 if ($dupes.Count -gt 0) {
     Write-Line WARN ("PATH contains {0} duplicated entries" -f $dupes.Count)
-    if (-not $Quiet) {
-        foreach ($d in $dupes) {
-            Write-Sub ("x{0}  {1}" -f $d.Count, (Format-Short $d.Name 100))
-        }
-    }
     Add-Result "PATH" "duplicates" "WARN" ("$($dupes.Count) duplicated PATH entries")
 }
 
 # =====================================================================
-#  7. Compile & run smoke test
+#  7. LingoFuse runtime library discovery
 # =====================================================================
-Show-Section "7. Smoke Test (compile + run)"
+Show-Section "7. LingoFuse Runtime Library"
+
+# Resolution order mirrors LingoFuse.c:
+#   1. LINGOFUSE_LIBRARY environment variable.
+#   2. Script directory.
+#   3. Walking up, checking "<dir>\Binary\LingoFuse64.dll".
+#   4. System PATH.
+
+$dllNames      = @("LingoFuse64.dll", "LingoFuse32.dll")
+$runtimePath   = $null
+$runtimeSource = $null
+
+# Step 1: LINGOFUSE_LIBRARY override
+$override = $env:LINGOFUSE_LIBRARY
+if ($override -and (Test-Path -LiteralPath $override -PathType Leaf)) {
+    $runtimePath   = $override
+    $runtimeSource = "LINGOFUSE_LIBRARY environment variable"
+} elseif ($override) {
+    Write-Line WARN "LINGOFUSE_LIBRARY is set but does not name an existing file:"
+    Write-Sub $override
+    Add-Result "Runtime" "LINGOFUSE_LIBRARY" "WARN" ("set but invalid: " + $override)
+}
+
+# Step 2: Script directory
+if (-not $runtimePath) {
+    foreach ($dll in $dllNames) {
+        $candidate = Join-Path $PSScriptRoot $dll
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $runtimePath   = $candidate
+            $runtimeSource = "script directory"
+            break
+        }
+    }
+}
+
+# Step 3: Walk up from the script directory, checking <dir>\Binary\<dll>
+if (-not $runtimePath) {
+    $current = $PSScriptRoot
+    for ($depth = 0; $depth -lt 6; $depth++) {
+        if ([string]::IsNullOrEmpty($current)) { break }
+        if ($current.Length -le 3) { break }   # e.g. "C:\" or "D:\"
+
+        foreach ($dll in $dllNames) {
+            $candidate = Join-Path (Join-Path $current "Binary") $dll
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $runtimePath   = $candidate
+                $runtimeSource = "walk up: $current\Binary"
+                break
+            }
+        }
+        if ($runtimePath) { break }
+
+        $parent = Split-Path -Parent $current
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+}
+
+# Step 4: System PATH
+if (-not $runtimePath) {
+    $pathEntries = @($env:Path -split ";" | Where-Object { $_ -ne "" })
+    foreach ($dir in $pathEntries) {
+        foreach ($dll in $dllNames) {
+            $candidate = Join-Path $dir $dll
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $runtimePath   = $candidate
+                $runtimeSource = "PATH: $dir"
+                break
+            }
+        }
+        if ($runtimePath) { break }
+    }
+}
+
+if ($runtimePath) {
+    $runtimeDir = Split-Path -Parent $runtimePath
+    $mainName   = Split-Path -Leaf $runtimePath
+    $size       = (Get-Item -LiteralPath $runtimePath).Length
+    Write-Line OK ("{0}  ({1} KB)" -f $mainName, [math]::Round($size / 1KB, 1))
+    Write-Sub ("found via: {0}" -f $runtimeSource)
+    Write-Sub ("dir:       {0}" -f $runtimeDir)
+    Add-Result "Runtime" "main DLL" "OK" ("$mainName at $runtimePath")
+
+    # Dependency: z_ipc_*.dll (must sit next to the main DLL).
+    $is64    = $mainName -match "64"
+    $depName = if ($is64) { "z_ipc_64.dll" } else { "z_ipc_32.dll" }
+    $depPath = Join-Path $runtimeDir $depName
+    if (Test-Path -LiteralPath $depPath -PathType Leaf) {
+        $size = (Get-Item -LiteralPath $depPath).Length
+        Write-Line OK ("{0}  ({1} KB)  [required]" -f $depName, [math]::Round($size / 1KB, 1))
+        Add-Result "Runtime" "z_ipc" "OK" "$depName present"
+    } else {
+        Write-Line MISSING ("{0} not found next to {1}" -f $depName, $mainName)
+        Write-Sub "LingoFuse64.dll cannot load without its IPC dependency."
+        Add-Result "Runtime" "z_ipc" "MISSING" "$depName absent"
+    }
+
+    # Optional: mimalloc
+    $mmName = if ($is64) { "mimalloc64.dll" } else { "mimalloc32.dll" }
+    $mmPath = Join-Path $runtimeDir $mmName
+    if (Test-Path -LiteralPath $mmPath -PathType Leaf) {
+        Write-Line OK ("{0}  [optional allocator]" -f $mmName)
+        Add-Result "Runtime" "mimalloc" "OK" "$mmName present"
+    } else {
+        Write-Line OPTIONAL ("{0} not found (optional)" -f $mmName)
+        Add-Result "Runtime" "mimalloc" "OPTIONAL" "falling back to system allocator"
+    }
+} else {
+    Write-Line MISSING "LingoFuse runtime not found."
+    Write-Sub "Place LingoFuse64.dll and z_ipc_64.dll in one of:"
+    Write-Sub "  - <fortran>\Binary\"
+    Write-Sub "  - a directory on PATH"
+    Write-Sub "  - set LINGOFUSE_LIBRARY to the full DLL path"
+    Add-Result "Runtime" "main DLL" "MISSING" "not found"
+}
+
+# =====================================================================
+#  8. Compile & run smoke test
+# =====================================================================
+Show-Section "8. Smoke Test (compile + run)"
 
 $gfortran = Get-Command gfortran -ErrorAction SilentlyContinue | Select-Object -First 1
 
 if (-not $gfortran) {
     Write-Line MISSING "gfortran unavailable - smoke test skipped"
     Add-Result "SmokeTest" "gfortran" "MISSING" "skipped"
-}
-else {
+} else {
     $tmp = Join-Path $env:TEMP ("fortran_smoke_" + [guid]::NewGuid().ToString("N").Substring(0, 8))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
@@ -392,18 +459,15 @@ end program hello
             $runOut = (& $exe 2>&1) -join " "
             Write-Line OK ("compile OK  ->  output: {0}" -f $runOut.Trim())
             Add-Result "SmokeTest" "compile+run" "OK" $runOut.Trim()
-        }
-        else {
+        } else {
             Write-Line MISSING "compilation failed"
             Write-Sub (($compileOut | Out-String).Trim())
             Add-Result "SmokeTest" "compile" "MISSING" (($compileOut | Out-String).Trim())
         }
-    }
-    catch {
+    } catch {
         Write-Line WARN ("smoke test error: {0}" -f $_.Exception.Message)
         Add-Result "SmokeTest" "compile+run" "WARN" $_.Exception.Message
-    }
-    finally {
+    } finally {
         Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -413,17 +477,16 @@ end program hello
 # =====================================================================
 Show-Section "Summary"
 
-$ok       = @($script:Results | Where-Object { $_.Status -eq "OK"       }).Count
-$warn     = @($script:Results | Where-Object { $_.Status -eq "WARN"     }).Count
-$miss     = @($script:Results | Where-Object { $_.Status -eq "MISSING"  }).Count
-$opt      = @($script:Results | Where-Object { $_.Status -eq "OPTIONAL" }).Count
+$ok   = @($script:Results | Where-Object { $_.Status -eq "OK"       }).Count
+$warn = @($script:Results | Where-Object { $_.Status -eq "WARN"     }).Count
+$miss = @($script:Results | Where-Object { $_.Status -eq "MISSING"  }).Count
+$opt  = @($script:Results | Where-Object { $_.Status -eq "OPTIONAL" }).Count
 
 Write-Host ("  OK        : {0}" -f $ok)   -ForegroundColor Green
 Write-Host ("  Warning   : {0}" -f $warn) -ForegroundColor Yellow
 Write-Host ("  Missing   : {0}" -f $miss) -ForegroundColor Red
 Write-Host ("  Optional  : {0}" -f $opt)  -ForegroundColor DarkGray
 
-# Split missing items by importance
 $debugMissing  = @($script:Results | Where-Object { $_.Status -eq "MISSING" -and $_.Category -eq "VSCode-Debug" })
 $editorMissing = @($script:Results | Where-Object { $_.Status -eq "MISSING" -and $_.Category -eq "VSCode-Editor" })
 $coreMissing   = @($script:Results | Where-Object { $_.Status -eq "MISSING" -and $_.Category -notlike "VSCode-*" })
@@ -464,6 +527,7 @@ Write-Host "  Quick fixes:" -ForegroundColor Cyan
 Write-Host "    fortls    : pip install fortls"
 Write-Host "    extensions: code --install-extension fortran-lang.linter-gfortran"
 Write-Host "                code --install-extension ms-vscode.cpptools"
+Write-Host "    runtime   : place LingoFuse64.dll + z_ipc_64.dll in <fortran>\Binary\"
 Write-Host "--------------------------------------------------------------" -ForegroundColor DarkGray
 
 if ($coreMissing.Count -gt 0) { exit 2 }

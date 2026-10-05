@@ -1,69 +1,91 @@
-# ============================================================================
-# Makefile for the cross-language demo programs.
+# cross_demo/Makefile
 #
-# Builds four executables:
+# Builds the four cross-language demo programs. All paths are
+# relative to this file, so the entire fortran/ directory can be
+# relocated.
 #
+# Outputs:
 #   cross_service.exe     Fortran beacon
-#   cross_node.exe        Fortran worker (add / inv_seri)
-#   cross_call.exe        Fortran caller  (same-language baseline)
-#   cross_call_cpp.exe    C++ caller      (cross-language verification)
+#   cross_node.exe        Fortran worker node
+#   cross_call.exe        Fortran caller (same-language baseline)
+#   cross_call_cpp.exe    C++ caller (cross-language verification)
 #
-# The common bridge objects (LingoFuse.o, lf_fortran.o, lf_fortran_mod.o)
-# are built by the parent c_ext directory. The 'all' target rebuilds
-# them first via `$(MAKE) -C ../c_ext`, so this Makefile is self-contained.
-# ============================================================================
+# The objects produced by ../c_ext (LingoFuse.o, lf_fortran.o,
+# lf_fortran_mod.o) are linked in. Build c_ext first.
 
-FC       := gfortran
-CXX      := g++
-MAKE     := mingw32-make
+# ------------------------------------------------------------------ #
+# Platform detection
+# ------------------------------------------------------------------ #
 
-C_EXT    := ../c_ext
+ifeq ($(OS),Windows_NT)
+    EXE_EXT       := .exe
+    RM            := rm -f
+    LDFLAGS_EXTRA := -lkernel32
+else
+    UNAME_S := $(shell uname -s)
+    ifeq ($(UNAME_S),Darwin)
+        EXE_EXT       :=
+        RM            := rm -f
+        LDFLAGS_EXTRA :=
+    else
+        EXE_EXT       :=
+        RM            := rm -f
+        LDFLAGS_EXTRA := -ldl -lpthread
+    endif
+endif
 
-FFLAGS   := -O2 -Wall -Wextra -std=f2008 -J. -I$(C_EXT)
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I$(C_EXT)
+# ------------------------------------------------------------------ #
+# Toolchain
+# ------------------------------------------------------------------ #
 
-COMMON_OBJS := $(C_EXT)/LingoFuse.o $(C_EXT)/lf_fortran.o
-MOD_OBJS    := $(C_EXT)/lf_fortran_mod.o
+CC  := gcc
+CXX := g++
+FC  := gfortran
 
-all: cross_service.exe cross_node.exe cross_call.exe cross_call_cpp.exe
+CFLAGS   := -O2 -Wall -Wextra -std=c11
+CXXFLAGS := -O2 -Wall -Wextra -std=c++17
+FFLAGS   := -O2 -Wall -Wextra -std=f2008 -I../c_ext -J../c_ext
 
-# ---- Ensure the parent bridge is built before we link against it ----
+C_EXT_OBJS := ../c_ext/LingoFuse.o \
+              ../c_ext/lf_fortran.o \
+              ../c_ext/lf_fortran_mod.o
 
-$(COMMON_OBJS) $(MOD_OBJS):
-	$(MAKE) -C $(C_EXT)
-
-# ---- Fortran executables (link Fortran objects + C++ runtime) ----
-
-cross_service.exe: cross_service.o $(COMMON_OBJS) $(MOD_OBJS)
-	$(CXX) -o $@ $^ -lgfortran
-
-cross_node.exe: cross_node.o $(COMMON_OBJS) $(MOD_OBJS)
-	$(CXX) -o $@ $^ -lgfortran
-
-cross_call.exe: cross_call.o $(COMMON_OBJS) $(MOD_OBJS)
-	$(CXX) -o $@ $^ -lgfortran
-
-# ---- C++ executable (link only the C++ bridge objects) ----
-
-cross_call_cpp.exe: cross_call_cpp.o $(COMMON_OBJS)
-	$(CXX) -o $@ $^
-
-# ---- Compilation rules ----
-
-%.o: %.f90
-	$(FC) $(FFLAGS) -c $< -o $@
-
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# The Fortran sources that use the module must wait for the module to
-# be compiled. This is guaranteed by the $(MOD_OBJS) prerequisite on
-# the link targets, and by the pattern rule's -I$(C_EXT) flag, which
-# points to the directory where lf_fortran_mod.mod lives.
-
-# ---- Cleanup ----
-
-clean:
-	-rm -f *.o *.mod *.exe
+ALL_EXES := cross_service$(EXE_EXT) \
+            cross_node$(EXE_EXT) \
+            cross_call$(EXE_EXT) \
+            cross_call_cpp$(EXE_EXT)
 
 .PHONY: all clean
+
+all: $(ALL_EXES)
+
+# ------------------------------------------------------------------ #
+# Fortran programs
+# ------------------------------------------------------------------ #
+
+cross_service$(EXE_EXT): cross_service.f90 $(C_EXT_OBJS)
+	$(FC) $(FFLAGS) cross_service.f90 $(C_EXT_OBJS) -o $@ \
+	    -lstdc++ $(LDFLAGS_EXTRA)
+
+cross_node$(EXE_EXT): cross_node.f90 $(C_EXT_OBJS)
+	$(FC) $(FFLAGS) cross_node.f90 $(C_EXT_OBJS) -o $@ \
+	    -lstdc++ $(LDFLAGS_EXTRA)
+
+cross_call$(EXE_EXT): cross_call.f90 $(C_EXT_OBJS)
+	$(FC) $(FFLAGS) cross_call.f90 $(C_EXT_OBJS) -o $@ \
+	    -lstdc++ $(LDFLAGS_EXTRA)
+
+# ------------------------------------------------------------------ #
+# C++ program
+# ------------------------------------------------------------------ #
+
+cross_call_cpp$(EXE_EXT): cross_call_cpp.cpp $(C_EXT_OBJS)
+	$(CXX) $(CXXFLAGS) -I../c_ext cross_call_cpp.cpp $(C_EXT_OBJS) \
+	    -o $@ -lgfortran $(LDFLAGS_EXTRA)
+
+# ------------------------------------------------------------------ #
+# Clean
+# ------------------------------------------------------------------ #
+
+clean:
+	$(RM) $(ALL_EXES)

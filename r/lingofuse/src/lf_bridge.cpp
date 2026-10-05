@@ -536,8 +536,23 @@ extern "C" int lf_impl_load_library(const char* runtime_dir)
 
 extern "C" void lf_impl_unload_library(void)
 {
+    // Deliberately do NOT call lf::Loader::unload() here. That method
+    // performs FreeLibrary on LingoFuse64.dll (or the platform
+    // equivalent). Loading the runtime starts background activity
+    // (the data-handle pool scanner and the simulated main thread
+    // machinery), and FreeLibrary would unmap the DLL underneath
+    // those threads, producing an access violation (exit code
+    // 0xC0000005 on Windows).
+    //
+    // Instead, drop ownership of the DLL handle without unmapping it.
+    // The OS reclaims the library at process exit, when all threads
+    // have already been torn down by the loader. The bridge's own
+    // function-pointer table is still cleared, so lf_impl_is_loaded()
+    // returns 0 and a subsequent lf_impl_load_library() will
+    // re-acquire the same DLL (LoadLibrary returns the same handle
+    // and increments its reference count).
     g_rt.clear();
-    g_rt.loader.unload();
+    g_rt.loader.detach();
     g_rt.last_error.clear();
 }
 

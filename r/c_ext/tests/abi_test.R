@@ -15,9 +15,11 @@
 # Usage:
 #   Rscript c_ext/tests/abi_test.R [runtime_dir]
 #
-# The runtime directory defaults to a set of well-known locations under
-# the LingoFuse repository. Pass it explicitly when the runtime lives
-# elsewhere.
+# The runtime directory is resolved by lf_find_runtime(), which consults
+# (in order): the first command-line argument, the LINGOFUSE_RUNTIME
+# environment variable, the "lingofuse.runtime" R option, and a list of
+# relative probes under the script directory and the current working
+# directory. No absolute path is hard-coded.
 #
 # All output and comments are English.
 # =============================================================================
@@ -34,6 +36,8 @@ script_dir <- tryCatch({
         getwd()
     }
 }, error = function(e) getwd())
+
+source(file.path(script_dir, "lf_runtime.R"))
 
 candidate_dirs <- c(
     file.path(script_dir, "..", "..", "libs"),
@@ -62,39 +66,18 @@ message("[OK]   Bridge library: ", bridge_path)
 # -----------------------------------------------------------------------------
 # Locate the LingoFuse runtime
 # -----------------------------------------------------------------------------
-# Accept an optional command-line argument; otherwise probe a small list
-# of well-known repository-relative locations.
-runtime_dir <- NULL
-
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) >= 1) {
-    runtime_dir <- args[1]
-    message("[INFO] Runtime directory from command line: ", runtime_dir)
-} else {
-    repo_root <- normalizePath(file.path(script_dir, "..", ".."))
-    probes <- c(
-        file.path(repo_root, "Binary"),
-        file.path(repo_root, "..", "Binary"),
-        "D:/CoreLibrary/LingoFuse/Binary",
-        "C:/CoreLibrary/LingoFuse/Binary"
-    )
-    for (p in probes) {
-        if (dir.exists(p)) {
-            runtime_dir <- normalizePath(p)
-            break
-        }
-    }
-    if (!is.null(runtime_dir)) {
-        message("[INFO] Runtime directory probed: ", runtime_dir)
-    }
-}
+explicit_runtime <- if (length(args) >= 1) args[1] else NULL
+runtime_dir <- lf_find_runtime(explicit_runtime, script_dir)
 
 if (is.null(runtime_dir)) {
     message("[FAIL] Could not locate the LingoFuse runtime directory.")
-    message("       Pass it as the first argument:")
-    message("         Rscript c_ext/tests/abi_test.R D:/path/to/Binary")
+    message("       Provide it as the first argument, set the")
+    message("       LINGOFUSE_RUNTIME environment variable, or place it")
+    message("       in Binary/ relative to this repository.")
     quit(status = 1)
 }
+message("[INFO] Runtime directory: ", runtime_dir)
 
 # -----------------------------------------------------------------------------
 # Load the bridge
@@ -223,8 +206,26 @@ expect_error("app use-after-free raises an error",
              .Call("lf_app_name", app))
 
 # -----------------------------------------------------------------------------
-# Unload
+# Shutdown
 # -----------------------------------------------------------------------------
+# LingoFuse starts background threads the moment it is loaded, even if
+# LF_PrepareDone is never called. Those threads must be stopped before
+# the R process exits, otherwise the operating system's DLL-unload path
+# at process exit races with the still-running threads and the process
+# terminates with an access violation (exit code 0xC0000005 on Windows).
+#
+# lf_exit_main_thread is safe to call even when LF_PrepareDone was
+# never invoked: it is a no-op if the simulated main thread is not
+# running. lf_shutdown is idempotent and releases all remaining library
+# resources.
+tryCatch(.Call("lf_exit_main_thread"), error = function(e) NULL)
+tryCatch(.Call("lf_shutdown"),          error = function(e) NULL)
+
+# The runtime DLL itself is intentionally left mapped until process
+# exit. lf_unload_library only clears the bridge's function-pointer
+# table (so lf_is_loaded() reports FALSE); the loader pinned the
+# runtime at load() time, so Windows will never unmap LingoFuse64.dll
+# during the process lifetime.
 .Call("lf_unload_library")
 check("lf_is_loaded returns FALSE after unload",
       isFALSE(.Call("lf_is_loaded")))
@@ -232,8 +233,11 @@ check("lf_is_loaded returns FALSE after unload",
 # -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
-tryCatch(dyn.unload(bridge_path), error = function(e) NULL)
-
+# Deliberately no dyn.unload(bridge_path) here. Unloading the bridge DLL
+# would cascade into the OS attempting to unmap LingoFuse64.dll while
+# its background threads may still be running. The bridge DLL and the
+# runtime DLL are both left mapped until process exit, which is the
+# only safe release point.
 message("")
 message(strrep("=", 60))
 message("ABI test summary")

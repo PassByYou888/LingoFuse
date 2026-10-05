@@ -707,3 +707,111 @@ lf_cleanup <- function(app = NULL, runtime_dir = NULL) {
 
     invisible(NULL)
 }
+
+# -----------------------------------------------------------------------------
+# Runtime directory resolution
+# -----------------------------------------------------------------------------
+
+#' Locate the LingoFuse runtime directory
+#'
+#' Resolves the directory that contains \code{LingoFuse64.dll} (or the
+#' platform equivalent) without relying on any hard-coded absolute
+#' path. This helper is intended for scripts that do not want to
+#' hard-code a runtime location, and for demo programs that ship with
+#' the package source tree.
+#'
+#' @param explicit Optional explicit path. When provided and valid, it
+#'   is used immediately. When provided but invalid, the function
+#'   returns \code{NULL} instead of falling through to the other
+#'   sources, so that a mistyped command-line argument does not
+#'   silently resolve to a different directory.
+#' @param script_dir Optional directory of the calling script. Used as
+#'   the base for the relative probes. Defaults to the current working
+#'   directory when \code{NULL}.
+#'
+#' @return The normalized path on success, or \code{NULL} on failure.
+#'
+#' @details
+#' Resolution order:
+#' \enumerate{
+#'   \item The explicit argument, if provided.
+#'   \item The \code{LINGOFUSE_RUNTIME} environment variable.
+#'   \item The \code{lingofuse.runtime} R option.
+#'   \item A list of relative probes under \code{script_dir} and the
+#'         current working directory.
+#' }
+#'
+#' @export
+lf_find_runtime <- function(explicit = NULL, script_dir = NULL) {
+
+    check_dir <- function(path) {
+        if (is.null(path) || !is.character(path) || length(path) != 1L ||
+            !nzchar(path)) {
+            return(NULL)
+        }
+        if (dir.exists(path)) {
+            return(normalizePath(path, winslash = "/", mustWork = FALSE))
+        }
+        NULL
+    }
+
+    # ---- 1. Explicit argument ------------------------------------------
+    if (!is.null(explicit) && nzchar(explicit)) {
+        resolved <- check_dir(explicit)
+        if (!is.null(resolved)) {
+            return(resolved)
+        }
+        return(NULL)
+    }
+
+    # ---- 2. Environment variable ---------------------------------------
+    env_val <- Sys.getenv("LINGOFUSE_RUNTIME", unset = "")
+    if (nzchar(env_val)) {
+        resolved <- check_dir(env_val)
+        if (!is.null(resolved)) {
+            return(resolved)
+        }
+    }
+
+    # ---- 3. R option ---------------------------------------------------
+    opt_val <- getOption("lingofuse.runtime", default = "")
+    if (is.character(opt_val) && length(opt_val) == 1L && nzchar(opt_val)) {
+        resolved <- check_dir(opt_val)
+        if (!is.null(resolved)) {
+            return(resolved)
+        }
+    }
+
+    # ---- 4. Relative probes --------------------------------------------
+    bases <- character(0)
+    if (!is.null(script_dir) && nzchar(script_dir)) {
+        bases <- c(bases, script_dir)
+    }
+    bases <- c(bases, getwd())
+
+    relatives <- c(
+        "Binary",
+        "runtime",
+        "runtime/Binary",
+        "lib",
+        "../Binary",
+        "../runtime",
+        "../runtime/Binary",
+        "../../Binary",
+        "../../runtime",
+        "../../runtime/Binary",
+        "../../../Binary"
+    )
+
+    for (base in bases) {
+        for (rel in relatives) {
+            candidate <- file.path(base, rel)
+            resolved <- check_dir(candidate)
+            if (!is.null(resolved)) {
+                return(resolved)
+            }
+        }
+    }
+
+    NULL
+}

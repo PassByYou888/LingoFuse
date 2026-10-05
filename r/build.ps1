@@ -47,7 +47,7 @@ if (-not $rExe) {
 }
 Write-Ok ("R.exe: " + $rExe.Source)
 
-foreach ($f in @("lf_r_shim.c", "lf_bridge.cpp", "lf_r_shim.h")) {
+foreach ($f in @("lf_r_shim.c", "lf_bridge.cpp", "lf_r_shim.h", "lf_loader.h")) {
     if (-not (Test-Path (Join-Path $SourceDir $f))) {
         Write-Fail ("Missing source file: " + $f)
         exit 1
@@ -77,12 +77,19 @@ if (-not (Test-Path $LibsDir)) {
 # -----------------------------------------------------------------------------
 Write-Step "Building lfR_bridge.dll with R CMD SHLIB"
 
+# Force C++17. R CMD SHLIB consults CXX_STD; leaving it unset would use
+# R's default standard, which may be older than C++17 on some R releases.
+$env:CXX_STD = "CXX17"
+
+# --preclean forces a full recompile every time, which avoids the
+# "linked against a stale object file" class of bug.
 Push-Location $SourceDir
 try {
-    & $rExe.Source CMD SHLIB lf_r_shim.c lf_bridge.cpp -o $DllName
+    & $rExe.Source CMD SHLIB --preclean lf_r_shim.c lf_bridge.cpp -o $DllName
     $rc = $LASTEXITCODE
 } finally {
     Pop-Location
+    Remove-Item Env:\CXX_STD -ErrorAction SilentlyContinue
 }
 
 if ($rc -ne 0) {
@@ -108,7 +115,6 @@ $gpp = Get-Command g++.exe -ErrorAction SilentlyContinue
 if (-not $gpp) {
     Write-Warn "g++ not found on PATH; skipping C++ test binaries."
 } else {
-    # test_service.exe
     if (Test-Path $TestSvcSrc) {
         & $gpp.Source -std=c++17 -O2 -I"$SourceDir" -o $TestSvcExe $TestSvcSrc
         if ($LASTEXITCODE -ne 0) {
@@ -118,7 +124,6 @@ if (-not $gpp) {
         }
     }
 
-    # echo_client.exe
     if (Test-Path $EchoCliSrc) {
         & $gpp.Source -std=c++17 -O2 -I"$SourceDir" -o $EchoCliExe $EchoCliSrc
         if ($LASTEXITCODE -ne 0) {
@@ -128,7 +133,6 @@ if (-not $gpp) {
         }
     }
 
-    # cross_client.exe
     if (Test-Path $CrossCliSrc) {
         & $gpp.Source -std=c++17 -O2 -I"$SourceDir" -o $CrossCliExe $CrossCliSrc
         if ($LASTEXITCODE -ne 0) {
@@ -149,15 +153,34 @@ if (Test-Path $EchoCliExe) { Write-Host ("  Echo client: " + $EchoCliExe) }
 if (Test-Path $CrossCliExe) { Write-Host ("  Cross client: " + $CrossCliExe) }
 Write-Host ""
 
+Write-Host "Runtime directory resolution" -ForegroundColor White
+Write-Host "  The test scripts locate the runtime without a hard-coded path." -ForegroundColor Gray
+Write-Host "  Order of precedence:" -ForegroundColor Gray
+Write-Host "    1. First command-line argument" -ForegroundColor Gray
+Write-Host "    2. LINGOFUSE_RUNTIME environment variable" -ForegroundColor Gray
+Write-Host "    3. lingofuse.runtime R option" -ForegroundColor Gray
+Write-Host "    4. Relative probes under the script dir and CWD" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Recommended layout:" -ForegroundColor White
+Write-Host "    <repo>/Binary/            (place the runtime DLLs here)" -ForegroundColor Gray
+Write-Host "    <repo>/c_ext/tests/       (test scripts live here)" -ForegroundColor Gray
+Write-Host "    <repo>/demo/              (two-process demo)" -ForegroundColor Gray
+Write-Host ""
 Write-Host "Test scenarios:" -ForegroundColor White
 Write-Host ""
 Write-Host "  STEP 3a (R caller -> C++ service):" -ForegroundColor White
-Write-Host "    T1:  c_ext\tests\test_service.exe D:\CoreLibrary\LingoFuse\Binary" -ForegroundColor Gray
-Write-Host "    T2:  Rscript c_ext\tests\caller_test.R D:\CoreLibrary\LingoFuse\Binary" -ForegroundColor Gray
+Write-Host "    T1:  c_ext\tests\test_service.exe <runtime_dir>" -ForegroundColor Gray
+Write-Host "    T2:  Rscript c_ext\tests\caller_test.R <runtime_dir>" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  STEP 3b (C++ client -> R service):" -ForegroundColor White
-Write-Host "    T1:  Rscript c_ext\tests\callee_test.R D:\CoreLibrary\LingoFuse\Binary" -ForegroundColor Gray
-Write-Host "    T2:  c_ext\tests\echo_client.exe D:\CoreLibrary\LingoFuse\Binary" -ForegroundColor Gray
+Write-Host "    T1:  Rscript c_ext\tests\callee_test.R <runtime_dir> 60" -ForegroundColor Gray
+Write-Host "    T2:  c_ext\tests\echo_client.exe <runtime_dir>" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  STEP 4 (CrossDemo):" -ForegroundColor White
+Write-Host "    T1:  Rscript c_ext\tests\cross_node.R <runtime_dir> 60" -ForegroundColor Gray
+Write-Host "    T2:  c_ext\tests\cross_client.exe <runtime_dir>" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  With the recommended layout the <runtime_dir> argument can be omitted." -ForegroundColor Gray
 Write-Host ""
 
 exit 0

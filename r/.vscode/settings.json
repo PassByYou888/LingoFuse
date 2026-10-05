@@ -3,5 +3,6 @@
         "*.c": "c",
         "*.h": "c",
         "*.cpp": "cpp"
-    }
+    },
+    "r.lsp.promptToInstall": false
 }

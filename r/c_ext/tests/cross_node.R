@@ -21,8 +21,11 @@
 # Usage:
 #   Rscript c_ext/tests/cross_node.R [runtime_dir] [wait_sec]
 #
-#   runtime_dir   Path to the LingoFuse runtime directory.
-#                 Default: D:/CoreLibrary/LingoFuse/Binary
+#   runtime_dir   Path to the LingoFuse runtime directory. When omitted,
+#                 lf_find_runtime() consults the LINGOFUSE_RUNTIME
+#                 environment variable, the "lingofuse.runtime" option,
+#                 and a list of relative probes under the script
+#                 directory and the current working directory.
 #   wait_sec      Maximum time to pump the job queue, in seconds.
 #                 Default: 60
 #
@@ -57,6 +60,7 @@ script_dir <- tryCatch({
     }
 }, error = function(e) getwd())
 
+source(file.path(script_dir, "lf_runtime.R"))
 source(file.path(script_dir, "lf_r_api.R"))
 
 # -----------------------------------------------------------------------------
@@ -79,15 +83,23 @@ if (is.null(bridge_path)) { message("[FAIL] Bridge not found"); quit(status = 1)
 
 args <- commandArgs(trailingOnly = TRUE)
 
-runtime_dir <- if (length(args) >= 1) {
-    args[1]
-} else {
-    "D:/CoreLibrary/LingoFuse/Binary"
-}
-if (!dir.exists(runtime_dir)) {
-    message("[FAIL] Runtime dir missing: ", runtime_dir)
+# Runtime directory resolution.
+#
+# The first command-line argument, when present, is treated as an
+# explicit runtime directory path. Otherwise lf_find_runtime() consults
+# the LINGOFUSE_RUNTIME environment variable, the "lingofuse.runtime"
+# option, and finally a list of relative probes under the script
+# directory and the current working directory.
+explicit_runtime <- if (length(args) >= 1) args[1] else NULL
+runtime_dir <- lf_find_runtime(explicit_runtime, script_dir)
+if (is.null(runtime_dir)) {
+    message("[FAIL] Could not locate the LingoFuse runtime directory.")
+    message("       Provide it as the first argument, set the")
+    message("       LINGOFUSE_RUNTIME environment variable, or place it")
+    message("       in Binary/ relative to this repository.")
     quit(status = 1)
 }
+message("[OK]   Runtime dir: ", runtime_dir)
 
 wait_sec <- 60L
 if (length(args) >= 2) {

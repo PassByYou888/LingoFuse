@@ -13,6 +13,12 @@
 # Usage:
 #   Rscript c_ext/tests/caller_test.R [runtime_dir]
 #
+#   runtime_dir   Path to the LingoFuse runtime directory. When omitted,
+#                 lf_find_runtime() consults the LINGOFUSE_RUNTIME
+#                 environment variable, the "lingofuse.runtime" option,
+#                 and a list of relative probes under the script
+#                 directory and the current working directory.
+#
 # LF SHUTDOWN CONTRACT
 # --------------------
 # This script establishes a client connection to a LingoFuse service.
@@ -39,6 +45,8 @@ script_dir <- tryCatch({
     } else getwd()
 }, error = function(e) getwd())
 
+source(file.path(script_dir, "lf_runtime.R"))
+
 candidates <- c(
     file.path(script_dir, "..", "..", "libs"),
     file.path(script_dir, "..", "libs"),
@@ -63,9 +71,21 @@ message("[OK]   Bridge: ", bridge_path)
 # Runtime directory
 # -----------------------------------------------------------------------------
 args <- commandArgs(trailingOnly = TRUE)
-runtime_dir <- if (length(args) >= 1) args[1] else "D:/CoreLibrary/LingoFuse/Binary"
-if (!dir.exists(runtime_dir)) {
-    message("[FAIL] Runtime directory does not exist: ", runtime_dir)
+
+# Runtime directory resolution.
+#
+# The first command-line argument, when present, is treated as an
+# explicit runtime directory path. Otherwise lf_find_runtime() consults
+# the LINGOFUSE_RUNTIME environment variable, the "lingofuse.runtime"
+# option, and finally a list of relative probes under the script
+# directory and the current working directory.
+explicit_runtime <- if (length(args) >= 1) args[1] else NULL
+runtime_dir <- lf_find_runtime(explicit_runtime, script_dir)
+if (is.null(runtime_dir)) {
+    message("[FAIL] Could not locate the LingoFuse runtime directory.")
+    message("       Provide it as the first argument, set the")
+    message("       LINGOFUSE_RUNTIME environment variable, or place it")
+    message("       in Binary/ relative to this repository.")
     quit(status = 1)
 }
 message("[OK]   Runtime dir: ", runtime_dir)

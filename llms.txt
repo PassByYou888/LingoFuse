@@ -13,7 +13,7 @@
 - IPC latency: < 1 ms (self-reported, verify with `test/`)
 - Built-in features: Service discovery, load balancing, FIFO ordering, automatic reconnection
 - No IDL required, no stub generation required, no HTTP service required
-- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, and PHP (caller-only via HTTP bridge)
+- First-party bindings: Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, Julia, and PHP (caller-only via HTTP bridge)
 - CI status: C++ only (GitHub-hosted; other languages have runnable local tests but no GitHub-hosted CI)
 - Maintenance model: Single author; users are expected to be able to build and maintain the core library themselves if needed
 - Related project: zIPC — https://github.com/PassByYou888/zIPC
@@ -57,6 +57,7 @@ LingoFuse places application stability as the top priority; concurrency performa
 | Erlang | Production-ready | ✅ | ✅ | 4 EUnit suites | NIF-based; all 37 C ABI functions wrapped in RAII-style resources; `lingofuse_json` enforces wire-format contract; async `register_call/4` and sync `register_call_sync/4` callback modes; cross-platform NIF build via `c_src/build.escript`; OTP 27+ with zero third-party runtime deps; Windows verified, Linux / macOS untested |
 | Ruby | Production-ready | ✅ | ✅ | 331 tests, 14 files | Fiddle bindings + native C extension for thread-safe callbacks; RAII `DataHandle` / `AppHandle`; unified `LfIo` JSON/string I/O; `NetworkEventQueue` for queue-based event consumption; Windows x64 verified, Linux / macOS untested |
 | Fortran | Production-ready | ✅ | ✅ | 173 assertions | Three-layer design: Fortran 2008 `iso_c_binding` → C ABI bridge (`lf_fortran.h` / `lf_fortran.cpp`) → LingoFuse C++ RAII layer; RAII data/app handles; unified JSON/string/byte I/O; native `bind(C)` callbacks via `c_funloc`; allocation-managed string reads; Windows x64 verified, Linux / macOS untested |
+| Julia | Production-ready | ✅ | ✅ | 118 assertions, 8 files | C shim (`lf_shim_real.dll`) bridges callbacks from native C4 worker threads into a dedicated Julia consumer thread via a mutex + condvar event queue; blocking calls routed through `@threadcall` to avoid Julia GC safepoint deadlock; RAII `DataHandle` / `App`; unified `io.jl` / `binio.jl` JSON + little-endian binary I/O; `NetworkEventQueue` with bounded queue backpressure; requires `--threads=2`; Windows x64 verified, Linux / macOS / Apple Silicon untested |
 | PHP | Caller-only | ❌ | ✅ | No FFI tests | Via `bridge.py` HTTP gateway, JSON over HTTP POST. PHP cannot be a server. Official PHP FFI cannot support C ABI callbacks. |
 
 > **Java note**: Requires JDK 22+ (JDK 25 LTS recommended). Functionally complete, including cross-process RPC, cross-language ABI verification, and three-process Demo. Performance optimization is still in progress. GitHub-hosted CI currently covers C++ only; Java tests run locally via `java/run_test_ci.ps1` / `run_test_ci.sh`.
@@ -71,6 +72,8 @@ LingoFuse places application stability as the top priority; concurrency performa
 
 > **Fortran note**: Requires a Fortran 2008 compiler (`gfortran` recommended), a C++17 compiler, a C11 compiler, and GNU Make. **The C++ compiler and Fortran compiler must come from the same toolchain distribution** — otherwise linking fails with `undefined reference to __gfortran_*`. The binding uses a three-layer design: Fortran 2008 (`iso_c_binding` + `bind(C)`) → C ABI bridge (`lf_fortran.h` / `lf_fortran.cpp`, exporting `extern "C"` symbols, absorbing exceptions, encoding UTF-8) → LingoFuse C++ RAII layer (`LingoFuse.hpp` / `lf_io.hpp`). 173 assertions across 3 suites: 57 C ABI tests, 43 Fortran binding tests, 73 Fortran JSON tests. Cross-language Demo validates byte-level interop against C++ (`cross_call_cpp.exe`). Windows x64 verified; Linux / macOS not yet tested.
 
+> **Julia note**: Requires Julia 1.9+ (1.13.1 verified) and **must be launched with `--threads=2` or higher** — the callback consumer task cannot run on the main thread, and the binding raises `LingoFuseStateError` at startup otherwise. Because Julia's GC, JIT, and Task scheduler all require threads to be adopted by the runtime, callbacks from C4 worker threads cannot enter Julia directly; a small pure-native C shim (`lf_shim_real.dll` / `.so` / `.dylib`) snapshots each event into a queue and blocks the C4 worker until a dedicated Julia consumer thread finishes handling it. Any C call that may block (`LF_Call`, `LF_PrepareDone`, `LF_ExitMainThread`, `LF_Shutdown`, `LF_LocalCall`, `LF_LocalNotify`, `LF_Notify`, `LF_Sequenced_Notify`) is dispatched via `@threadcall` on libuv's thread pool to keep the calling Julia thread at a GC safepoint. 118 assertions across 8 test files (`test_io` / `test_raii` / `test_network` / `test_status` / `test_restart` / `smoke` / `diag` / `try_module`), all passing. Uses JSON3.jl (the only external dependency). Windows x64 verified; Linux / macOS / Apple Silicon not yet tested. `UV_THREADPOOL_SIZE` (default 4) constrains `@threadcall` concurrency for Cross Demo load tests.
+
 > **PHP note**: PHP can only act as a caller. If you need PHP as a server, LingoFuse currently does not satisfy that requirement.
 
 ### Via code generator / bridge
@@ -78,10 +81,10 @@ LingoFuse places application stability as the top priority; concurrency performa
 | Language / Platform | Method | Maturity |
 |---|---|---|
 | Node.js / Browser | `bridge.py` HTTP gateway | Usable, non-native |
-| Kotlin / Lua / Elixir / Julia / Nim / Crystal | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
+| Kotlin / Lua / Elixir / Nim / Crystal | Via LingoFuse-Tools code generator | Generated code usable, requires own verification |
 | aarch64 / loongarch64 / RISC-V | Edge device porting planned | In progress, not production-ready |
 
-> Swift, Zig, Erlang, Ruby, and Fortran were previously listed under code-generator / bridge integration. All five have been promoted to first-party bindings and are no longer accessed via the code generator.
+> Swift, Zig, Erlang, Ruby, Fortran, and Julia were previously listed under code-generator / bridge integration. All six have been promoted to first-party bindings and are no longer accessed via the code generator.
 
 ## Cross-language interop (Cross Demo)
 
@@ -117,6 +120,7 @@ String = UTF-8 + NUL; integers = little-endian; floats = IEEE 754 little-endian.
 | Erlang | `erlang/cross/` (`cross_service.escript`, `cross_node.escript`, `cross_call.escript`) |
 | Ruby | `ruby/cross/` (`cross_service.rb`, `cross_node.rb`, `cross_call.rb`) |
 | Fortran | `fortran/cross_demo/` (`cross_service.f90`, `cross_node.f90`, `cross_call.f90`, `cross_call_cpp.cpp`) |
+| Julia | `julia/example/` (`CrossService.jl`, `CrossNode.jl`, `CrossCall.jl`) |
 | Rust | `rust/examples/` |
 | Go | `go/cross/` |
 | TypeScript | `ts/cross/` |
@@ -133,6 +137,7 @@ String = UTF-8 + NUL; integers = little-endian; floats = IEEE 754 little-endian.
 | Erlang ↔ C++ / C# / Python / JavaScript | ✅ Byte-level interoperable |
 | Ruby ↔ C++ / C# / Python / JavaScript | ✅ Byte-level compatible (shared wire-format contract; validated by test suite) |
 | Fortran ↔ C++ | ✅ Verified (Fortran `CrossNode` served both Fortran `CrossCall` and C++ `cross_call_cpp` with identical bytes) |
+| Julia ↔ C++ / C# / Pascal / Python / JavaScript | ✅ Byte-level compatible (shared wire-format contract; validated by test suite) |
 | Pascal ↔ C++ | ✅ Verified |
 | C# ↔ C++ | ✅ Verified |
 | Rust ↔ C++ | ✅ Verified |
@@ -194,7 +199,7 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 1. The author provides race-condition stability tests (the most important mechanism-level tests), but not your App-level tests. You need to simulate your own App layer and run a PoC to verify LF's behavior in your specific business scenario.
 2. You need to be able to build and compile LF yourself. LingoFuse is developed by Lao Zhang; if it is not maintained long-term, users need to build it themselves and keep up with generational updates.
-3. Each language has its own test / CI system in principle. Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, and Fortran all have runnable tests, but GitHub-hosted CI is C++ only. Other languages provide local test scripts or projects:
+3. Each language has its own test / CI system in principle. Currently Pascal, C#, C++, JS, TS, Python, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, and Julia all have runnable tests, but GitHub-hosted CI is C++ only. Other languages provide local test scripts or projects:
    - C++: `cpp/test/`, `cpp/Stress/`, `cpp/Conc/`
    - Java: `java/run_test_ci.ps1`, `java/run_test_ci.sh`
    - Swift: `swift/test.ps1`, `swift/Tests/LingoFuseTests/`
@@ -202,6 +207,7 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
    - Erlang: `erlang/test.ps1`, `erlang/test/`
    - Ruby: `ruby/run_test_ci.ps1`, `ruby/run_test_ci.sh`, `ruby/test/`
    - Fortran: `fortran/test.ps1`, `fortran/build.ps1`, `fortran/check_env.ps1`, `fortran/c_ext/`
+   - Julia: `julia/test.ps1`, `julia/test/runtests.jl`, `julia/check_env.ps1`
    - Go: `go/test.ps1`, `go/dev_test.ps1`
    - Rust: `rust/test.ps1`
    - C#: `csharp/build.ps1`, `csharp/test/`
@@ -213,7 +219,7 @@ For any uncertainty about the README — latency, ordering, stability, behavior 
 
 ### Why `test/` contains documents and executables instead of GitHub Actions
 
-GitHub's automated CI has many limitations. LingoFuse supports multiple languages and platforms — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
+GitHub's automated CI has many limitations. LingoFuse supports multiple languages and platforms — Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, Julia, PHP, across Windows / Linux / macOS, covering IPC / TCP / cross-machine deployment forms. Putting all combinations into GitHub's hosted runners is neither convenient nor realistic.
 
 So LingoFuse's approach is: deliver testing capability directly to the user. `test/` provides complete test guides (Markdown) and pre-compiled executables (`test.zip`). You extract, run, and observe on your own machine — getting real data from your own hardware.
 
@@ -234,6 +240,23 @@ Each subdirectory has `CMakeLists.txt` and one-click CI scripts.
 | [`LingoFuse_Concurrent_Notify_Demo.md`](https://github.com/PassByYou888/LingoFuse/blob/main/test/LingoFuse_Concurrent_Notify_Demo.md) | Concurrent Notify: Verifies Notify is lossless under high concurrency, demonstrates the "completion barrier" pattern, 20 batches × 10,000 messages with zero loss. | `test.zip` contains `ConcService` / `ConcClient` |
 
 ### Language-specific test suites
+
+#### Julia test suite
+
+The Julia binding ships with 118 assertions across 8 test files, all passing:
+
+| Test file | Assertions | Coverage |
+|---|---|---|
+| `test_io.jl` | 40 | Unified I/O: `dumps_json` / `loads_json`, string / byte I/O, JSON on handles, wire-format invariants |
+| `test_raii.jl` | 29 | `DataHandle` lifecycle, `App` register + local call, closure handlers |
+| `test_network.jl` | 13 | Single-process loopback RPC, `prepare` / `prepare_done`, diagnostics (`check_app` / `check_api`) |
+| `test_status.jl` | 30 | Network event listener, bounded queue backpressure, status queue |
+| `test_restart.jl` | 6 | In-process callback-layer restart (start → stop → start → call → stop) |
+| `smoke.jl` | 4 scenarios | Handler shape compatibility: named function, anonymous closure, captured-variable closure, runtime-registered closure |
+| `diag.jl` | diagnostic | `@threadcall` + GC safepoint deadlock minimal reproduction |
+| `try_module.jl` | diagnostic | `using LingoFuse` smoke test |
+
+Run with `.\test.ps1` from the `julia/` directory (auto-scans `test/*.jl`, spawns one Julia process per file with `--threads=2`). See [`julia/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/julia/README.md) for full usage instructions, including the C shim mechanism guide (`julia/c_ext/SHIM_MECHANISM_GUIDE.md`).
 
 #### Fortran test suite
 
@@ -386,6 +409,7 @@ See [`dart/README.md`](https://github.com/PassByYou888/LingoFuse/blob/main/dart/
 | Swift | XCTest | 128 | Windows verified; macOS / Linux untested | Local |
 | TypeScript | Node test | 127 | Windows / Linux / macOS | Local |
 | JavaScript | Node test | 127 | Windows / Linux / macOS | Local |
+| Julia | Custom assertions | 118 | Windows x64; Linux / macOS / Apple Silicon untested | Local |
 | C++ | Custom CI | 82 + stress + concurrent | Windows / Linux | ✅ GitHub |
 | Rust | cargo test | 67 | Windows / Linux / macOS | Local |
 | C# | xUnit | 58 | Windows | Local |
@@ -472,6 +496,7 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 - Erlang binding requires Erlang/OTP 27+; NIF crashes take down the BEAM node; never call blocking LingoFuse functions from callbacks.
 - Ruby binding requires Ruby 4.0+ (x64-mingw-ucrt) with DevKit for the native C extension; Linux / macOS not yet tested; CI not yet configured.
 - Fortran binding requires Fortran 2008 + C++17 + C11 toolchain, and the C++ / Fortran compilers must come from the same distribution; Linux / macOS theoretically supported but untested.
+- Julia binding **must be launched with `--threads=2` or higher** — the callback consumer cannot run on the main thread and the binding raises `LingoFuseStateError` otherwise. `@threadcall` concurrency is bounded by libuv's thread pool (`UV_THREADPOOL_SIZE`, default 4). Linux / macOS / Apple Silicon not yet tested; CI not yet configured.
 
 ## Documentation map
 
@@ -490,6 +515,7 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 - [Erlang README](https://github.com/PassByYou888/LingoFuse/blob/main/erlang/README.md): Erlang developers
 - [Ruby README](https://github.com/PassByYou888/LingoFuse/blob/main/ruby/README.md): Ruby developers (full manual: C extension, RAII handles, network events, test suite)
 - [Fortran README](https://github.com/PassByYou888/LingoFuse/blob/main/fortran/README.md): Fortran developers (three-layer design, `iso_c_binding`, C ABI bridge, toolchain consistency requirements)
+- [Julia README](https://github.com/PassByYou888/LingoFuse/blob/main/julia/README.md): Julia developers (C shim mechanism, `@threadcall` blocking-classification table, `--threads=2` requirement, `UV_THREADPOOL_SIZE` concurrency note)
 - [PHP README](https://github.com/PassByYou888/LingoFuse/blob/main/php/readme.md): PHP developers (HTTP bridge, caller-only)
 - [HTTP Bridge User Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/lingofuse/Bridge_User_Guide.md): Gateway deployment
 - [Cross-Language Demo Guide](https://github.com/PassByYou888/LingoFuse/blob/main/Py/cross/Cross_Demo_Guide_zh.md): Load balancing experience
@@ -511,4 +537,4 @@ On Windows, install the VC++ 2015-2022 Redistributable:
 
 ## Keywords
 
-LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, PHP, C ABI, FFI, FFM API, JDK 22+, Clang importer, C target, XCTest, Swift 5.9, Swift 6.4, Zig 0.17.0, extern declarations, RAII handles, nlohmann/json, lf_json, NIF, Erlang/OTP, OTP 27, EUnit, escript, rebar3, CGO, purego, Ruby 4.0, x64-mingw-ucrt, DevKit, Fiddle, C extension, lingofuse_ext, GVL, rb_thread_call_with_gvl, minitest, Fortran 2008, iso_c_binding, bind(C), c_funloc, c_funptr, c_ptr, c_associated, gfortran, MinGW-w64, lf_fortran_mod, lf_fortran.h, lf_fortran.cpp, toolchain consistency, __gfortran, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一
+LingoFuse, cross-language RPC, multi-language RPC, zero-IDL, no stub generation, no HTTP service, sub-1ms latency, same-machine IPC, service discovery, load balancing, FIFO ordering, automatic reconnection, zero-copy, C4 service mesh, Pascal, Python, C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig, Erlang, Ruby, Fortran, Julia, PHP, C ABI, FFI, FFM API, JDK 22+, Clang importer, C target, XCTest, Swift 5.9, Swift 6.4, Zig 0.17.0, extern declarations, RAII handles, nlohmann/json, lf_json, NIF, Erlang/OTP, OTP 27, EUnit, escript, rebar3, CGO, purego, Ruby 4.0, x64-mingw-ucrt, DevKit, Fiddle, C extension, lingofuse_ext, GVL, rb_thread_call_with_gvl, minitest, Fortran 2008, iso_c_binding, bind(C), c_funloc, c_funptr, c_ptr, c_associated, gfortran, MinGW-w64, lf_fortran_mod, lf_fortran.h, lf_fortran.cpp, toolchain consistency, __gfortran, Julia 1.9, Julia 1.13, lf_shim, lf_shim_real, mock_lf, @cfunction, @ccall, @threadcall, ccall, GC.@preserve, safepoint, isbits, invokelatest, world age, libuv, UV_THREADPOOL_SIZE, LingoFuseStateError, JSON3.jl, consumer thread, trampoline, mutex, condvar, event queue, streaming RPC, HTTP bridge, HTTP POST, JSON, official FFI limitation, deterministic code generation, LingoFuse-Tools, knowledge base, AI-ready, zIPC, ZNetV2, pasAgent, cppAgent, csharpAgent, tsAgent, stability first, 跨语言 RPC, 多语言互调, 零 IDL, 零桩代码, 同机通信, 服务发现, 负载均衡, FIFO 顺序, 断线重连, 零拷贝, 代码生成器, 知识库, 智能体底座, 稳定第一

@@ -1,74 +1,103 @@
-# ============================================================================
-# Makefile for the LingoFuse C-ABI bridge and its test programs.
+# c_ext/Makefile
 #
-# Targets:
-#   all       Build all three test executables (default)
-#   run-c     Build and run the C test
-#   run-f     Build and run the Fortran test
-#   run-j     Build and run the Fortran JSON test
-#   run       Build and run all three
-#   clean     Remove all build artifacts
+# Builds the LingoFuse Fortran bridge, its test programs, and its
+# Fortran module. All paths are relative to this file so the entire
+# fortran/ directory can be relocated.
 #
-# Toolchain override (from the command line):
-#   mingw32-make FC=x86_64-w64-mingw32-gfortran \
-#                CXX=x86_64-w64-mingw32-g++ \
-#                CC=x86_64-w64-mingw32-gcc
-# ============================================================================
+# Outputs:
+#   test_lf_fortran_c.exe   C ABI test
+#   test_lf_fortran_f.exe   Fortran binding test
+#   test_lf_json_f.exe      Fortran JSON test
+#   lf_fortran_mod.mod      Fortran module interface file
+#
+# The LingoFuse runtime DLL is resolved at runtime by LingoFuse.c,
+# not at link time. It is not referenced from this Makefile.
 
-FC       := gfortran
-CXX      := g++
-CC       := gcc
+# ------------------------------------------------------------------ #
+# Platform detection
+# ------------------------------------------------------------------ #
 
-FFLAGS   := -O2 -Wall -Wextra -std=f2008 -J.
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra
-CFLAGS   := -std=c11  -O2 -Wall -Wextra
+ifeq ($(OS),Windows_NT)
+    PLATFORM      := windows
+    EXE_EXT       := .exe
+    RM            := rm -f
+    NULL_DEV      := NUL
+    LDFLAGS_EXTRA := -lkernel32
+else
+    UNAME_S := $(shell uname -s)
+    ifeq ($(UNAME_S),Darwin)
+        PLATFORM      := macos
+        EXE_EXT       :=
+        RM            := rm -f
+        NULL_DEV      := /dev/null
+        LDFLAGS_EXTRA :=
+    else
+        PLATFORM      := linux
+        EXE_EXT       :=
+        RM            := rm -f
+        NULL_DEV      := /dev/null
+        LDFLAGS_EXTRA := -ldl -lpthread
+    endif
+endif
+
+# ------------------------------------------------------------------ #
+# Toolchain
+# ------------------------------------------------------------------ #
+
+CC  := gcc
+CXX := g++
+FC  := gfortran
+
+CFLAGS   := -O2 -Wall -Wextra -std=c11
+CXXFLAGS := -O2 -Wall -Wextra -std=c++17
+FFLAGS   := -O2 -Wall -Wextra -std=f2008 -J. -I.
+
+# ------------------------------------------------------------------ #
+# Targets
+# ------------------------------------------------------------------ #
 
 COMMON_OBJS := LingoFuse.o lf_fortran.o
-MOD_OBJS    := lf_fortran_mod.o
 
-all: test_lf_fortran_c.exe test_lf_fortran_f.exe test_lf_json_f.exe
+ALL_EXES := test_lf_fortran_c$(EXE_EXT) \
+            test_lf_fortran_f$(EXE_EXT) \
+            test_lf_json_f$(EXE_EXT)
 
-# ---- Test executables ----
+.PHONY: all clean
 
-test_lf_fortran_c.exe: $(COMMON_OBJS) test_lf_fortran.o
-	$(CXX) -o $@ $^
+all: $(ALL_EXES)
 
-test_lf_fortran_f.exe: $(COMMON_OBJS) $(MOD_OBJS) test_lf_fortran_f.o
-	$(CXX) -o $@ $^ -lgfortran
+# ------------------------------------------------------------------ #
+# Bridge objects
+# ------------------------------------------------------------------ #
 
-test_lf_json_f.exe: $(COMMON_OBJS) $(MOD_OBJS) test_lf_json_f.o
-	$(CXX) -o $@ $^ -lgfortran
+LingoFuse.o: LingoFuse.c LingoFuse.h
+	$(CC) $(CFLAGS) -c LingoFuse.c -o $@
 
-# ---- Compilation rules ----
+lf_fortran.o: lf_fortran.cpp lf_fortran.h LingoFuse.h
+	$(CXX) $(CXXFLAGS) -c lf_fortran.cpp -o $@
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+lf_fortran_mod.o lf_fortran_mod.mod: lf_fortran_mod.f90
+	$(FC) $(FFLAGS) -c lf_fortran_mod.f90 -o lf_fortran_mod.o
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# ------------------------------------------------------------------ #
+# Tests
+# ------------------------------------------------------------------ #
 
-%.o: %.f90
-	$(FC) $(FFLAGS) -c $< -o $@
+test_lf_fortran_c$(EXE_EXT): test_lf_fortran.c $(COMMON_OBJS)
+	$(CC) $(CFLAGS) test_lf_fortran.c $(COMMON_OBJS) -o $@ \
+	    -lstdc++ $(LDFLAGS_EXTRA)
 
-# The Fortran test programs use lf_fortran_mod, so they must be
-# compiled after the module.
-test_lf_fortran_f.o: $(MOD_OBJS)
-test_lf_json_f.o:    $(MOD_OBJS)
+test_lf_fortran_f$(EXE_EXT): test_lf_fortran_f.f90 lf_fortran_mod.o $(COMMON_OBJS)
+	$(FC) $(FFLAGS) test_lf_fortran_f.f90 lf_fortran_mod.o $(COMMON_OBJS) \
+	    -o $@ -lstdc++ $(LDFLAGS_EXTRA)
 
-# ---- Convenience targets ----
+test_lf_json_f$(EXE_EXT): test_lf_json_f.f90 lf_fortran_mod.o $(COMMON_OBJS)
+	$(FC) $(FFLAGS) test_lf_json_f.f90 lf_fortran_mod.o $(COMMON_OBJS) \
+	    -o $@ -lstdc++ $(LDFLAGS_EXTRA)
 
-run-c: test_lf_fortran_c.exe
-	./test_lf_fortran_c.exe
-
-run-f: test_lf_fortran_f.exe
-	./test_lf_fortran_f.exe
-
-run-j: test_lf_json_f.exe
-	./test_lf_json_f.exe
-
-run: run-c run-f run-j
+# ------------------------------------------------------------------ #
+# Clean
+# ------------------------------------------------------------------ #
 
 clean:
-	-rm -f *.o *.mod test_lf_fortran_c.exe test_lf_fortran_f.exe test_lf_json_f.exe
-
-.PHONY: all run run-c run-f run-j clean
+	$(RM) *.o *.mod $(ALL_EXES)

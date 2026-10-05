@@ -34,15 +34,22 @@
 - **`check_env.ps1`** — 环境诊断脚本（9 节）。
 - **`build.ps1` / `clean.ps1` / `test.ps1`** — 根目录一键脚本。
 
-**目录结构**：
+### 1.1 目录结构
 
-```
-julia/
-├── build.ps1 / clean.ps1 / test.ps1 / check_env.ps1
-├── c_ext/          C 回调桥（mock 版 + 真库版）
-├── src/            Julia 包源码（13 个 .jl）
-├── example/        Cross Demo（3 个 .jl + README）
-└── test/           验收测试（8 个 .jl + runtests）
+```mermaid
+flowchart TB
+    ROOT["julia/"]
+    ROOT --> SCRIPTS["根目录脚本<br/>build.ps1<br/>clean.ps1<br/>test.ps1<br/>check_env.ps1"]
+    ROOT --> CEXT["c_ext/<br/>C 回调桥"]
+    ROOT --> SRC["src/<br/>Julia 包源码<br/>13 个 .jl"]
+    ROOT --> EX["example/<br/>Cross Demo<br/>3 个 .jl"]
+    ROOT --> TEST["test/<br/>验收测试<br/>8 个 .jl + runtests"]
+
+    style ROOT fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
+    style CEXT fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
+    style SRC fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
+    style TEST fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style EX fill:#E8F4FF,stroke:#1E3A8A,stroke-width:3px,color:#0D2F52
 ```
 
 各目录的详细说明分散在下面各章节。
@@ -71,7 +78,9 @@ julia/
 
 > ⚠️ **`--threads=2` 是硬性要求，不是建议。**
 >
-> 回调消费者任务必须运行在非 main 线程上。原因见下面这张图：
+> 回调消费者任务必须运行在非 main 线程上。
+
+**为什么必须 `--threads=2`**
 
 ```mermaid
 flowchart LR
@@ -79,13 +88,24 @@ flowchart LR
     B --> C["trampoline 阻塞<br/>等待 consumer"]
     C --> D["consumer 若在<br/>main 线程 → 死锁"]
 
+    style A fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
     style D fill:#E74C3C,stroke:#922B21,stroke-width:4px,color:#FFFFFF
 ```
 
-`start_callback_consumer()` 会在运行时检查：
+`start_callback_consumer()` 会在运行时做两项检查：
 
-- `Threads.nthreads() < 2` → 抛 `LingoFuseStateError`
-- consumer 落到 tid=1 → 抛 `LingoFuseStateError`（并自我停止）
+```mermaid
+flowchart TD
+    A["start_callback_consumer()"] --> B{"Threads.nthreads() < 2 ?"}
+    B -- "Yes" --> X["抛 LingoFuseStateError<br/>（线程数不足）"]
+    B -- "No" --> C{"consumer 落到 tid == 1 ?"}
+    C -- "Yes" --> Y["抛 LingoFuseStateError<br/>（自我停止）"]
+    C -- "No" --> Z["正常启动"]
+
+    style X fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+    style Y fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+    style Z fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+```
 
 ### 2.3 LingoFuse 运行时
 
@@ -97,34 +117,93 @@ Julia 绑定**不包含**原生库，需要单独获取：
 | Linux | `liblingofuse.so` | `libz_ipc.so` | `libmimalloc.so` |
 | macOS | `liblingofuse.dylib` | `libz_ipc.dylib` | `libmimalloc.dylib` |
 
-**库路径搜索顺序**（由 `loader.jl` 决定）：
+#### 2.3.1 库路径解析策略
+
+`loader.jl` 采用与操作系统动态加载器一致的搜索方式，**不使用任何硬编码的绝对路径**，把运行时库放到系统搜索路径即可。
+
+```mermaid
+flowchart TD
+    START["loader.jl<br/>_resolve_library_path()"] --> P1{"环境变量<br/>LINGOFUSE_LIBRARY<br/>已设置?"}
+    P1 -- "Yes" --> V1{"文件存在?"}
+    V1 -- "Yes" --> HIT1["使用该路径"]
+    V1 -- "No" --> ERR["抛 LingoFuseLoadError<br/>（错别字不再被掩盖）"]
+    P1 -- "No" --> P2["遍历系统搜索路径"]
+    P2 --> FOUND{"命中?"}
+    FOUND -- "Yes" --> HIT2["使用命中路径"]
+    FOUND -- "No" --> FALLBACK["返回裸库名<br/>交由 OS 加载器搜索"]
+
+    style HIT1 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+    style HIT2 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+    style FALLBACK fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
+    style ERR fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+```
+
+#### 2.3.2 各平台的搜索路径
+
+```mermaid
+flowchart TB
+    PLAT{"当前平台"}
+    PLAT -- "Windows" --> W["PATH"]
+    PLAT -- "Linux / BSD" --> L["LD_LIBRARY_PATH<br/>↓<br/>PATH"]
+    PLAT -- "macOS" --> M["DYLD_LIBRARY_PATH<br/>↓<br/>DYLD_FALLBACK_LIBRARY_PATH<br/>↓<br/>PATH"]
+
+    style W fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
+    style L fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
+    style M fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
+```
+
+#### 2.3.3 命中后的副作用
 
 ```mermaid
 flowchart LR
-    A["env<br/>LINGOFUSE_LIBRARY"] --> B["env<br/>LINGOFUSE_HOME/Binary"]
-    B --> C["&lt;repo&gt;/Binary/"]
-    C --> D["PROGRAM_FILE 目录"]
-    D --> E["PATH / 系统加载路径"]
+    A["命中具体文件"] --> B["目录前置到 PATH"]
+    B --> C["写入 LINGOFUSE_LIBRARY<br/>供 C shim 懒加载器使用"]
+    C --> D["z_ipc_64.dll 等依赖<br/>可被系统加载器找到"]
 
     style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-    style E fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
+    style D fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
 ```
 
-找到后，`loader.jl` 会把库所在目录**前置到 `PATH`**，这样 Windows 上 `LingoFuse64.dll` 依赖的 `z_ipc_64.dll` 才能被系统加载器找到。
+> 当命中的目录本来就在 `PATH` 里（例如 `LD_LIBRARY_PATH` 已包含它），前置步骤是幂等的，不会重复添加。
 
-**推荐做法**（Windows）：
+#### 2.3.4 推荐做法
+
+**方式 A — 把运行时目录加入系统搜索路径（推荐）**
+
+这样整个 `julia/` 目录可以任意拷贝到其它位置，运行时仍能被自动定位。
 
 ```powershell
+# Windows (PowerShell) — permanent for the current user
+[Environment]::SetEnvironmentVariable(
+    "PATH",
+    "D:\CoreLibrary\LingoFuse\Binary;" + $env:PATH,
+    "User")
+```
+
+```bash
+# Linux / macOS — current session
+export LD_LIBRARY_PATH=/opt/lingofuse/Binary:$LD_LIBRARY_PATH
+```
+
+**方式 B — 点对点覆盖（仅作用于当前进程）**
+
+```powershell
+# Windows
 $env:LINGOFUSE_LIBRARY = "D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll"
 ```
 
-或者把 `Binary\` 目录加到系统 `PATH`。
+```bash
+# Linux / macOS
+export LINGOFUSE_LIBRARY=/opt/lingofuse/Binary/liblingofuse.so
+```
+
+> ⚠️ `LINGOFUSE_LIBRARY` 若指向不存在的文件，`loader.jl` **会显式抛错**，不会静默回退到搜索路径。这是为了避免 CI 里的错别字被掩盖。
 
 ---
 
 ## 三、依赖要求
 
-### 3.1 Julia 包依赖（需要安装）
+### 3.1 Julia 包依赖
 
 **唯一需要手动安装的外部包**：
 
@@ -178,11 +257,13 @@ julia -e 'using Pkg; Pkg.add("JSON3")'
 ```mermaid
 flowchart TB
     JF["Julia 绑定"]
+
     JF --> JSON3["JSON3.jl<br/>（需 Pkg.add）"]
     JF --> STD["Julia 标准库<br/>（自带）"]
     JF --> CSHIM["lf_shim_real.dll<br/>（build.ps1 产出）"]
-    CSHIM --> GCC["gcc / cc<br/>（需安装）"]
     JF --> RT["LingoFuse64.dll<br/>z_ipc_64.dll<br/>（需下载）"]
+
+    CSHIM --> GCC["gcc / cc<br/>（需安装）"]
 
     style JSON3 fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
     style GCC fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
@@ -240,10 +321,8 @@ x86_64-w64-mingw32
 
 ### 4.4 为什么不能链接 import library
 
-C shim 用**运行时动态解析**（`LoadLibraryA` / `GetProcAddress`）加载真库，**不链接 import library**：
-
 ```mermaid
-flowchart TB
+flowchart TD
     A["真库发行包"] --> B["只有 .dll<br/>无 .lib / .a"]
     B --> C["MinGW 无法从<br/>Pascal DLL 生成 import lib"]
     C --> D["改用 LoadLibraryA<br/>+ GetProcAddress"]
@@ -266,8 +345,6 @@ cd D:\CoreLibrary\LingoFuse\julia
 ```
 
 ### 5.2 构建流程
-
-`build.ps1` 依次执行三个步骤：
 
 ```mermaid
 flowchart LR
@@ -324,6 +401,8 @@ flowchart LR
     style I fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
 ```
 
+第 7 节采用与 `loader.jl` 一致的策略：优先检查 `LINGOFUSE_LIBRARY`，否则遍历 `PATH` 查找 `LingoFuse64.dll` / `LingoFuse32.dll`。
+
 ---
 
 ## 六、接口原理
@@ -334,7 +413,7 @@ LingoFuse 在 **C4 worker 线程**（native 线程）上触发回调。Julia 的
 
 ```mermaid
 flowchart TB
-    A["C4 worker 线程<br/>（native）"] -->|"调用 fn ptr"| B["裸 @cfunction"]
+    A["C4 worker 线程<br/>（native）"] --> B["裸 @cfunction"]
     B --> C["未认领线程<br/>进入 Julia"]
     C --> D["GC 遍历不到"]
     C --> E["JIT 状态不一致"]
@@ -358,7 +437,7 @@ flowchart TB
 
 **核心思路**：在 C 和 Julia 之间建一个缓冲区。
 
-**第一步：C4 worker 触发回调**
+#### 6.2.1 第一步 — C4 worker 触发回调
 
 ```mermaid
 flowchart LR
@@ -371,7 +450,7 @@ flowchart LR
     style E fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
 ```
 
-**第二步：Julia consumer 处理事件**
+#### 6.2.2 第二步 — Julia consumer 处理事件
 
 ```mermaid
 flowchart LR
@@ -383,7 +462,7 @@ flowchart LR
     style D fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
 ```
 
-**第三步：trampoline 醒来写回结果**
+#### 6.2.3 第三步 — trampoline 醒来写回结果
 
 ```mermaid
 flowchart LR
@@ -422,7 +501,7 @@ flowchart TB
 Julia 的 GC 需要所有线程到 safepoint。**阻塞在 ccall 里的线程不在 safepoint。**
 
 ```mermaid
-flowchart TB
+flowchart TD
     A["主线程：进入阻塞 ccall"] --> B["主线程无法响应 GC"]
     C["Consumer 线程：分配 → 请求 GC"] --> D["GC 等主线程到 safepoint"]
     B --> E["死锁"]
@@ -1001,6 +1080,7 @@ julia --threads=2 example\CrossCall.jl
 | **`read_string!` / `read_string_bytes` 无 NUL 时会扩展 buffer** | 触发 `LF_SetPos(size + 1)`，buffer +1 字节 | 契约行为，与其它绑定一致 |
 | **warmup 会真实调用 handler 三次** | 有副作用的 handler 需 `warmup=false` | 见 8.3 节 |
 | **`peek_string_bytes` 是纯读** | 不修改 cursor / size | 与非 peek 版本行为不同 |
+| **库路径依赖系统搜索路径** | `LINGOFUSE_LIBRARY` 未设时靠 `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | 见 2.3 节 |
 
 ---
 
@@ -1012,31 +1092,58 @@ MIT License. 详见仓库根目录 `LICENSE`。
 
 ## 附：Julia 源文件依赖顺序
 
-`src/LingoFuse.jl` 的 `include` 顺序是有意义的：
+`src/LingoFuse.jl` 的 `include` 顺序是有意义的。
+
+### A.1 第一组 — 基础层
 
 ```mermaid
 flowchart LR
     A["trace.jl"] --> B["error.jl"]
     B --> C["loader.jl"]
     C --> D["abi.jl"]
-    D --> E["shim.jl"]
+
+    style A fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+    style D fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+```
+
+### A.2 第二组 — 回调与封装
+
+```mermaid
+flowchart LR
+    D["abi.jl"] --> E["shim.jl"]
     E --> F["callback.jl"]
     F --> G["data_handle.jl"]
     G --> H["app.jl"]
-    H --> I["network.jl"]
+
+    style D fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+    style H fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+```
+
+### A.3 第三组 — 网络与 I/O
+
+```mermaid
+flowchart LR
+    H["app.jl"] --> I["network.jl"]
     I --> J["io.jl"]
     J --> K["binio.jl"]
     K --> L["status.jl"]
 
-    style A fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+    style H fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
     style L fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
 ```
 
-**约束**：
+### A.4 硬性约束
 
-- `error.jl` 必须在 `loader.jl` 之前（loader 会抛 `LingoFuseLoadError`）
-- `abi.jl` 必须在所有包装层之前
-- `shim.jl` 必须在 `callback.jl` 之前
+```mermaid
+flowchart TD
+    C1["error.jl 必须在 loader.jl 之前<br/>（loader 会抛 LingoFuseLoadError）"]
+    C2["abi.jl 必须在所有包装层之前"]
+    C3["shim.jl 必须在 callback.jl 之前"]
+
+    style C1 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style C2 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style C3 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+```
 
 ---
 

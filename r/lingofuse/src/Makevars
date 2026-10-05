@@ -1,0 +1,2 @@
+CXX_STD = CXX17
+PKG_CPPFLAGS = -DLF_R_INIT_NAME=R_init_lingofuse

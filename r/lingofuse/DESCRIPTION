@@ -1,0 +1,19 @@
+Package: lingofuse
+Type: Package
+Title: R Bindings for the LingoFuse Cross-Language RPC Framework
+Version: 0.5.0
+Authors@R:
+    person("LingoFuse", "Team", email = "noreply@example.com",
+           role = c("aut", "cre"))
+Description: Native R bindings for LingoFuse, a cross-language,
+    cross-process, cross-machine RPC framework. Call any function
+    written in another LingoFuse-aware language, or expose R functions
+    to be called by them. Uses R's C interface for zero-copy data
+    exchange. The wire format is byte-identical to the Pascal, Python,
+    C++, C#, TypeScript, JavaScript, Rust, Go, Dart, Java, Swift, Zig,
+    Erlang, Ruby, Fortran, and Julia bindings.
+License: MIT + file LICENSE
+Encoding: UTF-8
+SystemRequirements: C++17
+Depends: R (>= 3.5.0)
+Config/roxygen2/version: 8.1.0

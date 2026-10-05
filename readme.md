@@ -5,7 +5,7 @@
 > 任何语言写的函数，任何其他语言都能直接调。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Languages](https://img.shields.io/badge/languages-17%20first--party%20%2B%2030%20via%20tools-blue)]()
+[![Languages](https://img.shields.io/badge/languages-18%20first--party%20%2B%2030%20via%20tools-blue)]()
 [![Latency](https://img.shields.io/badge/same--machine%20IPC-%3C1ms-brightgreen)]()
 [![CI](https://img.shields.io/badge/CI-C%2B%2B%20only-orange)]()
 
@@ -57,7 +57,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 | 特性 | LingoFuse | gRPC | REST | HTTP POST |
 |------|-----------|------|------|-----------|
 | 跨机支持 | ✅ 原生 | ✅ 需网关 | ✅ 需网关 | ✅ 原生 |
-| 跨语言 | **17 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
+| 跨语言 | **18 种一方 + 30+ 经工具链** | 需生成代码 | 需手动封装 | ✅ 天然 |
 | 请求-响应 | ✅ Call | ✅ | ✅ | ✅ |
 | 流式 / 异步 | ✅ Notify | ⚠️ 需 stream | ❌ | ❌ |
 | 类型安全 | ✅ 强类型 | ✅ 需 IDL | ❌ | ❌ |
@@ -136,6 +136,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | Ruby | [`ruby/`](ruby/) | 🟢 生产就绪 | 331 项测试，Fiddle + C 扩展，完整 caller / server 双向能力 |
 | Fortran | [`fortran/`](fortran/) | 🟢 生产就绪 | 173 项断言，`iso_c_binding` + C++ 桥接层，2008 标准 |
 | Julia | [`julia/`](julia/) | 🟢 生产就绪 | 118 项断言，C shim + `@threadcall` 跨线程回调隔离，需 `--threads=2` |
+| R | [`r/`](r/) | 🟢 生产就绪 | 四层架构 + Job 队列跨线程回调；RAII 句柄；字符串 / 二进制双模式；R 4.6.1 + Rtools45 |
 | PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
 
 ### 经代码生成器 / 桥接支持
@@ -185,7 +186,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia、R 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
    - C++：`cpp/test/`、`cpp/Stress/`、`cpp/Conc/`
    - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`
    - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（128 项 XCTest）
@@ -194,6 +195,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
    - Ruby：`ruby/run_test_ci.ps1`、`ruby/run_test_ci.sh`、`ruby/test/`（331 项 minitest）
    - Fortran：`fortran/test.ps1`、`fortran/c_ext/`（173 项断言）
    - Julia：`julia/test.ps1`、`julia/test/`（118 项断言，8 个测试文件）
+   - R：`r/c_ext/tests/`（五步测试链：`smoke_test.R` / `abi_test.R` / `caller_test.R` / `callee_test.R` / `cross_node.R`）
    - Go：`go/test.ps1`、`go/dev_test.ps1`
    - Rust：`rust/test.ps1`
    - C#：`csharp/build.ps1`、`csharp/test/`
@@ -205,7 +207,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia、R、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -220,6 +222,28 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 - [`cpp/Conc/`](cpp/Conc/) —— 并发 Notify 测试（`ConcService.cpp` / `ConcClient.cpp`）
 
 每个子目录都有 `CMakeLists.txt` 和一键 CI 脚本。
+
+### 各语言测试规模速查
+
+| 语言 | 测试框架 | 测试数 | 平台验证 | CI |
+|------|----------|:------:|----------|:--:|
+| Ruby | minitest | 331 | Windows x64；Linux / macOS 待测 | 本地 |
+| Fortran | 自研断言 | 173 | Windows x64；Linux / macOS 待测 | 本地 |
+| Zig | Zig test + 冒烟程序 | 140 | Windows x64；Linux / macOS / 32 位待测 | 本地 |
+| Swift | XCTest | 128 | Windows；macOS / Linux 待测 | 本地 |
+| TypeScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
+| JavaScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
+| Julia | 自研断言 | 118 | Windows x64；Linux / macOS 待测 | 本地 |
+| C++ | 自研 CI | 82 + 压测 + 并发 | Windows / Linux | ✅ GitHub |
+| Rust | cargo test | 67 | Windows / Linux / macOS | 本地 |
+| C# | xUnit | 58 | Windows | 本地 |
+| R | 自研断言 + 双进程 demo | 五步链（39 项已实测） | Windows x64（R 4.6.1 + Rtools45） | 本地 |
+| Erlang | EUnit | 四个套件 | Windows；Linux / macOS 待测 | 本地 |
+| Go | go test | 18 | Windows / Linux / macOS | 本地 |
+| Java | JUnit 5 | 自动化测试 | Windows / Linux | 本地 |
+| Dart | Dart test | 完整套件 | Windows / Linux / macOS | 本地 |
+| Python | pytest | 完整链路 | Windows / Linux / macOS | 本地 |
+| Pascal | 自研 | 完整开发套件 | Windows / Linux | 本地 |
 
 ---
 
@@ -293,6 +317,7 @@ flowchart LR
 | Ruby | `ruby/cross/` |
 | Fortran | `fortran/cross_demo/` |
 | Julia | `julia/example/` |
+| R | `r/c_ext/tests/cross_node.R`（配套 `cross_client.cpp`） |
 | Rust | `rust/examples/` |
 | Go | `go/cross/` |
 | TypeScript | `ts/cross/` |
@@ -342,7 +367,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **十七语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / Erlang / Ruby / Fortran / Julia / PHP（PHP 为调用者） |
+| **十八语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / Erlang / Ruby / Fortran / Julia / R / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
@@ -365,6 +390,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 - **Ruby 绑定需要 Ruby 4.0+（x64-mingw-ucrt）与 DevKit**，用于编译 C 扩展；Linux / macOS 路径待验证
 - **Fortran 绑定需要 Fortran 2008 + C++17 工具链，且 C++ 与 Fortran 编译器必须来自同一套发行版**（否则 `__gfortran_*` 符号缺失）；Linux / macOS 理论可行但未实测
 - **Julia 绑定强制 `--threads=2`**（回调 consumer 不能落在 main 线程，否则死锁）；`@threadcall` 并发上限受 libuv 线程池约束（默认 4，可用 `UV_THREADPOOL_SIZE` 提升）；Linux / macOS / Apple Silicon 尚未验证
+- **R 绑定需要 R 4.0+ 与 Rtools45（Windows）** 才能编译桥接层；`LF_Call` 不可重入，单进程自测需改用 `lf_local_call`；受外部二进制依赖限制，无法提交 CRAN
 
 ---
 
@@ -394,7 +420,7 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 
 手记中记录的都是真实细节：在 VS 2022 中逐行翻阅 71 KB 的 `NativeMethods.cs`、C++ 绑定构建后 14 个项目 0 警告的输出、压测面板上累计 46,515 次调用和 100.00% 成功率、Dart 环境装了快两个小时但测试 8 秒跑完、有些环境装到凌晨才发现是版本问题。
 
-**AI 是工具，不是作者。** 这个项目从第一行 Pascal 核心代码到第十七个语言绑定，背后是一个真实人类的判断、试错和坚持。
+**AI 是工具，不是作者。** 这个项目从第一行 Pascal 核心代码到第十八个语言绑定，背后是一个真实人类的判断、试错和坚持。
 
 欢迎来撩、来喷、来 PR——**Star 是最好的催更。**
 

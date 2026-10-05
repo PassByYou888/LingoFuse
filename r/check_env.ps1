@@ -88,8 +88,10 @@ if ($rExe) {
     Write-Result "R.exe found" "FAIL" @"
 R.exe is not on PATH.
 R CMD SHLIB requires the full R.exe, not just Rscript.exe.
-Add the R bin directory to PATH, for example:
-    C:\Program Files\R\R-4.6.1\bin
+Add the R bin directory to PATH. Locate it with:
+    Rscript.exe -e "cat(file.path(R.home('bin')))"
+or from the R GUI:
+    R.home('bin')
 "@
 }
 

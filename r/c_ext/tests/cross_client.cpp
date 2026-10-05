@@ -10,6 +10,11 @@
 // The values chosen match the LingoFuse reference CrossCall so that
 // interop with the standard CrossNode can be verified by inspection.
 //
+// RUNTIME DIRECTORY RESOLUTION (no hard-coded absolute path):
+//   1. First command-line argument.
+//   2. LINGOFUSE_RUNTIME environment variable.
+//   3. Relative probes under the executable directory and the CWD.
+//
 // LF SHUTDOWN CONTRACT
 // --------------------
 // This program establishes a client connection to a LingoFuse service.
@@ -20,7 +25,7 @@
 //
 // The bridge DLL is deliberately NOT unloaded. LF_Shutdown is
 // asynchronous and worker threads may still be executing inside the
-// DLL when it returns. See lf_loader.hpp for the full rationale.
+// DLL when it returns. See lf_loader.h for the full rationale.
 //
 // Build:
 //     g++ -std=c++17 -O2 -I../src -o cross_client.exe cross_client.cpp
@@ -133,8 +138,25 @@ std::vector<std::uint8_t> call_raw(const char* app, const char* api,
 
 int main(int argc, char** argv)
 {
-    std::string runtime_dir =
-        (argc >= 2) ? argv[1] : "D:/CoreLibrary/LingoFuse/Binary";
+    // ------------------------------------------------------------------
+    // Runtime directory resolution (no hard-coded absolute path).
+    // ------------------------------------------------------------------
+    std::string runtime_dir;
+    if (argc >= 2) {
+        runtime_dir = argv[1];
+    } else {
+        runtime_dir = lf::find_runtime_dir();
+    }
+    if (runtime_dir.empty()) {
+        std::cerr << "[FATAL] Runtime directory not provided and could "
+                  << "not be auto-detected.\n"
+                  << "        Usage: " << argv[0] << " <runtime_dir>\n"
+                  << "        Or set the LINGOFUSE_RUNTIME environment "
+                  << "variable.\n"
+                  << "        Or place the runtime in a Binary/ directory "
+                  << "relative to this executable.\n";
+        return 1;
+    }
 
     std::cout << "=== LingoFuse cross_client ===" << std::endl;
     std::cout << "Runtime: " << runtime_dir << std::endl;
@@ -245,7 +267,7 @@ int main(int argc, char** argv)
     g_fn.ExitMainThread();
     g_fn.Shutdown();
 
-    // Do NOT unload the bridge DLL. See lf_loader.hpp.
+    // Do NOT unload the bridge DLL. See lf_loader.h.
     std::cout << "Bye." << std::endl;
     return 0;
 }

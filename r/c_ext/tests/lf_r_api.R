@@ -47,22 +47,41 @@ lf_prepare_client <- function(endpoint, app = NULL) {
 # -----------------------------------------------------------------------------
 # API registration
 # -----------------------------------------------------------------------------
+#
+# The C layer rejects duplicate API names by returning 0. The R-side
+# handler table is written only AFTER that check succeeds; otherwise a
+# failed registration would leave the table pointing at the new
+# handler while the C layer kept routing to the old one.
 
 lf_register_call <- function(app, api_name, description = "",
                              handler, bin = FALSE) {
-    if (!is.function(handler)) stop("lf_register_call: handler must be a function")
-    .lf_state$handlers[[api_name]] <- list(handler = handler, bin = isTRUE(bin))
+    if (!is.function(handler)) {
+        stop("lf_register_call: handler must be a function")
+    }
     rc <- .Call("lf_register_call", app, api_name, description)
-    if (rc != 1L) stop("lf_register_call failed for API '", api_name, "'")
+    if (rc != 1L) {
+        stop("lf_register_call failed for API '", api_name, "'")
+    }
+    .lf_state$handlers[[api_name]] <- list(
+        handler = handler,
+        bin     = isTRUE(bin)
+    )
     invisible(TRUE)
 }
 
 lf_register_notify <- function(app, api_name, description = "",
                                handler, bin = FALSE) {
-    if (!is.function(handler)) stop("lf_register_notify: handler must be a function")
-    .lf_state$handlers[[api_name]] <- list(handler = handler, bin = isTRUE(bin))
+    if (!is.function(handler)) {
+        stop("lf_register_notify: handler must be a function")
+    }
     rc <- .Call("lf_register_notify", app, api_name, description)
-    if (rc != 1L) stop("lf_register_notify failed for API '", api_name, "'")
+    if (rc != 1L) {
+        stop("lf_register_notify failed for API '", api_name, "'")
+    }
+    .lf_state$handlers[[api_name]] <- list(
+        handler = handler,
+        bin     = isTRUE(bin)
+    )
     invisible(TRUE)
 }
 

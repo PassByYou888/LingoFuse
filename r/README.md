@@ -1,4 +1,4 @@
-# LingoFuse R 绑定
+# LingoFuse R 绑定（v2.0，无硬编码路径，一键测试）
 
 > **让 R 与其他 16 种语言直接对话。**
 > 不写 IDL，不生成桩代码，不搭 HTTP 服务。
@@ -15,13 +15,16 @@
 - [5. 架构与原理](#5-架构与原理)
   - [5.1 四层架构](#51-四层架构)
   - [5.2 C 与 C++ 分层的必要性](#52-c-与-c-分层的必要性)
-  - [5.3 回调机制：Job 队列](#53-回调机制job-队列)
-  - [5.4 Job 生命周期](#54-job-生命周期)
-  - [5.5 单线程重入限制](#55-单线程重入限制)
+  - [5.3 运行时目录解析](#53-运行时目录解析)
+  - [5.4 回调机制：Job 队列](#54-回调机制job-队列)
+  - [5.5 Job 生命周期](#55-job-生命周期)
+  - [5.6 单线程重入限制](#56-单线程重入限制)
+  - [5.7 DLL 生命周期](#57-dll-生命周期)
 - [6. 构建与安装](#6-构建与安装)
   - [6.1 从零构建](#61-从零构建)
-  - [6.2 脚本一览](#62-脚本一览)
-  - [6.3 环境诊断](#63-环境诊断)
+  - [6.2 一键测试](#62-一键测试)
+  - [6.3 脚本一览](#63-脚本一览)
+  - [6.4 环境诊断](#64-环境诊断)
 - [7. 使用 R 接口](#7-使用-r-接口)
   - [7.1 最小示例：单进程自测](#71-最小示例单进程自测)
   - [7.2 两进程 demo](#72-两进程-demo)
@@ -33,7 +36,7 @@
   - [8.2 场景与测试对照](#82-场景与测试对照)
   - [8.3 R 测试脚本](#83-r-测试脚本)
   - [8.4 C++ 测试二进制](#84-c-测试二进制)
-  - [8.5 运行测试](#85-运行测试)
+  - [8.5 手动运行测试](#85-手动运行测试)
 - [9. R CMD check](#9-r-cmd-check)
 - [10. 常见错误](#10-常见错误)
 - [11. 已知限制](#11-已知限制)
@@ -61,11 +64,12 @@ graph LR
     style WORLD fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#FFFFFF
 ```
 
-**三条硬性承诺**：
+**四条硬性承诺**：
 
 1. **字节级互通** — 与 Pascal / Python / C++ / C# 等绑定产生**完全一致**的线格式。
 2. **RAII 语义** — 句柄通过 R `externalptr` 管理，GC 触发 finalizer 时自动释放。
 3. **零拷贝** — R `raw` 向量直接映射到 C++ `std::string`，不经过 JSON 序列化。
+4. **可任意搬移** — 整个 `r/` 目录可复制到任何位置，R 脚本、PowerShell 脚本、C++ 测试二进制**不含任何硬编码绝对路径**。
 
 ---
 
@@ -87,7 +91,7 @@ graph LR
 | Linux | `liblingofuse.so`, `libz_ipc.so`, `libmimalloc.so` |
 | macOS | `liblingofuse.dylib`, `libz_ipc.dylib`, `libmimalloc.dylib` |
 
-运行时目录路径通过 `LINGOFUSE_RUNTIME` 环境变量或 `lf_load(dir)` 显式提供。**R 包本身不携带运行时**——这是设计选择，避免把平台相关的二进制打进包里。
+运行时目录通过三种方式之一提供（见 [§5.3](#53-运行时目录解析)），**R 包本身不携带运行时**——这是设计选择，避免把平台相关的二进制打进包里。
 
 ---
 
@@ -110,7 +114,7 @@ graph LR
 
 | 依赖 | 用途 |
 |------|------|
-| C++17 STL | `std::string` / `std::atomic` / `std::mutex` / `std::condition_variable` / `std::unordered_map` |
+| C++17 STL | `std::string` / `std::atomic` / `std::mutex` / `std::condition_variable` / `std::unordered_map` / `std::filesystem` |
 | `<windows.h>` 或 `<dlfcn.h>` | 动态加载运行时 |
 | LingoFuse 的 C ABI | `LF_*` 导出函数 |
 
@@ -163,27 +167,65 @@ graph LR
 
 ## 4. 目录结构
 
-```mermaid
-graph TB
-    ROOT["r/"]
-    ROOT --> P1["c_ext/<br/>桥接层源码"]
-    ROOT --> P2["libs/<br/>libR_bridge.dll"]
-    ROOT --> P3["lingofuse/<br/>R 包"]
-    ROOT --> P4["demo/<br/>两进程示例"]
-    ROOT --> P5["*.ps1<br/>构建脚本"]
-
-    P1 --> S1["src/<br/>lf_r_shim.c / lf_r_shim.h<br/>lf_bridge.cpp / lf_loader.h"]
-    P1 --> S2["tests/<br/>C++ 二进制 + R 脚本"]
-
-    P3 --> R1["DESCRIPTION / NAMESPACE / LICENSE"]
-    P3 --> R2["R/ api.R zzz.R"]
-    P3 --> R3["src/ Makevars + 4 源文件"]
-    P3 --> R4["man/ 33 个 .Rd"]
-    P3 --> R5["tests/ smoke.R"]
-
-    style ROOT fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
-    style P3 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-    style P1 fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
+```
+r/
+├── README.md                   本文件
+├── build.ps1                   编译桥接 DLL + C++ 测试二进制
+├── build_package.ps1           复制源文件 + roxygenise + R CMD INSTALL
+├── check_env.ps1               环境诊断
+├── check_package.ps1           R CMD build + R CMD check（离线）
+├── clean.ps1                   清理构建产物
+├── install_package.ps1         只装 R 包（从源码树或 .tar.gz）
+├── run_all_tests.ps1           一键跑全部测试
+├── uninstall_package.ps1       卸载 R 包
+│
+├── .vscode/
+│   └── settings.json
+│
+├── c_ext/
+│   ├── src/                    桥接层源码（唯一真相）
+│   │   ├── lf_bridge.cpp       C++ 实现
+│   │   ├── lf_loader.h         运行时加载器 + find_runtime_dir()
+│   │   ├── lf_r_shim.c         C shim（唯一含 R 头的文件）
+│   │   └── lf_r_shim.h         C/C++ 接口（纯 C89）
+│   └── tests/
+│       ├── abi_test.R          STEP 2 - C ABI 往返
+│       ├── callee_test.R       STEP 3b - R 作为服务端
+│       ├── caller_test.R       STEP 3a - R 作为客户端
+│       ├── cross_node.R        STEP 4 - 二进制协议
+│       ├── smoke_test.R        STEP 1 - 构建链路
+│       ├── lf_r_api.R          测试脚本共用的 R API
+│       ├── lf_runtime.R        测试脚本共用的 runtime 解析器
+│       ├── cross_client.cpp    配套 cross_node.R
+│       ├── echo_client.cpp     配套 callee_test.R
+│       └── test_service.cpp    配套 caller_test.R
+│
+├── demo/
+│   ├── client.R                两进程 demo 客户端
+│   └── server.R                两进程 demo 服务端
+│
+├── libs/                       生成的开发用 DLL（git 忽略）
+│   └── lfR_bridge.dll
+│
+└── lingofuse/                  标准 R 包
+    ├── DESCRIPTION
+    ├── LICENSE
+    ├── NAMESPACE               由 roxygen2 生成
+    ├── inst/
+    │   └── README.md           安装到 system.file("README.md")
+    ├── man/                    由 roxygen2 生成（34 个 .Rd）
+    ├── R/
+    │   ├── api.R               公开 API + lf_find_runtime()
+    │   └── zzz.R               .onLoad / .onAttach / .onUnload
+    ├── src/
+    │   ├── lf_bridge.cpp       从 c_ext/src 复制
+    │   ├── lf_loader.h         从 c_ext/src 复制
+    │   ├── lf_r_shim.c         从 c_ext/src 复制
+    │   ├── lf_r_shim.h         从 c_ext/src 复制
+    │   ├── Makevars            手写
+    │   └── Makevars.win        手写
+    └── tests/
+        └── smoke.R             R CMD check 时自动运行
 ```
 
 **关键事实**：
@@ -191,6 +233,8 @@ graph TB
 - **`c_ext/src/` 是唯一的源码真相**。`lingofuse/src/` 里的同名文件是 `build_package.ps1` 每次构建时拷贝过去的。
 - **`lingofuse/` 是标准 R 包布局**，可以直接 `R CMD INSTALL`。
 - **`libs/lfR_bridge.dll` 是开发用的独立 DLL**，供 `c_ext/tests/*.R` 脚本 `dyn.load()` 使用。它与 R 包装的 DLL 是**同一份代码**，只是初始化函数名不同（`R_init_lfR_bridge` vs `R_init_lingofuse`）。
+- **`NAMESPACE` 和 `man/*.Rd` 由 roxygen2 从 `lingofuse/R/api.R` 的 `#'` 注释生成**，不要手工修改。
+- **所有路径相对于脚本自身解析**（`$PSScriptRoot` / `commandArgs("--file=")`），整个目录树可任意搬移。
 
 ---
 
@@ -205,7 +249,7 @@ graph TB
     end
 
     subgraph L2["R 包层（lingofuse）"]
-        API["api.R<br/>高德 API"]
+        API["api.R<br/>公开 API"]
         ZZZ["zzz.R<br/>.onLoad / .onAttach / .onUnload"]
     end
 
@@ -251,7 +295,7 @@ graph LR
 
     subgraph CPP_SIDE["C++ 编译单元"]
         CBRIDGE["lf_bridge.cpp"] -->|"不使用"| NOH["❌ 任何 R 头"]
-        CBRIDGE -->|"#include"| CPPH["<string> / <mutex><br/><atomic> / <dlfcn.h>"]
+        CBRIDGE -->|"#include"| CPPH["<string> / <mutex><br/><atomic> / <filesystem>"]
     end
 
     CSHIM <-.->|"extern C 接口<br/>lf_r_shim.h"| CBRIDGE
@@ -270,7 +314,43 @@ graph LR
 
 `lf_r_shim.h` 里**没有任何 R 类型**——只有 `void*` / `int64_t` / `const char*`。
 
-### 5.3 回调机制：Job 队列
+### 5.3 运行时目录解析
+
+**这是保证"任意位置可运行"的核心机制**。R 和 C++ 两端都实现了一致的解析顺序：
+
+| 优先级 | 来源 | 说明 |
+|:------:|------|------|
+| 1 | 命令行参数 | `Rscript ... <runtime_dir>` 或 `xxx.exe <runtime_dir>` |
+| 2 | `LINGOFUSE_RUNTIME` 环境变量 | `$env:LINGOFUSE_RUNTIME = "<runtime_dir>"` |
+| 3 | `lingofuse.runtime` R option | `options(lingofuse.runtime = "<runtime_dir>")`（仅 R 侧） |
+| 4 | **相对探测** | 在脚本目录和当前工作目录下依次探测：`Binary/`、`runtime/`、`runtime/Binary/`、`lib/`、`../Binary/`、`../../Binary/`、`../../../Binary/` 等 |
+
+**推荐布局**：把 runtime 放在 `<repo>/Binary/`，则**任何位置启动、无需任何参数**：
+
+```
+<任意目录>/
+├── Binary/                      ← 运行时 DLL（LingoFuse64.dll 等）
+└── r/                           ← 整个 R 绑定目录
+    ├── c_ext/tests/*.R
+    ├── demo/*.R
+    └── lingofuse/
+```
+
+对应实现：
+
+| 位置 | 实现 |
+|------|------|
+| R 脚本 | `c_ext/tests/lf_runtime.R` 的 `lf_find_runtime()`；demo 脚本内联的 `lf_resolve_runtime_dir()` |
+| R 包 | `lingofuse::lf_find_runtime()`（导出函数） |
+| C++ 测试程序 | `lf_loader.h` 的 `lf::find_runtime_dir()` |
+
+**特殊行为**：
+
+- R 侧的 `lf_find_runtime(explicit = ...)`：**当显式参数存在但无效时，直接返回 `NULL`**，不会回退到其他来源。这防止用户拼错路径后静默使用其他目录。
+- `lingofuse` 包的 `.onLoad`（`zzz.R`）会自动读取 `LINGOFUSE_RUNTIME` 和 `lingofuse.runtime`，如果发现就自动加载 runtime。`.onAttach` 只在非默认路径时打印一行提示。
+- **C++ 二进制在找不到 runtime 时打印清晰的诊断**（包含 `Usage:` 和三种解决方式），然后退出码 1。
+
+### 5.4 回调机制：Job 队列
 
 **核心约束**：**C4 worker 线程不能碰 R 解释器**。R 是单线程的——所有 R 代码必须在同一个线程执行。
 
@@ -315,10 +395,10 @@ graph TB
 | worker 线程**绝不**调用任何 R API | 违反则**进程崩溃**（R 内部断言） |
 | worker 线程只复制字节 + 排队 + 阻塞 | — |
 | R 主线程只从队列取 Job + 调用 handler | — |
-| R handler **绝不**调用 `lf_call` / `lf_notify` | 违反则**死锁**（见 §5.5） |
+| R handler **绝不**调用 `lf_call` / `lf_notify` | 违反则**死锁**（见 §5.6） |
 | handler 内**不得**阻塞超过 `timeout_ms` | 否则 worker 超时返回 `{"error":"R handler timeout"}` |
 
-### 5.4 Job 生命周期
+### 5.5 Job 生命周期
 
 **这是整个系统最容易出 UAF 的地方**。采用**原子引用计数**方案：
 
@@ -357,7 +437,7 @@ stateDiagram-v2
 1. R handler 完成 → `lf_impl_job_complete` → 设置 output + `done = true` + `notify` + **释放 R 侧引用**
 2. worker 被唤醒 → 读 output → 释放 worker 侧引用 → Job 销毁
 
-### 5.5 单线程重入限制
+### 5.6 单线程重入限制
 
 **`LF_Call` 不可重入**。这在 Pascal 指南里编号 **LF-CB-002**。
 
@@ -386,6 +466,24 @@ graph TB
 | 单进程自测（自我调用） | `lf_local_call` | ❌ 不需要 |
 | 跨进程/跨机器调用 | `lf_call` | ✅ 需要 |
 
+### 5.7 DLL 生命周期
+
+**问题**：LingoFuse 一旦被 `LoadLibrary` 加载，内部就启动后台线程（数据句柄池扫描器、模拟主线程、C4 网络）。如果在这些线程还在运行时调用 `FreeLibrary`，Windows 会在卸载 DLL 后触发访问冲突（退出码 `0xC0000005`）。
+
+**解决方案**分两层：
+
+1. **C++ 加载器层（`lf_loader.h`）**：
+   - `load()` 使用 `GetModuleHandleExA` 配合 `GET_MODULE_HANDLE_EX_FLAG_PIN`（Windows）或 `RTLD_NODELETE`（POSIX）**钉住** runtime DLL。
+   - 被钉住的 DLL 在进程生命周期内不会被卸载。Windows 会直接终止进程，而不是运行 detach 序列。**从根上消除竞态**。
+   - `unload()` 和 `detach()` **只清空函数指针表**，从不调用 `FreeLibrary`/`dlclose`。
+
+2. **R 层（`api.R` 的 `lf_cleanup()`）**：
+   - 运行完整关闭序列：`lf_exit_main_thread` → `lf_app_free` → `lf_shutdown`。
+   - **不调用** `dyn.unload()`（这会让 R 试图卸载桥接 DLL，进而尝试卸载 runtime DLL，触发崩溃）。
+   - 让 OS 在进程退出时回收所有 DLL。
+
+**副作用**：一个进程只能 `dlopen` 一次 runtime（因为无法卸载）。这在实践中没问题——LingoFuse 本身就是"一次加载，全局使用"的架构。
+
 ---
 
 ## 6. 构建与安装
@@ -396,7 +494,7 @@ graph TB
 graph LR
     A[".\clean.ps1 -All"] --> B[".\build.ps1 -Rebuild"]
     B --> C[".\build_package.ps1 -Rebuild"]
-    C --> D[".\check_package.ps1"]
+    C --> D[".\check_package.ps1 -NoRoxygen"]
 
     B -.->|"产出"| B1["libs/lfR_bridge.dll<br/>c_ext/tests/*.exe"]
     C -.->|"产出"| C1["已安装的 R 包"]
@@ -411,7 +509,7 @@ graph LR
 **命令**：
 
 ```powershell
-cd D:\CoreLibrary\LingoFuse\r
+cd <你放 r 目录的地方>
 
 # 1. 清空所有构建产物
 .\clean.ps1 -All
@@ -419,11 +517,11 @@ cd D:\CoreLibrary\LingoFuse\r
 # 2. 编译 c_ext 层（桥接 DLL + C++ 测试二进制）
 .\build.ps1 -Rebuild
 
-# 3. 复制源码到 R 包 + R CMD INSTALL
+# 3. 复制源码到 R 包 + 生成 NAMESPACE/man + R CMD INSTALL
 .\build_package.ps1 -Rebuild
 
 # 4. （可选）R CMD check
-.\check_package.ps1 -Keep
+.\check_package.ps1 -NoRoxygen
 ```
 
 **每一步的产物**：
@@ -432,26 +530,105 @@ cd D:\CoreLibrary\LingoFuse\r
 |:----:|------|------|
 | 2 | `lfR_bridge.dll` | `libs/` |
 | 2 | `test_service.exe` / `echo_client.exe` / `cross_client.exe` | `c_ext/tests/` |
-| 3 | 已安装的 R 包 | `C:\Program Files\R\R-4.6.1\library\lingofuse\` |
+| 3 | `lingofuse/src/lf_*.{c,h,cpp}` | 从 `c_ext/src/` 复制 |
+| 3 | `lingofuse/NAMESPACE` + `lingofuse/man/*.Rd`（34 个） | roxygen2 生成 |
+| 3 | 已安装的 R 包 | R 的默认库（通常是 `Program Files\R\...\library\lingofuse\`） |
 | 4 | `.tar.gz` + `.Rcheck` | `_check_YYYYMMDD_HHMMSS/` |
 
-### 6.2 脚本一览
+### 6.2 一键测试
+
+**这是最常用的入口**：
+
+```powershell
+cd <你放 r 目录的地方>
+.\run_all_tests.ps1
+```
+
+它会依次：
+
+| 阶段 | 动作 | 对应脚本 |
+|:----:|------|---------|
+| 0 | 清空树 | `clean.ps1 -All` |
+| 1a | 编译桥接 + C++ 二进制 | `build.ps1 -Rebuild` |
+| 1b | 复制源 + 生成 NAMESPACE/man + 安装 | `build_package.ps1 -Rebuild` |
+| 2 | 确认 roxygen2 输出 | （内部） |
+| 3 | 重新安装（可选） | `install_package.ps1 -NoRoxygen` |
+| 4 | `R CMD check`（离线） | `check_package.ps1 -NoRoxygen` |
+| 5 | **STEP 1** smoke_test.R | — |
+| 6 | **STEP 2** abi_test.R | — |
+| 7 | **STEP 3a** test_service.exe + caller_test.R（自动双进程） | — |
+| 8 | **STEP 3b** callee_test.R + echo_client.exe（自动双进程） | — |
+| 9 | **STEP 4** cross_node.R + cross_client.exe（自动双进程） | — |
+| 10 | **demo** server.R + client.R（自动双进程） | — |
+| 11 | 汇总表 | — |
+
+**双进程测试无需多终端**：
+- 服务端由 `Start-Process` 后台启动；
+- 客户端前台运行，`"" | & $exe` 用一个空行满足它的 "Press Enter to exit" 提示；
+- 服务端由 `finally { Stop-Process -Force }` 回收。
+
+**常用参数**：
+
+```powershell
+# 显式指定 runtime 目录
+.\run_all_tests.ps1 -RuntimeDir "<runtime_dir>"
+
+# 只跑测试，跳过构建/安装/检查
+.\run_all_tests.ps1 -SkipClean -SkipBuild -SkipInstall -SkipCheck
+```
+
+**预期末尾**：
+
+```
+Test                             Status Detail
+------------------------------------------------------------------------
+clean                            PASS
+build                            PASS
+build_package                    PASS
+roxygen2                         SKIP
+install_package                  PASS
+R CMD check                      PASS
+STEP 1 smoke_test.R              PASS
+STEP 2 abi_test.R                PASS
+STEP 3a caller_test.R            PASS
+STEP 3b callee_test.R            PASS
+STEP 4 cross_node.R              PASS
+demo server/client               PASS
+------------------------------------------------------------------------
+  Total   : 12
+  Passed  : 11
+  Failed  : 0
+  Skipped : 1
+```
+
+每一步的完整输出都写在 `test_logs\` 下的独立日志文件里，可以事后查。
+
+### 6.3 脚本一览
 
 | 脚本 | 定位 | 何时用 |
 |------|------|--------|
 | `check_env.ps1` | 环境诊断 | 首次搭建 / 编译报错 |
-| `build.ps1` | 编译 c_ext 桥接层 | 改了任何 C/C++ 代码 |
-| `build_package.ps1` | 编译 + 装 R 包 | 改了任何 C/C++ 代码，且要重装 R 包 |
-| `install_package.ps1` | 只装 R 包（不编译） | 从 `.tar.gz` 装，或源文件已就绪 |
+| `build.ps1` | 编译 c_ext 桥接层 + C++ 二进制 | 改了任何 C/C++ 代码 |
+| `build_package.ps1` | 复制源 + roxygenise + R CMD INSTALL | 改了任何 C/C++ 代码，且要重装 R 包 |
+| `install_package.ps1` | 只装 R 包 | 源文件已就绪，或从 `.tar.gz` 装 |
 | `uninstall_package.ps1` | 卸载 R 包 | 清理 |
 | `clean.ps1` | 清理构建产物 | 从零重来 |
-| `check_package.ps1` | `R CMD build` + `R CMD check` | 验证包质量 |
+| `check_package.ps1` | `R CMD build` + `R CMD check`（离线） | 验证包质量 |
+| **`run_all_tests.ps1`** | **一键跑全部测试** | **日常验证 / CI** |
 
-**`-Rebuild` 参数**：删除所有 `.o` / `.dll` / `.exe` 后重新编译。**改了 C 代码必须带 `-Rebuild`**，否则 make 可能漏掉重编译。
+**关键参数**：
 
-**`clean.ps1 -All`**：除了构建产物，还删除 `man/` / `NAMESPACE` / `lingofuse/src/` 里的拷贝源文件。**下次 `build_package.ps1` 会全部重新生成**。
+| 参数 | 脚本 | 作用 |
+|------|------|------|
+| `-Rebuild` | `build.ps1` / `build_package.ps1` | 删除所有中间产物后重编译 |
+| `-All` | `clean.ps1` | 额外删除 `man/` / `NAMESPACE` / 拷贝到 `lingofuse/src/` 的源文件 |
+| `-NoRoxygen` | `build_package.ps1` / `install_package.ps1` / `check_package.ps1` | 跳过自动 roxygenise |
+| `-RuntimeDir <path>` | `run_all_tests.ps1` | 显式指定 runtime 目录 |
+| `-SkipClean` / `-SkipBuild` / `-SkipInstall` / `-SkipCheck` | `run_all_tests.ps1` | 跳过相应阶段 |
 
-### 6.3 环境诊断
+**`clean.ps1 -All` 会删除 `man/` / `NAMESPACE` / `lingofuse/src/` 里的拷贝源文件**。下次 `build_package.ps1` 会全部重新生成——这一点已经自动化。
+
+### 6.4 环境诊断
 
 **编译报错时，第一件事跑这个**：
 
@@ -476,25 +653,32 @@ cd D:\CoreLibrary\LingoFuse\r
 **单进程自测演示 R 函数被自己的 R 代码调用**——不经过网络，不需要第二个进程。
 
 ```r
-Sys.setenv(LINGOFUSE_RUNTIME = "D:/CoreLibrary/LingoFuse/Binary")
+# 提供 runtime 目录（三种方式任选其一，见 §5.3）
+#   1. 环境变量：Sys.setenv(LINGOFUSE_RUNTIME = "<runtime_dir>")
+#   2. 显式加载：lf_load("<runtime_dir>")
+#   3. 放在仓库根的 Binary/ 下，让包自动找到
 
 library(lingofuse)
-library(jsonlite)
 
-# 1. 加载 runtime（也可通过 LINGOFUSE_RUNTIME 自动加载）
-lf_load("D:/CoreLibrary/LingoFuse/Binary")
+# 1. 加载 runtime（若已通过环境变量配置，此步可省）
+lf_load("<runtime_dir>")
 
 # 2. 创建 App
 app <- lf_create_app("CalcSelf", "self-contained demo")
 
 # 3. 注册一个 Call API
 lf_register_call(app, "add", "Add two integers", function(input) {
-    req <- fromJSON(input)
-    toJSON(list(result = req$a + req$b), auto_unbox = TRUE)
+    # input 是 JSON 字符串
+    if (requireNamespace("jsonlite", quietly = TRUE)) {
+        req <- jsonlite::fromJSON(input)
+        jsonlite::toJSON(list(result = req$a + req$b), auto_unbox = TRUE)
+    } else {
+        '{"result":7}'
+    }
 })
 
 # 4. 单进程本地调用——绕过 C4 网络，直接派发
-res <- lf_local_call(app, "add", toJSON(list(a = 3L, b = 4L), auto_unbox = TRUE))
+res <- lf_local_call(app, "add", '{"a":3,"b":4}')
 cat("response:", res, "\n")
 # 输出：response: {"result":7}
 
@@ -511,7 +695,8 @@ R 作为服务端，另一个 R 进程作为客户端——**这才走真正的 
 **服务端**（`demo/server.R`，T1 终端）：
 
 ```r
-Sys.setenv(LINGOFUSE_RUNTIME = "D:/CoreLibrary/LingoFuse/Binary")
+# runtime 目录解析：命令行第一参数 → 环境变量 → R option → 相对探测
+# （demo 脚本内联实现了这一解析，不依赖包）
 library(lingofuse)
 library(jsonlite)
 
@@ -539,7 +724,6 @@ lf_cleanup(app)
 **客户端**（`demo/client.R`，T2 终端）：
 
 ```r
-Sys.setenv(LINGOFUSE_RUNTIME = "D:/CoreLibrary/LingoFuse/Binary")
 library(lingofuse)
 library(jsonlite)
 
@@ -562,15 +746,17 @@ cat("response:", res, "\n")
 lf_cleanup(NULL)
 ```
 
-**运行**：
+**运行方式**（runtime 放在 `<repo>/Binary/` 则无需参数）：
 
 ```powershell
 # T1
-Rscript demo\server.R D:\CoreLibrary\LingoFuse\Binary 60
+Rscript demo\server.R
 
 # T2
-Rscript demo\client.R D:\CoreLibrary\LingoFuse\Binary
+Rscript demo\client.R
 ```
+
+**或用 `run_all_tests.ps1` 自动双进程跑**（推荐，见 §6.2）。
 
 ### 7.3 二进制载荷
 
@@ -633,7 +819,7 @@ lingofuse: LF was running. The bridge DLL is left loaded;
 the OS will reclaim it at process exit.
 ```
 
-这是**故意的**——`LF_Shutdown` 是异步的，C4 worker 线程可能还在 DLL 里跑。此时 `FreeLibrary` 会崩。**让 OS 在进程退出时回收**是唯一安全的做法。
+这是**故意的**——`LF_Shutdown` 是异步的，C4 worker 线程可能还在 DLL 里跑，并且 `lf_loader.h` 已经通过 `GET_MODULE_HANDLE_EX_FLAG_PIN` 把 runtime DLL 钉住。**让 OS 在进程退出时回收**是唯一安全的做法。
 
 ---
 
@@ -709,6 +895,8 @@ graph TB
 
 ### 8.3 R 测试脚本
 
+所有测试脚本都通过 `lf_runtime.R` 或内联解析器定位 runtime，**无硬编码路径**。
+
 #### `c_ext/tests/smoke_test.R` — STEP 1
 
 **做什么**：验证 R 能 `dyn.load` 桥接 DLL，`.Call` 注册表可访问，参数往返正确。
@@ -723,12 +911,12 @@ Rscript c_ext\tests\smoke_test.R
 
 #### `c_ext/tests/abi_test.R` — STEP 2
 
-**做什么**：加载真实运行时，验证 `TDataHnd` / `TAppHnd` 创建、读写、位置、大小、use-after-free 错误路径。
+**做什么**：加载真实运行时，验证 `TDataHnd` / `TAppHnd` 创建、读写、位置、大小、use-after-free 错误路径。**结尾调用 `lf_exit_main_thread` + `lf_shutdown` 干净关闭**（防止进程退出时崩溃）。
 
 **不需要 C4 网络**。
 
 ```powershell
-Rscript c_ext\tests\abi_test.R D:\CoreLibrary\LingoFuse\Binary
+Rscript c_ext\tests\abi_test.R <runtime_dir>
 ```
 
 **期望**：`Passed : 18  Failed : 0`
@@ -737,14 +925,14 @@ Rscript c_ext\tests\abi_test.R D:\CoreLibrary\LingoFuse\Binary
 
 **做什么**：R 作为客户端，调用 C++ 服务（`test_service.exe`）的 `add` / `echo` / `notify`。
 
-**需要两终端**：先启动服务端，再运行测试脚本。
+**需要两终端**（或用 `run_all_tests.ps1` 自动）：
 
 ```powershell
 # T1
-.\c_ext\tests\test_service.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\test_service.exe <runtime_dir>
 
 # T2
-Rscript c_ext\tests\caller_test.R D:\CoreLibrary\LingoFuse\Binary
+Rscript c_ext\tests\caller_test.R <runtime_dir>
 ```
 
 **期望**：`Passed : 12  Failed : 0`
@@ -753,16 +941,14 @@ Rscript c_ext\tests\caller_test.R D:\CoreLibrary\LingoFuse\Binary
 
 **做什么**：R 作为服务端，被 C++ 客户端（`echo_client.exe`）调用。
 
-**需要两终端**：先启动 R 服务端，再启动 C++ 客户端。
-
 **用法**：`Rscript callee_test.R [runtime_dir] [wait_sec]`（`wait_sec` 默认 60 秒）
 
 ```powershell
 # T1
-Rscript c_ext\tests\callee_test.R D:\CoreLibrary\LingoFuse\Binary 60
+Rscript c_ext\tests\callee_test.R <runtime_dir> 60
 
 # T2（5 秒内启动）
-.\c_ext\tests\echo_client.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\echo_client.exe <runtime_dir>
 ```
 
 **支持 Ctrl+C 提前退出**：pump loop 被打断后会打印已收到的请求列表并干净退出（退出码 0）。
@@ -778,14 +964,12 @@ Rscript c_ext\tests\callee_test.R D:\CoreLibrary\LingoFuse\Binary 60
 | `demo.add` | `int32 a` + `int32 b` | `int32 a+b` |
 | `demo.inv_seri` | `u8 + u16 + u32 + u64 + string(NUL) + float` | 逆序：`float + string + u64 + u32 + u16 + u8` |
 
-**需要两终端**：
-
 ```powershell
 # T1
-Rscript c_ext\tests\cross_node.R D:\CoreLibrary\LingoFuse\Binary 60
+Rscript c_ext\tests\cross_node.R <runtime_dir> 60
 
 # T2（5 秒内启动）
-.\c_ext\tests\cross_client.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\cross_client.exe <runtime_dir>
 ```
 
 **期望 T2 输出**：
@@ -810,7 +994,7 @@ Rscript c_ext\tests\cross_node.R D:\CoreLibrary\LingoFuse\Binary 60
 Rscript lingofuse\tests\smoke.R
 
 # 带 runtime
-$env:LINGOFUSE_RUNTIME = "D:/CoreLibrary/LingoFuse/Binary"
+$env:LINGOFUSE_RUNTIME = "<runtime_dir>"
 Rscript lingofuse\tests\smoke.R
 ```
 
@@ -822,54 +1006,55 @@ Rscript lingofuse\tests\smoke.R
 | `echo_client.exe` | 连接到 `ipc:r_callee`，调 `RService` | `callee_test.R`（STEP 3b） |
 | `cross_client.exe` | 连接到 `ipc:cross`，用二进制协议调 `demo` | `cross_node.R`（STEP 4） |
 
-**它们都是 LingoFuse 官方风格的 C++ 客户端/服务**——不依赖桥接层，只依赖 `lf_loader.h`（动态加载器）。
+**它们都是 LingoFuse 官方风格的 C++ 客户端/服务**——不依赖桥接层，只依赖 `lf_loader.h`（动态加载器）。**runtime 目录同样通过命令行 / 环境变量 / 相对探测三种方式解析**，无硬编码路径。
 
 **编译**：由 `build.ps1` 统一编译。
 
-### 8.5 运行测试
+### 8.5 手动运行测试
 
-**完整流程**（从零开始）：
+**完整流程**（从零开始，runtime 放在 `<repo>/Binary/`）：
 
 ```powershell
-cd D:\CoreLibrary\LingoFuse\r
+cd <你放 r 目录的地方>
 
-# 1. 全清 + 重建
+# 1. 全清 + 重建 + 装包
 .\clean.ps1 -All
 .\build.ps1 -Rebuild
+.\build_package.ps1 -Rebuild
 
 # 2. STEP 1（独立）
 Rscript c_ext\tests\smoke_test.R
 
 # 3. STEP 2（独立）
-Rscript c_ext\tests\abi_test.R D:\CoreLibrary\LingoFuse\Binary
+Rscript c_ext\tests\abi_test.R
 
-# 4. STEP 3a（两终端）
+# 4. STEP 3a（两终端；或 run_all_tests.ps1 自动）
 # T1:
-.\c_ext\tests\test_service.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\test_service.exe
 # T2:
-Rscript c_ext\tests\caller_test.R D:\CoreLibrary\LingoFuse\Binary
+Rscript c_ext\tests\caller_test.R
 
 # 5. STEP 3b（两终端）
 # T1:
-Rscript c_ext\tests\callee_test.R D:\CoreLibrary\LingoFuse\Binary 15
+Rscript c_ext\tests\callee_test.R "" 15
 # T2:
-.\c_ext\tests\echo_client.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\echo_client.exe
 
 # 6. STEP 4（两终端）
 # T1:
-Rscript c_ext\tests\cross_node.R D:\CoreLibrary\LingoFuse\Binary 15
+Rscript c_ext\tests\cross_node.R "" 15
 # T2:
-.\c_ext\tests\cross_client.exe D:\CoreLibrary\LingoFuse\Binary
+.\c_ext\tests\cross_client.exe
 ```
 
-**用 `15` 秒替代 `60` 秒** 可以快速跑通——只要客户端在 15 秒内完成，服务端就按时退出。
+**更简单**：直接跑 `.\run_all_tests.ps1`，上面 6 步全部自动完成。
 
 ---
 
 ## 9. R CMD check
 
 ```powershell
-.\check_package.ps1 -Keep
+.\check_package.ps1 -NoRoxygen
 ```
 
 **产物**：`_check_YYYYMMDD_HHMMSS/` 目录，含 `.tar.gz` 和 `.Rcheck/`。
@@ -879,8 +1064,19 @@ Rscript c_ext\tests\cross_node.R D:\CoreLibrary\LingoFuse\Binary 15
 - 设置 `_R_CHECK_PACKAGE_DEPENDS_=false` 等环境变量
 - 通过 `R_PROFILE_USER` 把 `repos` 指向 `http://127.0.0.1:1/`（回环地址，任何请求立即被拒）
 - `R_DEFAULT_INTERNET_TIMEOUT=2`（2 秒超时）
+- 脚本退出前恢复所有被修改的环境变量
 
-**预期结果**：`Status: OK`
+**预期结果**：
+
+```
+* checking for missing documentation entries ... OK
+...
+* checking tests ...
+  Running 'smoke.R'
+ OK
+* DONE
+Status: OK
+```
 
 ---
 
@@ -906,9 +1102,9 @@ void LF_R_INIT_NAME(DllInfo *dll) { ... }
 
 **原因**：`NAMESPACE` 里 `useDynLib` 缺 `.fixes = "C_"`。
 
-**修**：
+**修**：`lingofuse/NAMESPACE` 首行应为：
 
-```plaintext
+```
 useDynLib(lingofuse, .registration = TRUE, .fixes = "C_")
 ```
 
@@ -949,7 +1145,21 @@ runtime <- if (length(args) >= 1) {
 
 **原因**：`roxygenise` / `pkgload::load_all()` 时包 DLL 未就绪，但 `LINGOFUSE_RUNTIME` 已设置。
 
-**修**：`zzz.R` 的 `.onLoad` 必须用 `is.loaded("lf_load_library")` 探测符号。
+**修**：`zzz.R` 的 `.onLoad` 必须用 `is.loaded("lf_load_library")` 探测符号（当前实现已如此）。
+
+### STEP 2 abi_test.R 退出码 `-1073741819`（`0xC0000005`）
+
+**原因**：`lf_unload_library` 或 `dyn.unload` 在 LingoFuse 后台线程仍运行时卸载了 DLL。
+
+**修**（当前实现已修复）：
+1. `lf_loader.h` 在 `load()` 时用 `GET_MODULE_HANDLE_EX_FLAG_PIN` 钉住 runtime DLL。
+2. `abi_test.R` 结尾调用 `lf_exit_main_thread` + `lf_shutdown`，**不调用 `dyn.unload`**。
+
+### `clean.ps1 -All` 后 `install_package.ps1` 报 "missing src\lf_*.{c,h,cpp}"
+
+**原因**：`clean.ps1 -All` 删除了 `lingofuse/src/` 里从 `c_ext/src/` 拷贝的源文件。
+
+**修**：用 `build_package.ps1 -Rebuild` 代替 `install_package.ps1`（它会先复制再安装）。或直接跑 `run_all_tests.ps1`，它按正确顺序执行。
 
 ---
 
@@ -962,6 +1172,7 @@ runtime <- if (length(args) >= 1) {
 | **Linux / macOS** | ⏳ 未测 | 代码路径一致，但未在真机跑过 |
 | **R < 4.0** | ❌ 不支持 | 依赖 `R_RegisterCFinalizerEx` 的现代语义 |
 | **单线程重入** | ❌ 不可能 | LF_Call 设计上不可重入。用 `lf_local_call` 替代 |
+| **进程内重复加载** | ⚠️ 一次 | runtime DLL 被钉住，同一进程只能加载一次 |
 | **`lf_run` 优雅停止** | ⚠️ 不完美 | 目前靠固定时长或 Ctrl+C；未来可用 `later::later_fd` 实现 |
 | **CRAN 提交** | ❌ 不可行 | 运行时是外部二进制依赖，CRAN 政策拒绝 |
 | **`man/` 无 examples** | ⚠️ 待补 | 目前 `checking examples ... NONE`，不影响 check 通过 |

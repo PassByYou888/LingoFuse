@@ -13,6 +13,12 @@
 //     echo       -- returns input bytes verbatim.
 //     add        -- parses {"a": int, "b": int} and returns {"result": int}.
 //
+// RUNTIME DIRECTORY RESOLUTION (no hard-coded absolute path):
+//   1. First command-line argument.
+//   2. LINGOFUSE_RUNTIME environment variable.
+//   3. Relative probes under the executable directory and the CWD
+//      (Binary/, runtime/, ../Binary/, ../../Binary/, ...).
+//
 // LF SHUTDOWN CONTRACT
 // --------------------
 // This program starts a LingoFuse service. It therefore runs the full
@@ -24,7 +30,7 @@
 //
 // The bridge DLL is deliberately NOT unloaded. LF_Shutdown is
 // asynchronous and worker threads may still be executing inside the
-// DLL when it returns. See lf_loader.hpp for the full rationale.
+// DLL when it returns. See lf_loader.h for the full rationale.
 //
 // Build:
 //     g++ -std=c++17 -O2 -I../src -o test_service.exe test_service.cpp
@@ -161,8 +167,25 @@ void __cdecl add_cb(void* trigger, void* input, void* output)
 
 int main(int argc, char** argv)
 {
-    std::string runtime_dir =
-        (argc >= 2) ? argv[1] : "D:/CoreLibrary/LingoFuse/Binary";
+    // ------------------------------------------------------------------
+    // Runtime directory resolution (no hard-coded absolute path).
+    // ------------------------------------------------------------------
+    std::string runtime_dir;
+    if (argc >= 2) {
+        runtime_dir = argv[1];
+    } else {
+        runtime_dir = lf::find_runtime_dir();
+    }
+    if (runtime_dir.empty()) {
+        std::cerr << "[FATAL] Runtime directory not provided and could "
+                  << "not be auto-detected.\n"
+                  << "        Usage: " << argv[0] << " <runtime_dir>\n"
+                  << "        Or set the LINGOFUSE_RUNTIME environment "
+                  << "variable.\n"
+                  << "        Or place the runtime in a Binary/ directory "
+                  << "relative to this executable.\n";
+        return 1;
+    }
 
     std::cout << "=== LingoFuse R test service ===" << std::endl;
     std::cout << "Runtime directory: " << runtime_dir << std::endl;
@@ -251,7 +274,7 @@ int main(int argc, char** argv)
     //   2. FreeApp          detach the application
     //   3. Shutdown         release library resources
     //
-    // The DLL is deliberately left loaded. See lf_loader.hpp.
+    // The DLL is deliberately left loaded. See lf_loader.h.
     // ------------------------------------------------------------------
     std::cout << "Shutting down..." << std::endl;
     g_fn.ExitMainThread();

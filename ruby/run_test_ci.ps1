@@ -14,9 +14,24 @@
 #
 #      powershell -ExecutionPolicy Bypass -File run_test_ci.ps1
 #
-#  Required environment (set once per PowerShell session):
+#  Native library discovery:
 #
-#      $env:LINGOFUSE_LIB_PATH = "D:\CoreLibrary\LingoFuse\Binary"
+#      The runtime binding resolves the LingoFuse native library
+#      (LingoFuse64.dll and its three siblings) through the operating
+#      system's library search path ONLY:
+#
+#          Windows           PATH
+#          Linux / BSD       LD_LIBRARY_PATH
+#          macOS             DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH
+#
+#      There is no binding-specific environment variable. In a CI job,
+#      ensure the directory that contains the native library is on PATH
+#      before invoking this script. Example (PowerShell):
+#
+#          $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH
+#
+#      The four DLLs must live in the same directory, because
+#      LingoFuse64.dll loads its siblings by name at load time.
 #
 #  This script is functionally identical to run_tests.ps1. The two
 #  files are kept separate so that a future change (for example,

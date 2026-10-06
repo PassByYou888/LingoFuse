@@ -6,41 +6,36 @@
 # invoked. It uses Ruby's standard-library Fiddle (not the FFI gem).
 #
 # ============================================================================
-# WHY FIDDLE
-# ============================================================================
-# Fiddle uses the Windows API LoadLibrary without the
-# LOAD_WITH_ALTERED_SEARCH_PATH flag. This means:
-#
-#   1. A bare file name is resolved against the standard Windows DLL
-#      search order, including every directory on PATH.
-#   2. Dependent DLLs (z_ipc_64.dll, mimalloc64.dll) are resolved
-#      against the same standard search order.
-#   3. No absolute path is required at the call site.
-#
-# ============================================================================
 # NATIVE LIBRARY DISCOVERY
 # ============================================================================
-# The shared library is located by trying a fixed list of candidate
-# absolute paths, in order. The first one that exists on disk is loaded.
+# The LingoFuse native shared library (and its dependent DLLs / shared
+# objects) is resolved EXCLUSIVELY through the operating system's library
+# search path. There is no binding-relative directory walking, no
+# hard-coded path, and no binding-specific environment variable.
 #
-# Search order:
+# The search path is taken from the platform's standard environment
+# variables:
 #
-#   1. $LINGOFUSE_LIB_PATH/<library name>              (explicit override)
-#   2. $PWD/<library name>                             (current directory)
-#   3. <binding.rb dir>/<library name>                 (sibling of this file)
-#   4. <binding.rb dir>/../Binary/<library name>       (lib/Binary/)
-#   5. <binding.rb dir>/../../Binary/<library name>    (ruby/Binary/)
-#   6. <binding.rb dir>/../../../Binary/<library name> (project root Binary/)
-#   7. The bare library name                           (OS loader / PATH)
+#   Windows           PATH                              (semicolon-separated)
+#   Linux / BSD       LD_LIBRARY_PATH                   (colon-separated)
+#   macOS             DYLD_LIBRARY_PATH                 (colon-separated)
+#                     DYLD_FALLBACK_LIBRARY_PATH
 #
-# When a candidate is loaded from an absolute path, its containing
-# directory is first registered with SetDllDirectoryW (Windows only) so
-# that dependent DLLs are found. On Linux and macOS, the loader search
-# path is controlled by LD_LIBRARY_PATH / DYLD_LIBRARY_PATH and no
-# per-load registration is required.
+# This makes the binding fully portable: copy the ruby/ tree anywhere, and
+# as long as the directory that contains the native library is on the
+# system search path, it loads. There is no per-project configuration and
+# no relative directory resolution.
 #
-# If no candidate path exists, Fiddle.dlopen is called with the bare
-# name and the OS loader's standard search order applies.
+# If the library is not found in any directory on the search path, the
+# bare file name is handed to Fiddle.dlopen, which delegates to the OS
+# loader's own default search (system directories, /etc/ld.so.conf,
+# @rpath, standard framework paths).
+#
+# On Windows, once the directory containing the library is located, that
+# directory is registered with SetDllDirectoryW so that the library's own
+# dependencies (z_ipc_64.dll, mimalloc64.dll, mimalloc-redirect.dll) are
+# resolved from the same directory. This reflects the runtime contract
+# that the four DLLs must always live together.
 #
 # ============================================================================
 # CALLBACK LIFETIME
@@ -87,47 +82,78 @@ module LingoFuse
   end
 
   # ========================================================================
-  # Candidate path search
+  # System library search path
   # ========================================================================
 
-  # Returns the ordered list of absolute paths to try, given a library
-  # file name. Duplicates are removed while preserving the original order.
+  # Returns the ordered, de-duplicated list of directories that make up
+  # the operating system's library search path for the current platform.
   #
-  # The list mirrors the search strategy documented in
-  # INSTALL_DEPENDENCIES.md so that the documented behaviour and the
-  # actual behaviour never diverge.
+  # Only the standard environment variables are consulted:
   #
-  # @param lib_name [String]
+  #   Windows           PATH
+  #   Linux / BSD       LD_LIBRARY_PATH
+  #   macOS             DYLD_LIBRARY_PATH
+  #                     DYLD_FALLBACK_LIBRARY_PATH
+  #
+  # Empty entries are dropped. Duplicates are removed while preserving
+  # first-occurrence order, so callers can search deterministically.
+  #
   # @return [Array<String>]
-  def self.candidate_library_paths(lib_name)
-    here = __dir__
+  def self.system_library_search_dirs
+    os = RbConfig::CONFIG['host_os'].to_s
 
-    list = []
+    raw_values =
+      if os =~ /mswin|mingw|cygwin/i
+        [ENV['PATH']]
+      elsif os =~ /darwin/i
+        [ENV['DYLD_LIBRARY_PATH'], ENV['DYLD_FALLBACK_LIBRARY_PATH']]
+      else
+        [ENV['LD_LIBRARY_PATH']]
+      end
 
-    # 1. Explicit override. LINGOFUSE_LIB_PATH always wins.
-    env_dir = ENV['LINGOFUSE_LIB_PATH']
-    if env_dir && !env_dir.strip.empty?
-      list << File.join(env_dir, lib_name)
+    separator = (os =~ /mswin|mingw|cygwin/i) ? ';' : ':'
+
+    dirs = []
+    seen = {}
+
+    raw_values.each do |raw|
+      next if raw.nil? || raw.empty?
+
+      raw.split(separator).each do |entry|
+        dir = entry.strip
+        next if dir.empty?
+        next if seen[dir]
+        seen[dir] = true
+        dirs << dir
+      end
     end
 
-    # 2. Current working directory.
-    list << File.join(Dir.pwd, lib_name)
+    dirs
+  end
 
-    # 3. Sibling of this file (lib/lingofuse/).
-    list << File.join(here, lib_name)
+  # ========================================================================
+  # Library search
+  # ========================================================================
 
-    # 4. lib/Binary/ — in-package layout.
-    list << File.join(here, '..', 'Binary', lib_name)
-
-    # 5. ruby/Binary/ — the binding's own Binary directory.
-    list << File.join(here, '..', '..', 'Binary', lib_name)
-
-    # 6. <project>/Binary/ — standard repository layout:
-    #      <project>/ruby/lib/lingofuse/binding.rb
-    #      <project>/Binary/LingoFuse64.dll
-    list << File.join(here, '..', '..', '..', 'Binary', lib_name)
-
-    list.uniq
+  # Searches the system library search path for `lib_name` and returns
+  # the absolute path of the first directory that contains it, or nil
+  # when no directory on the search path contains the file.
+  #
+  # @param lib_name [String] platform-specific library file name
+  # @return [String, nil] absolute path to the library file
+  def self.find_library_on_system_path(lib_name)
+    system_library_search_dirs.each do |dir|
+      candidate = File.join(dir, lib_name)
+      begin
+        return candidate if File.file?(candidate)
+      rescue StandardError
+        # A malformed search-path entry (invalid encoding, permission
+        # denied, unmounted network share) must not abort the search.
+        # Skip it and continue with the remaining directories.
+        next
+      end
+    end
+    nil
   end
 
   # ========================================================================
@@ -136,7 +162,7 @@ module LingoFuse
 
   # Registers a directory with SetDllDirectoryW so that subsequent
   # LoadLibrary calls resolve dependent DLLs (z_ipc_64.dll,
-  # mimalloc64.dll) from that directory as well.
+  # mimalloc64.dll, mimalloc-redirect.dll) from that directory as well.
   #
   # On Windows the call is required because LoadLibrary does NOT
   # automatically search the loaded DLL's own directory for its
@@ -175,33 +201,57 @@ module LingoFuse
   # Library loading
   # ========================================================================
 
-  # Loads the native LingoFuse shared library.
+  # Loads the native LingoFuse shared library by scanning the operating
+  # system's library search path.
   #
-  # Tries every candidate path in order. The first one that exists on
-  # disk is loaded (after its containing directory is registered with
-  # SetDllDirectoryW on Windows). If none exists, the bare file name is
-  # passed to Fiddle.dlopen and the OS loader's standard search order
-  # applies.
+  # Resolution strategy:
+  #
+  #   1. Enumerate the system library search path
+  #      (PATH on Windows, LD_LIBRARY_PATH on Linux / BSD,
+  #       DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH on macOS).
+  #
+  #   2. For each directory, look for the exact library file name. The
+  #      first directory that contains it wins. On Windows, that
+  #      directory is registered with SetDllDirectoryW before the load,
+  #      so the library's own dependencies resolve from the same
+  #      directory.
+  #
+  #   3. If no directory on the search path contains the file, hand the
+  #      bare name to Fiddle.dlopen. This delegates to the OS loader's
+  #      own default search, which covers system directories,
+  #      /etc/ld.so.conf on Linux, and @rpath on macOS.
+  #
+  # There is no binding-relative search and no binding-specific
+  # environment variable. Portability comes from the system path alone.
   #
   # @param lib_name [String]
   # @return [Object] the Fiddle library handle
-  # @raise [LibraryLoadError] when no candidate can be loaded
+  # @raise [LibraryLoadError] when the library cannot be loaded
   def self.load_native_library(lib_name)
     errors = []
 
-    candidate_library_paths(lib_name).each do |path|
-      next unless File.file?(path)
+    # --- Step 1: search the system library search path ------------------
+    system_library_search_dirs.each do |dir|
+      candidate = File.join(dir, lib_name)
 
       begin
-        register_dll_directory(File.dirname(path))
-        return Fiddle.dlopen(path)
+        next unless File.file?(candidate)
+      rescue StandardError
+        next
+      end
+
+      begin
+        register_dll_directory(dir)
+        return Fiddle.dlopen(candidate)
       rescue Fiddle::DLError => e
-        errors << "#{path}: #{e.message}"
+        errors << "#{candidate}: #{e.message}"
       end
     end
 
-    # Fall back to the bare name. The OS loader will search PATH and the
-    # standard system directories.
+    # --- Step 2: hand the bare name to the OS loader --------------------
+    # This covers the platform's own default search: Windows system
+    # directories, Linux /etc/ld.so.conf and RPATH, macOS @rpath and
+    # standard framework paths.
     begin
       return Fiddle.dlopen(lib_name)
     rescue Fiddle::DLError => e
@@ -212,33 +262,59 @@ module LingoFuse
   end
 
   # Builds a clear, actionable error message listing every attempt.
+  #
+  # @param lib_name [String]
+  # @param errors [Array<String>]
+  # @return [String]
   def self.build_load_error_message(lib_name, errors)
+    os = RbConfig::CONFIG['host_os'].to_s
+
+    path_var =
+      if os =~ /mswin|mingw|cygwin/i
+        'PATH'
+      elsif os =~ /darwin/i
+        'DYLD_LIBRARY_PATH / DYLD_FALLBACK_LIBRARY_PATH'
+      else
+        'LD_LIBRARY_PATH'
+      end
+
     lines = []
     lines << "Failed to load the LingoFuse native library '#{lib_name}'."
     lines << ''
+    lines << 'The library is resolved exclusively through the operating'
+    lines << "system's library search path (#{path_var})."
+    lines << ''
     lines << 'Attempts:'
     if errors.empty?
-      lines << '  (no candidate path existed on disk, and the OS loader ' \
-               'search also failed)'
+      lines << '  (no directory on the search path contained the library,'
+      lines << '   and the OS loader fallback also failed)'
     else
       errors.each { |e| lines << "  - #{e}" }
     end
     lines << ''
-    lines << 'To make the library discoverable, do ONE of the following:'
+    lines << 'To make the library discoverable, add the directory that'
+    lines << "contains it to #{path_var}."
     lines << ''
-    lines << '  1. Place the file next to this binding:'
-    lines << '       ruby/lib/lingofuse/' + lib_name
-    lines << ''
-    lines << '  2. Place it in the standard repository layout:'
-    lines << '       <project>/Binary/' + lib_name
-    lines << ''
-    lines << '  3. Place it in the current working directory, or on PATH.'
-    lines << ''
-    lines << '  4. Set LINGOFUSE_LIB_PATH to the directory containing it:'
-    lines << '       $env:LINGOFUSE_LIB_PATH = "<directory>"'
-    lines << ''
-    lines << 'On Windows, LingoFuse64.dll also needs its runtime dependencies'
-    lines << '(z_ipc_64.dll, mimalloc64.dll) in the same directory.'
+
+    if os =~ /mswin|mingw|cygwin/i
+      lines << 'On Windows, the following files must all live in the SAME'
+      lines << 'directory, because LingoFuse64.dll loads its siblings by'
+      lines << 'name:'
+      lines << '    LingoFuse64.dll'
+      lines << '    z_ipc_64.dll'
+      lines << '    mimalloc64.dll'
+      lines << '    mimalloc-redirect.dll'
+      lines << ''
+      lines << 'Example (PowerShell, current session):'
+      lines << '    $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH'
+    elsif os =~ /darwin/i
+      lines << 'Example (bash / zsh):'
+      lines << '    export DYLD_LIBRARY_PATH="/opt/lingofuse/lib:$DYLD_LIBRARY_PATH"'
+    else
+      lines << 'Example (bash / zsh):'
+      lines << '    export LD_LIBRARY_PATH="/opt/lingofuse/lib:$LD_LIBRARY_PATH"'
+    end
+
     lines.join("\n")
   end
 

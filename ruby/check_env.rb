@@ -1,291 +1,470 @@
-#!/usr/bin/env ruby
-# frozen_string_literal: true
+# =============================================================================
+#  check_env.ps1 — Build-environment diagnostic for the LingoFuse Ruby
+#                  C extension (lingofuse_ext).
+# -----------------------------------------------------------------------------
+#  Run this AFTER installing RubyInstaller + DevKit, and BEFORE running
+#  `ruby extconf.rb` / `make` inside ext/lingofuse_ext/.
 #
-# check_env.rb — Environment diagnostic for the LingoFuse Ruby binding.
+#  Usage:
 #
-# Verifies, in order:
+#      powershell -ExecutionPolicy Bypass -File check_env.ps1
 #
-#   1. Ruby runtime
-#   2. Package layout
-#   3. Native library load and C ABI round trip
-#   4. Full-stack smoke test
+#  Exit code:
 #
-# No external gem is required. The binding uses Fiddle from the standard
-# library.
+#      0   every required check passed; you can run `make` now
+#      1   at least one required check failed
 #
-# Exit status:
-#   0   all required checks passed
-#   1   at least one check failed
+#  The script never modifies anything persistent. It compiles two
+#  throwaway C programs into a temporary directory, then removes it.
+# =============================================================================
+
+$ErrorActionPreference = 'Continue'
+
+# -----------------------------------------------------------------------------
+# Reporter
+# -----------------------------------------------------------------------------
+
+$script:PassCount = 0
+$script:FailCount = 0
+$script:WarnCount = 0
+
+function Write-Section {
+    param([string]$Title)
+    Write-Host ''
+    Write-Host ('=' * 72)
+    Write-Host $Title
+    Write-Host ('=' * 72)
+}
+
+function Write-Ok {
+    param([string]$Message)
+    Write-Host "  [OK]   $Message"
+    $script:PassCount++
+}
+
+function Write-Fail {
+    param([string]$Message)
+    Write-Host "  [FAIL] $Message"
+    $script:FailCount++
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-Host "  [WARN] $Message"
+    $script:WarnCount++
+}
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "         $Message"
+}
+
+# =============================================================================
+# Section 1 — PowerShell and OS
+# =============================================================================
+
+Write-Section '1. PowerShell and OS'
+
+Write-Info "PowerShell version : $($PSVersionTable.PSVersion)"
+try {
+    $osName = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption
+} catch {
+    $osName = [System.Environment]::OSVersion.VersionString
+}
+Write-Info "OS                 : $osName"
+Write-Info "Architecture       : $env:PROCESSOR_ARCHITECTURE"
+Write-Info "Script directory   : $PSScriptRoot"
+Write-Info "Working directory  : $(Get-Location)"
+
+if ($PSVersionTable.PSVersion.Major -ge 5) {
+    Write-Ok "PowerShell $($PSVersionTable.PSVersion.Major) is supported."
+} else {
+    Write-Fail "PowerShell 5 or newer is required."
+}
+
+# =============================================================================
+# Section 2 — Ruby runtime
+# =============================================================================
+
+Write-Section '2. Ruby runtime'
+
+$rubyCmd = Get-Command ruby -ErrorAction SilentlyContinue
+if (-not $rubyCmd) {
+    Write-Fail 'ruby is not on PATH. Install RubyInstaller and reopen PowerShell.'
+} else {
+    Write-Info "Ruby executable    : $($rubyCmd.Source)"
+
+    $rubyVersion = (& ruby -v 2>&1) -join ' '
+    Write-Info "Ruby version       : $rubyVersion"
+
+    $rubyPlatform = (& ruby -e "puts RUBY_PLATFORM" 2>&1) -join ' '
+    Write-Info "Ruby platform      : $rubyPlatform"
+
+    $rubyHostOs = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['host_os']" 2>&1) -join ' '
+    Write-Info "RbConfig host_os   : $rubyHostOs"
+
+    $rubyArch = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['arch']" 2>&1) -join ' '
+    Write-Info "RbConfig arch      : $rubyArch"
+
+    $rubyBindir = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['bindir']" 2>&1) -join ' '
+    Write-Info "RbConfig bindir    : $rubyBindir"
+
+    if ($rubyPlatform -match 'mingw') {
+        Write-Ok 'Running under MinGW Ruby (x64-mingw-ucrt or similar).'
+    } else {
+        Write-Warn "Ruby platform is '$rubyPlatform', not a MinGW build."
+    }
+
+    if ($rubyVersion -match 'mingw') {
+        Write-Ok 'Ruby reports a MinGW build in its version string.'
+    }
+}
+
+# =============================================================================
+# Section 3 — Build toolchain (DevKit)
+# =============================================================================
+
+Write-Section '3. Build toolchain (DevKit)'
+
+# --- make ------------------------------------------------------------------
+
+$makeCmd = Get-Command make -ErrorAction SilentlyContinue
+if (-not $makeCmd) {
+    Write-Fail 'make is not on PATH. Install Ruby DevKit and open a NEW shell.'
+} else {
+    Write-Info "make path          : $($makeCmd.Source)"
+
+    $makeVersion = (& make --version 2>&1 | Select-Object -First 1) -join ' '
+    Write-Info "make version       : $makeVersion"
+
+    $makePath = $makeCmd.Source
+
+    if ($makePath -match 'Embarcadero|Borland|bcc32|CodeGear') {
+        Write-Fail 'make is Embarcadero / Borland Make, not GNU Make.'
+        Write-Info 'The Makefile generated by mkmf requires GNU Make.'
+        Write-Info 'Install Ruby DevKit and open a NEW PowerShell so that'
+        Write-Info 'its bin/ directory is at the FRONT of PATH.'
+    } elseif ($makeVersion -match 'GNU Make') {
+        Write-Ok 'GNU Make detected.'
+    } else {
+        Write-Warn 'make does not self-identify as GNU Make.'
+        Write-Info 'Run "make --version" manually and confirm it is GNU Make.'
+    }
+}
+
+# --- gcc -------------------------------------------------------------------
+
+$gccCmd = Get-Command gcc -ErrorAction SilentlyContinue
+if (-not $gccCmd) {
+    Write-Fail 'gcc is not on PATH. Install Ruby DevKit.'
+} else {
+    Write-Info "gcc path           : $($gccCmd.Source)"
+    $gccVersion = (& gcc --version 2>&1 | Select-Object -First 1) -join ' '
+    Write-Info "gcc version        : $gccVersion"
+    Write-Ok 'gcc is available.'
+}
+
+# --- optional: g++ ---------------------------------------------------------
+
+$gxxCmd = Get-Command g++ -ErrorAction SilentlyContinue
+if ($gxxCmd) {
+    Write-Info "g++ path           : $($gxxCmd.Source)"
+} else {
+    Write-Info 'g++ is not present (optional; the extension is pure C).'
+}
+
+# --- DevKit environment marker --------------------------------------------
+
+if ($env:RI_DEVKIT) {
+    Write-Ok "RI_DEVKIT is set: $env:RI_DEVKIT"
+} else {
+    Write-Info 'RI_DEVKIT is not set (fine when make/gcc come from the Ruby installer).'
+}
+
+# --- PATH sanity: is the DevKit bin ahead of any foreign make? -------------
+
+$pathEntries = $env:PATH -split ';'
+$foreignMake = $pathEntries | Where-Object {
+    $_ -and (Test-Path (Join-Path $_ 'make.exe')) -and ($_ -match 'Embarcadero|Borland')
+}
+if ($foreignMake) {
+    Write-Warn 'A foreign make.exe is still present on PATH:'
+    foreach ($p in $foreignMake) {
+        Write-Info "  $p"
+    }
+    Write-Info 'The DevKit bin directory must come BEFORE it. Reorder PATH.'
+}
+
+# =============================================================================
+# Section 4 — mkmf and C compilation
+# =============================================================================
+
+Write-Section '4. mkmf and C compilation'
+
+# --- mkmf availability -----------------------------------------------------
+
+$mkmfCheck = (& ruby -e "begin; require 'mkmf'; puts 'MKMK_OK'; rescue LoadError => e; puts 'MKMK_MISSING ' + e.message; end" 2>&1) -join ' '
+if ($mkmfCheck -match 'MKMK_OK') {
+    Write-Ok 'mkmf is available.'
+} else {
+    Write-Fail "mkmf is not available: $mkmfCheck"
+    Write-Info 'Install Ruby DevKit. mkmf ships with the Ruby standard'
+    Write-Info 'library but needs a working C toolchain for its checks.'
+}
+
+# --- real gcc compile-and-run ---------------------------------------------
+
+$tmpDir = Join-Path $env:TEMP ('lf_c_ext_test_' + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+try {
+    $testC   = Join-Path $tmpDir 'hello.c'
+    $testExe = Join-Path $tmpDir 'hello.exe'
+
+    @'
+#include <stdio.h>
+int main(void) {
+    printf("hello from C\n");
+    return 0;
+}
+'@ | Set-Content -Path $testC -Encoding ASCII
+
+    $compileOutput = (& gcc -o $testExe $testC 2>&1) -join "`n"
+
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $testExe)) {
+        Write-Ok 'gcc compiled and linked a test C program.'
+
+        $runOutput = (& $testExe 2>&1) -join ' '
+        if ($runOutput -match 'hello from C') {
+            Write-Ok 'The compiled test program runs and prints the expected output.'
+        } else {
+            Write-Warn "Test program ran but produced unexpected output: $runOutput"
+        }
+    } else {
+        Write-Fail 'gcc could not compile a test C program.'
+        if ($compileOutput) {
+            foreach ($line in ($compileOutput -split "`n")) {
+                Write-Info $line
+            }
+        }
+    }
+} finally {
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
+# =============================================================================
+# Section 5 — pthread and ruby/thread.h
+# =============================================================================
+
+Write-Section '5. pthread and ruby/thread.h'
+
+$tmpDir = Join-Path $env:TEMP ('lf_pthread_test_' + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+try {
+    # --- compile a pthread program -----------------------------------------
+
+    $testC   = Join-Path $tmpDir 'pthread_test.c'
+    $testExe = Join-Path $tmpDir 'pthread_test.exe'
+
+    @'
+#include <pthread.h>
+#include <stdio.h>
+
+static void* worker(void* arg) {
+    (void)arg;
+    return NULL;
+}
+
+int main(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, worker, NULL) != 0) {
+        fprintf(stderr, "pthread_create failed\n");
+        return 1;
+    }
+    pthread_join(t, NULL);
+    printf("pthread OK\n");
+    return 0;
+}
+'@ | Set-Content -Path $testC -Encoding ASCII
+
+    $compileOutput = (& gcc -o $testExe $testC -lpthread 2>&1) -join "`n"
+
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $testExe)) {
+        Write-Ok 'pthread.h is present and libpthread links (-lpthread).'
+
+        $runOutput = (& $testExe 2>&1) -join ' '
+        if ($runOutput -match 'pthread OK') {
+            Write-Ok 'pthread runtime works.'
+        } else {
+            Write-Warn "pthread test program did not print the expected output: $runOutput"
+        }
+    } else {
+        Write-Warn 'pthread.h missing or libpthread did not link (-lpthread).'
+        Write-Info 'MinGW-w64 normally ships winpthreads; DevKit should provide it.'
+        if ($compileOutput) {
+            foreach ($line in ($compileOutput -split "`n")) {
+                Write-Info $line
+            }
+        }
+    }
+
+    # --- locate ruby/thread.h ---------------------------------------------
+
+    $rubyHdrDir     = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['rubyhdrdir']" 2>&1) -join ' '
+    $rubyArchHdrDir = (& ruby -e "require 'rbconfig'; puts RbConfig::CONFIG['rubyarchhdrdir']" 2>&1) -join ' '
+
+    Write-Info "rubyhdrdir         : $rubyHdrDir"
+    Write-Info "rubyarchhdrdir     : $rubyArchHdrDir"
+
+    if ($rubyHdrDir -and (Test-Path $rubyHdrDir)) {
+        $threadHdr = Join-Path $rubyHdrDir 'ruby/thread.h'
+        if (Test-Path $threadHdr) {
+            Write-Ok "ruby/thread.h is present."
+        } else {
+            Write-Fail "ruby/thread.h was not found under $rubyHdrDir."
+        }
+    } else {
+        Write-Warn 'Could not resolve rubyhdrdir from RbConfig.'
+    }
+} finally {
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+
+# =============================================================================
+# Section 6 — LingoFuse native library (PATH lookup)
+# -----------------------------------------------------------------------------
+#  The runtime binding (lib/lingofuse/binding.rb) resolves the native
+#  library EXCLUSIVELY through the operating system's library search
+#  path:
 #
-
-module Reporter
-  @pass_count = 0
-  @fail_count = 0
-
-  class << self
-    def pass_count; @pass_count; end
-    def fail_count; @fail_count; end
-
-    def section(title)
-      puts ''
-      puts '=' * 72
-      puts title
-      puts '=' * 72
-    end
-
-    def ok(msg)
-      puts "  [OK]   #{msg}"
-      @pass_count += 1
-    end
-
-    def fail(msg)
-      puts "  [FAIL] #{msg}"
-      @fail_count += 1
-    end
-
-    def info(msg)
-      puts "         #{msg}"
-    end
-  end
-end
-
-script_dir = File.expand_path(__dir__)
-
-# ============================================================================
-# Section 0 — Load path
-# ============================================================================
+#      Windows           PATH
+#      Linux / BSD       LD_LIBRARY_PATH
+#      macOS             DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH
 #
-# lib/ MUST be on $LOAD_PATH before any require of the binding. Without
-# this, `require 'lingofuse'` still works (it is loaded by absolute
-# path below), but the C extension `lingofuse_ext.so` lives in lib/ and
-# is required by native_bridge.rb through a bare name. That bare-name
-# require only consults $LOAD_PATH, so the extension would silently
-# fail to load and every callback path would fall back to the Fiddle
-# stub.
-#
-# Adding lib/ here makes the diagnostic accurate: if the extension is
-# present in lib/, this script will load it.
+#  There is no binding-specific environment variable. This section
+#  reflects that contract by searching PATH directly.
+# =============================================================================
 
-lib_dir = File.join(script_dir, 'lib')
-$LOAD_PATH.unshift(lib_dir) unless $LOAD_PATH.include?(lib_dir)
+Write-Section '6. LingoFuse native library (PATH lookup)'
 
-# ============================================================================
-# Section 1 — Ruby runtime
-# ============================================================================
+$nativeLibName =
+    if ([IntPtr]::Size -eq 8) { 'LingoFuse64.dll' } else { 'LingoFuse32.dll' }
+Write-Info "Expected file name: $nativeLibName"
 
-Reporter.section('1. Ruby runtime')
+$pathEntries = $env:PATH -split ';' | Where-Object { $_ -and $_.Trim() -ne '' }
+$foundDir = $null
 
-Reporter.info "Ruby version    : #{RUBY_VERSION}"
-Reporter.info "Ruby platform   : #{RUBY_PLATFORM}"
-Reporter.info "Working dir     : #{Dir.pwd}"
+foreach ($dir in $pathEntries) {
+    try {
+        $candidate = Join-Path $dir $nativeLibName
+        if (Test-Path $candidate -PathType Leaf) {
+            $foundDir = $dir
+            break
+        }
+    } catch {
+        # A malformed PATH entry must not abort the search.
+    }
+}
 
-if RUBY_VERSION >= '2.7.0'
-  Reporter.ok "Ruby version #{RUBY_VERSION} satisfies the >= 2.7.0 requirement."
-else
-  Reporter.fail "Ruby #{RUBY_VERSION} is older than the required 2.7.0."
-end
+if ($foundDir) {
+    Write-Ok "Found on PATH: $nativeLibName"
+    Write-Info "  directory: $foundDir"
 
-# ============================================================================
-# Section 2 — Package layout
-# ============================================================================
-
-Reporter.section('2. Package layout')
-
-EXPECTED_LIB_FILES = %w[
-  lib/lingofuse.rb
-  lib/lingofuse/errors.rb
-  lib/lingofuse/binding.rb
-  lib/lingofuse/callback_error_reporter.rb
-  lib/lingofuse/native_bridge.rb
-  lib/lingofuse/data_handle.rb
-  lib/lingofuse/app_handle.rb
-  lib/lingofuse/lf_io.rb
-  lib/lingofuse/framework.rb
-  lib/lingofuse/status.rb
-  lib/lingofuse/network_events.rb
-].freeze
-
-EXPECTED_TEST_FILES = %w[
-  test/test_lf_io.rb
-  test/test_data_handle.rb
-  test/test_app_handle.rb
-].freeze
-
-EXPECTED_LIB_FILES.each do |rel|
-  abs = File.join(script_dir, rel)
-  if File.file?(abs)
-    Reporter.ok "Found: #{rel}"
-  else
-    Reporter.fail "Missing: #{rel}"
-  end
-end
-
-EXPECTED_TEST_FILES.each do |rel|
-  abs = File.join(script_dir, rel)
-  if File.file?(abs)
-    Reporter.ok "Found: #{rel}"
-  else
-    Reporter.fail "Missing: #{rel}"
-  end
-end
-
-# ============================================================================
-# Section 3 — Native library load and C ABI round trip
-# ============================================================================
-
-Reporter.section('3. Native library load and C ABI round trip')
-
-binding_loaded = false
-
-begin
-  require File.join(script_dir, 'lib', 'lingofuse', 'binding')
-  Reporter.ok "require 'lingofuse/binding' succeeded."
-
-  hnd = LingoFuse::LF_CreateData.call(
-    LingoFuse.cstr_ptr('check_env_raw')
-  )
-
-  # The C ABI returns a void*; a null pointer has to_i == 0.
-  if hnd.nil? || hnd.to_i.zero?
-    Reporter.fail 'LF_CreateData returned a null handle.'
-  else
-    Reporter.ok 'LF_CreateData returned a non-null handle.'
-
-    payload = "\x01\x02\x03\x04".b
-    in_ptr = Fiddle::Pointer.malloc(payload.bytesize)
-    in_ptr[0, payload.bytesize] = payload
-
-    written = LingoFuse::LF_WriteBuffer.call(
-      hnd, in_ptr, payload.bytesize
+    # LingoFuse64.dll loads its siblings by name at load time, so they
+    # must live in the same directory.
+    $siblings = @(
+        'z_ipc_64.dll',
+        'mimalloc64.dll',
+        'mimalloc-redirect.dll'
     )
+    foreach ($s in $siblings) {
+        $p = Join-Path $foundDir $s
+        if (Test-Path $p) {
+            $size = (Get-Item $p).Length
+            Write-Ok "  sibling present: $s ($size bytes)"
+        } else {
+            Write-Warn "  sibling MISSING: $s"
+            Write-Info '  All four DLLs must live in the same directory,'
+            Write-Info '  because LingoFuse64.dll loads its siblings by name.'
+        }
+    }
+} else {
+    Write-Warn "$nativeLibName is not on PATH."
+    Write-Info 'The runtime binding will not be able to load it.'
+    Write-Info ''
+    Write-Info 'The runtime binding searches ONLY the system PATH. To fix'
+    Write-Info 'this, add the directory that contains the library to PATH.'
+    Write-Info ''
+    Write-Info 'Example (current PowerShell session):'
+    Write-Info '    $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH'
+    Write-Info ''
+    Write-Info 'The three sibling DLLs must live in the same directory:'
+    Write-Info '    LingoFuse64.dll'
+    Write-Info '    z_ipc_64.dll'
+    Write-Info '    mimalloc64.dll'
+    Write-Info '    mimalloc-redirect.dll'
+    Write-Info ''
+    Write-Info 'See README.md section 7 for runtime integration options.'
+}
 
-    if written == payload.bytesize
-      Reporter.ok "LF_WriteBuffer wrote #{written} bytes."
-    else
-      Reporter.fail "LF_WriteBuffer wrote #{written} of #{payload.bytesize} bytes."
-    end
+# =============================================================================
+# Section 7 — Extension source tree
+# =============================================================================
 
-    LingoFuse::LF_SetPos.call(hnd, 0)
+Write-Section '7. Extension source tree'
 
-    out_ptr = Fiddle::Pointer.malloc(payload.bytesize)
-    read = LingoFuse::LF_ReadBuffer.call(hnd, out_ptr, payload.bytesize)
+$scriptDir = $PSScriptRoot
 
-    if read == payload.bytesize && out_ptr.to_s(payload.bytesize) == payload
-      Reporter.ok 'LF_ReadBuffer returned the exact bytes written.'
-    else
-      Reporter.fail 'LF_ReadBuffer mismatch.'
-    end
+$expected = @(
+    'ext/lingofuse_ext/extconf.rb',
+    'ext/lingofuse_ext/lingofuse_ext.c',
+    'lib/lingofuse/native_bridge.rb'
+)
 
-    LingoFuse::LF_FreeData.call(hnd)
-    Reporter.ok 'LF_FreeData released the handle.'
-  end
+foreach ($rel in $expected) {
+    $abs = Join-Path $scriptDir $rel
+    if (Test-Path $abs) {
+        Write-Ok "Found: $rel"
+    } else {
+        Write-Fail "Missing: $rel"
+    }
+}
 
-  binding_loaded = true
-rescue StandardError, LoadError => e
-  Reporter.fail "Could not load the native library: #{e.class}"
-  Reporter.info e.message.to_s.lines.first(6).map(&:chomp).join("\n         ")
-  binding_loaded = false
-end
+$genMakefile = Join-Path $scriptDir 'ext/lingofuse_ext/Makefile'
+if (Test-Path $genMakefile) {
+    $mfHeader = (Get-Content $genMakefile -TotalCount 5 -ErrorAction SilentlyContinue) -join ' '
+    if ($mfHeader -match 'GNU Make|mkmf|RbConfig') {
+        Write-Info 'ext/lingofuse_ext/Makefile exists and looks like a mkmf output.'
+    } else {
+        Write-Warn 'ext/lingofuse_ext/Makefile exists but does not look like an mkmf output.'
+        Write-Info 'Delete it and re-run: ruby extconf.rb'
+    }
+    Write-Info 'If you change the source tree, delete Makefile before re-running extconf.rb.'
+}
 
-# ============================================================================
-# Section 4 — Full-stack smoke test
-# ============================================================================
+# =============================================================================
+# Section 8 — Report
+# =============================================================================
 
-Reporter.section('4. Full-stack smoke test')
+Write-Section 'Report'
 
-if binding_loaded
-  begin
-    require File.join(script_dir, 'lib', 'lingofuse')
-    Reporter.ok "require 'lingofuse' (full stack) succeeded."
-  rescue StandardError => e
-    Reporter.fail "require 'lingofuse' failed: #{e.class}: #{e.message}"
-  end
-end
+Write-Host "  Passed : $script:PassCount"
+Write-Host "  Warned : $script:WarnCount"
+Write-Host "  Failed : $script:FailCount"
+Write-Host ''
 
-# --- C extension load status ---------------------------------------------
-#
-# Reported separately so that a missing lingofuse_ext is visible in the
-# diagnostic output. The extension is OPTIONAL for pure-local usage but
-# REQUIRED for remote callbacks (see BUILD_EXTENSION.md).
-
-if defined?(LingoFuse::NativeBridge)
-  if LingoFuse::NativeBridge.available?
-    Reporter.ok 'lingofuse_ext is loaded (NativeBridge available).'
-  else
-    Reporter.fail 'lingofuse_ext is NOT available. Remote callbacks will not work.'
-    Reporter.info 'Build it with: powershell -File setup_build_env.ps1'
-    Reporter.info 'Then re-run this diagnostic.'
-  end
-end
-
-# --- DataHandle -----------------------------------------------------------
-if binding_loaded && defined?(LingoFuse::DataHandle)
-  begin
-    dh = LingoFuse::DataHandle.new('check_env_dh')
-    dh.write_int32(42)
-    dh.position = 0
-    value = dh.read_int32
-    dh.dispose
-    value == 42 ? Reporter.ok('DataHandle scalar round trip OK.')
-                : Reporter.fail("DataHandle scalar mismatch: #{value.inspect}")
-
-    dh = LingoFuse::DataHandle.new('check_env_str')
-    dh.write_string('你好, 🌍')
-    dh.position = 0
-    text = dh.read_string
-    dh.dispose
-    text == '你好, 🌍' ? Reporter.ok('DataHandle string round trip OK.')
-                       : Reporter.fail("DataHandle string mismatch: #{text.inspect}")
-  rescue StandardError => e
-    Reporter.fail "DataHandle smoke test failed: #{e.class}: #{e.message}"
-  end
-end
-
-# --- AppHandle ------------------------------------------------------------
-if binding_loaded && defined?(LingoFuse::AppHandle)
-  begin
-    app = LingoFuse::AppHandle.new('check_env_app', 'diagnostic')
-    app.register_call('ping', 'diagnostic ping') do |_input, output|
-      output.write_int32(99)
-    end
-
-    req = LingoFuse::DataHandle.new('ping')
-    res = app.local_call(req)
-    value = res.read_int32
-
-    res.dispose
-    req.dispose
-    app.dispose
-
-    value == 99 ? Reporter.ok('AppHandle local_call round trip OK.')
-                : Reporter.fail("AppHandle local_call mismatch: #{value.inspect}")
-  rescue StandardError => e
-    Reporter.fail "AppHandle smoke test failed: #{e.class}: #{e.message}"
-  end
-end
-
-# --- LfIo JSON policy -----------------------------------------------------
-if defined?(LingoFuse::LfIo)
-  begin
-    text = LingoFuse::LfIo.dumps_json({ 'msg' => '你好' })
-    if text.include?('你好') && !text.include?('\\u')
-      Reporter.ok 'LfIo JSON policy OK (non-ASCII emitted literally).'
-    else
-      Reporter.fail "LfIo JSON policy violated: #{text.inspect}"
-    end
-  rescue StandardError => e
-    Reporter.fail "LfIo smoke test failed: #{e.class}: #{e.message}"
-  end
-end
-
-# ============================================================================
-# Section 5 — Report
-# ============================================================================
-
-Reporter.section('5. Report')
-
-puts "  Passed : #{Reporter.pass_count}"
-puts "  Failed : #{Reporter.fail_count}"
-puts ''
-
-exit(Reporter.fail_count.zero? ? 0 : 1)
+if ($script:FailCount -eq 0) {
+    Write-Host '  All required checks passed.'
+    Write-Host '  You may now build the C extension:'
+    Write-Host ''
+    Write-Host '      cd ext\lingofuse_ext'
+    Write-Host '      ruby extconf.rb'
+    Write-Host '      make'
+    Write-Host ''
+    exit 0
+} else {
+    Write-Host "  $script:FailCount required check(s) failed."
+    Write-Host '  Fix the issues above and run this script again.'
+    exit 1
+}

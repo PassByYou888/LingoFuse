@@ -14,9 +14,29 @@
 #      0   every step passed
 #      1   at least one step failed
 #
-#  Required environment (set once per PowerShell session):
+#  Native library discovery:
 #
-#      $env:LINGOFUSE_LIB_PATH = "D:\CoreLibrary\LingoFuse\Binary"
+#      The runtime binding resolves the LingoFuse native library
+#      (LingoFuse64.dll and its three siblings) through the operating
+#      system's library search path ONLY:
+#
+#          Windows           PATH
+#          Linux / BSD       LD_LIBRARY_PATH
+#          macOS             DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH
+#
+#      There is no binding-specific environment variable. Before running
+#      this script, ensure the directory that contains the native library
+#      is on PATH. Example:
+#
+#          $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH
+#
+#      The four DLLs must live in the same directory, because
+#      LingoFuse64.dll loads its siblings by name at load time:
+#
+#          LingoFuse64.dll
+#          z_ipc_64.dll
+#          mimalloc64.dll
+#          mimalloc-redirect.dll
 #
 # =============================================================================
 

@@ -14,9 +14,31 @@
 | `rake`（gem） | 任务运行器 | `gem install rake` |
 | `debug`（gem） | 调试器后端 | `gem install debug` |
 | 系统 `pthread` | C 扩展线程原语 | DevKit 自带 |
-| `LingoFuse64.dll` | 原生 RPC 库 | 从 `Binary/` 目录获取 |
+| `LingoFuse64.dll` | 原生 RPC 库 | 从 `Binary/` 目录获取，放到 PATH 上 |
 
 **Fiddle 是 Ruby 标准库的一部分**，不需要单独安装。FFI gem **不是**本绑定的依赖。
+
+### 1.1 依赖层级
+
+```mermaid
+flowchart TD
+    R["Ruby 4.0+<br/>x64-mingw-ucrt"] --> Core["核心运行时"]
+    D["DevKit<br/>msys64"] --> Core
+    M["gem: minitest"] --> Test["测试"]
+    K["gem: rake"] --> Test
+    G["gem: debug<br/>（可选）"] --> Test
+    Core --> LF["LingoFuse Ruby 绑定"]
+    Test --> LF
+
+    N["LingoFuse64.dll<br/>+ 3 个兄弟 DLL"] -->|"PATH 搜索"| LF
+
+    classDef req fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+    classDef opt fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef native fill:#FCE4EC,stroke:#AD1457,stroke-width:2px,color:#880E4F
+    class R,D,M,K req
+    class G opt
+    class N native
+```
 
 ---
 
@@ -106,15 +128,11 @@ GNU Make 4.4.1
 
 Embarcadero 的 `make.exe` 与 GNU Make 不兼容，会导致 mkmf 生成的 Makefile 编译失败。
 
-**修复方法 1**：把 msys64 的 bin 目录前置到 PATH。
-
-```powershell
-$env:PATH = "C:\Ruby40-x64\msys64\usr\bin;" + $env:PATH
-```
-
-**修复方法 2**：永久修改 PATH。在 Windows 系统设置里，把 `C:\Ruby40-x64\msys64\usr\bin` 移到 `C:\Program Files (x86)\Embarcadero\Studio\21.0\bin` 的前面。
-
-**修复方法 3**：使用项目自带的 `setup_build_env.ps1` 脚本，它会自动找到正确的 make。
+| 修复方法 | 命令 | 作用范围 |
+|:--------:|------|----------|
+| 1 | `$env:PATH = "C:\Ruby40-x64\msys64\usr\bin;" + $env:PATH` | 当前会话 |
+| 2 | 系统设置 → 环境变量：把 msys64 路径移到 Embarcadero 之前 | 永久 |
+| 3 | 使用项目自带的 `setup_build_env.ps1`，自动处理 | 脚本内 |
 
 ### 3.3 检查 MSYS2 环境
 
@@ -239,9 +257,21 @@ ruby -e "require 'debug'; puts 'debug OK'"
 
 ## 五、原生库（LingoFuse64.dll）
 
-### 5.1 需要的文件
+### 5.1 定位原则
 
-放到 `D:\CoreLibrary\LingoFuse\Binary\`：
+原生库（`LingoFuse64.dll` 及其三个兄弟 DLL）由 `lib/lingofuse/binding.rb` 在**运行时**通过 `Fiddle.dlopen` 加载。**加载路径仅来自操作系统的库搜索路径**：
+
+| 平台 | 环境变量 | 分隔符 |
+|------|----------|:------:|
+| Windows | `PATH` | `;` |
+| Linux / BSD | `LD_LIBRARY_PATH` | `:` |
+| macOS | `DYLD_LIBRARY_PATH` + `DYLD_FALLBACK_LIBRARY_PATH` | `:` |
+
+**没有绑定专属的环境变量**（例如旧的 `LINGOFUSE_LIB_PATH` 已被移除）。这与任何其他 Windows 程序使用 PATH 的行为一致，也是唯一的机制。
+
+### 5.2 需要的文件
+
+四个 DLL **必须放在同一目录**：
 
 | 文件 | 用途 |
 |---|---|
@@ -250,35 +280,92 @@ ruby -e "require 'debug'; puts 'debug OK'"
 | `mimalloc64.dll` | 内存分配器 |
 | `mimalloc-redirect.dll` | mimalloc 重定向 |
 
-`LingoFuse64.dll` 加载时**会尝试加载另外三个 DLL**。如果它们不在同一个目录、也不在 PATH 上，加载会失败并报 `The specified module could not be found`。
+**为什么必须同一目录**：`LingoFuse64.dll` 加载时会**按文件名**加载另外三个 DLL。Windows 加载器在 `LoadLibrary` 时不会自动搜索"已加载 DLL 自己的目录"，所以它们必须在同一个目录里，且该目录必须在 `PATH` 上。
 
-### 5.2 验证文件存在
+```mermaid
+flowchart TD
+    A["LingoFuse64.dll<br/>被 Fiddle.dlopen 加载"] --> B["按名字加载 z_ipc_64.dll"]
+    A --> C["按名字加载 mimalloc64.dll"]
+    C --> D["mimalloc64.dll 加载<br/>mimalloc-redirect.dll"]
+    B --> E["全部成功"]
+    C --> E
+    D --> E
 
-```powershell
-Get-ChildItem D:\CoreLibrary\LingoFuse\Binary\*.dll | Select-Object Name, Length
+    classDef main fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
+    classDef dep fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef ok fill:#E3F2FD,stroke:#1565C0,stroke-width:3px,color:#0D47A1
+    class A main
+    class B,C,D dep
+    class E ok
 ```
 
-**期望**：至少列出上述 4 个。
+**少一个 DLL，或分散到不同目录，加载会失败并报 `The specified module could not be found`。**
 
-### 5.3 无需设置环境变量（推荐）
+### 5.3 放置位置
 
-`lib/lingofuse/binding.rb` 会自动搜索以下位置（按顺序）：
+推荐放到一个独立目录，例如：
 
-1. `$LINGOFUSE_LIB_PATH`（环境变量，可选覆盖）
-2. 当前工作目录
-3. `lib/lingofuse/`（binding.rb 所在目录）
-4. `lib/Binary/`
-5. `ruby/Binary/`
-6. **`<项目根>/Binary/`**（标准仓库布局）
+```
+D:\LingoFuse\Binary\
+├── LingoFuse64.dll
+├── z_ipc_64.dll
+├── mimalloc64.dll
+└── mimalloc-redirect.dll
+```
 
-第 6 条命中你的项目布局。所以**正常情况下不需要设任何环境变量**。
+然后把这个目录加到 `PATH` 上。
 
-若以上所有路径都不命中，最后会以裸文件名交给操作系统加载器，
-此时 `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` 仍可生效。
+### 5.4 把目录加入 PATH
 
-### 5.4 验证自动发现
+**当前 PowerShell 会话**：
 
-**新开一个 PowerShell**（不设任何环境变量）：
+```powershell
+$env:PATH = "D:\LingoFuse\Binary;" + $env:PATH
+```
+
+**永久生效**（Windows 系统设置）：
+
+1. `Win + R` → `sysdm.cpl` → 高级 → 环境变量
+2. 在"用户变量"或"系统变量"里找到 `Path`
+3. 添加 `D:\LingoFuse\Binary`
+4. 确认，重启 PowerShell
+
+```mermaid
+flowchart TD
+    A["打开 系统属性"] --> B["高级 选项卡"]
+    B --> C["环境变量 按钮"]
+    C --> D["用户变量 / 系统变量"]
+    D --> E["选中 Path → 编辑"]
+    E --> F["新建 → 填目录"]
+    F --> G["确认 → 重启 PowerShell"]
+
+    classDef step fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    class A,B,C,D,E,F,G step
+```
+
+**Linux / BSD**（`~/.bashrc` 或 `~/.zshrc`）：
+
+```bash
+export LD_LIBRARY_PATH="/opt/lingofuse/lib:$LD_LIBRARY_PATH"
+```
+
+**macOS**（`~/.zshrc`）：
+
+```bash
+export DYLD_LIBRARY_PATH="/opt/lingofuse/lib:$DYLD_LIBRARY_PATH"
+```
+
+### 5.5 验证
+
+**新开一个 PowerShell**，确认 PATH 已经包含目标目录：
+
+```powershell
+$env:PATH -split ';' | Select-String "LingoFuse"
+```
+
+**期望**：输出包含 `D:\LingoFuse\Binary` 的那一行。
+
+然后跑绑定加载：
 
 ```powershell
 cd D:\CoreLibrary\LingoFuse\ruby
@@ -292,61 +379,140 @@ true
 LingoFuse64.dll
 ```
 
-### 5.5 显式覆盖（可选）
+### 5.6 运行时搜索顺序
 
-如果 DLL 放在其他位置，可以设环境变量：
+`binding.rb` 的搜索顺序**只有**下面两条：
 
-```powershell
-$env:LINGOFUSE_LIB_PATH = "D:\OtherLocation\LingoFuse\Binary"
+```mermaid
+flowchart TD
+    A["绑定加载"] --> B["枚举系统 PATH"]
+    B --> C{"逐个目录查找<br/>LingoFuse64.dll?"}
+    C -->|"找到"| D["注册 SetDllDirectoryW<br/>（仅 Windows）"]
+    D --> E["Fiddle.dlopen 绝对路径"]
+    C -->|"未找到"| F["Fiddle.dlopen 裸文件名"]
+    F --> G["操作系统加载器默认搜索<br/>系统目录 / .so.conf / rpath"]
+    E --> H["加载成功"]
+    G --> H
+
+    classDef search fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    classDef fallback fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef ok fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
+
+    class A,B,C search
+    class F,G fallback
+    class D,E,H ok
 ```
 
-**该变量是会话级的**，新开 PowerShell 需要重设。如果长期使用，可以在 Windows 系统设置里加到用户环境变量。
+**没有**下面这些路径：
+
+- ❌ `LINGOFUSE_LIB_PATH` 环境变量（已移除）
+- ❌ 绑定自身目录
+- ❌ `Binary/` 子目录
+- ❌ 项目根目录
+- ❌ 当前工作目录
+
+**只有 PATH。** 如果 PATH 上没有，就是找不到。
 
 ---
 
 ## 六、一键环境诊断
 
-项目自带 `check_env.ps1`，检查编译环境：
+项目自带两个诊断脚本，用途不同。
+
+### 6.1 分工
+
+| 脚本 | 检查对象 | 何时运行 |
+|---|---|---|
+| `check_env.ps1` | 编译 C 扩展的**工具链** | 首次搭建环境、编译失败时 |
+| `check_env.rb` | Ruby 绑定的**运行时** | 首次使用、加载失败时 |
+
+```mermaid
+flowchart TD
+    Start["首次搭建环境"] --> CE1["check_env.ps1<br/>编译环境诊断"]
+    CE1 --> Q1{"Failed = 0?"}
+    Q1 -->|"否"| Fix1["按提示修复"]
+    Fix1 --> CE1
+    Q1 -->|"是"| Ready1["编译环境就绪"]
+    Ready1 --> Setup["setup_build_env.ps1<br/>编译 C 扩展"]
+    Setup --> CE2["check_env.rb<br/>运行时诊断"]
+    CE2 --> Q2{"Failed = 0?"}
+    Q2 -->|"否"| Fix2["按提示修复"]
+    Fix2 --> CE2
+    Q2 -->|"是"| Ready2["运行时就绪"]
+    Ready2 --> Test["run_test_ci.ps1<br/>完整测试"]
+
+    classDef build fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef run fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    classDef ok fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
+    classDef fail fill:#FFEBEE,stroke:#C62828,stroke-width:2px,color:#B71C1C
+
+    class CE1,Fix1 build
+    class CE2,Fix2 run
+    class Ready1,Ready2,Test ok
+```
+
+### 6.2 `check_env.ps1` — 编译环境诊断
 
 ```powershell
 cd D:\CoreLibrary\LingoFuse\ruby
 powershell -ExecutionPolicy Bypass -File check_env.ps1
 ```
 
-会依次检查 8 项：
+**检查内容**（8 个 Section）：
 
-1. PowerShell 版本与操作系统
-2. Ruby 版本、平台、`RbConfig`
-3. **GNU Make 与 gcc**（判断是不是 Embarcadero Make）
-4. `mkmf` 可用性 + 实际编译一个 C 程序
-5. `pthread` 编译链接 + `ruby/thread.h` 存在
-6. `LINGOFUSE_LIB_PATH` 与 DLL 文件（**可选**，缺失不阻塞构建）
-7. 扩展源码树完整性
-8. **汇总报告**（`Passed` / `Warned` / `Failed`）
+| Section | 检查项 |
+|:-------:|--------|
+| 1 | PowerShell 版本 + 操作系统 |
+| 2 | Ruby 版本 / 平台 / `RbConfig` |
+| 3 | **GNU Make（区分 Embarcadero）+ gcc** |
+| 4 | `mkmf` 可用性 + 实际编译一个 C 程序 |
+| 5 | `pthread.h` 编译链接 + `ruby/thread.h` 存在 |
+| 6 | **原生库 PATH 探测**（信息性，缺失仅 WARN） |
+| 7 | 扩展源码树完整性 |
+| 8 | 汇总报告 |
 
-**期望**：`Failed : 0`。
+**期望尾部**：
 
-`check_env.rb` 是另一个独立的诊断脚本，检查**运行时**环境：
+```
+  Passed : 26
+  Warned : 0
+  Failed : 0
+
+  All required checks passed.
+```
+
+**Section 6 特别说明**：这一节直接枚举 `$env:PATH`，逐个目录查找 `LingoFuse64.dll`。找到后还会验证 3 个兄弟 DLL 是否同目录。找不到只报 `[WARN]`，不阻塞。
+
+### 6.3 `check_env.rb` — 运行时诊断
 
 ```powershell
 ruby check_env.rb
 ```
 
+**检查内容**（5 个 Section）：
+
+| Section | 检查项 |
+|:-------:|--------|
+| 1 | Ruby 版本 |
+| 2 | 包布局（11 个 lib 文件 + 3 个 test 文件） |
+| 3 | 原生库加载 + C ABI 往返（create / write / read / free） |
+| 4 | 全栈冒烟测试 + **C 扩展加载状态** |
+| 5 | 汇总 |
+
 **期望尾部**：
 
 ```
-  Passed : 23
+  Passed : 26
   Failed : 0
-
-  All checks passed. The environment is ready.
 ```
 
-两个脚本用途不同：
+**关键检查**：
 
-| 脚本 | 检查对象 | 何时运行 |
-|---|---|---|
-| `check_env.ps1` | 编译 C 扩展的工具链 | 首次搭建环境、编译失败时 |
-| `check_env.rb` | Ruby 绑定运行时 | 首次使用、加载失败时 |
+```
+  [OK]   lingofuse_ext is loaded (NativeBridge available).
+```
+
+如果显示 `[FAIL] lingofuse_ext is NOT available`，说明 C 扩展未正确安装，需要回到 `BUILD_EXTENSION.md` 重新编译。
 
 ---
 
@@ -360,6 +526,8 @@ ruby check_env.rb
 ruby -v
 gem -v
 ```
+
+**期望**：Ruby 4.0+，`x64-mingw-ucrt`，gem 4.x+。
 
 ### 第 2 步：DevKit 工具链
 
@@ -378,13 +546,15 @@ gem list minitest rake debug
 
 **期望**：列出这三个 gem 及版本号。
 
-### 第 4 步：原生库
+### 第 4 步：原生库在 PATH 上
 
 ```powershell
-Get-ChildItem D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll
+$env:PATH -split ';' | Select-String "LingoFuse"
 ```
 
-**期望**：返回文件信息。
+**期望**：输出包含目标目录的那一行。
+
+或者用 `check_env.ps1` 的 Section 6 结果作为权威判断。
 
 ### 第 5 步：绑定加载
 
@@ -425,8 +595,25 @@ powershell -ExecutionPolicy Bypass -File run_test_ci.ps1
 
 ```
 ========================================================================
-All 13 test files passed.
+All 14 test files passed.
 ========================================================================
+```
+
+### 7.1 验证流程图
+
+```mermaid
+flowchart TD
+    S1["第 1 步<br/>Ruby 环境"] --> S2["第 2 步<br/>DevKit 工具链"]
+    S2 --> S3["第 3 步<br/>gem 依赖"]
+    S3 --> S4["第 4 步<br/>原生库 PATH"]
+    S4 --> S5["第 5 步<br/>绑定加载"]
+    S5 --> S6["第 6 步<br/>C 扩展加载"]
+    S6 --> S7["第 7 步<br/>单测通过"]
+    S7 --> S8["第 8 步<br/>全部通过"]
+
+    classDef step fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    class S1,S2,S3,S4,S5,S6,S7 step
+    class S8 step
 ```
 
 ---
@@ -522,16 +709,42 @@ Extensions 面板搜索并安装：
 | 症状 | 原因 | 修复 |
 |---|---|---|
 | `ruby: command not found` | PATH 未生效 | 重启 PowerShell 或重装 RubyInstaller |
-| `cannot load such file -- lingofuse` | load path 不对 | 用 `require_relative` 或 `-I lib` |
-| `Failed to load the LingoFuse native library` | DLL 找不到或依赖缺失 | 检查 `Binary/` 目录，或设 `LINGOFUSE_LIB_PATH` |
-| `[BUG] rb_thread_call_with_gvl()` | C 扩展未编译 | 运行 `setup_build_env.ps1` |
-| `Fatal makefile ... No terminator` | 用了 Embarcadero Make | 用 msys64 的 GNU Make |
-| `gettimeofday: conflicting types` | 头文件冲突 | 更新 `lingofuse_ext.c`（去掉 `<sys/time.h>`） |
-| `undefined reference to 'clock_gettime'` | MinGW 缺少 pthread | 重装 DevKit |
+| `cannot load such file -- lingofuse` | `$LOAD_PATH` 未包含 `lib/` | 用 `require_relative` 或 `-I lib` |
+| `Failed to load the LingoFuse native library` | 原生库不在 PATH 上 | 见 §5.4，把目录加入 PATH |
+| `The specified module could not be found` | 兄弟 DLL 缺失或分散 | 4 个 DLL 必须同一目录 |
+| `[BUG] rb_thread_call_with_gvl()` | C 扩展未编译 | 跑 `setup_build_env.ps1` |
+| `[LingoFuse::NativeBridge] lingofuse_ext not available` | C 扩展不在 `lib/` | 见 BUILD_EXTENSION.md 问题 5 |
+| `No GNU Make found` | DevKit 未安装 / PATH 顺序 | 见 §3.2 |
+| `Fatal makefile ... No terminator` | 用了 Embarcadero Make | 前置 msys64 到 PATH |
+| `gettimeofday: conflicting types` | 头文件冲突 | 更新 `lingofuse_ext.c`（去 `<sys/time.h>`） |
+| `undefined reference to 'clock_gettime'` | MinGW 缺 pthread | 重装 DevKit |
 | `gem install debug` 失败 | DevKit 未装 | 先装 DevKit 再装 debug |
 | `cannot load such file -- debug` | gem 未安装 | `gem install debug` |
 | `Workspace not activated` (VS Code) | 工作区 URI 异常 | 用 `code .` 而不是 `code <path>` 打开 |
 | `Cannot find any Ruby installations` (Ruby LSP) | 扩展检测失败 | 卸载 Ruby LSP，或用 rdbg 替代 |
+
+### 9.1 通用排查顺序
+
+```mermaid
+flowchart TD
+    Issue["遇到问题"] --> Q1{"check_env.ps1<br/>通过?"}
+    Q1 -->|"否"| Fix1["修复编译环境<br/>§6.2"]
+    Q1 -->|"是"| Q2{"setup_build_env.ps1<br/>通过?"}
+    Q2 -->|"否"| Fix2["按 Section 0 报错修复<br/>BUILD_EXTENSION.md §4"]
+    Q2 -->|"是"| Q3{"check_env.rb<br/>通过?"}
+    Q3 -->|"否"| Fix3["修复运行时环境<br/>§6.3"]
+    Q3 -->|"是"| Q4{"run_test_ci.ps1<br/>通过?"}
+    Q4 -->|"否"| Fix4["看具体失败的测试文件"]
+    Q4 -->|"是"| OK["环境完全就绪"]
+
+    classDef ok fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
+    classDef fail fill:#FFEBEE,stroke:#C62828,stroke-width:2px,color:#B71C1C
+    classDef check fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+
+    class OK ok
+    class Fix1,Fix2,Fix3,Fix4 fail
+    class Q1,Q2,Q3,Q4 check
+```
 
 ---
 
@@ -547,13 +760,44 @@ ruby/
 ├── check_env.ps1                    编译环境诊断（PowerShell）
 ├── check_env.rb                     运行时环境诊断（Ruby）
 ├── setup_build_env.ps1              一键编译 C 扩展
-├── run_test_ci.ps1                  Windows CI 测试运行器
-├── run_test_ci.sh                   Linux/macOS CI 测试运行器
-├── BUILD_EXTENSION.md               本目录下的编译指南
+├── clean.ps1                        清理编译产物
+├── run_tests.ps1                    开发测试运行器（Windows）
+├── run_test_ci.ps1                  CI 测试运行器（Windows）
+├── run_test_ci.sh                   CI 测试运行器（Linux / macOS）
+├── BUILD_EXTENSION.md               编译指南
 ├── INSTALL_DEPENDENCIES.md          本文件
+├── README.md                        完整手册
 ├── lib/
+│   ├── lingofuse.rb                 公共入口
 │   ├── lingofuse_ext.so             C 扩展（编译产物）
 │   └── lingofuse/                   绑定源码
 ├── ext/lingofuse_ext/               C 扩展源码
-└── test/                            测试套件（13 个文件）
+└── test/                            测试套件（14 个文件）
 ```
+
+### 10.1 运行时依赖与编译时依赖
+
+```mermaid
+flowchart LR
+    subgraph Build["编译时"]
+        B1["extconf.rb"] --> B2["Makefile"]
+        B2 --> B3["lingofuse_ext.so"]
+    end
+    subgraph Runtime["运行时"]
+        R1["lib/*.rb"] --> R2["LingoFuse64.dll<br/>（PATH）"]
+        R1 --> R3["lingofuse_ext.so<br/>（lib/）"]
+    end
+
+    classDef build fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef runtime fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+
+    class B1,B2,B3 build
+    class R1,R2,R3 runtime
+```
+
+**关键区别**：
+
+| 依赖 | 何时需要 | 位置要求 |
+|------|:--------:|----------|
+| `lingofuse_ext.so` | 编译时产出，运行时加载 | `lib/`（与 `lingofuse/` 同级） |
+| `LingoFuse64.dll` | 仅运行时 | PATH 上的任意目录，4 个 DLL 同目录 |

@@ -351,24 +351,71 @@ if ($makeCmd) {
 }
 
 # =============================================================================
-# Section 3 — LINGOFUSE_LIB_PATH (informational)
+# Section 3 — LingoFuse native library (informational)
 # -----------------------------------------------------------------------------
-#  This variable is NOT required to build the extension. It is only
-#  used by the runtime binding, and even then it is optional: binding.rb
-#  automatically searches several standard locations. This section is
-#  purely informational.
+#  The native library (LingoFuse64.dll and its three siblings) is
+#  resolved at RUNTIME by lib/lingofuse/binding.rb, which searches ONLY
+#  the operating system's library search path:
+#
+#      Windows           PATH
+#      Linux / BSD       LD_LIBRARY_PATH
+#      macOS             DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH
+#
+#  There is no binding-specific environment variable. The same PATH
+#  lookup that any other Windows program uses is the only mechanism.
+#
+#  The build step itself does NOT need the native library: the C
+#  extension does not link against it. All LingoFuse function pointers
+#  are passed in from Ruby through the existing Fiddle bindings.
+#
+#  This section reports whether the library is currently discoverable
+#  through PATH, so that the operator knows about a potential runtime
+#  problem before moving on.
 # =============================================================================
 
-Write-Section '3. LingoFuse native library path (informational)'
+Write-Section '3. LingoFuse native library (informational)'
 
-if ($env:LINGOFUSE_LIB_PATH) {
-    Write-Ok "LINGOFUSE_LIB_PATH = $env:LINGOFUSE_LIB_PATH"
+$nativeLibName =
+    if ([IntPtr]::Size -eq 8) { 'LingoFuse64.dll' } else { 'LingoFuse32.dll' }
+
+$foundOnPath = $null
+foreach ($dir in ($env:PATH -split ';')) {
+    if (-not $dir) { continue }
+    try {
+        $candidate = Join-Path $dir $nativeLibName
+        if (Test-Path $candidate -PathType Leaf) {
+            $foundOnPath = $dir
+            break
+        }
+    } catch {
+        # A malformed PATH entry must not abort the search.
+    }
+}
+
+if ($foundOnPath) {
+    Write-Ok "Found on PATH: $nativeLibName"
+    Write-Info "  directory: $foundOnPath"
+
+    # LingoFuse64.dll loads its three siblings by name at load time, so
+    # they must live in the same directory.
+    foreach ($sibling in @('z_ipc_64.dll', 'mimalloc64.dll', 'mimalloc-redirect.dll')) {
+        if (Test-Path (Join-Path $foundOnPath $sibling)) {
+            Write-Ok "  sibling present: $sibling"
+        } else {
+            Write-Warn "  sibling MISSING: $sibling"
+            Write-Info '  All four DLLs must live in the same directory.'
+        }
+    }
 } else {
-    Write-Info 'LINGOFUSE_LIB_PATH is not set in this shell.'
-    Write-Info 'This is OPTIONAL. It is not needed for the build, and the'
-    Write-Info 'runtime binding searches standard locations automatically.'
-    Write-Info 'Set it only if the DLLs are stored outside the project:'
-    Write-Info '    $env:LINGOFUSE_LIB_PATH = "D:\path\to\binary"'
+    Write-Warn "$nativeLibName is not on PATH."
+    Write-Info 'The build will still succeed (the C extension does not link'
+    Write-Info 'against the native library). The load test in Section 7 will'
+    Write-Info 'also succeed (it does not touch the native library either).'
+    Write-Info ''
+    Write-Info 'At RUNTIME, however, lib/lingofuse/binding.rb will fail to'
+    Write-Info 'load the library unless the directory that contains it is on'
+    Write-Info 'PATH. Add it like this (current PowerShell session):'
+    Write-Info '    $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH'
 }
 
 # =============================================================================
@@ -453,11 +500,11 @@ try {
     # Section 6 — Artifact + strict install
     # -----------------------------------------------------------------
     #  The install step is STRICT: any failure aborts the script with
-    #  exit code 1. This is deliberate. A previous version reported
-    #  [OK] even when Copy-Item failed (typically because the
-    #  destination .so was locked by a running Ruby process), and then
-    #  ran a load test against the STALE file in lib/, producing a
-    #  false-positive success message.
+    #  exit code 1. A previous version reported [OK] even when
+    #  Copy-Item failed (typically because the destination .so was
+    #  locked by a running Ruby process), and then ran a load test
+    #  against the STALE file in lib/, producing a false-positive
+    #  success message.
     # =================================================================
 
     Write-Section '6. Artifact'
@@ -498,11 +545,6 @@ try {
 
     # -----------------------------------------------------------------
     # Step 6a — remove any stale copy of the destination file.
-    #
-    # On Windows, a .so that has been loaded into a process cannot be
-    # overwritten while that process is alive. Removing the file first
-    # produces a clearer error than overwriting it, and lets us give
-    # the user a precise remediation message.
     # -----------------------------------------------------------------
     if (Test-Path $destPath) {
         try {
@@ -537,9 +579,6 @@ try {
 
     # -----------------------------------------------------------------
     # Step 6c — verify the copied file matches the source.
-    #
-    # A size check catches the rare case where the copy succeeded from
-    # PowerShell's point of view but produced a truncated file.
     # -----------------------------------------------------------------
     $srcSize  = (Get-Item $soFile.FullName).Length
     $destSize = (Get-Item $destPath).Length

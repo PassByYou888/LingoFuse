@@ -13,6 +13,20 @@
 #      and for the process-wide network event handlers.
 #
 # ============================================================================
+# C EXTENSION LOADING
+# ============================================================================
+# The C extension `lingofuse_ext.so` is loaded with `require_relative`,
+# which resolves the file path relative to THIS source file. That makes
+# the binding fully relocatable: move the whole ruby/ tree anywhere and
+# the extension is still found, without depending on $LOAD_PATH, on the
+# current working directory, or on any environment variable.
+#
+# The extension is not mandatory for pure-local usage. When it is
+# missing, the binding falls back to the Fiddle callback path, which is
+# safe only for LocalCall / LocalNotify. Remote callbacks require the
+# extension (see BUILD_EXTENSION.md for the rationale).
+#
+# ============================================================================
 # CALLBACK KINDS (must match the C constants)
 # ============================================================================
 #   0 = Call
@@ -50,7 +64,9 @@ require_relative 'data_handle'
 require_relative 'callback_error_reporter'
 
 begin
-  require 'lingofuse_ext'
+  # Resolved relative to THIS file: lib/lingofuse_ext.so.
+  # Ruby's require machinery tries .so, .dll, .bundle, and .rb suffixes.
+  require_relative '../lingofuse_ext'
   LINGOFUSE_EXT_LOADED = true
 rescue LoadError => e
   LINGOFUSE_EXT_LOADED = false

@@ -1,18 +1,19 @@
-# LingoFuse HTTP Bridge — Knowledge Base
+# LingoFuse HTTP Bridge — Knowledge Base (v6.0)
 
-**Document version**: v5.0
+**Document version**: v6.0
 **Component name**: `bridge` (distributed as `bridge.py` or `bridge.exe`)
 **Document type**: Knowledge Base (for AI and humans)
-**Reading goal**: Master the bridge's behavior and deployment without reading the source
+**Reading goal**: Master the bridge's behavior, deployment, and test methodology without reading the source
 
 ---
 
 > **Self-declaration of this knowledge base**
 >
 > 1. Every contract in this document is traceable to the actual bridge implementation. Every item marked 🟢 can be verified against the source.
-> 2. This document **supersedes** v4.0. v4.0 described a bidirectional bridge; the current bridge adds a **third direction** (JSON repair) and a **forward-only operating mode**.
+> 2. This document **supersedes** v5.0. v5.0 documented the tri-directional bridge. v6.0 adds the **handle-ownership model** (why the inbound path must use the synchronous call family), a **test methodology chapter** (unit / integration / end-to-end), and the **debugging post-mortem** of the async-handle misuse that v5.0 shipped with.
 > 3. If the source and this document conflict, **the source wins**.
-> 4. All diagrams use Mermaid. All log output and code comments are English (this is a source-code contract).
+> 4. All diagrams use Mermaid. All log output and code comments are English.
+> 5. The bridge's history contains one important correctness fix (see Chapter 12, `BR-PIT-017` through `BR-PIT-020`). Any future maintainer who rewrites `handle_call` must read those items first.
 
 ---
 
@@ -37,12 +38,16 @@
 - [Chapter 11 — Extension and Modification (BR-EXT-*)](#chapter-11--extension-and-modification)
 - [Chapter 12 — Pitfalls (BR-PIT-*)](#chapter-12--pitfalls)
 
-**Part IV — Integration and Evolution**
-- [Chapter 13 — Integration Guide (BR-INT-*)](#chapter-13--integration-guide)
-- [Chapter 14 — Upgrade Guide (BR-UP-*)](#chapter-14--upgrade-guide)
+**Part IV — Verification**
+- [Chapter 13 — Test Methodology (BR-TEST-*)](#chapter-13--test-methodology)
+- [Chapter 14 — Debugging Post-Mortem (BR-PM-*)](#chapter-14--debugging-post-mortem)
 
-**Part V — Meta**
-- [Chapter 15 — Self-Review and Index](#chapter-15--self-review-and-index)
+**Part V — Integration and Evolution**
+- [Chapter 15 — Integration Guide (BR-INT-*)](#chapter-15--integration-guide)
+- [Chapter 16 — Upgrade Guide (BR-UP-*)](#chapter-16--upgrade-guide)
+
+**Part VI — Meta**
+- [Chapter 17 — Self-Review and Index](#chapter-17--self-review-and-index)
 - [Appendix A — ID Overview](#appendix-a--id-overview)
 - [Appendix B — Configuration Cheat Sheet](#appendix-b--configuration-cheat-sheet)
 - [Appendix C — Retrieval Rules for AI](#appendix-c--retrieval-rules-for-ai)
@@ -72,7 +77,7 @@ flowchart LR
     end
 
     HTTPClient -->|"POST /app/api"| Bridge
-    Bridge -->|"LF_Call"| BizApp
+    Bridge -->|"LF_Call (synchronous family)"| BizApp
     BizApp -->|"LF response"| Bridge
     Bridge -->|"HTTP 200"| HTTPClient
 
@@ -95,50 +100,41 @@ flowchart LR
 | **B — Outbound** | LingoFuse caller | `LF_Call` → HTTP POST | Send a LingoFuse request to an external HTTP service |
 | **C — Repair** | LingoFuse caller | `LF_Call` → repair engine | Delegate malformed JSON to the unified repair engine |
 
-## 0.3 What the Bridge Is For
-
-The LingoFuse mesh lets services written in **many languages** — Pascal, Python, C++, Rust, C#, Java, and others — call each other. What it does **not** natively provide is a stable, language-neutral HTTP boundary.
-
-The bridge provides exactly that boundary:
-
-- **A stable POST entry point**: any HTTP client, in any language, can POST to a well-known URL and reach any LingoFuse App.
-- **A stable outbound POST proxy**: any LingoFuse caller can request an outbound HTTP POST without needing an HTTP client library in its own language.
-- **A stable JSON repair service**: any LingoFuse caller can delegate malformed JSON to the unified repair engine, without vendoring a repair library in its own language.
-- **A stable binary passthrough guarantee**: payloads that are not JSON are forwarded byte-for-byte unchanged.
-
-The bridge is deliberately a **thin gateway**. It does not validate business schemas, does not transform business data, and does not hold state. It moves bytes between the HTTP world and the LingoFuse mesh.
-
-## 0.4 Three Ironclad Rules
+## 0.3 Four Ironclad Rules
 
 | # | Rule | Violation Result | ID |
 |:-:|------|------------------|-----|
 | 1 | **The URL path determines inbound routing**: `/<app>/<api>` or `/<api>` + `--app` | Returns `-2` (HTTP 400) | `BR-IN-003` |
 | 2 | **`--endpoint` must match the backend**; the default is almost always wrong | Returns `-3` | `BR-ERR-003`, `BR-PIT-001` |
 | 3 | **JSON normalization only applies to JSON-recognizable payloads**; all other bytes are forwarded unchanged | Binary safety preserved | `BR-JSON-001` |
+| 4 | **The inbound path must call the LingoFuse *synchronous* family, never the *asynchronous* family**; the async family's result handle belongs to the framework and is released the moment its callback returns | Use-after-free, double-free, intermittent empty bodies | `BR-PIT-017`, `BR-PM-001` |
 
-## 0.5 Which Chapter Should I Read?
+## 0.4 Which Chapter Should I Read?
 
 ```mermaid
 flowchart TD
     Start["What do I want to do?"] --> Q1{"First contact?"}
     Q1 -- "Yes" --> R1["Chapters 0–2"]
     Q1 -- "No" --> Q2{"Call the bridge?"}
-    Q2 -- "Yes (from HTTP)" --> R2["Ch. 3 + §13.1"]
-    Q2 -- "Yes (from LingoFuse)" --> R3["Ch. 4, 5 + §13.2"]
+    Q2 -- "Yes (from HTTP)" --> R2["Ch. 3 + §15.1"]
+    Q2 -- "Yes (from LingoFuse)" --> R3["Ch. 4, 5 + §15.2"]
     Q2 -- "No" --> Q4{"Configure / deploy?"}
     Q4 -- "Yes" --> R4["Ch. 8 + Ch. 10"]
     Q4 -- "No" --> Q5{"Hit an error?"}
     Q5 -- "Yes" --> R5["Ch. 9 + Ch. 12"]
     Q5 -- "No" --> Q6{"Modify the source?"}
     Q6 -- "Yes" --> R6["Ch. 11"]
-    Q6 -- "No" --> Q7{"Upgrade?"}
-    Q7 -- "Yes" --> R7["Ch. 14"]
-    Q7 -- "No" --> R8["Ch. 15 (index)"]
+    Q6 -- "No" --> Q7{"Run / extend tests?"}
+    Q7 -- "Yes" --> R7["Ch. 13 + Ch. 14"]
+    Q7 -- "No" --> Q8{"Upgrade?"}
+    Q8 -- "Yes" --> R8["Ch. 16"]
+    Q8 -- "No" --> R9["Ch. 17 (index)"]
 
     style Start fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
     style R2 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
     style R3 fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
     style R5 fill:#E74C3C,stroke:#922B21,stroke-width:3px,color:#FFFFFF
+    style R7 fill:#F39C12,stroke:#7E5109,stroke-width:3px,color:#FFFFFF
 ```
 
 ---
@@ -250,6 +246,8 @@ flowchart LR
 | **Rollback safety** | If network setup fails, every created resource is released | `BR-DEP-008` |
 | **Binary safety** | Non-JSON payloads are returned unchanged; the bridge never guesses | `BR-JSON-001` |
 | **Three-layer configuration** | Global variable → environment variable → command line, all converging on one config object | `BR-CFG-001` |
+| **Synchronous-only inbound dispatch** | The inbound path uses `LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call`, never the async family | `BR-PIT-017` |
+| **Callback-safe deserialization** | Any data the caller needs is copied out of the result handle *inside* the callback, never by reference | `BR-PIT-018` |
 
 ---
 
@@ -270,6 +268,8 @@ flowchart LR
 | **repair API** | The Call API exposed to LingoFuse callers for JSON repair (default name `__lf_repair_json__`) |
 | **Forward-only mode** | An operating mode where the HTTP listener is disabled |
 | **Beacon** | The LingoFuse service registration hub (`bridge_service`) |
+| **Synchronous family** | `LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call` — the returned handle belongs to the caller |
+| **Asynchronous family** | `LF_Async_Call` / `LF_UID_Async_Call` / `LF_P2PNAME_Async_Call` — the `Result_` handle belongs to the framework |
 
 ## 2.2 ID Naming Convention
 
@@ -288,8 +288,10 @@ Format: `BR-<subsystem>-<three-digit number>`
 | `BR-DEP` | Deployment and operations | Chapter 10 |
 | `BR-EXT` | Extension and modification | Chapter 11 |
 | `BR-PIT` | Pitfalls | Chapter 12 |
-| `BR-INT` | Integration | Chapter 13 |
-| `BR-UP` | Upgrade | Chapter 14 |
+| `BR-TEST` | Test methodology | Chapter 13 |
+| `BR-PM` | Debugging post-mortem | Chapter 14 |
+| `BR-INT` | Integration | Chapter 15 |
+| `BR-UP` | Upgrade | Chapter 16 |
 
 ## 2.3 Evidence Levels
 
@@ -325,6 +327,8 @@ Format: `BR-<subsystem>-<three-digit number>`
 | `/exp` | `pas` | `app='pas'`, `api='exp'` |
 | `/exp` | unset | **Error `-2` (HTTP 400)** |
 | `/a/b/c` | any | `app='a'`, `api='b/c'` (the tail is joined into `api`) |
+| `/uid/<hex64>/<api>` | any | UID addressing |
+| `/p2p/<group>/<api>` | any | P2PName addressing |
 | `/` | any | **Error `-2`** |
 
 ## 3.2 ID: `BR-IN-002` — Request Body Handling
@@ -367,24 +371,26 @@ flowchart TD
     G -->|"Not available"| X["Return -3"]
     G -->|"Available"| Z
     Z --> H["Forward to LingoFuse"]
-
-    style X fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
 ```
 
-## 3.5 ID: `BR-IN-005` — Forwarding to LingoFuse
+## 3.5 ID: `BR-IN-005` — Forwarding to LingoFuse (Synchronous Family)
 
 - **Evidence level**: 🟢
 - **Flow**:
   1. Create a DataHandle for `api_name`.
   2. Write the body (a NUL terminator is appended).
-  3. Synchronously call `app_name` with the configured timeout.
-  4. Release the input handle (always, even on exception).
-  5. If the returned handle is NULL, treat as a call failure.
-  6. Read the response bytes up to the first NUL.
-  7. Release the response handle (always).
+  3. Dispatch using the **synchronous** call primitive for the selected addressing mode:
+     - App-name: `LF_Call(app_name, hnd, timeout_ms)`
+     - UID: `LF_UID_Call(uid_array, hnd, timeout_ms)`
+     - P2PName: `LF_P2PNAME_Call(group_name, hnd, timeout_ms)`
+  4. **Reset the result handle position to 0** with `LF_SetPos(res_ptr, 0)` before reading.
+  5. Read the response bytes with `read_string_bytes(res_ptr)`.
+  6. Release the result handle with `LF_FreeData(res_ptr)` — legal because the **synchronous family returns a caller-owned handle**.
+  7. Release the input handle (always, even on exception).
 - **Key constraints**:
   - Every handle release happens on the exception path too.
   - The call timeout is in milliseconds.
+  - **The synchronous family is chosen deliberately**; see `BR-PIT-017` for why the asynchronous family is unsafe here.
 
 ## 3.6 ID: `BR-IN-006` — Response Content-Type Mapping
 
@@ -473,7 +479,6 @@ flowchart TD
 - **Evidence level**: 🟢
 - **Allow-list**: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`
 - **Out-of-list result**: `{"error": "Unsupported HTTP method: ..."}`
-- **Why an allow-list**: to prevent a caller from passing an arbitrary string.
 
 ## 4.4 ID: `BR-OUT-004` — Body Serialization Policy
 
@@ -486,9 +491,6 @@ flowchart LR
     BodyObj["Caller body object<br/>{'msg': '你好'}"] --> Ser["Canonical serialization<br/>(ensure_ascii=False)"]
     Ser --> Bytes["UTF-8 bytes<br/>{'msg': 你好}"]
     Bytes --> HTTP["HTTP POST body"]
-
-    style Ser fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-    style Bytes fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
 ```
 
 ## 4.5 ID: `BR-OUT-005` — Exception Isolation
@@ -516,12 +518,6 @@ flowchart LR
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `status_code` | int | HTTP status code |
-| `headers` | object | all keys lower-cased |
-| `body` | any | if the response body is JSON, a nested value; otherwise, a string |
-
 - **Error response**:
 
 ```json
@@ -538,7 +534,6 @@ flowchart LR
 - **Evidence level**: 🟢
 - **Upper bound**: 300 s.
 - **Out-of-range handling**: a caller passing > 300 is **clamped to 300**, not rejected.
-- **Rationale**: prevents a caller from holding a worker thread indefinitely.
 
 ## 4.9 ID: `BR-OUT-009` — Callback Threading Model
 
@@ -550,7 +545,7 @@ flowchart LR
 ## 4.10 ID: `BR-OUT-010` — Interaction with Forward-Only Mode
 
 - **Evidence level**: 🟢
-- **Contract**: the outbound API is registered and served identically in **both** operating modes. A forward-only bridge is a fully functional LingoFuse-to-HTTP proxy — it merely has no inbound HTTP listener.
+- **Contract**: the outbound API is registered and served identically in **both** operating modes.
 
 ---
 
@@ -565,7 +560,6 @@ flowchart LR
   - LLMs frequently emit near-JSON that a strict parser rejects: trailing commas, single quotes, unbalanced braces, stray BOMs.
   - Every language in the mesh would otherwise need to vendor its own repair library.
   - The bridge already carries the canonical repair engine; exposing it as a Call API makes the repair policy **language-neutral**.
-- **Result**: any LingoFuse caller, in any language, can call `__lf_repair_json__` and get back a repaired string.
 
 ## 5.2 ID: `BR-REP-002` — Input Contract
 
@@ -592,7 +586,6 @@ flowchart LR
 
 - **Evidence level**: 🟢
 - **Contract**: the returned text never contains a `\uXXXX` escape for any character that can be emitted literally in UTF-8.
-- **Why it matters**: an advanced caller may consume the repaired string directly. Without this guarantee, such a caller would observe `\u4f60\u597d` instead of `你好`.
 
 ```mermaid
 flowchart LR
@@ -600,9 +593,6 @@ flowchart LR
     Rep --> Engine["Repair engine<br/>(ensure_ascii=False)"]
     Engine --> Out["repaired text<br/>(literal UTF-8, no \\uXXXX)"]
     Out --> Caller
-
-    style Engine fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-    style Out fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
 ```
 
 ## 5.5 ID: `BR-REP-005` — Exception Isolation
@@ -613,22 +603,17 @@ flowchart LR
 ## 5.6 ID: `BR-REP-006` — Repair Layer Alignment
 
 - **Evidence level**: 🟢
-- **Contract**: the repair API uses the **same** engine as the bridge's inbound normalization (Layer 2), and as every other JSON read path in the toolchain.
-- **Consequence**: a payload that can be repaired on the inbound path can be repaired by the repair API, and vice versa. One policy, one engine, one behavior.
+- **Contract**: the repair API uses the **same** engine as the bridge's inbound normalization (Layer 2).
 
 ## 5.7 ID: `BR-REP-007` — Encoding Fallback Chain
 
 - **Evidence level**: 🟢
 - **Order**: UTF-8 → GBK → Latin-1.
-- **Why**:
-  - UTF-8 is the modern standard.
-  - GBK covers the default encoding on Chinese Windows.
-  - Latin-1 never fails (any byte sequence decodes), acting as the ultimate fallback.
 
 ## 5.8 ID: `BR-REP-008` — Interaction with Forward-Only Mode
 
 - **Evidence level**: 🟢
-- **Contract**: the repair API is registered and served identically in **both** operating modes. A forward-only bridge is a fully functional JSON repair service.
+- **Contract**: the repair API is registered and served identically in **both** operating modes.
 
 ---
 
@@ -661,10 +646,6 @@ flowchart TD
     OK --> OUT["6. Re-serialize canonically"]
     REP --> OUT
     OUT --> ENC["7. Encode as UTF-8"]
-
-    style OK fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
-    style REP fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
-    style PASS fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
 ```
 
 ## 6.3 ID: `BR-JSON-003` — The Four Status Codes
@@ -679,18 +660,11 @@ flowchart TD
 ## 6.4 ID: `BR-JSON-004` — Permitted Repairs
 
 - **Evidence level**: 🟢
-- **Conservative repairs** (never change the meaning of a well-formed document):
+- **Conservative repairs**:
   1. Strip a UTF-8 BOM.
   2. Strip trailing NUL bytes.
   3. Strip a leading U+FEFF character.
   4. Remove trailing commas (`{"a":1,}` → `{"a":1}`).
-- **What it does not do**:
-  - Does not repair missing quotes on its own.
-  - Does not convert single quotes to double quotes on its own.
-  - Does not infer missing braces on its own.
-  - **Does not modify any binary payload.**
-
-> Note: the deeper repair layer is *more* aggressive, but it re-validates its own output against strict JSON, so the binary-safety guarantee is preserved.
 
 ## 6.5 ID: `BR-JSON-005` — Status Classification Truth Table
 
@@ -711,7 +685,6 @@ flowchart TD
 
 - **Evidence level**: 🟢
 - **Contract**: normalizing an already-normalized payload produces the same bytes.
-- **Why**: after the first call produces canonical output, the second call classifies it as canonical and re-serializes to the same bytes.
 
 ## 6.7 ID: `BR-JSON-007` — Single Source of Serialization Policy
 
@@ -721,24 +694,16 @@ flowchart TD
   1. Inbound normalization (step 6).
   2. Outbound body serialization.
   3. Error response serialization.
-- **Why it matters**: changing any of these to a different serializer would introduce `\uXXXX` escapes and violate the toolchain-wide contract.
 
 ## 6.8 ID: `BR-JSON-008` — Encoding Fallback Order
 
 - **Evidence level**: 🟢
 - **Attempt order**: UTF-8 → GBK → Latin-1.
-- **Why**:
-  - UTF-8 is the modern standard.
-  - GBK covers the default encoding on Chinese Windows.
-  - Latin-1 never fails, acting as the ultimate fallback.
 
 ## 6.9 ID: `BR-JSON-009` — Binary Safety Boundary
 
 - **Evidence level**: 🟢
-- **Safe cases**:
-  - Any byte sequence.
-  - Payloads containing NUL bytes.
-  - Non-UTF-8 text (handled as passthrough).
+- **Safe cases**: any byte sequence, payloads containing NUL bytes, non-UTF-8 text.
 - **Unsafe cases**: **none** (this is a hard guarantee).
 
 ---
@@ -760,32 +725,20 @@ flowchart TD
 
 - **Evidence level**: 🟢
 - **Use cases**:
-  1. **Internal relay**: the bridge runs as an internal node that must not be reachable from the network, but still must provide outbound HTTP proxying and JSON repair to LingoFuse peers.
-  2. **Edge proxy already present**: HTTP listening is handled by a different process (nginx, a reverse proxy, a sidecar), and this instance is dedicated to Call API serving.
-  3. **Restricted host environment**: port binding is not permitted in the container/pod, but LingoFuse IPC is available.
+  1. **Internal relay**: must not be reachable from the network.
+  2. **Edge proxy already present**: HTTP handled elsewhere.
+  3. **Restricted host environment**: port binding not permitted.
 
 ## 7.3 ID: `BR-MODE-003` — Behavior in Forward-Only Mode
 
 - **Evidence level**: 🟢
 - **Startup sequence**:
-  1. Read configuration into the global config object (three layers: global → env → CLI).
+  1. Read configuration into the global config object.
   2. Configure logging.
-  3. Print the startup banner, which explicitly reports the mode.
-  4. Register the bridge App and both Call APIs on the LingoFuse mesh.
-  5. **Skip** the HTTP listener. Instead, the main thread sleeps.
-  6. On Ctrl+C or a process signal, the cleanup routine runs from the `finally` block.
-
-- **What is *not* done**:
-  - No HTTP listener.
-  - No TCP port bound.
-  - No inbound request handler executed at runtime.
-  - No path parsing, pre-check, or HTTP response building.
-
-- **What *is* done**:
-  - The bridge App is registered.
-  - The outbound Call API is registered.
-  - The repair Call API is registered.
-  - The LingoFuse main thread is started.
+  3. Print the startup banner (reports the mode).
+  4. Register the bridge App and both Call APIs.
+  5. **Skip** the HTTP listener; the main thread sleeps.
+  6. On Ctrl+C, cleanup runs from the `finally` block.
 
 ## 7.4 ID: `BR-MODE-004` — Main Thread Behavior Comparison
 
@@ -793,23 +746,17 @@ flowchart TD
 flowchart TD
     Start["Run the bridge"] --> Setup["Register the App and Call APIs"]
     Setup --> Fork{"forward_only?"}
-    Fork -- "False (full mode)" --> Flask["HTTP listener runs<br/>blocks in the request loop"]
-    Fork -- "True (forward-only)" --> Sleep["Main thread sleeps<br/>(no CPU consumed)"]
+    Fork -- "False (full mode)" --> Flask["HTTP listener runs"]
+    Fork -- "True (forward-only)" --> Sleep["Main thread sleeps"]
     Flask --> Interrupt["Ctrl+C / signal"]
     Sleep --> Interrupt
-    Interrupt --> Cleanup["Cleanup<br/>(idempotent)"]
-
-    style Fork fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
-    style Flask fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
-    style Sleep fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    Interrupt --> Cleanup["Cleanup (idempotent)"]
 ```
-
-- **Why a sleep loop and not a busy loop**: `time.sleep()` is portable across Linux and Windows; `KeyboardInterrupt` is delivered promptly on both; the process consumes no CPU while idle.
 
 ## 7.5 ID: `BR-MODE-005` — Mode Transition
 
 - **Evidence level**: 🟢
-- **Contract**: the mode is read **once** at startup. There is no runtime API to switch modes. To change modes, restart the process with a different `--forward-only` / `--no-forward-only` value, a different `LINGOFUSE_FORWARD_ONLY` environment value, or a different programmatic pre-set.
+- **Contract**: the mode is read **once** at startup. There is no runtime API to switch modes.
 
 ---
 
@@ -824,14 +771,10 @@ flowchart TD
 ```mermaid
 flowchart LR
     GlobalVar["Global variable pre-set"] -->|"may be overridden"| Env
-    Env["Environment variables<br/>LINGOFUSE_*"] -->|"Phase 1"| Cfg["Frozen config object"]
+    Env["Environment variables LINGOFUSE_*"] -->|"Phase 1"| Cfg["Frozen config object"]
     CLI["Command-line arguments"] -->|"Phase 2 (overrides)"| Cfg
     Cfg --> Runtime["All runtime code"]
-
-    style Cfg fill:#2ECC71,stroke:#1E8449,stroke-width:4px,color:#FFFFFF
 ```
-
-- **Precedence summary**: command line wins over environment, which wins over a global variable pre-set, which wins over the built-in default.
 
 ## 8.2 ID: `BR-CFG-002` — Complete Configuration Table
 
@@ -857,14 +800,13 @@ flowchart LR
 - **Evidence level**: 🟢
 - **Truthy**: `1`, `true`, `yes`, `on` (case-insensitive).
 - **Falsy**: `0`, `false`, `no`, `off` (case-insensitive).
-- **Invalid values**: logged as a warning, and the default is used; startup is not aborted.
+- **Invalid values**: logged as a warning, and the default is used.
 
 ## 8.4 ID: `BR-CFG-004` — Command-Line Help
 
 - **Evidence level**: 🟢
 - **Supported**: `--help` / `-h`.
 - **Behavior**: prints the full usage, including the environment-variable reference, and exits with status 0.
-- **Rationale**: an operator or an AI can obtain the entire configuration surface from `--help` in one shot.
 
 ## 8.5 ID: `BR-CFG-005` — Configuration Precedence
 
@@ -874,20 +816,12 @@ flowchart LR
     GV --> Mid["Environment variable"]
     Mid --> High["Command line"]
     High --> Final["Final config value"]
-
-    style High fill:#D5F5E3,stroke:#1E8449,stroke-width:3px,color:#0E4D2A
-    style GV fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
 ```
-
-- **Effect**: when a command-line flag is absent, the environment-derived value is retained; when present, it overrides.
-- **Global variable pre-set**: because the config object is a plain module-level object, embedding code may assign to any field **before** the run starts. The environment loader only overwrites a field when the corresponding environment variable is set; the command-line loader only overwrites when the corresponding flag is present.
 
 ## 8.6 ID: `BR-CFG-006` — Configuration Freeze Contract
 
 - **Evidence level**: 🟢
 - **Contract**: after startup, no field of the config is written again.
-- **How it is guaranteed**: only the environment loader and the command-line loader write to it; those are called exactly once.
-- **Why it matters**: concurrent reads of an immutable object need no lock.
 
 ## 8.7 ID: `BR-CFG-007` — `log_file`: Unset vs. Empty
 
@@ -906,28 +840,21 @@ flowchart LR
 - **Evidence level**: 🟢
 - **Timing**: set before preparing the LingoFuse client.
 - **Value**: `True`.
-- **Rationale**: allows the bridge to share the endpoint with an existing client.
 
 ## 8.10 ID: `BR-CFG-010` — `Wait_Connection_ReadyOk` Implicit Setting
 
 - **Evidence level**: 🟢
 - **Value**: `False` (deployment mode).
-- **Effect**: startup does not block waiting for every client to be ready; this lets an elastic cluster start in any order.
 
 ## 8.11 ID: `BR-CFG-011` — Language of Logs and Comments
 
 - **Evidence level**: 🟢
 - **Contract**: **all logs, comments, and docstrings are in English**.
-- **Rationale**: standard log pipeline processing; cross-language team collaboration.
 
 ## 8.12 ID: `BR-CFG-012` — Programmatic Use via the Global Variable Layer
 
 - **Evidence level**: 🟢
 - **Contract**: the config object is a plain module-level object. Code that embeds the bridge may assign to any of its fields before the run starts.
-- **Semantics**:
-  - A programmatic pre-set survives an unset environment variable and an absent CLI flag.
-  - Setting `LINGOFUSE_FORWARD_ONLY` or passing `--forward-only` / `--no-forward-only` overrides it.
-- **Recommended for**: embedding scenarios where command-line arguments are not appropriate.
 
 ---
 
@@ -942,8 +869,6 @@ flowchart LR
 { "code": -3, "error": "API 'exp' not available for app 'pas'" }
 ```
 
-- **Serialization**: canonical (no `\uXXXX` escapes).
-
 ## 9.2 ID: `BR-ERR-002` — Inbound Error Code Overview
 
 | Code | HTTP | Meaning | Trigger | Fix |
@@ -955,13 +880,7 @@ flowchart LR
 ## 9.3 ID: `BR-ERR-003` — Outbound Error Format
 
 - **Evidence level**: 🟢
-- **Format**:
-
-```json
-{ "error": "description" }
-```
-
-- **Trigger scenarios**: invalid request JSON; missing URL; HTTP method not in the allow-list; HTTP request timeout; HTTP request failure; internal exception.
+- **Format**: `{ "error": "description" }`
 
 ## 9.4 ID: `BR-ERR-004` — Error Message Index
 
@@ -1004,16 +923,11 @@ flowchart TD
 - **Evidence level**: 🟢
 - **Trigger**: an inbound response is empty and `--debug` is enabled.
 - **Behavior**: the bridge reads up to 3 LingoFuse internal log messages and forwards them to its own logger.
-- **Use**: when an inbound request returns an empty response, LingoFuse may have logged the root cause.
 
 ## 9.7 ID: `BR-ERR-007` — Forward-Only Mode Diagnostics
 
 - **Evidence level**: 🟢
-- **Contract**: in forward-only mode, inbound HTTP errors `-1`, `-2`, `-3` never appear, because the inbound path never executes.
-- **Possible errors in forward-only mode**:
-  - Startup failure → the process exits with status 1.
-  - Outbound Call API errors (see `BR-ERR-003`).
-  - Repair Call API errors (see `BR-REP-005`).
+- **Contract**: in forward-only mode, inbound HTTP errors `-1`, `-2`, `-3` never appear.
 
 ---
 
@@ -1023,29 +937,19 @@ flowchart TD
 
 ## 10.1 ID: `BR-DEP-001` — Executable Forms
 
-The bridge is distributed in two forms:
-
 | Form | Linux | Windows |
 |------|-------|---------|
 | Python script | `python3 bridge.py` or `./bridge.py` | `python bridge.py` |
 | Native executable | `./bridge` (if built) | `bridge.exe` |
-
-**Behavioral contract**: the two forms are identical in every observable way. Both read the same environment variables, accept the same command-line flags, and produce the same log output.
 
 ## 10.2 ID: `BR-DEP-002` — Shell Syntax Differences
 
 ### Linux (bash / zsh)
 
 ```bash
-# Set an environment variable for one process
 LINGOFUSE_FORWARD_ONLY=1 \
 LINGOFUSE_ENDPOINT=ipc:compute_grid \
 ./bridge --no-precheck
-
-# Or export it for the session
-export LINGOFUSE_ENDPOINT=ipc:compute_grid
-export LINGOFUSE_NO_PRECHECK=1
-./bridge
 ```
 
 ### Windows — Command Prompt (cmd.exe)
@@ -1064,8 +968,6 @@ $env:LINGOFUSE_ENDPOINT = "ipc:compute_grid"
 .\bridge.exe --no-precheck
 ```
 
-**Contract**: environment variable names and accepted values are identical across all three shells. Only the syntax differs.
-
 ## 10.3 ID: `BR-DEP-003` — Three-Stage Startup (Reference Recipe)
 
 ```mermaid
@@ -1079,43 +981,6 @@ sequenceDiagram
     Note over T3: bridge ready
 ```
 
-- **Ordering**: the beacon must be started first.
-- **Wait time**: after the business node starts, wait 1–2 s before starting the bridge (broadcast propagation).
-
-### Linux
-
-```bash
-# Terminal 1
-./bridge_service
-
-# Terminal 2 (after Terminal 1 prints OK)
-./bridge_compute
-
-# Terminal 3 (after Terminal 2 prints OK)
-./bridge \
-    --endpoint ipc:compute_grid \
-    --no-precheck \
-    --debug \
-    --port 8081
-```
-
-### Windows
-
-```bat
-:: Terminal 1
-bridge_service.exe
-
-:: Terminal 2 (after Terminal 1 prints OK)
-bridge_compute.exe
-
-:: Terminal 3 (after Terminal 2 prints OK)
-bridge.exe ^
-    --endpoint ipc:compute_grid ^
-    --no-precheck ^
-    --debug ^
-    --port 8081
-```
-
 ## 10.4 ID: `BR-DEP-004` — Production Deployment (Full Mode)
 
 ```mermaid
@@ -1125,27 +990,13 @@ flowchart TB
     BR --> MESH["LingoFuse Mesh"]
 ```
 
-**Key parameters**:
-
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| `--host` | `127.0.0.1` | Bind only locally |
-| `--log-file` | a log file path | Log rotation |
-| `--endpoint` | same as the backend | Avoid `-3` |
-| `--no-precheck` | as needed | If broadcast delay is unacceptable |
-
 ## 10.5 ID: `BR-DEP-005` — Forward-Only Deployment Recipe
-
-**Scenario**: an internal relay that provides outbound HTTP proxying and JSON repair to LingoFuse peers, but is not directly reachable over the network.
 
 ### Linux
 
 ```bash
 LINGOFUSE_FORWARD_ONLY=1 \
 LINGOFUSE_ENDPOINT=ipc:compute_grid \
-LINGOFUSE_BRIDGE_APP=__lf_relay__ \
-LINGOFUSE_BRIDGE_API=__lf_outbound_post__ \
-LINGOFUSE_BRIDGE_REPAIR_API=__lf_repair_json__ \
 ./bridge
 ```
 
@@ -1154,21 +1005,7 @@ LINGOFUSE_BRIDGE_REPAIR_API=__lf_repair_json__ \
 ```powershell
 $env:LINGOFUSE_FORWARD_ONLY = "1"
 $env:LINGOFUSE_ENDPOINT = "ipc:compute_grid"
-$env:LINGOFUSE_BRIDGE_APP = "__lf_relay__"
-$env:LINGOFUSE_BRIDGE_API = "__lf_outbound_post__"
-$env:LINGOFUSE_BRIDGE_REPAIR_API = "__lf_repair_json__"
 .\bridge.exe
-```
-
-Expected startup log:
-
-```
-=== LingoFuse HTTP Bridge (tri-directional POST gateway with JSON repair service) ===
-Operating mode: FORWARD-ONLY (HTTP listener disabled)
-Inbound HTTP listen: DISABLED (forward-only mode)
-LingoFuse endpoint: ipc:compute_grid
-...
-Forward-only mode active: HTTP listener is DISABLED. Only the LingoFuse Call APIs will be served. Press Ctrl+C to exit.
 ```
 
 ## 10.6 ID: `BR-DEP-006` — Containerized Deployment (Full Mode)
@@ -1182,13 +1019,6 @@ services:
       LINGOFUSE_PORT: "8081"
       LINGOFUSE_FORWARD_ONLY: "0"
       LINGOFUSE_ENDPOINT: "ipc:compute_grid"
-      LINGOFUSE_TIMEOUT: "10000"
-      LINGOFUSE_DEBUG: "0"
-      LINGOFUSE_NO_PRECHECK: "1"
-      LINGOFUSE_NORMALIZE_JSON: "1"
-      LINGOFUSE_BRIDGE_APP: "__lf_http_bridge__"
-      LINGOFUSE_BRIDGE_API: "__lf_outbound_post__"
-      LINGOFUSE_BRIDGE_REPAIR_API: "__lf_repair_json__"
     ports:
       - "8081:8081"
 ```
@@ -1202,19 +1032,13 @@ services:
     environment:
       LINGOFUSE_FORWARD_ONLY: "1"
       LINGOFUSE_ENDPOINT: "ipc:compute_grid"
-      LINGOFUSE_TIMEOUT: "10000"
-      LINGOFUSE_DEBUG: "0"
-      LINGOFUSE_BRIDGE_APP: "__lf_http_bridge__"
-      LINGOFUSE_BRIDGE_API: "__lf_outbound_post__"
-      LINGOFUSE_BRIDGE_REPAIR_API: "__lf_repair_json__"
     # NOTE: no ports section — this instance binds no TCP port.
 ```
 
 ## 10.8 ID: `BR-DEP-008` — Horizontal Scaling
 
 - **Add instances**: start more bridge processes.
-- **No configuration change**: every instance connects to the same endpoint.
-- **No backend change**: LingoFuse discovers them automatically.
+- **No configuration change**.
 - **No session affinity**: the bridge is stateless.
 
 ## 10.9 ID: `BR-DEP-009` — Startup as a Service
@@ -1236,7 +1060,7 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-### Windows (Service via `sc.exe` after wrapping with NSSM or WinSW)
+### Windows (Service via NSSM)
 
 ```bat
 nssm install LingoFuseBridge "C:\LingoFuse\bridge.exe" ^
@@ -1245,11 +1069,7 @@ nssm install LingoFuseBridge "C:\LingoFuse\bridge.exe" ^
 nssm start LingoFuseBridge
 ```
 
-**Contract**: both the Linux and Windows service wrappers run the same executable with the same arguments. The bridge itself has no service-specific code.
-
 ## 10.10 ID: `BR-DEP-010` — Cleanup Order
-
-Cleanup runs strictly in this order:
 
 ```mermaid
 flowchart LR
@@ -1257,27 +1077,16 @@ flowchart LR
     B --> C["3. Free the bridge App"]
     C --> D["4. Clear the callback list"]
     D --> E["5. Shut down the LingoFuse library"]
-
-    style A fill:#FFF7E6,stroke:#B7791F,stroke-width:2px,color:#7E5109
-    style E fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
 ```
-
-- **Idempotent**: guaranteed by a one-shot flag.
-- **Triggered by**: a process-exit hook + the `finally` block of the run loop.
 
 ## 10.11 ID: `BR-DEP-011` — Failure Rollback
 
 - **Evidence level**: 🟢
 - **Contract**: any step failing releases the resources already created.
-- **Order**:
-  1. Stop the LingoFuse main thread.
-  2. Free the bridge App.
-- **Globals**: the global App handle is only written after every step has succeeded.
 
 ## 10.12 ID: `BR-DEP-012` — Cross-Platform Log Handling
 
 - **Contract**: logs are written to stderr by default, and to `--log-file` when provided.
-- **Line endings**: the log file is opened in text mode with UTF-8 encoding on both platforms. On Windows, this produces CRLF; on Linux, LF. Consumers of the log should treat both as whitespace.
 
 ---
 
@@ -1287,30 +1096,22 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A["HTTP request"] --> P1["Insertion point 1<br/>inbound handler entry"]
+    A["HTTP request"] --> P1["Insertion point 1: inbound handler entry"]
     P1 --> B["Path parsing"]
-    B --> P2["Insertion point 2<br/>pre-check region"]
+    B --> P2["Insertion point 2: pre-check region"]
     P2 --> C["Forward to LingoFuse"]
-    C --> P3["Insertion point 3<br/>before returning the response"]
+    C --> P3["Insertion point 3: before returning the response"]
     P3 --> D["HTTP response"]
 
-    LFC["LingoFuse caller"] --> P4["Insertion point 4<br/>outbound callback entry"]
+    LFC["LingoFuse caller"] --> P4["Insertion point 4: outbound callback entry"]
     P4 --> PostReq["HTTP POST"]
-    PostReq --> P5["Insertion point 5<br/>outbound response build"]
+    PostReq --> P5["Insertion point 5: outbound response build"]
     P5 --> LFR["LingoFuse response"]
 
-    LFC --> P6["Insertion point 6<br/>repair callback entry"]
+    LFC --> P6["Insertion point 6: repair callback entry"]
     P6 --> Rep["Repair engine"]
-    Rep --> P7["Insertion point 7<br/>repair output write"]
+    Rep --> P7["Insertion point 7: repair output write"]
     P7 --> LFR
-
-    style P1 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
-    style P2 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
-    style P3 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
-    style P4 fill:#E8F4FF,stroke:#1E3A8A,stroke-width:3px,color:#0D2F52
-    style P5 fill:#E8F4FF,stroke:#1E3A8A,stroke-width:3px,color:#0D2F52
-    style P6 fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
-    style P7 fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
 ```
 
 ## 11.2 ID: `BR-EXT-002` — Common Extension Patterns
@@ -1330,15 +1131,8 @@ flowchart TD
 
 ## 11.3 ID: `BR-EXT-003` — Adding New Error Codes
 
-- **Evidence level**: 🟡 (a convention, not the source)
 - **Current range**: `-1`, `-2`, `-3`.
-- **Extension rule**:
-  - Start at `-4` and decrement.
-  - **Must be explicitly recorded in the documentation.**
-  - HTTP status semantics:
-    - 4xx for client errors.
-    - 5xx for server errors.
-    - 200 for business-layer errors (following the existing convention).
+- **Extension rule**: start at `-4` and decrement; document the new code explicitly.
 
 ## 11.4 ID: `BR-EXT-004` — The Only Place to Change JSON Policy
 
@@ -1346,9 +1140,8 @@ flowchart TD
 - **Location**: the canonical serializer used by every direction.
 - **Do not**:
   - Use a different JSON serializer anywhere in the bridge.
-  - Use any HTTP library's `.json=` shortcut (it forces `ensure_ascii=True`).
+  - Use any HTTP library's `.json=` shortcut.
   - Manually concatenate JSON.
-- **Correct approach**: always call the canonical serializer.
 
 ## 11.5 ID: `BR-EXT-005` — Adding a New Outbound HTTP Client
 
@@ -1358,31 +1151,22 @@ flowchart TD
   - Preserve the timeout clamp.
   - Preserve the exception-category handling.
   - Preserve the response-header lowercasing.
-  - Preserve the "no `\uXXXX` on the wire" policy (do not use the library's `.json=` shortcut).
+  - Preserve the "no `\uXXXX` on the wire" policy.
 
 ## 11.6 ID: `BR-EXT-006` — Changing the Callback API Names
 
-- **Evidence level**: 🟢
 - **Command line**: `--bridge-app` `--bridge-api` `--bridge-repair-api`.
 - **Environment variable**: `LINGOFUSE_BRIDGE_APP` `LINGOFUSE_BRIDGE_API` `LINGOFUSE_BRIDGE_REPAIR_API`.
-- **Notes**:
-  - **Both ends must change** (bridge side + caller side).
-  - If you change to a name that can collide (like `post`), you lose namespace isolation.
 
 ## 11.7 ID: `BR-EXT-007` — Changing Inbound Routing
 
 - **Evidence level**: 🟢
-- **Extension methods**:
-  - Header routing: check a header before path parsing.
-  - Query routing: use the query string.
-  - Body routing: **not recommended** (you must read the body first, which breaks the pre-normalization check).
-- **Warning**: after modifying, you must update §3.1 of this document.
+- **Warning**: after modifying, update §3.1 of this document.
 
 ## 11.8 ID: `BR-EXT-008` — Adding a New Forward-Only Capability
 
 - **Evidence level**: 🟢
-- **Pattern**: if you need a new LingoFuse-to-LingoFuse capability that must also be available in forward-only mode, register it as an additional Call API alongside the outbound and repair APIs.
-- **Result**: the new capability is available in both full and forward-only modes with no further changes.
+- **Pattern**: register the new capability as an additional Call API alongside the outbound and repair APIs.
 
 ---
 
@@ -1393,105 +1177,653 @@ flowchart TD
 - **Symptom**: `-3: API 'exp' not available for app 'pas'`.
 - **Root cause**: the default `--endpoint` is `ipc:lingofuse_bridge`, which does not match the backend.
 - **Fix**: explicitly set `--endpoint ipc:compute_grid`.
-- **Frequency**: **the root cause of ~90% of "API unavailable" reports**.
 
 ## 12.2 ID: `BR-PIT-002` — Broadcast Delay Mistaken for a Missing API
 
 - **Symptom**: a business node just started, and the bridge called it immediately → `-3`.
-- **Root cause**: the availability check relies on a ~3-second broadcast.
 - **Fix A**: `--no-precheck`.
 - **Fix B**: wait 1–2 s before starting the bridge.
 
 ## 12.3 ID: `BR-PIT-003` — Single-Segment Path Without a Default App
 
 - **Symptom**: `-2: No default app set (use --app)`.
-- **Fix A**: `--app pas`.
-- **Fix B**: use a two-segment path `POST /pas/exp`.
 
 ## 12.4 ID: `BR-PIT-004` — Expecting JSON Schema Validation
 
-- **Misconception**: the bridge validates business fields.
 - **Truth**: the bridge only guarantees *legal JSON bytes*; it does not guarantee *business-valid data*.
-- **Correct mental model**: the bridge is a byte-layer gateway; the business layer is the backend's responsibility.
 
 ## 12.5 ID: `BR-PIT-005` — Binary Payload "Corruption"
 
-- **Misconception**: the bridge converts everything to JSON.
 - **Truth**: non-JSON payloads are forwarded **byte-for-byte unchanged**.
-- **Contract**: see `BR-JSON-001`.
 
 ## 12.6 ID: `BR-PIT-006` — Timeout Too Short
 
 - **Symptom**: `-1: Call timeout`.
-- **Fix**: increase `--timeout` (in milliseconds). Note the outbound-direction upper bound is 300 s.
 
 ## 12.7 ID: `BR-PIT-007` — `\uXXXX` Escapes in the Outbound Body
 
 - **Symptom**: the external HTTP server receives `\u4f60\u597d` instead of `你好`.
 - **Root cause**: using a library's `.json=` shortcut triggers `ensure_ascii=True`.
-- **Fix**: the bridge always serializes the outbound body itself with the canonical serializer.
-- **Regression protection**: see `BR-JSON-007`.
 
 ## 12.8 ID: `BR-PIT-008` — Outbound API Name Collision
 
 - **Symptom**: a caller calls `post`, but routing goes to a business App instead.
-- **Root cause**: if `--bridge-api` is set to a plain name (like `post`), it may collide with a business API.
-- **Fix**: keep the default double-underscore name, or ensure a custom name is globally unique.
+- **Fix**: keep the default double-underscore name.
 
 ## 12.9 ID: `BR-PIT-009` — Calling a Blocking LingoFuse Function Inside a Callback
 
 - **Symptom**: the entire LingoFuse mesh deadlocks.
-- **Root cause**: callbacks run on a worker thread; calling a blocking function re-enters the scheduler and self-locks.
-- **Fix**: if a callback needs to call another LingoFuse API, offload to a separate thread.
 
 ## 12.10 ID: `BR-PIT-010` — Concurrent Modification of the Config Object
 
-- **Symptom**: inconsistent behavior across workers.
-- **Root cause**: if the config object is modified at runtime, there is no lock protection.
-- **Fix**: **do not modify**. All configuration goes through the three layers at startup; the object is read-only afterwards.
+- **Fix**: **do not modify**. All configuration goes through the three layers at startup.
 
 ## 12.11 ID: `BR-PIT-011` — Process-Exit Hooks Are Not Deterministic
 
-- **Symptom**: cleanup does not execute on some exit paths.
-- **Root cause**: process-exit hooks do not cover forced exits.
-- **Fix**: the normal run loop's `finally` block already calls cleanup, covering the normal paths.
+- **Fix**: the normal run loop's `finally` block already calls cleanup.
 
 ## 12.12 ID: `BR-PIT-012` — LingoFuse Startup Can Only Happen Once Per Process
 
-- **Symptom**: a second startup call in the same process returns failure.
-- **Root cause**: the LingoFuse main thread has already started.
-- **Bridge scenario**: the bridge calls it only once per lifetime; no impact.
+- **Fix**: the bridge calls it only once per lifetime; no impact.
 
 ## 12.13 ID: `BR-PIT-013` — Confusing Full Mode and Forward-Only Mode
 
-- **Symptom**: after enabling forward-only mode, HTTP requests are refused by the OS, but LingoFuse callers still succeed.
-- **Root cause**: forward-only mode disables the HTTP listener but keeps the Call APIs.
 - **Fix**: read the startup banner. The `Operating mode:` line explicitly reports the mode.
-- **Prevention**: the banner is printed at every startup, in both modes.
 
 ## 12.14 ID: `BR-PIT-014` — Programmatic Pre-Set Overridden by Environment
 
-- **Symptom**: the code set `forward_only = True`, but the bridge still listens on HTTP.
-- **Root cause**: an environment variable or a CLI flag overrode the programmatic value.
-- **Fix**: unset the environment variable, or remove the CLI flag, or pass the opposite flag.
+- **Fix**: unset the environment variable, or remove the CLI flag.
 
 ## 12.15 ID: `BR-PIT-015` — Shell-Specific Syntax When Launching
 
-- **Symptom**: a launch command works in one shell and fails in another.
-- **Root cause**: Linux shells, Windows Command Prompt, and PowerShell all set environment variables with different syntax.
-- **Fix**: see §10.2 for the three syntaxes. The variable names and accepted values are identical across all three.
+- **Fix**: see §10.2 for the three syntaxes.
 
 ## 12.16 ID: `BR-PIT-016` — Port Already in Use
 
-- **Symptom**: the bridge fails to start with an address-in-use error.
-- **Root cause**: another process is bound to `--port`.
-- **Fix**: change `--port`, or stop the other process, or switch to forward-only mode (no port is needed).
+- **Fix**: change `--port`, or stop the other process, or switch to forward-only mode.
+
+## 12.17 ID: `BR-PIT-017` — Using the Asynchronous Call Family on the Inbound Path
+
+> **This is the most important pitfall in this document.** It caused intermittent empty HTTP responses that resisted diagnosis for several debugging sessions.
+
+- **Symptom**: some inbound requests return `200 OK` with an **empty body**, while other similar requests work correctly. The failure pattern correlates with payload size, not with API name or URL path.
+- **Root cause**:
+  - The inbound handler used `LF_Async_Call` / `LF_UID_Async_Call` / `LF_P2PNAME_Async_Call` and passed the **raw result handle** out of the LingoFuse worker thread via a future.
+  - LingoFuse's asynchronous family creates the result handle with `auto_recycle = False`. The framework releases this handle **immediately after the `OnResult` callback returns** (see `TLF_Async_Call_Bridge.Do_Th`).
+  - By the time the Flask worker thread read from the handle, the framework had already released it.
+  - Result: use-after-free (reading freed memory) plus double-free (the bridge also called `LF_FreeData`).
+- **Why the symptom looks size-dependent**:
+  - Small payloads (for example, an `int` return value of `7`, 2 bytes): the freed memory is usually not reused in the scheduling window, so the bridge reads stale-but-intact bytes.
+  - Large payloads (for example, a JSON object of 17+ bytes): the freed memory is more likely to have been reused, so the bridge reads zeroes or garbage.
+- **Fix**: use the **synchronous family** (`LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call`) on the inbound path.
+  - The synchronous family returns a **caller-owned** handle.
+  - The caller is responsible for `LF_SetPos(res_ptr, 0)` before reading and `LF_FreeData(res_ptr)` afterwards.
+  - See §3.5 (`BR-IN-005`) for the current implementation.
+- **Trade-off**: the synchronous family signals a timeout by returning a size-0 handle, which is indistinguishable from "the peer replied with an empty payload". For a generic HTTP passthrough this is acceptable: the timeout is a configurable value (`--timeout`), and an empty response is a legitimate `200 OK` with an empty body. The status queue (`_drain_status`) still surfaces framework-level diagnostics.
+- **Verification**: after the fix, all `echo`-based integration tests and end-to-end tests pass. See Chapter 13 for the exact test matrix.
+- **Related**: `BR-PM-001`, `BR-PM-002`, `BR-PIT-018`, `BR-PIT-019`, `BR-PIT-020`.
+
+## 12.18 ID: `BR-PIT-018` — Retaining or Freeing an Asynchronous `Result_` Handle
+
+- **Symptom**: intermittent crashes, empty results, or memory corruption that only manifests under concurrent load.
+- **Root cause**: the asynchronous family's `Result_` handle belongs to the framework. Two mistakes are common:
+  1. Retaining the raw pointer past the callback body (for example, storing it in a queue and reading it from another thread).
+  2. Calling `LF_FreeData` on it, causing a double-free.
+- **Correct use**:
+  - Read from the handle **only inside the callback**.
+  - Copy the bytes out of the handle **inside the callback**.
+  - Never call `LF_FreeData` on a `Result_` handle.
+  - Never hand the raw pointer to another thread.
+- **The Python binding's own comment was misleading on this point** — see `BR-PIT-019`.
+- **Related**: `BR-PIT-017`, `BR-PM-001`, `BR-PM-002`.
+
+## 12.19 ID: `BR-PIT-019` — Trusting the "~1 Second" Comment
+
+- **Symptom**: a developer reads the LingoFuse binding comment that says "released automatically ~1 second after this callback returns" and assumes there is a one-second safe window to use the handle.
+- **Truth**: the handle is released **immediately** after the callback returns. The "~1 second" figure refers to the release of the `TLF_Async_Call_Bridge` **object**, not the `Result_` handle.
+- **Source-of-truth** (`Z.Net.C4.LingoFuse.pas`, `TLF_Async_Call_Bridge.Do_Th`):
+
+```pascal
+result_param_ := TLF_Data.New_Result_From(Result_M64.Swap_To_New_Instance, False);
+try
+  if Assigned(OnResult) then
+    OnResult(Data_, result_param_);   // ← the only safe window
+except
+end;
+TLF_Data.Free_Data(result_param_);    // ← immediate release
+DelayFreeObj(1.0, Self);              // ← 1 second later, the BRIDGE OBJECT is freed
+```
+
+- **Lesson**: **comments are second-hand information**. When behavior is suspect, read the source, not the comment.
+- **Related**: `BR-PIT-017`, `BR-PIT-018`, `BR-PM-002`.
+
+## 12.20 ID: `BR-PIT-020` — Misdiagnosing a Size-Dependent Failure as a Type-Dependent One
+
+- **Symptom**: during debugging, the failure pattern looked like "`int`-returning APIs work, `dict`-returning APIs fail", which suggested a serialization bug or a type-handling bug.
+- **Root cause of the misdiagnosis**: the actual correlation was with **payload size**, not with **Python type**:
+  - Small payload → freed memory usually still intact → "works".
+  - Large payload → freed memory usually reused → "fails".
+- **Correct diagnostic method**:
+  1. Classify failures by **payload size** before classifying by type.
+  2. If a failure is intermittent and correlates with payload size, suspect **handle lifetime / memory reuse**, not serialization.
+  3. Print `LF_GetSize(res_ptr)` and `LF_GetPos(res_ptr)` at the point of use, before any read or release.
+- **Lesson**: **binary search requires the right classifier**. "Type" was the wrong axis; "size" (or, more fundamentally, "lifetime window") was the right one.
+- **Related**: `BR-PIT-017`, `BR-PM-001`.
 
 ---
 
-# Chapter 13 — Integration Guide
+# Chapter 13 — Test Methodology
 
-## 13.1 ID: `BR-INT-001` — HTTP Client Integration
+> **This chapter describes the test strategy, the fixture design, and the exact commands to reproduce the verification of every contract in this knowledge base. It is the reference for future maintainers who modify the bridge.**
+
+## 13.1 ID: `BR-TEST-001` — Three-Layer Test Strategy
+
+The bridge is verified at three layers:
+
+```mermaid
+flowchart TD
+    L1["L1 — Unit tests<br/>(test_bridge_units.py)"] --> L2["L2 — Integration tests<br/>(test_bridge_integration.py)"]
+    L2 --> L3["L3 — End-to-end tests<br/>(test_bridge_e2e.py)"]
+
+    L1 --- L1D["Pure functions<br/>No network, no sockets"]
+    L2 --- L2D["In-process LingoFuse mesh<br/>No subprocess, no sockets"]
+    L3 --- L3D["Real bridge subprocess<br/>Real HTTP sockets"]
+
+    style L1 fill:#D5F5E3,stroke:#1E8449,stroke-width:3px
+    style L2 fill:#E8F4FF,stroke:#1E3A8A,stroke-width:3px
+    style L3 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px
+```
+
+| Layer | File | What it exercises | Environment |
+|-------|------|-------------------|-------------|
+| **L1** | `test_bridge_units.py` | Stateless functions: `normalize_json_bytes`, `_try_repair_json`, `_decode_text_with_fallback`, `_parse_inbound_path`, `_parse_outbound_request`, `_normalize_headers_dict`, `_json_error_response`, `BridgeConfig`, `_ENV_VAR_TABLE` | Pure Python, no network, no native calls |
+| **L2** | `test_bridge_integration.py` | Router (`handle_call`), Flask request handling, the two Call-API callbacks (`_bridge_post_callback`, `_bridge_repair_callback`), config loaders | In-process LingoFuse mesh, no subprocess, no sockets |
+| **L3** | `test_bridge_e2e.py` | Full inbound path: HTTP socket → Flask → URL router → LingoFuse IPC → backend App → response → HTTP socket | Real `bridge.py` subprocess, real TCP sockets |
+
+## 13.2 ID: `BR-TEST-002` — Running the Tests
+
+### 13.2.1 Prerequisites
+
+- Python 3.10 or later.
+- `pytest` and `requests` installed.
+- The LingoFuse shared library (`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`) reachable from the `PATH` or from the current working directory.
+- The `lingofuse` package importable (usually via `pip install -e .` from the package root).
+
+### 13.2.2 Running all three layers
+
+```bash
+cd <package-root>            # the directory containing the lingofuse/ package
+
+# Layer 1 — unit
+python -m pytest lingofuse/test_bridge_units.py -v
+
+# Layer 2 — integration
+python -m pytest lingofuse/test_bridge_integration.py -v
+
+# Layer 3 — end-to-end
+python -m pytest lingofuse/test_bridge_e2e.py -v
+
+# All three at once
+python -m pytest lingofuse/test_bridge_units.py \
+                 lingofuse/test_bridge_integration.py \
+                 lingofuse/test_bridge_e2e.py -v
+```
+
+### 13.2.3 Expected pass counts (v6.0)
+
+| Layer | Test file | Passed |
+|-------|-----------|--------|
+| L1 | `test_bridge_units.py` | 84 |
+| L2 | `test_bridge_integration.py` | 58 |
+| L3 | `test_bridge_e2e.py` | 13 |
+| **Total** | | **155** |
+
+Any deviation indicates either a regression or an environment issue. See §13.6 for diagnosis.
+
+### 13.2.4 Windows-specific notes
+
+The commands are identical on Windows. PowerShell's `Tee-Object` can capture both screen and file:
+
+```powershell
+python -m pytest lingofuse/test_bridge_e2e.py -v 2>&1 | Tee-Object -FilePath e2e_run.log
+```
+
+## 13.3 ID: `BR-TEST-003` — Fixture Design (L2)
+
+### 13.3.1 Why an in-process mesh
+
+LingoFuse is a process-global singleton: one simulated main thread, one client pool, one service pool. The bridge's production `_setup_network` prepares only a **client**, expecting a separate process to provide the **service**. In a single-process integration test, that assumption fails: `LF_PrepareDone` would block waiting for a service that never appears.
+
+The L2 fixture therefore prepares **both** the service and the client itself, then binds the bridge's own App to the client. The result is a fully functional in-process mesh on which the router and callbacks can be exercised without a subprocess.
+
+```mermaid
+flowchart TD
+    subgraph Test["Test process"]
+        A["BridgeNetworkTestBase.setUpClass"] --> B["LF_ResetPrepare"]
+        B --> C["LF_PrepareService(ipc:bridge_test_*)"]
+        C --> D["LF_PrepareClient(ipc:bridge_test_*, bridge_app)"]
+        D --> E["LF_PrepareDone"]
+        E --> F["Publish config to bridge_module.config"]
+        F --> G["Store bridge_app handle"]
+    end
+
+    G --> H["Test methods run<br/>Flask test_client posts to bridge.app"]
+
+    subgraph Backend["In-process backend App"]
+        I["bridge_app registers 'echo'"]
+    end
+
+    H -->|"router dispatches via LF_Call"| I
+```
+
+### 13.3.2 Base class contract
+
+`BridgeNetworkTestBase` in `test_bridge_integration.py`:
+
+- **`setUpClass`**: prepares service + client, binds the bridge App, publishes config to `bridge_module.config`, stores the App handle.
+- **`tearDownClass`**: resets bridge globals, frees the App, full LingoFuse reset.
+- **`setUp`**: snapshots the config fields a test may mutate (`default_app`, `no_precheck`, `debug`, `normalize_json`).
+- **`tearDown`**: restores the snapshotted config.
+
+Each concrete test class sets `_CLASS_TAG` (for unique endpoint names) and `_REGISTERED_APIS` (the APIs to register on the backend App).
+
+### 13.3.3 The echo callback contract
+
+Inside a `register_call` callback, the incoming `input` and `output` are **already-wrapped `DataHandle` objects**, not raw pointers. Do not call `DataHandle._from_raw` on them again — that is only for **direct ctypes callbacks** such as `_bridge_repair_callback`.
+
+```python
+# ✓ Correct
+def _echo(trigger, h_in, h_out):
+    data = h_in.read_json_strict()
+    h_out.write_json(data)
+
+# ✗ Wrong — h_in is already a DataHandle
+def _echo(trigger, h_in, h_out):
+    h = DataHandle._from_raw(h_in, owned=False)   # WRONG
+```
+
+## 13.4 ID: `BR-TEST-004` — Fixture Design (L3)
+
+### 13.4.1 Why a real subprocess
+
+L3 must exercise the actual socket path, the actual `bridge.py` main loop, and the actual `_setup_network` logic. The parent process cannot both host the backend and exercise the bridge's production network setup, because LingoFuse is a process-global singleton.
+
+The L3 fixture therefore:
+
+1. Starts a **backend Server** in the test process.
+2. Spawns `bridge.py` as a **subprocess**, connected to the same IPC endpoint.
+3. Drives the subprocess with **real HTTP** requests via `requests`.
+
+```mermaid
+flowchart LR
+    subgraph Parent["Parent test process"]
+        BE["Backend Server<br/>(echo, add)"]
+        HTTP["requests client"]
+    end
+
+    subgraph Child["bridge.py subprocess"]
+        BR["Flask HTTP listener<br/>+ LingoFuse client"]
+    end
+
+    HTTP -->|"HTTP POST /app/api"| BR
+    BR -->|"LF_Call over IPC"| BE
+    BE -->|"response"| BR
+    BR -->|"HTTP 200"| HTTP
+```
+
+### 13.4.2 Environment sanitization
+
+The subprocess's `PYTHONPATH` is **prepended** with the package parent so that `import lingofuse` resolves to **this checkout** of the package, not a stale copy that might be reachable through the parent's environment.
+
+```python
+def _build_bridge_env() -> dict:
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    if existing:
+        env["PYTHONPATH"] = _PACKAGE_PARENT + os.pathsep + existing
+    else:
+        env["PYTHONPATH"] = _PACKAGE_PARENT
+    return env
+```
+
+**Why this is not optional**: a stale `lingofuse` package earlier on the inherited `PYTHONPATH` would win the import race. The subprocess would fail at import time with a confusing `ImportError` naming the OTHER copy's file path. See §13.6.3 for the exact failure mode.
+
+### 13.4.3 Subprocess lifecycle
+
+| Phase | Action |
+|-------|--------|
+| **Start** | Launch `bridge.py` with `--endpoint <unique>`, `--bridge-app <unique>`, and either `--port <free>` (full mode) or `--forward-only` |
+| **Wait (full mode)** | Poll `POST http://127.0.0.1:<port>/` until any HTTP response is received (a 400 is expected and means the listener is up) |
+| **Wait (forward-only)** | Sleep 3 s, then confirm the subprocess is still alive |
+| **Stop** | `terminate()` then `wait(timeout=5)`; if needed, `kill()` |
+| **Diagnostics** | On any start-up failure, dump the subprocess's stderr (last 4000 bytes) |
+
+### 13.4.4 Free-port allocation
+
+The fixture asks the OS for a free port:
+
+```python
+def _find_free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+```
+
+## 13.5 ID: `BR-TEST-005` — Test Coverage Matrix
+
+### 13.5.1 L1 (unit) coverage
+
+| Test class | What it covers | ID |
+|-----------|----------------|-----|
+| `TestNormalizeJsonBytesStatuses` | Every status (canonical / recoded / repaired / passthrough) | `BR-JSON-003` |
+| `TestNormalizeJsonBytesFraming` | UTF-8 BOM strip; UTF-16 BOM passthrough; trailing NUL strip | `BR-JSON-002` |
+| `TestNormalizeJsonBytesIdempotence` | Idempotence of canonical / repaired / passthrough | `BR-JSON-006` |
+| `TestTryRepairJson` | Layer 1 conservative repairs | `BR-JSON-004` |
+| `TestDecodeTextWithFallback` | UTF-8 → GBK → Latin-1 chain | `BR-JSON-008` |
+| `TestParseInboundPath` | All URL forms and reserved prefixes | `BR-IN-001` |
+| `TestParseOutboundRequest` | Outbound request validation | `BR-OUT-002`, `BR-OUT-003` |
+| `TestNormalizeHeadersDict` | Header lowercasing and stringification | `BR-OUT-007` |
+| `TestJsonErrorResponse` | Error envelope (canonical UTF-8 JSON) | `BR-ERR-001` |
+| `TestBridgeConfig` | Config defaults and constants | `BR-CFG-002` |
+| `TestEnvVarTable` | Environment variable name mapping | `BR-CFG-002` |
+
+### 13.5.2 L2 (integration) coverage
+
+| Test class | What it covers | ID |
+|-----------|----------------|-----|
+| `TestOutboundPostCallback` | Direction B: request validation, timeout, exception handling, canonical body | `BR-OUT-002`, `BR-OUT-004`, `BR-OUT-005` |
+| `TestRepairCallback` | Direction C: repair, passthrough, no-escape, BOM strip | `BR-REP-002`, `BR-REP-003`, `BR-REP-004` |
+| `TestInboundAppNameRouting` | App-name routing, default app, 400 on missing app | `BR-IN-001`, `BR-IN-003` |
+| `TestInboundUidRouting` | UID path parsing, pre-check failure | `BR-IN-001` |
+| `TestInboundP2PNameRouting` | P2PName path parsing, pre-check failure | `BR-IN-001` |
+| `TestInboundJsonNormalization` | Normalization before forward | `BR-JSON-002` |
+| `TestForwardOnlyModeCallbacks` | Call APIs served in forward-only mode | `BR-MODE-003` |
+| `TestConfigEnvironment` | Env loaders: strings, ints, bools, empty strings, malformed values | `BR-CFG-002`, `BR-CFG-003` |
+| `TestConfigCommandLine` | CLI overrides, boolean flags, empty-string handling | `BR-CFG-005` |
+
+### 13.5.3 L3 (end-to-end) coverage
+
+| Test class | What it covers | ID |
+|-----------|----------------|-----|
+| `TestBridgeEndToEnd::test_app_route_roundtrip` | Full inbound path (JSON object) | `BR-IN-005` |
+| `TestBridgeEndToEnd::test_app_route_positional_arguments` | JSON list → positional args | `BR-IN-005` |
+| `TestBridgeEndToEnd::test_response_is_utf8_json` | No `\uXXXX` escapes on the wire | `BR-JSON-007` |
+| `TestBridgeEndToEnd::test_trailing_comma_is_repaired_on_the_wire` | Repair at socket boundary | `BR-JSON-004` |
+| `TestBridgeEndToEnd::test_utf8_bom_is_stripped_on_the_wire` | BOM strip at socket boundary | `BR-JSON-002` |
+| `TestBridgeEndToEnd::test_binary_payload_does_not_crash_bridge` | Binary safety | `BR-JSON-001` |
+| `TestBridgeEndToEnd::test_unknown_app_returns_documented_error_code` | Error envelope `-1` / `-3` | `BR-ERR-002` |
+| `TestBridgeEndToEnd::test_malformed_uid_route_returns_400` | URL error `-2` | `BR-IN-003` |
+| `TestBridgeEndToEnd::test_malformed_p2p_route_returns_400` | URL error `-2` | `BR-IN-003` |
+| `TestBridgeEndToEnd::test_cors_headers_on_success` | CORS headers | `BR-IN-008` |
+| `TestBridgeEndToEnd::test_cors_headers_on_error` | CORS headers on error responses | `BR-IN-008` |
+| `TestBridgeForwardOnlyE2E::test_no_http_listener_is_opened` | Forward-only mode is genuine | `BR-MODE-003` |
+| `TestBridgeForwardOnlyE2E::test_bridge_subprocess_stays_alive` | Forward-only is not "start and exit" | `BR-MODE-003` |
+
+## 13.6 ID: `BR-TEST-006` — Diagnosing Test Failures
+
+### 13.6.1 Layer 1 failures
+
+L1 failures are almost always genuine logic regressions in the pure functions. Check the assertion message: it names the exact input and the expected status.
+
+### 13.6.2 Layer 2 failures
+
+Common L2 failure patterns:
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `LF_PrepareDone` returns 0 | A previous test class did not fully reset LingoFuse | Verify `tearDownClass` calls `LF_Shutdown` |
+| `UserDefine` type mismatch | The `BridgeNetworkTestBase` subclass registered wrong APIs | Check `_REGISTERED_APIS` |
+| Response body empty | **The inbound path is using the async family** — see `BR-PIT-017` | Verify `handle_call` uses `LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call` |
+| Config leaks between tests | A test mutated `bridge_module.config` and did not restore | Check `setUp` / `tearDown` in `BridgeNetworkTestBase` |
+
+### 13.6.3 Layer 3 failures
+
+**Subprocess exits early (`setUpClass` fails with `RuntimeError: bridge subprocess exited early`)**:
+
+1. Read the subprocess stderr tail that the fixture prints.
+2. Common causes:
+   - **`ImportError: cannot import name 'LF_UID_Call' from 'lingofuse._lf_native'`**: the subprocess picked up a stale `lingofuse` package from the inherited `PYTHONPATH`. Verify `_build_bridge_env()` prepends `_PACKAGE_PARENT` to the front of `PYTHONPATH`.
+   - **`ModuleNotFoundError: LingoFuse64.dll`**: the shared library is not reachable from the subprocess's `PATH` or working directory.
+   - **`OSError: address already in use`**: a previous subprocess did not release its port. The fixture asks the OS for a free port, so this is rare, but it can happen if a prior test crashed without cleanup.
+
+**HTTP listener does not become ready**:
+
+1. The fixture polls `POST http://127.0.0.1:<port>/` for 30 seconds.
+2. If the timeout is hit, check the subprocess stderr for a startup exception.
+3. A common cause: the subprocess started successfully but the listening port is behind a firewall.
+
+**Forward-only subprocess exits immediately**:
+
+1. The fixture sleeps 3 s and then checks `bridge_proc.poll()`.
+2. If the poll is non-null, check the stderr tail. The most common cause is a `_setup_network` failure (bad endpoint, LingoFuse not available).
+
+### 13.6.4 Reproducing a specific failure
+
+To reproduce a specific test in isolation, run it by its full path:
+
+```bash
+python -m pytest "lingofuse/test_bridge_e2e.py::TestBridgeEndToEnd::test_app_route_roundtrip" -v -s
+```
+
+The `-s` flag disables output capture, which is useful for observing the fixture's `print` statements (the stderr tail dump, the startup banner, etc.).
+
+## 13.7 ID: `BR-TEST-007` — Adding New Tests
+
+### 13.7.1 Adding an L1 test
+
+Add a method to one of the existing L1 test classes, or create a new class. L1 tests must not touch the network or native calls.
+
+### 13.7.2 Adding an L2 test
+
+Subclass `BridgeNetworkTestBase`. Set `_CLASS_TAG` to a unique string and `_REGISTERED_APIS` to the APIs the test needs. Use the Flask test client:
+
+```python
+class TestMyNewRouter(BridgeNetworkTestBase):
+    _CLASS_TAG = "MyNewRouter"
+    _REGISTERED_APIS = ("my_api",)
+
+    def test_my_new_contract(self):
+        client = bridge_module.app.test_client()
+        response = client.post(
+            f"/{bridge_module.config.bridge_app_name}/my_api",
+            data=b'{"input": "value"}',
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {"input": "value"})
+```
+
+### 13.7.3 Adding an L3 test
+
+Add a method to `TestBridgeEndToEnd`. Use `self.fixture.url(path)` to build URLs and `requests.post(...)` to drive the subprocess:
+
+```python
+def test_my_new_wire_contract(self):
+    app = self.fixture.backend_app_name
+    resp = requests.post(
+        self.fixture.url(f"{app}/echo"),
+        data=b'{"k": "v"}',
+        timeout=10,
+    )
+    self.assertEqual(resp.status_code, 200)
+    self.assertEqual(resp.json(), {"k": "v"})
+```
+
+### 13.7.4 Adding a forward-only E2E test
+
+Add a method to `TestBridgeForwardOnlyE2E`. Note that this class **cannot** drive the bridge's LingoFuse Call APIs, because the test process's LingoFuse singleton is already owned by the backend Server. Forward-only Call-API coverage lives in L2 (`TestForwardOnlyModeCallbacks`).
+
+## 13.8 ID: `BR-TEST-008` — Regression Guard for the Async-Handle Bug
+
+Since `BR-PIT-017` caused a multi-session debugging effort, a minimal regression guard should be kept:
+
+- **`TestBridgeEndToEnd::test_app_route_roundtrip`** exercises a **JSON object** payload (17+ bytes) — the exact case that failed before the fix.
+- **`TestBridgeEndToEnd::test_response_is_utf8_json`** exercises a **non-ASCII** payload — the case most likely to reveal byte-level corruption from a use-after-free.
+- **`TestBridgeEndToEnd::test_trailing_comma_is_repaired_on_the_wire`** exercises the repair path end-to-end.
+
+If any of these three tests fails intermittently, treat `BR-PIT-017` as the first hypothesis. The diagnostic procedure is in `BR-PM-001`.
+
+## 13.9 ID: `BR-TEST-009` — Continuous Integration Recommendations
+
+CI should run all three layers on every commit. Recommended matrix:
+
+| OS | Python | L1 | L2 | L3 |
+|----|:------:|:--:|:--:|:--:|
+| Linux (x86_64) | 3.10, 3.11, 3.12 | ✅ | ✅ | ✅ |
+| Windows (x86_64) | 3.10, 3.11, 3.12 | ✅ | ✅ | ✅ |
+
+L3 requires the LingoFuse shared library to be available in the CI environment. If it is not, run L1 + L2 only and document the gap.
+
+## 13.10 ID: `BR-TEST-010` — Manual Verification Checklist
+
+Before merging a change to `bridge.py`, verify the following by hand:
+
+- [ ] `python -m pytest lingofuse/test_bridge_units.py -v` → 84 passed.
+- [ ] `python -m pytest lingofuse/test_bridge_integration.py -v` → 58 passed.
+- [ ] `python -m pytest lingofuse/test_bridge_e2e.py -v` → 13 passed.
+- [ ] Start the bridge in full mode with `--debug` and POST a JSON object to `/pas/exp`; confirm the response body is a valid JSON object.
+- [ ] POST a payload with a trailing comma; confirm the response reflects the repaired form.
+- [ ] POST a non-JSON payload; confirm the response is `application/octet-stream` (or an error envelope) and the bridge stays alive.
+- [ ] Start the bridge with `--forward-only` and confirm no TCP port is opened.
+- [ ] Confirm the startup banner reports the correct `Operating mode:`.
+
+---
+
+# Chapter 14 — Debugging Post-Mortem
+
+> **This chapter records the debugging journey that produced `BR-PIT-017` through `BR-PIT-020`. It is preserved so that a future maintainer does not repeat the same misdiagnoses.**
+
+## 14.1 ID: `BR-PM-001` — The Async-Handle Bug
+
+### 14.1.1 Initial symptoms
+
+| Test layer | Status |
+|-----------|--------|
+| L1 (unit) | All green |
+| L2 (integration) | 3 failed (`TestInboundAppNameRouting`, `TestInboundJsonNormalization`) |
+| L3 (end-to-end) | 13 errors at `setUpClass` (`bridge subprocess exited early`) |
+
+The L2 failures showed a peculiar pattern:
+
+| Backend API | Return type | Result |
+|-------------|:-----------:|:------:|
+| `add` | `int` | ✅ Pass |
+| `echo` | `dict` | ❌ Fail (empty body) |
+
+### 14.1.2 Initial (wrong) hypotheses
+
+1. **"The problem is in the C layer"** — the bridge's C4 backend was suspected of not writing the result.
+2. **"The problem is type-related"** — `int` worked, `dict` failed, so serialization was suspected.
+3. **"The `LF_SetPos` reset is missing"** — this was true but not the root cause.
+
+### 14.1.3 The actual root cause
+
+The bridge's inbound `handle_call` used the **asynchronous call family** (`LF_Async_Call` / `LF_UID_Async_Call` / `LF_P2PNAME_Async_Call`) and handed the **raw result handle** out of the LingoFuse worker thread via a future. By the time the Flask worker thread read the handle, the framework had already released it.
+
+The size-dependence is explained in `BR-PIT-017`:
+
+- Small payloads: freed memory usually intact → "works".
+- Large payloads: freed memory usually reused → "fails".
+
+### 14.1.4 The fix
+
+Replace the asynchronous family with the **synchronous family** on the inbound path. The synchronous family returns a **caller-owned** handle. The caller is responsible for:
+
+1. `LF_SetPos(res_ptr, 0)` before reading.
+2. `read_string_bytes(res_ptr)` to copy the bytes.
+3. `LF_FreeData(res_ptr)` after reading (legal, since the caller owns it).
+
+See §3.5 (`BR-IN-005`) for the current implementation.
+
+### 14.1.5 Verification
+
+After the fix:
+
+| Layer | Before | After |
+|-------|--------|-------|
+| L1 | 84 passed | 84 passed |
+| L2 | 3 failed | **58 passed** |
+| L3 | 13 errors | **13 passed** |
+| **Total** | 84 + 55 + 0 = 139 | **155 passed** |
+
+## 14.2 ID: `BR-PM-002` — Misdiagnosis Lessons
+
+### 14.2.1 Reading error messages all the way to the parentheses
+
+The original `ImportError: cannot import name 'LF_UID_Call' from 'lingofuse._lf_native' (D:\LingoFuse-csharpAgent\src\lingofuse\_lf_native.py)` pointed at a **different** package directory. Reading the path in the parentheses is what finally revealed the PYTHONPATH issue that was causing the L3 `setUpClass` failures.
+
+**Lesson**: when an import error names a file, the file path is the truth. A wrong path means a wrong package is being imported.
+
+### 14.2.2 Binary search requires the right classifier
+
+The initial binary search classified failures by **return type** (`int` vs `dict`). That classifier was wrong; the real classifier was **payload size**.
+
+**Lesson**: before running a binary search, ask "what is the *true* axis of difference?" A type difference is often a proxy for a size difference, or a lifetime difference, or an allocation-timing difference.
+
+### 14.2.3 Comments are second-hand information
+
+The LingoFuse binding comment said "released automatically ~1 second after this callback returns." The source releases the handle **immediately**. The "1 second" figure referred to a different object.
+
+**Lesson**: when behavior and comments disagree, read the source. This is `BR-PIT-019`.
+
+### 14.2.4 Do not assume "same code path" means "same behavior"
+
+`add` and `echo` both went through the same `handle_call` code path. They behaved differently because the **runtime memory state** differed, not because the code branched.
+
+**Lesson**: identical code paths can produce different outcomes when the outcome depends on external state (in this case, allocator state).
+
+## 14.3 ID: `BR-PM-003` — Diagnostic Procedure for Future Recurrences
+
+If a future change produces intermittent empty HTTP bodies, run the following procedure:
+
+```mermaid
+flowchart TD
+    A["Symptom: intermittent empty HTTP body"] --> B{"Is the failure correlated with payload size?"}
+    B -- "Yes" --> C["Suspect handle lifetime / memory reuse"]
+    B -- "No" --> D["Suspect a logic bug in the router"]
+
+    C --> E["Add temporary diagnostic:"]
+    E --> E1["Log LF_GetSize(res_ptr) before LF_SetPos"]
+    E1 --> E2["Log LF_GetPos(res_ptr) before LF_SetPos"]
+    E2 --> E3["Log the first 64 bytes after read"]
+
+    E3 --> F{"Is size > 0 but the read is empty?"}
+    F -- "Yes" --> G["Handle was released before the read — check the call family"]
+    F -- "No, size == 0" --> H["Backend returned nothing — check the backend"]
+
+    G --> I["Verify handle_call uses LF_Call / LF_UID_Call / LF_P2PNAME_Call"]
+    I --> J{"Still using LF_Async_Call?"}
+    J -- "Yes" --> K["Replace with the synchronous family"]
+    J -- "No" --> L["Check for a double-free: is LF_FreeData being called twice?"]
+```
+
+The three diagnostic log lines to add temporarily (inside `handle_call`, before and after the read):
+
+```python
+logger.debug("res size=%d pos=%d", LF_GetSize(res_ptr), LF_GetPos(res_ptr))
+LF_SetPos(res_ptr, 0)
+result_bytes = read_string_bytes(res_ptr)
+logger.debug("after read: pos=%d len=%d first64=%r",
+             LF_GetPos(res_ptr), len(result_bytes), result_bytes[:64])
+```
+
+Interpretation:
+
+| Observation | Conclusion |
+|-------------|------------|
+| `size > 0`, but `len(result_bytes) == 0` | The handle was released before the read. Check the call family (`BR-PIT-017`). |
+| `size == 0` | The backend returned nothing. Check the backend or the pre-check. |
+| `size > 0` and `len(result_bytes) > 0`, but the body is garbage | Memory corruption from a double-free. Check for a second `LF_FreeData` on the same handle (`BR-PIT-018`). |
+| `size > 0` and the read succeeds but the process crashes later | A late callback from an abandoned async op is writing to a freed handle. Check for any remaining async-family usage. |
+
+---
+
+# Chapter 15 — Integration Guide
+
+## 15.1 ID: `BR-INT-001` — HTTP Client Integration
 
 The HTTP contract is language-neutral: send an HTTP POST to `http://<host>:<port>/<app>/<api>`, with the payload as the body.
 
@@ -1512,16 +1844,7 @@ Invoke-RestMethod -Method POST `
   -Body '{"args": ["1+2*3"]}'
 ```
 
-### Contract notes
-
-- The URL path determines routing (`BR-IN-001`).
-- The response body is canonical UTF-8 JSON when the backend returned JSON; otherwise it is the raw bytes.
-- If the client library escapes non-ASCII characters as `\uXXXX`, the bridge's normalization un-escapes them before forwarding.
-- If the response is empty, see §9.6 for diagnostics.
-
-## 13.2 ID: `BR-INT-002` — LingoFuse Caller Integration (Outbound HTTP)
-
-The contract is: create a DataHandle for the API `__lf_outbound_post__`, write a UTF-8 NUL-terminated JSON request, call the bridge App `__lf_http_bridge__`, and read a UTF-8 NUL-terminated JSON response.
+## 15.2 ID: `BR-INT-002` — LingoFuse Caller Integration (Outbound HTTP)
 
 ### Request JSON
 
@@ -1545,14 +1868,7 @@ The contract is: create a DataHandle for the API `__lf_outbound_post__`, write a
 }
 ```
 
-### Contract notes
-
-- The caller does not need an HTTP client library.
-- The caller does not need to worry about `\uXXXX` escapes; the bridge emits literal UTF-8.
-
-## 13.3 ID: `BR-INT-003` — LingoFuse Caller Integration (JSON Repair)
-
-The contract is: create a DataHandle for the API `__lf_repair_json__`, write a UTF-8 NUL-terminated JSON text (possibly malformed), call the bridge App `__lf_http_bridge__`, and read a UTF-8 NUL-terminated text (the repaired JSON).
+## 15.3 ID: `BR-INT-003` — LingoFuse Caller Integration (JSON Repair)
 
 ### Input (a malformed JSON string)
 
@@ -1566,59 +1882,31 @@ The contract is: create a DataHandle for the API `__lf_repair_json__`, write a U
 {"name": "Alice", "age": 30}
 ```
 
-### Contract notes
-
-- Input is a JSON **string** (not a JSON object).
-- Output is a JSON **string** (not a JSON object).
-- A repaired string contains literal UTF-8 characters, never `\uXXXX` escapes.
-- If repair is impossible, the original text is returned unchanged.
-
-## 13.4 ID: `BR-INT-004` — Using the Bridge from Any Language
-
-The bridge is language-neutral. The wire contract is the same for every LingoFuse client:
+## 15.4 ID: `BR-INT-004` — Using the Bridge from Any Language
 
 | Step | What the client does |
 |------|----------------------|
 | 1 | Create a DataHandle whose API name is `__lf_outbound_post__` (or `__lf_repair_json__`) |
 | 2 | Write a UTF-8 NUL-terminated payload into the handle |
-| 3 | Call the App `__lf_http_bridge__` |
-| 4 | Read a UTF-8 NUL-terminated payload from the response handle |
+| 3 | Call the App `__lf_http_bridge__` **with the synchronous family** (`LF_Call` or the language equivalent) |
+| 4 | Read a UTF-8 NUL-terminated payload from the response handle **inside the caller's own thread** |
 | 5 | Free both handles |
 
-| Language | Handle creation | String write | Call | Response read |
-|----------|-----------------|--------------|------|---------------|
-| Pascal | `LF_CreateDataEx` | `LF_WriteString` | `LF_CallEx` | `LF_ReadString` |
-| Python | `DataHandle(api_name)` | `write_string(...)` | `LF_Call(...)` | `read_string(...)` |
-| C++ | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
-| Rust | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
-| C# | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
-| Java | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
-| Node.js | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
-| PHP | `LF_CreateData` | `LF_WriteString` | `LF_Call` | `LF_ReadString` |
+## 15.5 ID: `BR-INT-005` — Interop with a Web Demo
 
-## 13.5 ID: `BR-INT-005` — Interop with a Web Demo
-
-A web demo page typically hard-codes the bridge URL, for example:
+A web demo page typically hard-codes the bridge URL:
 
 ```
 http://127.0.0.1:8081/pas/exp
 ```
 
-**Requirements**:
-
-- The bridge listens on `127.0.0.1:8081`.
-- The backend App is named `pas` and the API is named `exp`.
-- Renaming any of these requires updating the HTML.
-
-## 13.6 ID: `BR-INT-006` — Chaining Bridge Instances
+## 15.6 ID: `BR-INT-006` — Chaining Bridge Instances
 
 **Scenario**: bridge A wants to send an HTTP POST via bridge B.
 
 **Method**: A registers its outbound call to target bridge B's `__lf_outbound_post__` API.
 
-**Note**: this forms a chain `A → LingoFuse → B → HTTP → external`. The longer the chain, the higher the latency.
-
-## 13.7 ID: `BR-INT-007` — Integration Checklist
+## 15.7 ID: `BR-INT-007` — Integration Checklist
 
 | Peer | Needs to know | Reference |
 |------|---------------|-----------|
@@ -1632,51 +1920,46 @@ http://127.0.0.1:8081/pas/exp
 
 ---
 
-# Chapter 14 — Upgrade Guide
+# Chapter 16 — Upgrade Guide
 
-## 14.1 ID: `BR-UP-001` — Version History
+## 16.1 ID: `BR-UP-001` — Version History
 
 | Version | Core change |
 |---------|-------------|
 | v3.1 and earlier | Unidirectional HTTP → LingoFuse gateway |
 | v4.0 | **Bidirectional**: added the outbound Call API |
-| **v5.0 (current)** | **Tri-directional**: added the JSON repair Call API and the forward-only mode |
+| v5.0 | **Tri-directional**: added the JSON repair Call API and forward-only mode |
+| **v6.0 (current)** | **Handle-ownership fix**: the inbound path uses the synchronous call family; the async-handle pitfall is documented; the test methodology chapter is added |
 
-## 14.2 ID: `BR-UP-002` — Compatibility from v4.0 → v5.0
+## 16.2 ID: `BR-UP-002` — Compatibility from v5.0 → v6.0
 
 | Aspect | Compatible? | Notes |
 |--------|:-----------:|-------|
-| Command-line arguments | ✅ | All v4.0 arguments preserved |
-| Environment variables | ✅ | All v4.0 variables preserved |
+| Command-line arguments | ✅ | All v5.0 arguments preserved |
+| Environment variables | ✅ | All v5.0 variables preserved |
 | Inbound routing | ✅ | URL format unchanged |
 | Inbound error codes | ✅ | `-1` / `-2` / `-3` unchanged |
-| Inbound Content-Type mapping | ✅ | Four statuses unchanged |
 | Outbound API contract | ✅ | Request and response JSON shape unchanged |
-| Default App name | ✅ | `__lf_http_bridge__` unchanged |
-| Default outbound API name | ✅ | `__lf_outbound_post__` unchanged |
-| Default repair API name | 🆕 | `__lf_repair_json__` is newly registered; no collision with v4.0 |
-| **`forward_only` config field** | 🆕 | Optional, defaults to `False` (v4.0 behavior preserved) |
-| **`--forward-only` flag** | 🆕 | Optional, defaults to `False` |
-| **`LINGOFUSE_FORWARD_ONLY` env var** | 🆕 | Optional, defaults to `False` |
+| Repair API contract | ✅ | Input/output unchanged |
+| Forward-only mode | ✅ | Unchanged |
+| **Empty-body behavior on large payloads** | 🆕 | Now returns the correct body instead of an empty one |
+| **Timeout vs. empty-payload distinction** | ⚠️ | The synchronous family cannot distinguish the two; both return `200 OK` with a size-0 handle. This was already true before v5.0 for the small-payload path. |
 
 **Upgrade advice**:
 
-- **No breaking changes.** Directly replace the executable.
-- Existing v4.0 deployments continue to behave identically because `forward_only` defaults to `False`.
-- To opt in to the new mode, pass `--forward-only` or set `LINGOFUSE_FORWARD_ONLY=1`.
+- **No breaking changes** to the wire protocol or configuration.
+- Directly replace the executable.
+- The only behavioral change is the **fix**: large-payload responses now return the correct body.
+- If your deployment depends on the specific error returned when the backend times out, review `BR-IN-007`. The synchronous family returns `200 OK` with an empty body for a timeout, not an error envelope. For the outbound and repair directions, timeouts still return their respective error envelopes.
 
-## 14.3 ID: `BR-UP-003` — Upgrade Steps from v4.0
+## 16.3 ID: `BR-UP-003` — Upgrade Steps from v5.0
 
 1. **Back up** the old executable.
 2. **Replace** with the new one.
 3. **Restart**: stop the old bridge, start the new one.
-4. **Verify**:
-   - Inbound (full mode only): an HTTP POST to `/<app>/<api>`.
-   - Outbound: call `__lf_outbound_post__` from a LingoFuse caller.
-   - Repair: call `__lf_repair_json__` from a LingoFuse caller with a malformed JSON string.
-5. **Inspect the logs**: confirm both Call APIs were registered and, if in forward-only mode, that the banner reports it.
+4. **Verify** with the manual checklist in §13.10.
 
-## 14.4 ID: `BR-UP-004` — Future Compatibility Contract
+## 16.4 ID: `BR-UP-004` — Future Compatibility Contract
 
 - **Promises**:
   - Inbound URL format unchanged.
@@ -1693,29 +1976,28 @@ http://127.0.0.1:8081/pas/exp
   - New outbound request fields (backward compatible).
   - New Call APIs on the bridge App.
 
-## 14.5 ID: `BR-UP-005` — Upgrade Strategy for Custom Branches
+## 16.5 ID: `BR-UP-005` — Upgrade Strategy for Custom Branches
 
-If you have modified the bridge (see Chapter 11), when upgrading:
+If you have modified the bridge:
 
-1. **Record**: note which insertion points you modified.
+1. **Record**: note which insertion points you modified (see §11.1).
 2. **Diff**: compare the new version with the old one, section by section.
 3. **Replay**: reapply your modifications on top of the new version.
-4. **Regress**: run the full verification checklist.
+4. **Regress**: run the full verification checklist (§13.10).
 5. **Submit**: if a change has general value, consider upstreaming it.
 
-## 14.6 ID: `BR-UP-006` — Rollback Steps
+## 16.6 ID: `BR-UP-006` — Rollback Steps
 
 1. Stop the current bridge.
 2. Restore the backed-up executable.
 3. Restart.
 4. **Note**: if the new bridge has registered an App, stopping it will destroy the App with the LingoFuse library shutdown.
-5. If the old and new versions use different App names, there is no conflict.
 
 ---
 
-# Chapter 15 — Self-Review and Index
+# Chapter 17 — Self-Review and Index
 
-## 15.1 Contract Completeness Review
+## 17.1 Contract Completeness Review
 
 | Category | Covered | Chapter |
 |----------|:-------:|---------|
@@ -1735,10 +2017,12 @@ If you have modified the bridge (see Chapter 11), when upgrading:
 | Executable forms | ✅ | §10.1 |
 | Extension points | ✅ | Ch. 11 |
 | Pitfalls | ✅ | Ch. 12 |
-| Integration | ✅ | Ch. 13 |
-| Upgrade | ✅ | Ch. 14 |
+| Test methodology | ✅ | **Ch. 13** |
+| Debugging post-mortem | ✅ | **Ch. 14** |
+| Integration | ✅ | Ch. 15 |
+| Upgrade | ✅ | Ch. 16 |
 
-## 15.2 AI Reference Tests
+## 17.2 AI Reference Tests
 
 After reading this document, an AI should be able to answer:
 
@@ -1753,31 +2037,36 @@ After reading this document, an AI should be able to answer:
 | How do I write the outbound request JSON? | §4.2 |
 | Will the outbound body contain `\uXXXX` escapes? | §4.4, §12.7 |
 | On which thread does the outbound callback run? | §4.9, §12.9 |
+| **Why does the inbound path use the synchronous call family?** | **§3.5, §12.17, §14.1** |
+| **How do I avoid use-after-free on an async result handle?** | **§12.18** |
+| **How do I run the three test layers?** | **§13.2** |
+| **What does the L2 fixture do differently from the L3 fixture?** | **§13.3, §13.4** |
+| **How do I add a new test?** | **§13.7** |
 | How do I add authentication? | §11.2 |
 | How do I deploy to production on Linux? | §10.4, §10.9 |
 | How do I deploy to production on Windows? | §10.4, §10.9 |
 | How do I run the bridge without opening a port? | §7, §10.5, §10.7 |
-| How do I delegate JSON repair to the bridge from any language? | §5, §13.3, §13.4 |
+| How do I delegate JSON repair to the bridge from any language? | §5, §15.3, §15.4 |
 | What is the difference between full mode and forward-only mode? | §7.1 |
 | How do I run the bridge as a Windows service? | §10.9 |
 | How do I run the bridge as a Linux systemd service? | §10.9 |
 
-## 15.3 Differences from v4.0
+## 17.3 Differences from v5.0
 
-| v4.0 statement | v5.0 reality |
+| v5.0 statement | v6.0 reality |
 |----------------|--------------|
-| "The bridge is bidirectional" | The bridge is **tri-directional** (inbound, outbound, repair) |
-| "The bridge always listens on HTTP" | The bridge listens on HTTP **unless forward-only mode is enabled** |
-| "Two Call APIs are registered" | **Still two** — outbound and repair |
-| Configuration table: 12 items | Configuration table: **14 items** |
-| No operating-mode chapter | New Chapter 7 |
-| No repair-service chapter | New Chapter 5 |
-| No Linux/Windows deployment chapter | New Chapter 10 |
-| No executable-form chapter | New §10.1 |
+| "The bridge is tri-directional" | Still tri-directional; **the inbound path now uses the synchronous family** |
+| "`LF_Async_Call` is safe on the inbound path" | **No.** The async result handle is released immediately after the callback returns; use the synchronous family |
+| "Two Call APIs are registered" | Still two — outbound and repair |
+| Configuration table: 14 items | Configuration table: **14 items** (unchanged) |
+| No test-methodology chapter | **New Chapter 13** |
+| No debugging post-mortem | **New Chapter 14** |
+| No regression guard recommendation | **New §13.8** |
 
-## 15.4 Documentation Maintenance Contract
+## 17.4 Documentation Maintenance Contract
 
 - This document describes the **current source**. When the source changes, at minimum update:
+  - Ch. 3 (inbound path — especially the call family choice)
   - Ch. 4 (outbound contract)
   - Ch. 5 (repair contract)
   - Ch. 6 (JSON normalization)
@@ -1785,11 +2074,14 @@ After reading this document, an AI should be able to answer:
   - Ch. 8 (configuration table)
   - Ch. 9 (error codes)
   - Ch. 10 (deployment)
-  - §14.1 (version history)
+  - Ch. 12 (pitfalls)
+  - Ch. 13 (test methodology)
+  - Ch. 14 (post-mortem)
+  - §16.1 (version history)
 - All diagrams use Mermaid, never ASCII art.
 - Every contract must be traceable to the source.
 
-## 15.5 Explicitly Out of Scope
+## 17.5 Explicitly Out of Scope
 
 | Excluded topic | Where to look |
 |----------------|---------------|
@@ -1815,7 +2107,7 @@ After reading this document, an AI should be able to answer:
 | `BR-IN-002` | Request body handling | §3.2 |
 | `BR-IN-003` | Path parsing error (`-2`) | §3.3 |
 | `BR-IN-004` | Optional pre-check | §3.4 |
-| `BR-IN-005` | Forwarding to LingoFuse | §3.5 |
+| `BR-IN-005` | Forwarding to LingoFuse (synchronous family) | §3.5 |
 | `BR-IN-006` | Response content-type mapping | §3.6 |
 | `BR-IN-007` | Inbound error codes | §3.7 |
 | `BR-IN-008` | CORS support | §3.8 |
@@ -1908,24 +2200,45 @@ After reading this document, an AI should be able to answer:
 | `BR-PIT-014` | Programmatic pre-set overridden by environment | §12.14 |
 | `BR-PIT-015` | Shell-specific syntax when launching | §12.15 |
 | `BR-PIT-016` | Port already in use | §12.16 |
-| `BR-INT-001` | HTTP client integration | §13.1 |
-| `BR-INT-002` | LingoFuse caller integration (outbound HTTP) | §13.2 |
-| `BR-INT-003` | LingoFuse caller integration (JSON repair) | §13.3 |
-| `BR-INT-004` | Using the bridge from any language | §13.4 |
-| `BR-INT-005` | Interop with a web demo | §13.5 |
-| `BR-INT-006` | Chaining bridge instances | §13.6 |
-| `BR-INT-007` | Integration checklist | §13.7 |
-| `BR-UP-001` | Version history | §14.1 |
-| `BR-UP-002` | Compatibility from v4.0 → v5.0 | §14.2 |
-| `BR-UP-003` | Upgrade steps from v4.0 | §14.3 |
-| `BR-UP-004` | Future compatibility contract | §14.4 |
-| `BR-UP-005` | Upgrade strategy for custom branches | §14.5 |
-| `BR-UP-006` | Rollback steps | §14.6 |
+| **`BR-PIT-017`** | **Using the asynchronous call family on the inbound path** | **§12.17** |
+| **`BR-PIT-018`** | **Retaining or freeing an asynchronous `Result_` handle** | **§12.18** |
+| **`BR-PIT-019`** | **Trusting the "~1 second" comment** | **§12.19** |
+| **`BR-PIT-020`** | **Misdiagnosing a size-dependent failure as a type-dependent one** | **§12.20** |
+| **`BR-TEST-001`** | **Three-layer test strategy** | **§13.1** |
+| **`BR-TEST-002`** | **Running the tests** | **§13.2** |
+| **`BR-TEST-003`** | **Fixture design (L2)** | **§13.3** |
+| **`BR-TEST-004`** | **Fixture design (L3)** | **§13.4** |
+| **`BR-TEST-005`** | **Test coverage matrix** | **§13.5** |
+| **`BR-TEST-006`** | **Diagnosing test failures** | **§13.6** |
+| **`BR-TEST-007`** | **Adding new tests** | **§13.7** |
+| **`BR-TEST-008`** | **Regression guard for the async-handle bug** | **§13.8** |
+| **`BR-TEST-009`** | **Continuous integration recommendations** | **§13.9** |
+| **`BR-TEST-010`** | **Manual verification checklist** | **§13.10** |
+| **`BR-PM-001`** | **The async-handle bug** | **§14.1** |
+| **`BR-PM-002`** | **Misdiagnosis lessons** | **§14.2** |
+| **`BR-PM-003`** | **Diagnostic procedure for future recurrences** | **§14.3** |
+| `BR-INT-001` | HTTP client integration | §15.1 |
+| `BR-INT-002` | LingoFuse caller integration (outbound HTTP) | §15.2 |
+| `BR-INT-003` | LingoFuse caller integration (JSON repair) | §15.3 |
+| `BR-INT-004` | Using the bridge from any language | §15.4 |
+| `BR-INT-005` | Interop with a web demo | §15.5 |
+| `BR-INT-006` | Chaining bridge instances | §15.6 |
+| `BR-INT-007` | Integration checklist | §15.7 |
+| `BR-UP-001` | Version history | §16.1 |
+| `BR-UP-002` | Compatibility from v5.0 → v6.0 | §16.2 |
+| `BR-UP-003` | Upgrade steps from v5.0 | §16.3 |
+| `BR-UP-004` | Future compatibility contract | §16.4 |
+| `BR-UP-005` | Upgrade strategy for custom branches | §16.5 |
+| `BR-UP-006` | Rollback steps | §16.6 |
 
 ## A.2 Cross-Knowledge-Base References
 
 | This KB's ID | Related ID | Related document |
 |--------------|------------|------------------|
+| `BR-PIT-017` | `LF-ASYNC-001`, `LF-ASYNC-003`, `LF-ASYNC-006` | Pascal Guide (async handle ownership) |
+| `BR-PIT-018` | `LF-ASYNC-002` | Pascal Guide (retaining async handle) |
+| `BR-PIT-019` | `LF-ASYNC-004` | Pascal Guide (comment is not the source) |
+| `BR-PIT-020` | `LF-ASYNC-005` | Pascal Guide (int vs dict is a false classifier) |
 | `BR-OUT-005` | `LF-CB-002` | Pascal Guide (callbacks must not block) |
 | `BR-OUT-009` | `LF-CB-004` | Pascal Guide (callback threads) |
 | `BR-PIT-009` | `LF-CB-002` | Pascal Guide |
@@ -1963,42 +2276,26 @@ After reading this document, an AI should be able to answer:
 
 ```bash
 # 1. Development / debugging (full mode)
-./bridge \
-    --endpoint ipc:compute_grid \
-    --no-precheck \
-    --debug
+./bridge --endpoint ipc:compute_grid --no-precheck --debug
 
 # 2. Production deployment (full mode)
-./bridge \
-    --endpoint ipc:compute_grid \
-    --host 127.0.0.1 \
-    --log-file /var/log/bridge.log
+./bridge --endpoint ipc:compute_grid --host 127.0.0.1 --log-file /var/log/bridge.log
 
 # 3. Forward-only mode
-./bridge \
-    --endpoint ipc:compute_grid \
-    --forward-only
+./bridge --endpoint ipc:compute_grid --forward-only
 
 # 4. Forward-only mode via environment variable
-LINGOFUSE_FORWARD_ONLY=1 \
-LINGOFUSE_ENDPOINT=ipc:compute_grid \
-./bridge
+LINGOFUSE_FORWARD_ONLY=1 LINGOFUSE_ENDPOINT=ipc:compute_grid ./bridge
 ```
 
 ### Windows (Command Prompt)
 
 ```bat
 :: 1. Development / debugging (full mode)
-bridge.exe ^
-    --endpoint ipc:compute_grid ^
-    --no-precheck ^
-    --debug
+bridge.exe --endpoint ipc:compute_grid --no-precheck --debug
 
 :: 2. Production deployment (full mode)
-bridge.exe ^
-    --endpoint ipc:compute_grid ^
-    --host 127.0.0.1 ^
-    --log-file C:\LingoFuse\logs\bridge.log
+bridge.exe --endpoint ipc:compute_grid --host 127.0.0.1 --log-file C:\LingoFuse\logs\bridge.log
 
 :: 3. Forward-only mode via environment variable
 set LINGOFUSE_FORWARD_ONLY=1
@@ -2010,16 +2307,10 @@ bridge.exe
 
 ```powershell
 # 1. Development / debugging (full mode)
-.\bridge.exe `
-    --endpoint ipc:compute_grid `
-    --no-precheck `
-    --debug
+.\bridge.exe --endpoint ipc:compute_grid --no-precheck --debug
 
 # 2. Production deployment (full mode)
-.\bridge.exe `
-    --endpoint ipc:compute_grid `
-    --host 127.0.0.1 `
-    --log-file C:\LingoFuse\logs\bridge.log
+.\bridge.exe --endpoint ipc:compute_grid --host 127.0.0.1 --log-file C:\LingoFuse\logs\bridge.log
 
 # 3. Forward-only mode via environment variable
 $env:LINGOFUSE_FORWARD_ONLY = "1"
@@ -2074,44 +2365,49 @@ When handling a bridge-related question, an AI should:
 3. **Error questions**: see Chapter 9 and Chapter 12.
 4. **Mode questions**: see Chapter 7.
 5. **Repair questions**: see Chapter 5.
-6. **Deployment questions**: see Chapter 10 (Linux and Windows).
-7. **Integration questions**: see Chapter 13.
-8. **Upgrade questions**: see Chapter 14.
-9. **Source modification**: see Chapter 11.
-10. **Cross-KB**: see Appendix A.2.
-11. **No answer**: state explicitly "insufficient material", recommend consulting the source.
+6. **Handle-ownership questions**: see §3.5, §12.17–§12.20, and Chapter 14.
+7. **Test questions**: see Chapter 13.
+8. **Deployment questions**: see Chapter 10 (Linux and Windows).
+9. **Integration questions**: see Chapter 15.
+10. **Upgrade questions**: see Chapter 16.
+11. **Source modification**: see Chapter 11.
+12. **Cross-KB**: see Appendix A.2.
+13. **No answer**: state explicitly "insufficient material", recommend consulting the source.
 
 ## C.2 Metadata Required with Every Answer
 
 When answering a bridge question, the AI should proactively include:
 
-- **The ID it is based on** (e.g., `BR-OUT-004`).
+- **The ID it is based on** (e.g., `BR-PIT-017`).
 - **The evidence level** (all entries in this KB are 🟢).
 - **Whether the "pitfall list" was hit** (Chapter 12).
 
 **Example answer**:
 
-> According to **BR-OUT-004 (evidence level: 🟢)**, the outbound HTTP body must always be sent as literal UTF-8 bytes. An HTTP library's `.json=` shortcut forces `ensure_ascii=True`, which produces `\uXXXX` escapes and violates the toolchain contract.
+> According to **BR-PIT-017 (evidence level: 🟢)**, the inbound path must use the **synchronous** call family (`LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call`), not the asynchronous family.
 >
-> **Correct approach**: always serialize the outbound body with the canonical serializer, then send the resulting bytes as the request body.
+> **Root cause**: the asynchronous family's `Result_` handle belongs to the framework and is released **immediately** after the `OnResult` callback returns. Reading it from a different thread (as the Flask worker does) is a use-after-free, and freeing it is a double-free.
 >
-> **Related pitfall**: `BR-PIT-007`.
+> **Fix**: use the synchronous family. The synchronous family's handle is caller-owned; the caller reads with `LF_SetPos(res_ptr, 0)` + `read_string_bytes(res_ptr)` and releases with `LF_FreeData(res_ptr)`.
 >
-> **Related contract**: `BR-JSON-007` (single source of serialization policy).
+> **Related pitfall**: `BR-PIT-018` (retaining the async handle) and `BR-PIT-019` (trusting the "~1 second" comment).
+>
+> **Related post-mortem**: `BR-PM-001`.
 
 ## C.3 Forbidden Behaviors
 
 An AI should not:
 
 - ❌ Invent IDs or chapters that do not exist.
-- ❌ Confuse v4.0 with v5.0 behavior.
-- ❌ Claim the bridge is "bidirectional" (v5.0 is **tri-directional**).
+- ❌ Confuse v5.0 with v6.0 behavior.
+- ❌ Claim the bridge's inbound path uses `LF_Async_Call`.
 - ❌ Recommend any HTTP library's `.json=` shortcut.
 - ❌ Recommend a bare JSON serializer anywhere in the bridge.
 - ❌ Recommend calling a blocking LingoFuse function inside a callback.
 - ❌ Ignore the requirement that `--endpoint` must match the backend.
 - ❌ Claim the bridge opens an HTTP listener when `forward_only=True`.
 - ❌ Give only a Linux command for a task that also needs a Windows command (or vice versa).
+- ❌ Present the async-handle bug as "a C-layer problem" — it is a Python-side ownership-model mismatch.
 
 ## C.4 Structured Output Template
 
@@ -2136,14 +2432,15 @@ When asked "what can the bridge do?", the AI should:
 - Emphasize the **shared endpoint** (`BR-GEN-001`).
 - Emphasize **consistent JSON normalization across all directions** (`BR-JSON-007`).
 - Emphasize the **forward-only mode** (`BR-MODE-001`) as the dedicated relay deployment.
+- Emphasize the **synchronous call family on the inbound path** (`BR-PIT-017`).
 
 ## C.6 Multi-Language Answer Guidelines
 
 When asked "how do I use the bridge from <language>?", the AI should:
 
 - State that the bridge is **language-neutral** (`BR-INT-004`).
-- Provide the DataHandle-based pattern: create handle with API name → write a UTF-8 NUL-terminated payload → call the bridge App → read a UTF-8 NUL-terminated response.
-- Refer to §13.4 for the language-to-LingoFuse call mapping.
+- Provide the DataHandle-based pattern: create handle with API name → write a UTF-8 NUL-terminated payload → **call with the synchronous family** → read a UTF-8 NUL-terminated response **inside the caller's thread** → free both handles.
+- Refer to §15.4 for the language-to-LingoFuse call mapping.
 - For JSON payloads, remind the caller to use literal UTF-8 (no `\uXXXX` escapes on the wire).
 
 ## C.7 Cross-Platform Answer Guidelines
@@ -2167,9 +2464,21 @@ When asked "how do I run a bridge without opening a port?", the AI should:
 - Emphasize that the outbound POST proxy and the JSON repair service remain **fully functional** (`BR-OUT-010`, `BR-REP-008`).
 - Provide the recipe from §10.5.
 
+## C.9 Test Methodology Answer Guidelines
+
+When asked "how do I verify the bridge?", the AI should:
+
+- State the **three-layer strategy** (`BR-TEST-001`):
+  - L1: unit tests, no network (`test_bridge_units.py`).
+  - L2: in-process integration (`test_bridge_integration.py`).
+  - L3: subprocess end-to-end (`test_bridge_e2e.py`).
+- Provide the exact `pytest` commands from §13.2.
+- Note the expected pass counts: 84 / 58 / 13 (total 155).
+- For failures, refer to §13.6 (diagnosis) and Chapter 14 (post-mortem).
+
 ---
 
-*Document version: v5.0 (tri-directional bridge with forward-only mode)*
-*This document supersedes Bridge_User_Guide.md v4.0*
-*Last updated: 2026-09-25*
+*Document version: v6.0 (tri-directional bridge with handle-ownership fix, forward-only mode, and test methodology)*
+*This document supersedes Bridge_User_Guide.md v5.0*
+*Last updated: 2026-10-12*
 *Maintained by: the LingoFuse team*

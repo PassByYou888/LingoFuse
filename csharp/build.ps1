@@ -8,7 +8,7 @@
     instead. When no solution file exists, falls back to recursively
     discovering every *.csproj under the script directory.
 
-    Optionally packs NuGet packages, runs test projects, and cleans
+    Optionally packs NuGet packages, runs the test projects, and cleans
     before building.
 
     The repository layout this script expects (documentation only; the
@@ -17,9 +17,10 @@
         lf_csharp.sln
         CrossCall/CrossCall.csproj
         CrossNode/CrossNode.csproj
-        crossService/crossService.csproj
-        src/LingoFuse_cs/LingoFuse_cs.csproj     (library)
-        test/test.csproj                         (test runner)
+        CrossService/crossService.csproj
+        src/LingoFuse_cs/LingoFuse_cs.csproj    (library, packable)
+        test/test.csproj                        (v4.0 test harness, Exe)
+        test2/test2.csproj                      (v5.0 test harness, Exe)
 
     Only lf_csharp.sln and the recursive *.csproj scan are consulted at
     run time; the list above is documentation, not configuration.
@@ -32,9 +33,21 @@
 
       Build  (default)  Restore + build.
       Pack              Build + produce .nupkg files in artifacts/.
-                        Pack failures for non-packable projects are
-                        reported as warnings and do not abort the run.
-      Test              Build + run every test project.
+                        Only projects that are actually packable are
+                        attempted; exe / WinExe projects are skipped
+                        without error.
+      Test              Build + run every test project. A project is
+                        treated as a test project when:
+                          - its leaf name contains "test" or "spec", or
+                          - its directory path contains a "tests?"
+                            segment.
+                        Two run modes are supported:
+                          - xUnit / NUnit / MSTest projects (detected by
+                            a Microsoft.NET.Test.Sdk reference) run via
+                            `dotnet test`;
+                          - plain console apps run via `dotnet run`,
+                            which is the correct mode for the LingoFuse
+                            test harnesses under test/ and test2/.
 
 .PARAMETER Project
     Optional. When set, only the specified project is built (or packed
@@ -59,6 +72,10 @@
 .EXAMPLE
     .\build.ps1 -Clean -Target Test
     Clean, then build and run every test project.
+
+.EXAMPLE
+    .\build.ps1 -Project .\test2\test2.csproj -Target Test
+    Build and run only the v5.0 test suite.
 
 .EXAMPLE
     .\build.ps1 -Project .\src\LingoFuse_cs\LingoFuse_cs.csproj
@@ -122,6 +139,54 @@ if (-not $dotnet) {
 }
 Write-Host ("dotnet SDK      : " + (& dotnet --version)) -ForegroundColor DarkGray
 Write-Host ''
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# A project is packable when:
+#   - <IsPackable>true</IsPackable> is present, or
+#   - no explicit IsPackable and no Exe/WinExe OutputType (modern SDK
+#     treats library projects as packable by default).
+function Test-IsPackableProject {
+    param([Parameter(Mandatory)] [string]$CsprojPath)
+
+    try {
+        $content = Get-Content -LiteralPath $CsprojPath -Raw -ErrorAction Stop
+        if ($content -match '<IsPackable>\s*true\s*</IsPackable>') { return $true }
+        if ($content -match '<IsPackable>\s*false\s*</IsPackable>') { return $false }
+        return -not [bool]($content -match '<OutputType>\s*(Exe|WinExe)\s*</OutputType>')
+    }
+    catch {
+        return $false
+    }
+}
+
+# A project is an SDK-based test project (xUnit / NUnit / MSTest) when
+# it references Microsoft.NET.Test.Sdk. Such projects are run with
+# `dotnet test`. Console-app test harnesses are run with `dotnet run`.
+function Test-IsSdkTestProject {
+    param([Parameter(Mandatory)] [string]$CsprojPath)
+
+    try {
+        $content = Get-Content -LiteralPath $CsprojPath -Raw -ErrorAction Stop
+        return [bool]($content -match 'Microsoft\.NET\.Test\.Sdk')
+    }
+    catch {
+        return $false
+    }
+}
+
+# A project is treated as a test project when its leaf name contains
+# "test" or "spec", or its directory path contains a "tests?" segment.
+function Test-IsTestProject {
+    param([Parameter(Mandatory)] [string]$CsprojPath)
+
+    $leaf = Split-Path -Leaf $CsprojPath
+    $dir  = Split-Path -Parent $CsprojPath
+    return ($leaf -match '(?i)(test|spec)') -or
+           ($dir  -match '(?i)[\\/](tests?)[\\/]')
+}
 
 # ---------------------------------------------------------------------------
 # Determine the build target(s)
@@ -265,7 +330,7 @@ switch ($Target) {
         # back to packing every discovered .csproj; in single-project
         # or recursive mode we already have the list.
         if ($useSolution) {
-            $packTargets = @(
+            $packCandidates = @(
                 Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.csproj' `
                     -ErrorAction SilentlyContinue |
                     Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
@@ -274,24 +339,34 @@ switch ($Target) {
             )
         }
         else {
-            $packTargets = $buildTargets
+            $packCandidates = $buildTargets
         }
 
-        foreach ($proj in $packTargets) {
-            $name = Split-Path -Leaf $proj
-            Write-Host "  Packing: $name" -ForegroundColor DarkGray
+        # Only pack projects that declare themselves packable. This is
+        # more precise than attempting to pack every project and
+        # treating the failures as warnings: an exe project that is
+        # genuinely not meant to produce a package is skipped without
+        # noise.
+        $packTargets = @($packCandidates | Where-Object { Test-IsPackableProject $_ })
 
-            # Some projects (exe / sample apps) are not packable;
-            # dotnet pack fails for them. Treat that as a warning.
-            & dotnet pack "$proj" `
-                -c $Configuration `
-                --no-build `
-                -o "$ArtifactsDir" `
-                -v $verbosity
+        if ($packTargets.Count -eq 0) {
+            Write-Host '  No packable project found (skipping).' -ForegroundColor DarkYellow
+        }
+        else {
+            foreach ($proj in $packTargets) {
+                $name = Split-Path -Leaf $proj
+                Write-Host "  Packing: $name" -ForegroundColor DarkGray
 
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  WARNING: pack failed for $name (skipped)" `
-                    -ForegroundColor DarkYellow
+                & dotnet pack "$proj" `
+                    -c $Configuration `
+                    --no-build `
+                    -o "$ArtifactsDir" `
+                    -v $verbosity
+
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  WARNING: pack failed for $name (skipped)" `
+                        -ForegroundColor DarkYellow
+                }
             }
         }
 
@@ -313,11 +388,8 @@ switch ($Target) {
     'Test' {
         Write-Host '[3/3] Running tests...' -ForegroundColor Yellow
 
-        # A project is treated as a test project when:
-        #   - its leaf name contains "test" or "spec", or
-        #   - its directory path contains a "test" or "tests" segment.
-        #
-        # In single-project mode we only consider that one project.
+        # In single-project mode we only consider that one project;
+        # otherwise scan the whole tree.
         if ($Project) {
             $allProjects = $buildTargets
         }
@@ -330,14 +402,7 @@ switch ($Target) {
             )
         }
 
-        $testProjects = @(
-            $allProjects | Where-Object {
-                $leaf = Split-Path -Leaf $_
-                $dir  = Split-Path -Parent $_
-                ($leaf -match '(?i)(test|spec)') -or
-                ($dir  -match '(?i)[\\/](tests?)[\\/]')
-            }
-        )
+        $testProjects = @($allProjects | Where-Object { Test-IsTestProject $_ })
 
         if ($testProjects.Count -eq 0) {
             Write-Host '  No test projects found.' -ForegroundColor DarkYellow
@@ -347,12 +412,26 @@ switch ($Target) {
 
             foreach ($proj in $testProjects) {
                 $name = Split-Path -Leaf $proj
-                Write-Host "  Testing: $name" -ForegroundColor DarkGray
 
-                & dotnet test "$proj" `
-                    -c $Configuration `
-                    --no-restore `
-                    -v $verbosity
+                if (Test-IsSdkTestProject $proj) {
+                    # xUnit / NUnit / MSTest project.
+                    Write-Host "  Testing (dotnet test): $name" -ForegroundColor DarkGray
+
+                    & dotnet test "$proj" `
+                        -c $Configuration `
+                        --no-restore `
+                        -v $verbosity
+                }
+                else {
+                    # Console-app test harness. `dotnet test` would do
+                    # nothing for these; `dotnet run` executes main().
+                    Write-Host "  Testing (dotnet run):  $name" -ForegroundColor DarkGray
+
+                    & dotnet run `
+                        --project "$proj" `
+                        -c $Configuration `
+                        --no-build
+                }
 
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "ERROR: tests failed for $name." -ForegroundColor Red

@@ -1,26 +1,21 @@
-﻿using System;
-using System.Reflection;
-using System.Runtime.InteropServices;
-
-namespace LingoFuse.Native;
-
+﻿// ============================================================================
+// File: csharp/src/LingoFuse_cs/Native/NativeMethods.cs
 // ============================================================================
 // NativeMethods — P/Invoke declarations for the LingoFuse C ABI.
 // ============================================================================
-//
 // This class is the ONLY place in the entire binding where native code
 // is invoked. Every managed wrapper in the LingoFuse namespace goes
 // through these declarations.
 //
-// The 37 exports below are declared in the same order as the exports
-// section of LingoFuse.lpr. EntryPoint strings are case-sensitive and
-// match the Pascal source exactly.
+// All declarations are grouped and ordered to match the export
+// section of Z.LingoFuse_Export.pas. EntryPoint strings are
+// case-sensitive and match the Pascal source exactly.
 //
 // CALLING CONVENTION
 // ------------------
-// All functions use CallingConvention.Cdecl. The resolver registered in
-// the static constructor selects the correct platform library at first
-// use:
+// All functions use CallingConvention.Cdecl. The resolver registered
+// in the static constructor selects the correct platform library at
+// first use:
 //
 //     Windows 64-bit  ->  LingoFuse64.dll
 //     Windows 32-bit  ->  LingoFuse32.dll
@@ -39,7 +34,24 @@ namespace LingoFuse.Native;
 // Utf8Marshal.PtrToString; the native side owns the underlying memory
 // and may invalidate it at any time.
 //
+// UID PARAMETERS
+// --------------
+// The UID is a 32-byte aggregate. It is declared as TUIDNative (a
+// blittable struct of four ulongs) and passed BY VALUE, matching the
+// Pascal-side array[0..31] of Byte convention on x86-64.
+//
+// The single exception is LF_Get_P2P_UID, which RETURNS an IntPtr
+// pointing to a library-owned 32-byte buffer. The returned pointer is
+// valid for approximately 5 seconds; the managed wrapper copies the
+// 32 bytes immediately and never exposes the pointer.
+//
 // ============================================================================
+
+using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
+
+namespace LingoFuse.Native;
 
 internal static class NativeMethods
 {
@@ -99,7 +111,7 @@ internal static class NativeMethods
     }
 
     // ====================================================================
-    // Data handle operations (10 exports)
+    // Data handle operations (12 exports)
     // ====================================================================
 
     /// <summary>
@@ -151,12 +163,6 @@ internal static class NativeMethods
     ///   Permanent handles created in that window stay allocated until
     ///   the process terminates. LF_Shutdown also releases any
     ///   permanent handle that is still alive.
-    ///
-    /// [PITFALL - LIFETIME]
-    ///   "Permanent" means "not automatically reclaimed", NOT "never
-    ///   released". You are fully responsible for calling LF_FreeData.
-    ///   Losing the pointer leaks the handle for the lifetime of the
-    ///   process.
     /// </remarks>
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_CreateData_Permanent", ExactSpelling = true)]
@@ -233,6 +239,76 @@ internal static class NativeMethods
         EntryPoint = "LF_SetSize", ExactSpelling = true)]
     internal static extern void LF_SetSize(DataHnd hnd, long size);
 
+    /// <summary>
+    /// Reads the sender's 32-byte session UID from an INPUT handle.
+    /// </summary>
+    /// <param name="hnd">
+    /// Data handle. Must be the <c>input</c> argument of a Call /
+    /// Notify callback. On an output handle or a caller-created handle
+    /// the native layer logs a warning and returns a pointer to a
+    /// zero-filled UID.
+    /// </param>
+    /// <returns>
+    /// A pointer to a 32-byte UID buffer, OR <see cref="IntPtr.Zero"/>
+    /// only if the library itself could not allocate the buffer.
+    /// The pointed-to buffer is released by the native layer
+    /// approximately 5 seconds after the call.
+    ///
+    /// <b>Contract:</b>
+    /// <list type="bullet">
+    ///   <item>Copy the 32 bytes IMMEDIATELY if you want to retain
+    ///         them.</item>
+    ///   <item>Do NOT free the pointer.</item>
+    ///   <item>Do NOT retain the pointer past the ~5-second
+    ///         window.</item>
+    /// </list>
+    ///
+    /// The managed wrapper (<c>DataHandle.GetSenderUid</c>) performs
+    /// the copy and never exposes the pointer.
+    /// </returns>
+    /// <remarks>
+    /// SIDE-DATA SEMANTICS: this is NOT a property of the handle. It is
+    /// the sender's identity, written into the payload header by the
+    /// sender's transport layer. It therefore only exists on an INPUT
+    /// handle.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Get_P2P_UID", ExactSpelling = true)]
+    internal static extern IntPtr LF_Get_P2P_UID(DataHnd hnd);
+
+    /// <summary>
+    /// Reads the sender's P2P group name from an INPUT handle.
+    /// </summary>
+    /// <param name="hnd">
+    /// Data handle. Must be the <c>input</c> argument of a Call /
+    /// Notify callback. On an output handle or a caller-created handle
+    /// the native layer logs a warning and returns an empty string.
+    /// </param>
+    /// <returns>
+    /// A pointer to a UTF-8, NUL-terminated string, or
+    /// <see cref="IntPtr.Zero"/> on failure. The pointed-to buffer is
+    /// released by the native layer approximately 5 seconds after the
+    /// call.
+    ///
+    /// <b>Contract:</b>
+    /// <list type="bullet">
+    ///   <item>Copy the string IMMEDIATELY if you want to retain
+    ///         it.</item>
+    ///   <item>Do NOT free the pointer.</item>
+    ///   <item>Do NOT retain the pointer past the ~5-second
+    ///         window.</item>
+    /// </list>
+    ///
+    /// The managed wrapper (<c>DataHandle.GetSenderP2PName</c>)
+    /// performs the copy and never exposes the pointer.
+    /// </returns>
+    /// <remarks>
+    /// Same SIDE-DATA semantics as <see cref="LF_Get_P2P_UID"/>.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Get_P2P_Name", ExactSpelling = true)]
+    internal static extern IntPtr LF_Get_P2P_Name(DataHnd hnd);
+
     // ====================================================================
     // Application handle operations (5 exports)
     // ====================================================================
@@ -290,7 +366,7 @@ internal static class NativeMethods
     internal static extern int LF_BindApp(AppHnd appHnd);
 
     // ====================================================================
-    // API registration (3 exports)
+    // API registration — app-bound (3 exports)
     // ====================================================================
 
     /// <summary>
@@ -326,6 +402,57 @@ internal static class NativeMethods
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_Unregister", ExactSpelling = true)]
     internal static extern int LF_Unregister(AppHnd appHnd, IntPtr methodName);
+
+    // ====================================================================
+    // API registration — process-wide P2P (3 exports)
+    // ====================================================================
+
+    /// <summary>
+    /// Registers a process-wide Call API on the LF_P2P_APP.
+    /// </summary>
+    /// <remarks>
+    /// APIs registered here are reachable via UID addressing and
+    /// P2PName addressing. They are NOT reachable via App-name
+    /// addressing, even if the API name happens to match an App name.
+    ///
+    /// They live on the process-wide LF_P2P_APP and survive until
+    /// LF_Shutdown.
+    ///
+    /// Typical use: globally-discoverable utility APIs (health probes,
+    /// capability discovery, identity echo, etc.) that any client in
+    /// the mesh can call by UID or by P2PName without knowing the
+    /// target's App name.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Register_P2P_Call", ExactSpelling = true)]
+    internal static extern int LF_Register_P2P_Call(
+        IntPtr methodName,
+        IntPtr desc,
+        IntPtr trigger,
+        LfCallFunc onCall);
+
+    /// <summary>
+    /// Registers a process-wide Notify API on the LF_P2P_APP.
+    /// </summary>
+    /// <remarks>
+    /// Same namespace and reachability rules as
+    /// <see cref="LF_Register_P2P_Call"/>.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Register_P2P_Notify", ExactSpelling = true)]
+    internal static extern int LF_Register_P2P_Notify(
+        IntPtr methodName,
+        IntPtr desc,
+        IntPtr trigger,
+        LfNotifyFunc onNotify);
+
+    /// <summary>
+    /// Removes a process-wide P2P API by name. Does NOT affect
+    /// app-bound APIs of the same name.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Unregister_P2P", ExactSpelling = true)]
+    internal static extern int LF_Unregister_P2P(IntPtr methodName);
 
     // ====================================================================
     // Local execution (2 exports)
@@ -399,7 +526,7 @@ internal static class NativeMethods
     internal static extern void LF_ExitMainThread();
 
     // ====================================================================
-    // Remote invocation (3 exports)
+    // Remote invocation — App name addressing (5 exports)
     // ====================================================================
 
     /// <summary>
@@ -409,6 +536,43 @@ internal static class NativeMethods
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_Call", ExactSpelling = true)]
     internal static extern DataHnd LF_Call(IntPtr appName, DataHnd param, ulong timeoutMs);
+
+    /// <summary>
+    /// Starts an asynchronous remote call. Returns 1 if the request was
+    /// queued, 0 otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <paramref name="onResult"/> callback fires later on a worker
+    /// thread. If the return value is 0, the callback is NEVER
+    /// invoked. The managed bridge detects this synchronous failure
+    /// and faults the corresponding Task.
+    /// </para>
+    /// <para>
+    /// The <paramref name="data"/> pointer is forwarded verbatim to
+    /// the callback. LingoFuse neither owns nor frees it.
+    /// </para>
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Async_Call", ExactSpelling = true)]
+    internal static extern int LF_Async_Call(
+        IntPtr appName,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
+
+    /// <summary>
+    /// Starts an asynchronous sequenced remote call (FIFO per
+    /// (app, api) pair). Same return-value and callback contract as
+    /// <see cref="LF_Async_Call"/>.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Async_Sequenced_Call", ExactSpelling = true)]
+    internal static extern int LF_Async_Sequenced_Call(
+        IntPtr appName,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
 
     /// <summary>
     /// Sends a one-way notification. Delivery order is not guaranteed.
@@ -426,7 +590,179 @@ internal static class NativeMethods
     internal static extern void LF_Sequenced_Notify(IntPtr appName, DataHnd param);
 
     // ====================================================================
-    // Options and diagnostics (7 exports)
+    // Remote invocation — UID addressing (5 exports)
+    // ====================================================================
+
+    /// <summary>
+    /// Synchronous remote call addressed by session UID.
+    /// Same timeout / failure contract as <see cref="LF_Call"/>.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_UID_Call", ExactSpelling = true)]
+    internal static extern DataHnd LF_UID_Call(
+        TUIDNative uid,
+        DataHnd param,
+        ulong timeoutMs);
+
+    /// <summary>
+    /// Starts an asynchronous remote call addressed by session UID.
+    /// Same return-value and callback contract as
+    /// <see cref="LF_Async_Call"/>.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_UID_Async_Call", ExactSpelling = true)]
+    internal static extern int LF_UID_Async_Call(
+        TUIDNative uid,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
+
+    /// <summary>
+    /// Starts an asynchronous sequenced remote call addressed by
+    /// session UID.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_UID_Async_Sequenced_Call", ExactSpelling = true)]
+    internal static extern int LF_UID_Async_Sequenced_Call(
+        TUIDNative uid,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
+
+    /// <summary>
+    /// Sends a one-way notification addressed by session UID.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_UID_Notify", ExactSpelling = true)]
+    internal static extern void LF_UID_Notify(TUIDNative uid, DataHnd param);
+
+    /// <summary>
+    /// Sends a one-way sequenced notification addressed by session UID.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_UID_Sequenced_Notify", ExactSpelling = true)]
+    internal static extern void LF_UID_Sequenced_Notify(TUIDNative uid, DataHnd param);
+
+    // ====================================================================
+    // Remote invocation — P2PName addressing (5 exports)
+    // ====================================================================
+
+    /// <summary>
+    /// Synchronous remote call addressed by P2P group name.
+    /// Same timeout / failure contract as <see cref="LF_Call"/>.
+    /// </summary>
+    /// <remarks>
+    /// P2PName routing is NOT local-first: even when the caller process
+    /// itself hosts a client in the target group, the call is
+    /// forwarded to the server for dispatch.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_P2PNAME_Call", ExactSpelling = true)]
+    internal static extern DataHnd LF_P2PNAME_Call(
+        IntPtr p2pName,
+        DataHnd param,
+        ulong timeoutMs);
+
+    /// <summary>
+    /// Starts an asynchronous remote call addressed by P2P group name.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_P2PNAME_Async_Call", ExactSpelling = true)]
+    internal static extern int LF_P2PNAME_Async_Call(
+        IntPtr p2pName,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
+
+    /// <summary>
+    /// Starts an asynchronous sequenced remote call addressed by P2P
+    /// group name.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_P2PNAME_Async_Sequenced_Call", ExactSpelling = true)]
+    internal static extern int LF_P2PNAME_Async_Sequenced_Call(
+        IntPtr p2pName,
+        DataHnd param,
+        IntPtr data,
+        LfAsyncCallOnResult onResult);
+
+    /// <summary>
+    /// Sends a one-way notification addressed by P2P group name.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_P2PNAME_Notify", ExactSpelling = true)]
+    internal static extern void LF_P2PNAME_Notify(IntPtr p2pName, DataHnd param);
+
+    /// <summary>
+    /// Sends a one-way sequenced notification addressed by P2P group
+    /// name.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_P2PNAME_Sequenced_Notify", ExactSpelling = true)]
+    internal static extern void LF_P2PNAME_Sequenced_Notify(IntPtr p2pName, DataHnd param);
+
+    // ====================================================================
+    // Queries (11 exports)
+    // ====================================================================
+
+    /// <summary>
+    /// Returns 1 if the simulated main thread is running.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_CheckMainThread", ExactSpelling = true)]
+    internal static extern int LF_CheckMainThread();
+
+    /// <summary>
+    /// Returns 1 if an application with the given name is available.
+    /// The lookup uses a local cache with an approximate 3-second
+    /// broadcast delay.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_CheckApp", ExactSpelling = true)]
+    internal static extern int LF_CheckApp(IntPtr appName);
+
+    /// <summary>
+    /// Returns 1 if the named API is available for the given
+    /// application. Same cache caveat as LF_CheckApp.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_CheckApi", ExactSpelling = true)]
+    internal static extern int LF_CheckApi(IntPtr appName, IntPtr apiName);
+
+    /// <summary>
+    /// Returns 1 if a client with the given UID is currently
+    /// registered. Same cache caveat as LF_CheckApp.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Check_UID", ExactSpelling = true)]
+    internal static extern int LF_Check_UID(TUIDNative uid);
+
+    /// <summary>
+    /// Returns 1 if a client with the given UID exposes the named API.
+    /// Same cache caveat as LF_CheckApp.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Check_UID_Api", ExactSpelling = true)]
+    internal static extern int LF_Check_UID_Api(TUIDNative uid, IntPtr apiName);
+
+    /// <summary>
+    /// Returns 1 if a client with the given P2P group name is
+    /// registered. Same cache caveat as LF_CheckApp.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Check_P2PNAME", ExactSpelling = true)]
+    internal static extern int LF_Check_P2PNAME(IntPtr p2pName);
+
+    /// <summary>
+    /// Returns 1 if a client in the given P2P group exposes the named
+    /// API. Same cache caveat as LF_CheckApp.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Check_P2PNAME_Api", ExactSpelling = true)]
+    internal static extern int LF_Check_P2PNAME_Api(IntPtr p2pName, IntPtr apiName);
+
+    // ====================================================================
+    // Options (2 exports)
     // ====================================================================
 
     /// <summary>
@@ -436,6 +772,21 @@ internal static class NativeMethods
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
         EntryPoint = "LF_SetOption", ExactSpelling = true)]
     internal static extern void LF_SetOption(IntPtr option, IntPtr value);
+
+    /// <summary>
+    /// Reads a global runtime option. The returned pointer targets a
+    /// transient buffer released ~5 seconds after the call; copy the
+    /// string immediately via Utf8Marshal.PtrToString.
+    ///
+    /// Unknown option names produce an empty string.
+    /// </summary>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_GetOption", ExactSpelling = true)]
+    internal static extern IntPtr LF_GetOption(IntPtr option);
+
+    // ====================================================================
+    // Status (3 exports)
+    // ====================================================================
 
     /// <summary>
     /// Returns the number of pending log messages (max 1000).
@@ -465,49 +816,6 @@ internal static class NativeMethods
         EntryPoint = "LF_PostStatus", ExactSpelling = true)]
     internal static extern void LF_PostStatus(IntPtr status);
 
-    /// <summary>
-    /// Returns 1 if the simulated main thread is running.
-    /// </summary>
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
-        EntryPoint = "LF_CheckMainThread", ExactSpelling = true)]
-    internal static extern int LF_CheckMainThread();
-
-    /// <summary>
-    /// Returns 1 if an application with the given name is available.
-    /// The lookup uses a local cache with an approximate 3-second
-    /// broadcast delay.
-    /// </summary>
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
-        EntryPoint = "LF_CheckApp", ExactSpelling = true)]
-    internal static extern int LF_CheckApp(IntPtr appName);
-
-    /// <summary>
-    /// Returns 1 if the named API is available for the given
-    /// application. Same cache caveat as LF_CheckApp.
-    /// </summary>
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
-        EntryPoint = "LF_CheckApi", ExactSpelling = true)]
-    internal static extern int LF_CheckApi(IntPtr appName, IntPtr apiName);
-
-    // ====================================================================
-    // Shutdown (1 export)
-    // ====================================================================
-
-    /// <summary>
-    /// Gracefully terminates the framework, releasing all resources.
-    /// Safe to call multiple times.
-    /// </summary>
-    /// <remarks>
-    /// The native side also clears both network event callbacks during
-    /// teardown. The managed delegate references held by
-    /// LingoFuse.NetworkEvents are NOT released automatically; call
-    /// NetworkEvents.Clear explicitly before shutdown if you want to
-    /// release them.
-    /// </remarks>
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
-        EntryPoint = "LF_Shutdown", ExactSpelling = true)]
-    internal static extern void LF_Shutdown();
-
     // ====================================================================
     // Network events (1 export)
     // ====================================================================
@@ -527,4 +835,23 @@ internal static class NativeMethods
     internal static extern void LF_Set_Network_Event(
         LfNetworkEventFunc? onConnect,
         LfNetworkEventFunc? onDisconnect);
+
+    // ====================================================================
+    // Shutdown (1 export)
+    // ====================================================================
+
+    /// <summary>
+    /// Gracefully terminates the framework, releasing all resources.
+    /// Safe to call multiple times.
+    /// </summary>
+    /// <remarks>
+    /// The native side also clears both network event callbacks during
+    /// teardown. The managed delegate references held by
+    /// LingoFuse.NetworkEvents are NOT released automatically; call
+    /// NetworkEvents.Clear explicitly before shutdown if you want to
+    /// release them.
+    /// </remarks>
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl,
+        EntryPoint = "LF_Shutdown", ExactSpelling = true)]
+    internal static extern void LF_Shutdown();
 }

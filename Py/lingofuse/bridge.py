@@ -2,16 +2,17 @@
 # -*- coding: utf-8 -*-
 """
 LingoFuse HTTP Bridge - Bidirectional HTTP <-> LingoFuse POST gateway
-with canonical JSON normalization.
+with canonical JSON normalization and three-addressing-mode routing.
 
 This module provides a single-process, stateless bridge that operates
 in BOTH directions:
 
   Direction A (inbound, HTTP -> LingoFuse):
-      The bridge listens on an HTTP port. A client POSTs to
-      /<app_name>/<api_name>; the bridge forwards the body to the
-      LingoFuse App named <app_name> by calling <api_name>, then
-      returns the LingoFuse response as the HTTP response.
+      The bridge listens on an HTTP port. A client POSTs to a routing
+      URL; the bridge forwards the body to a LingoFuse target by
+      invoking the named API, then returns the LingoFuse response as
+      the HTTP response. Three addressing modes are supported; see
+      the "INBOUND ROUTING" section below.
 
   Direction B (outbound, LingoFuse -> HTTP):
       The bridge registers its own LingoFuse App and exposes a Call
@@ -34,6 +35,82 @@ With all three directions active, this bridge is a universal
 LingoFuse gateway: HTTP clients can reach LingoFuse services,
 LingoFuse clients can reach external HTTP services, and any
 LingoFuse client can delegate JSON repair to the bridge.
+
+==================== INBOUND ROUTING ====================
+The bridge supports the three addressing modes that the LingoFuse C
+ABI exposes for remote invocation. The addressing mode is selected
+by the leading path segment(s) of the URL:
+
+    /<app>/<api>                App-name addressing
+    /<api>                      App-name addressing, using --app
+
+    /uid/<hex64>/<api>          UID addressing
+    /p2p/<group>/<api>          P2PName addressing
+
+Routing semantics (see the LingoFuse Pascal and Python documentation
+for the full background):
+
+    App-name addressing (LOCAL-FIRST):
+        If the bridge process itself hosts an App with the matching
+        name and API, the call is serviced locally without touching
+        the network. This mirrors the semantics of the C ABI's
+        LF_Call.
+
+    UID addressing (LOCAL-FIRST):
+        Routes to the specific client whose TunnelLink produced the
+        given 32-byte UID. The UID is supplied on the URL as 64
+        lowercase hexadecimal characters. It can address ANY API
+        registered on the target (app-bound or process-wide P2P),
+        without requiring the caller to know the target App name.
+        The UID is regenerated on every reconnect: callers must
+        re-probe after a link loss.
+
+    P2PName addressing (NOT local-first):
+        Routes to any client in the user-supplied group. The server
+        side dispatcher owns the load-balancing state and picks the
+        actual target. Even when the bridge process itself hosts a
+        client in the target group, the call is forwarded to the
+        server for dispatch. This is deliberate: short-cutting
+        locally would defeat the server-side load balancing.
+
+{!!!!!  RESERVED LEADING SEGMENTS  !!!!!}
+The leading path segments ``uid`` and ``p2p`` are RESERVED. They
+always select UID addressing and P2PName addressing, respectively.
+An App whose name is literally ``uid`` or ``p2p`` cannot be reached
+through the App-name route. This is a deliberate trade-off that
+keeps the URL grammar unambiguous. The bridge's own App name
+(default ``__lf_http_bridge__``) uses a double-underscore prefix and
+suffix, so it never collides with the reserved words.
+
+==================== CONNECTION READINESS ====================
+The bridge waits for the LingoFuse client-server handshake to
+complete before starting the HTTP listener. This is controlled by
+two settings:
+
+    --wait-connection / --no-wait-connection
+        When enabled (the default), LF_PrepareDone blocks until the
+        prepared client reaches the "online" state, i.e. until the
+        bridge process has received the server's first API-info
+        broadcast. This eliminates the race that would otherwise
+        cause the first inbound HTTP request to fail with a -3
+        pre-check error.
+
+        When disabled, LF_PrepareDone returns as soon as the
+        simulated main thread has started. The bridge starts the
+        HTTP listener immediately, but early requests may fail with
+        a -3 pre-check error until the broadcast cache catches up
+        (typically 1-3 seconds). Use --no-wait-connection only if
+        you cannot tolerate a bounded startup delay (for example, in
+        an elastic cluster where the peer's startup order is
+        genuinely unpredictable) and are prepared to retry -3
+        responses at the caller.
+
+    --wait-timeout / LINGOFUSE_WAIT_TIMEOUT
+        The maximum time, in milliseconds, that LF_PrepareDone will
+        wait for the handshake. The default is 10000 ms (10
+        seconds). Note that LF_PrepareDone still returns 1 when the
+        timeout expires without the client being ready; the bridge
+        will warn at startup and proceed.
 
 ==================== FORWARD-ONLY MODE ====================
 The bridge supports a dedicated FORWARD-ONLY operating mode that
@@ -83,11 +160,8 @@ A third entry point is available for embedded / programmatic use:
 since `config` is a plain module-level object, code that imports
 this module may assign to any of its fields BEFORE `main()` runs.
 `main()` does NOT overwrite a field that the caller has already
-populated... unless the environment variable or command-line flag
-explicitly targets that field. This lets an embedding application
-pin, for example, `config.forward_only = True` and still allow
-downstream operators to override it via environment / CLI if they
-so choose.
+populated, unless the environment variable or command-line flag
+explicitly targets that field.
 
 ==================== WHY JSON NORMALIZATION ====================
 A backend service usually expects canonical UTF-8 JSON. A browser or
@@ -205,8 +279,8 @@ payload.
 On the outbound path, the request body is always JSON by contract
 (the LingoFuse caller sends a JSON request object). The HTTP
 response body is inspected: if it parses as JSON it is embedded as a
-JSON value, otherwise it is embedded as a raw string. No
-payload corruption occurs either way.
+JSON value, otherwise it is embedded as a raw string. No payload
+corruption occurs either way.
 
 On the repair path, the same policy applies: an undecodable payload
 is returned unchanged, and an unrepairable payload is returned
@@ -235,19 +309,21 @@ lone surrogates; the fix exists so that a broken peer cannot bring
 the bridge down.
 
 ==================== INBOUND REQUEST FORMAT ====================
-POST /<app_name>/<api_name>
+POST /<app_name>/<api_name>          App-name addressing
+POST /<api_name>                     App-name addressing (uses --app)
+POST /uid/<hex64>/<api_name>         UID addressing
+POST /p2p/<group_name>/<api_name>    P2PName addressing
+
 Content-Type: any (ignored by bridge, preserved for backend)
 Body: arbitrary binary data (JSON is normalized)
-
-If only one path segment is given (e.g. /api_name), the default app
-(specified via --app or LINGOFUSE_APP) is used.
 
 ==================== INBOUND RESPONSE FORMAT ====================
 Success: HTTP 200 with the (possibly normalized) response body.
 Failure (bridge-level errors):
     {"code": -1, "error": "..."}     # call error (timeout, etc.)
     {"code": -2, "error": "..."}     # request shape error (HTTP 400)
-    {"code": -3, "error": "..."}     # check_api pre-check failed
+    {"code": -3, "error": "..."}     # pre-check failed (check_api /
+                                     # check_uid_api / check_p2pname_api)
 
 ==================== OUTBOUND LINGOFUSE CALL API ====================
 The bridge registers a Call API on its own LingoFuse App. By default:
@@ -345,16 +421,50 @@ from typing import Optional, Tuple
 import requests
 from flask import Flask, request, Response
 
-# Make sibling modules importable when the script is run directly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ----------------------------------------------------------------------
+# Import-path bootstrap.
+#
+# bridge.py is typically launched as a standalone script, for example:
+#
+#     python /path/to/py/lingofuse/bridge.py
+#
+# When Python starts a script directly, sys.path[0] is set to the
+# SCRIPT'S DIRECTORY (i.e. the `lingofuse` package directory), NOT its
+# parent. That means `import lingofuse` would look for a subdirectory
+# named `lingofuse` inside the `lingofuse` directory itself and fail,
+# then fall through to whatever other `lingofuse` package happens to be
+# reachable later on sys.path (for example an outdated copy installed
+# elsewhere in the environment).
+#
+# The correct bootstrap is therefore to put the PACKAGE PARENT on
+# sys.path, so that `import lingofuse._lf_native` resolves to THIS
+# copy of the package. This mirrors what lingofuse/test_bridge_e2e.py
+# already does via its _PACKAGE_PARENT constant.
+# ----------------------------------------------------------------------
+_PACKAGE_PARENT = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
+if _PACKAGE_PARENT not in sys.path:
+    sys.path.insert(0, _PACKAGE_PARENT)
 
-from lingofuse import set_option, check_api, get_status, get_status_num
+
+from lingofuse import (
+    set_option,
+    check_api,
+    get_status,
+    get_status_num,
+)
 from lingofuse.errors import ConnectionError, TimeoutError, LingoFuseError
 from lingofuse._lf_native import (
     LF_ResetPrepare,
     LF_PrepareClient,
     LF_PrepareDone,
     LF_Call,
+    LF_UID_Call,
+    LF_P2PNAME_Call,
+    LF_Async_Call,
+    LF_UID_Async_Call,
+    LF_P2PNAME_Async_Call,
     LF_FreeData,
     LF_CreateData,
     LF_ExitMainThread,
@@ -362,9 +472,20 @@ from lingofuse._lf_native import (
     LF_CreateApp,
     LF_FreeApp,
     LF_RegisterCall,
+    LF_Check_UID_Api,
+    LF_Check_P2PNAME_Api,
+    LF_SetPos,
     LFCallFunc,
 )
 from lingofuse.core import DataHandle
+
+# UID normalization lives in lingofuse.address, which is the single
+# source of truth for the accepted textual / binary representations
+# of a UID. The bridge's URL grammar carries a UID as a 64-character
+# hexadecimal string; _normalize_uid converts it (and raw bytes, and
+# bytearray, and memoryview) into a 32-byte bytes object, and
+# _to_tp2p_uid converts that into the ctypes array the C ABI expects.
+from lingofuse.address import _normalize_uid, _to_tp2p_uid
 
 # ----------------------------------------------------------------------
 # Unified LingoFuse payload I/O.
@@ -445,6 +566,21 @@ DEFAULT_BRIDGE_REPAIR_API_NAME = '__lf_repair_json__'
 #: docstring for the full rationale.
 DEFAULT_FORWARD_ONLY = False
 
+#: When True, the bridge blocks in LF_PrepareDone until the prepared
+#: client has reached the "online" state. This eliminates the race
+#: between "bridge starts accepting HTTP requests" and "broadcast
+#: cache has caught up", which would otherwise cause the first
+#: inbound request to fail with a -3 pre-check error. See the
+#: "CONNECTION READINESS" section in the module docstring.
+DEFAULT_WAIT_CONNECTION = True
+
+#: Timeout for the above wait, in milliseconds. Only meaningful when
+#: DEFAULT_WAIT_CONNECTION is True. The default matches the LingoFuse
+#: convention of "10 seconds is long enough for a local IPC or LAN
+#: handshake, short enough that a misconfigured deployment does not
+#: hang the startup".
+DEFAULT_WAIT_TIMEOUT_MS = 10000
+
 #: The lower-case HTTP methods the outbound proxy is willing to
 #: forward. Anything else is rejected before the request is built.
 #: This is a security / correctness guard, not a business policy.
@@ -456,6 +592,11 @@ ALLOWED_HTTP_METHODS = frozenset(
 #: larger is clamped, to protect the bridge from a mis-configured
 #: caller that would otherwise hold a worker thread indefinitely.
 MAX_OUTBOUND_TIMEOUT_S = 300.0
+
+#: Reserved leading URL segments that select non-App addressing.
+#: See the module docstring section "RESERVED LEADING SEGMENTS".
+RESERVED_PREFIX_UID = 'uid'
+RESERVED_PREFIX_P2P = 'p2p'
 
 
 # ======================================================================
@@ -498,6 +639,11 @@ class BridgeConfig:
     default_app: Optional[str] = None
     no_precheck: bool = DEFAULT_NO_PRECHECK
 
+    # --- connection readiness ---
+    # See the module docstring section "CONNECTION READINESS".
+    wait_connection: bool = DEFAULT_WAIT_CONNECTION
+    wait_timeout_ms: int = DEFAULT_WAIT_TIMEOUT_MS
+
     # --- payload handling ---
     normalize_json: bool = DEFAULT_NORMALIZE_JSON
 
@@ -535,6 +681,8 @@ _ENV_VAR_TABLE = {
     'default_app':             'LINGOFUSE_APP',
     'threaded':                'LINGOFUSE_THREADED',
     'forward_only':            'LINGOFUSE_FORWARD_ONLY',
+    'wait_connection':         'LINGOFUSE_WAIT_CONNECTION',
+    'wait_timeout_ms':         'LINGOFUSE_WAIT_TIMEOUT',
     'debug':                   'LINGOFUSE_DEBUG',
     'no_precheck':             'LINGOFUSE_NO_PRECHECK',
     'normalize_json':          'LINGOFUSE_NORMALIZE_JSON',
@@ -670,13 +818,17 @@ def _apply_environment_defaults(cfg: BridgeConfig) -> None:
     if value is not None:
         cfg.threaded = value
 
-    # forward_only: the environment variable overrides the built-in
-    # default AND any value the embedding application may have
-    # pre-set on `config.forward_only`. The command line (phase 2)
-    # can still override this in turn.
     value = _env_bool(_ENV_VAR_TABLE['forward_only'])
     if value is not None:
         cfg.forward_only = value
+
+    value = _env_bool(_ENV_VAR_TABLE['wait_connection'])
+    if value is not None:
+        cfg.wait_connection = value
+
+    value = _env_int(_ENV_VAR_TABLE['wait_timeout_ms'])
+    if value is not None:
+        cfg.wait_timeout_ms = value
 
     value = _env_bool(_ENV_VAR_TABLE['debug'])
     if value is not None:
@@ -736,16 +888,20 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         prog='bridge',
         description=(
             "LingoFuse HTTP Bridge - bidirectional HTTP <-> LingoFuse "
-            "POST gateway with canonical JSON normalization and a "
-            "LingoFuse-callable JSON repair API. "
+            "POST gateway with canonical JSON normalization, "
+            "three-addressing-mode routing (App name / UID / P2PName), "
+            "and a LingoFuse-callable JSON repair API. "
             "Environment variables are read as defaults; command-line "
             "arguments override them."
         ),
         epilog=(
+            "Inbound routing: /<app>/<api>, /<api>, /uid/<hex64>/<api>, "
+            "/p2p/<group>/<api>. "
             "Environment variables: "
             "LINGOFUSE_HOST, LINGOFUSE_PORT, LINGOFUSE_ENDPOINT, "
             "LINGOFUSE_TIMEOUT, LINGOFUSE_APP, LINGOFUSE_THREADED, "
-            "LINGOFUSE_FORWARD_ONLY, LINGOFUSE_DEBUG, "
+            "LINGOFUSE_FORWARD_ONLY, LINGOFUSE_WAIT_CONNECTION, "
+            "LINGOFUSE_WAIT_TIMEOUT, LINGOFUSE_DEBUG, "
             "LINGOFUSE_NO_PRECHECK, LINGOFUSE_NORMALIZE_JSON, "
             "LINGOFUSE_LOG_FILE, LINGOFUSE_BRIDGE_APP, "
             "LINGOFUSE_BRIDGE_API, LINGOFUSE_BRIDGE_REPAIR_API. "
@@ -826,6 +982,47 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         ),
     )
 
+    # --- connection readiness ---
+    parser.add_argument(
+        '--wait-connection',
+        dest='wait_connection',
+        action='store_true',
+        default=cfg.wait_connection,
+        help=(
+            "Block in LF_PrepareDone until the LingoFuse client-"
+            "server handshake is complete (default). This prevents "
+            "the first inbound HTTP request from racing the broadcast "
+            "cache and failing with a -3 pre-check error."
+        ),
+    )
+    parser.add_argument(
+        '--no-wait-connection',
+        dest='wait_connection',
+        action='store_false',
+        help=(
+            "Do NOT block in LF_PrepareDone. The HTTP listener starts "
+            "immediately, but the first requests may fail with a -3 "
+            "pre-check error until the broadcast cache catches up "
+            "(typically 1-3 seconds). Use only when the peer's "
+            "startup order is genuinely unpredictable and the caller "
+            "is prepared to retry."
+        ),
+    )
+    parser.add_argument(
+        '--wait-timeout',
+        dest='wait_timeout_ms',
+        type=int,
+        default=cfg.wait_timeout_ms,
+        help=(
+            f"Maximum time, in milliseconds, to wait for the "
+            f"handshake when --wait-connection is enabled "
+            f"(default: {cfg.wait_timeout_ms}). Note that "
+            f"LF_PrepareDone still returns 1 when the timeout expires "
+            f"without the client being ready; the bridge will warn "
+            f"at startup and proceed."
+        ),
+    )
+
     # --- Boolean flags ---
     # Mutually exclusive pairs. The environment-derived value is used
     # when neither flag is present.
@@ -863,8 +1060,9 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
         action='store_true',
         default=cfg.no_precheck,
         help=(
-            "Disable the inbound API pre-check (check_api) to avoid "
-            "cache false negatives. Ignored in forward-only mode."
+            "Disable the inbound API pre-check (check_api / "
+            "check_uid_api / check_p2pname_api) to avoid cache false "
+            "negatives. Ignored in forward-only mode."
         ),
     )
     parser.add_argument(
@@ -954,6 +1152,8 @@ def _apply_command_line(cfg: BridgeConfig, argv) -> None:
     cfg.endpoint = args.endpoint
     cfg.timeout_ms = args.timeout_ms
     cfg.default_app = args.default_app if args.default_app else None
+    cfg.wait_connection = args.wait_connection
+    cfg.wait_timeout_ms = args.wait_timeout_ms
     cfg.threaded = args.threaded
     cfg.debug = args.debug
     cfg.no_precheck = args.no_precheck
@@ -1290,7 +1490,6 @@ def normalize_json_bytes(raw: bytes) -> Tuple[bytes, str]:
         return canonical_bytes, STATUS_RECODED
     return canonical_bytes, STATUS_CANONICAL
 
-
 # ======================================================================
 # Flask application
 # ======================================================================
@@ -1392,7 +1591,56 @@ def cleanup() -> None:
     except Exception:
         logger.exception("LF_Shutdown failed during cleanup")
 
-    logger.info("LingoFuse resources released")
+    # ------------------------------------------------------------------
+    # Guard the final log line against interpreter shutdown.
+    #
+    # cleanup() is registered with atexit, so it also runs when the
+    # Python interpreter is tearing down and may have ALREADY CLOSED
+    # sys.stderr (or removed the stream handler's underlying file).
+    # Calling logger.info() at that point raises:
+    #
+    #     ValueError: I/O operation on closed file.
+    #
+    # which surfaces as an ugly "--- Logging error ---" banner and
+    # hides the real reason the process is exiting. Swallowing the
+    # logging failure is the right trade-off: the resource release
+    # above has already completed successfully.
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Detach every handler BEFORE the final log call.
+    #
+    # cleanup() is registered with atexit, so it also runs during
+    # interpreter teardown, at which point sys.stderr (and any
+    # FileHandler's underlying file) may already be closed. A logger
+    # call in that state raises INSIDE the handler's emit() method:
+    #
+    #     ValueError: I/O operation on closed file.
+    #
+    # That exception does NOT propagate to the caller of logger.info();
+    # the logging module's own Handler.handleError intercepts it and
+    # prints a "--- Logging error ---" traceback to stderr instead.
+    # A try/except around the logger call is therefore useless, and the
+    # spurious banner pollutes test output.
+    #
+    # Detaching the handlers first makes the subsequent log call a
+    # silent no-op regardless of stream state. Iterating over a
+    # snapshot (list(...)) is required because removeHandler mutates
+    # the underlying list.
+    # ------------------------------------------------------------------
+    for _handler in list(logger.handlers):
+        try:
+            logger.removeHandler(_handler)
+            _handler.close()
+        except Exception:
+            pass
+
+    # With no handler attached this is a silent no-op, but we keep
+    # the call so that a caller which later re-attaches a handler
+    # still sees the shutdown marker.
+    try:
+        logger.info("LingoFuse resources released")
+    except Exception:
+        pass
 
 
 atexit.register(cleanup)
@@ -1409,14 +1657,16 @@ def _json_error_response(code: int, msg: str,
 
     Error codes (negative, bridge-level):
 
-        -1  Remote call failed: timeout, null handle from LF_Call,
-            LingoFuseError, or any unexpected internal exception.
+        -1  Remote call failed: timeout, null handle from the call
+            primitive, LingoFuseError, or any unexpected internal
+            exception.
         -2  Request shape error: the URL path could not be parsed into
-            (app_name, api_name), or no default app was configured
-            and the path omitted the app segment. Returned with HTTP
-            400.
-        -3  API pre-check failed: check_api returned False after the
-            configured number of retries.
+            a recognised addressing form, or no default app was
+            configured and the path omitted the app segment. Returned
+            with HTTP 400.
+        -3  API pre-check failed: the addressing-mode-specific
+            pre-check (check_api / check_uid_api / check_p2pname_api)
+            returned False after the configured number of retries.
 
     The JSON body is produced via lingofuse.lf_io.dumps_json, so it is
     guaranteed to be canonical UTF-8 with no \\uXXXX escapes.
@@ -1480,6 +1730,149 @@ def _decode_text_with_fallback(raw: bytes) -> Tuple[Optional[str], str]:
         except (UnicodeDecodeError, LookupError):
             continue
     return None, ENCODING
+
+
+# ======================================================================
+# URL routing parser (three addressing modes)
+# ----------------------------------------------------------------------
+# The inbound URL selects the addressing mode by its leading path
+# segment(s). This parser returns a tuple that the handler uses to
+# dispatch to the correct C ABI primitive:
+#
+#     ("app",  app_name_or_None, api_name)
+#     ("uid",  32-byte UID,       api_name)
+#     ("p2p",  group_name,        api_name)
+#
+# The parser raises ValueError with a user-facing message when the
+# path is malformed. The handler converts that into an HTTP 400 with
+# error code -2.
+# ======================================================================
+
+def _parse_inbound_path(path: str) -> Tuple[str, object, str]:
+    """
+    Parse the inbound URL path into (mode, key, api_name).
+
+    Modes:
+        "app"  -> key is the app name as a str, or None when the
+                  default app (from --app / LINGOFUSE_APP) should be
+                  used. The handler resolves None via config.
+        "uid"  -> key is a 32-byte bytes object.
+        "p2p"  -> key is the P2P group name as a str.
+
+    Raises ValueError on a malformed path. The message is suitable
+    for returning verbatim to the client.
+    """
+    stripped = path.strip('/')
+    if not stripped:
+        raise ValueError("Empty path")
+
+    parts = stripped.split('/')
+
+    # ---- UID addressing: /uid/<hex64>/<api> -------------------------
+    if parts[0] == RESERVED_PREFIX_UID:
+        if len(parts) < 3:
+            raise ValueError(
+                f"UID route requires /{RESERVED_PREFIX_UID}/"
+                f"<hex64>/<api>; got /{stripped}"
+            )
+        uid_hex = parts[1]
+        api_name = '/'.join(parts[2:])
+        if not api_name:
+            raise ValueError("UID route is missing the API name")
+        # _normalize_uid accepts a 64-character hexadecimal string and
+        # raises ValueError with a clear message on a malformed one.
+        try:
+            uid_bytes = _normalize_uid(uid_hex)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Invalid UID in path: {exc}"
+            ) from exc
+        return "uid", uid_bytes, api_name
+
+    # ---- P2PName addressing: /p2p/<group>/<api> ---------------------
+    if parts[0] == RESERVED_PREFIX_P2P:
+        if len(parts) < 3:
+            raise ValueError(
+                f"P2PName route requires /{RESERVED_PREFIX_P2P}/"
+                f"<group>/<api>; got /{stripped}"
+            )
+        group_name = parts[1]
+        api_name = '/'.join(parts[2:])
+        if not group_name:
+            raise ValueError("P2PName route is missing the group name")
+        if not api_name:
+            raise ValueError("P2PName route is missing the API name")
+        return "p2p", group_name, api_name
+
+    # ---- App-name addressing: /<app>/<api> or /<api> ----------------
+    if len(parts) == 1:
+        # /<api>: use the default app; the handler resolves it.
+        return "app", None, parts[0]
+
+    app_name = parts[0]
+    api_name = '/'.join(parts[1:])
+    if not api_name:
+        raise ValueError("App route is missing the API name")
+    return "app", app_name, api_name
+
+
+def _precheck_inbound(mode: str, key: object, api_name: str) -> bool:
+    """
+    Run the addressing-mode-specific pre-check with retry.
+
+    Returns True if the target appears reachable, False otherwise.
+
+    The pre-check consults a locally cached view of the mesh that is
+    updated by periodic broadcasts. The cache lags fresh
+    registrations and unregistrations by a few seconds, so we retry
+    a small number of times before giving up. This is what makes the
+    pre-check useful as a fail-fast gate without generating spurious
+    failures during the broadcast window.
+
+    With --wait-connection enabled (the default), the bridge blocks
+    in LF_PrepareDone until the handshake completes, so the cache is
+    already populated when the first request arrives and the retry
+    loop is purely defensive. With --no-wait-connection, the retry
+    loop is the caller's only protection against the ~3-second
+    broadcast delay.
+    """
+    # Local import of the addressing-mode-specific pre-check helpers.
+    #
+    # check_api is re-exported by lingofuse/__init__.py, so it is
+    # already available at module scope; only the UID / P2PName
+    # variants need a local import to keep this hot path's imports
+    # scoped to the functions that actually use them.
+    #
+    # check_app is intentionally NOT imported here: the App-name path
+    # uses check_api (which itself covers both local and cached-remote
+    # views), so check_app would be an unused name.
+    from lingofuse import check_uid_api, check_p2pname_api
+
+    for attempt in range(3):
+        if mode == "app":
+            # A None key means "use the configured default app".
+            # The handler resolves the default before calling us, so
+            # by the time we get here `key` is always a str.
+            ok = check_api(key, api_name)
+        elif mode == "uid":
+            ok = check_uid_api(key, api_name)
+        elif mode == "p2p":
+            ok = check_p2pname_api(key, api_name)
+        else:
+            # Unreachable: _parse_inbound_path only returns the
+            # three modes above. Defensive guard.
+            ok = False
+
+        if ok:
+            return True
+        if config.debug:
+            logger.debug(
+                "precheck(%s, %r, %s) attempt %d returned False",
+                mode, key, api_name, attempt + 1,
+            )
+        time.sleep(0.2)
+
+    return False
 
 
 # ======================================================================
@@ -1908,7 +2301,6 @@ def _bridge_repair_callback(trigger, inp, out):
             # there is nothing more we can do.
             pass
 
-
 # ======================================================================
 # Inbound HTTP request handler
 # ======================================================================
@@ -1923,66 +2315,67 @@ def _bridge_repair_callback(trigger, inp, out):
 @app.route('/<path:path>', methods=['POST', 'OPTIONS'])
 def handle_call(path: str):
     """
-    Handle an inbound HTTP request and forward it to a LingoFuse App.
+    Handle an inbound HTTP request and forward it to a LingoFuse target.
 
-    The URL path determines the routing:
-        /<app>/<api>  -> call <api> on <app>
-        /<api>        -> call <api> on config.default_app
+    The URL path selects the addressing mode:
+
+        /<app>/<api>              App-name addressing
+        /<api>                    App-name addressing, using --app
+        /uid/<hex64>/<api>        UID addressing
+        /p2p/<group>/<api>        P2PName addressing
+
+    See the module docstring section "INBOUND ROUTING" for the full
+    semantics of each addressing mode and for the reserved-segment
+    rules.
     """
     # CORS preflight.
     if request.method == 'OPTIONS':
         return '', 200
 
     # ------------------------------------------------------------------
-    # Path parsing. str.split('/') always returns at least one element,
-    # so an empty path yields [''] which is caught by the empty api_name
-    # check below.
+    # Path parsing. Any malformed path is a client-side error and is
+    # reported with HTTP 400 and error code -2.
     # ------------------------------------------------------------------
-    parts = path.strip('/').split('/')
-    if len(parts) == 1:
-        api_name = parts[0]
-        app_name = config.default_app
-        if not app_name:
+    try:
+        mode, key, api_name = _parse_inbound_path(path)
+    except ValueError as e:
+        return _json_error_response(-2, str(e), 400)
+
+    # Resolve the default-app case for App-name addressing. This must
+    # happen BEFORE the pre-check, because the pre-check needs the
+    # actual app name string.
+    if mode == "app" and key is None:
+        if not config.default_app:
             return _json_error_response(
-                -2, "No default app set (use --app)", 400
+                -2,
+                "No default app configured (use --app or "
+                "LINGOFUSE_APP, or include the app name in the path)",
+                400,
             )
-    else:
-        app_name = parts[0]
-        api_name = '/'.join(parts[1:])
-
-    if not api_name:
-        return _json_error_response(
-            -2, "Missing API name in path", 400
-        )
+        key = config.default_app
 
     # ------------------------------------------------------------------
-    # Optional pre-check. check_api is backed by a broadcast-updated
-    # cache, which can lag behind registration by a few seconds, so we
-    # retry a small number of times before giving up.
+    # Optional pre-check. The addressing-mode-specific pre-check
+    # (check_api / check_uid_api / check_p2pname_api) is backed by a
+    # broadcast-updated cache, which can lag behind registration by a
+    # few seconds, so _precheck_inbound retries a small number of
+    # times before giving up.
     # ------------------------------------------------------------------
     if not config.no_precheck:
-        available = False
-        for attempt in range(3):
-            if check_api(app_name, api_name):
-                available = True
-                break
+        if not _precheck_inbound(mode, key, api_name):
             if config.debug:
                 logger.debug(
-                    "check_api(%s, %s) attempt %d returned False",
-                    app_name, api_name, attempt + 1,
-                )
-            time.sleep(0.2)
-
-        if not available:
-            if config.debug:
-                logger.debug(
-                    "check_api(%s, %s) failed after 3 attempts",
-                    app_name, api_name,
+                    "precheck(%s, %r, %s) failed after retries",
+                    mode, key, api_name,
                 )
                 _drain_status(3)
+            # The message is deliberately mode-agnostic in its outer
+            # form, with the addressing detail in the parenthetical,
+            # so that a caller who got the mode wrong can see it.
             return _json_error_response(
                 -3,
-                f"API '{api_name}' not available for app '{app_name}'",
+                f"API '{api_name}' not available for "
+                f"{mode} target {key!r}",
                 200,
             )
 
@@ -2003,8 +2396,9 @@ def handle_call(path: str):
 
     if config.debug:
         logger.debug(
-            "Inbound request: app=%s api=%s bytes=%d normalize=%s status=%s",
-            app_name, api_name, len(body),
+            "Inbound request: mode=%s key=%r api=%s bytes=%d "
+            "normalize=%s status=%s",
+            mode, key, api_name, len(body),
             config.normalize_json, request_status,
         )
         if len(body) < 1024:
@@ -2031,7 +2425,122 @@ def handle_call(path: str):
 
         try:
             write_string_bytes(hnd_in, body)
-            res_ptr = LF_Call(cstr(app_name), hnd_in, config.timeout_ms)
+
+            # Dispatch to the correct C ABI primitive for the
+            # addressing mode selected by the URL.
+            #
+            # We use the ASYNCHRONOUS primitives rather than the
+            # synchronous ones. The synchronous variants signal a
+            # timeout by returning a size-0 handle, which is then
+            # indistinguishable from "the peer replied with an empty
+            # payload". The asynchronous variants surface a timeout
+            # as an explicit TimeoutError, and a dispatch failure as
+            # an explicit LingoFuseError, so the bridge can map each
+            # to a distinct HTTP response.
+            #
+            # The AsyncBridge subsystem owns the lifetime of the
+            # underlying ctypes callback. A timeout does NOT cause a
+            # use-after-free even if the C-side request eventually
+            # completes: the bridge keeps the callback alive for a
+            # configurable grace period.
+            #
+            # All three primitives have the same call shape
+            # (key, DataHnd, NULL, callback) -> int, differing only
+            # in the type of the key argument:
+            #
+            #     LF_Async_Call         takes a c_char_p (app name)
+            #     LF_UID_Async_Call     takes a TP2P_UID (32-byte array)
+            #     LF_P2PNAME_Async_Call takes a c_char_p (group name)
+            #
+            # For the UID case, we pass the ctypes array produced by
+            # _to_tp2p_uid; the array is a fresh Python object whose
+            # lifetime is scoped to this function, and the C side
+            # copies its 32 bytes synchronously before the call
+            # returns, so the array does not need to outlive the
+            # dispatch.
+            # ------------------------------------------------------------------
+            # Dispatch to the synchronous Call primitive.
+            #
+            # ==================================================================
+            # WHY SYNCHRONOUS (and not LF_Async_Call)
+            # ==================================================================
+            # The asynchronous family (LF_Async_Call / LF_UID_Async_Call /
+            # LF_P2PNAME_Async_Call) hands the result handle to the user
+            # callback with a DIFFERENT ownership contract than the
+            # synchronous family:
+            #
+            #   LF_Call / LF_UID_Call / LF_P2PNAME_Call
+            #       The returned handle is OWNED BY THE CALLER.
+            #       (Pascal side: TLF_Data.New_Result_From(Output, True)
+            #       in Z.LingoFuse_Export.pas.)
+            #       The caller MUST release it with LF_FreeData.
+            #
+            #   LF_Async_Call / LF_UID_Async_Call / LF_P2PNAME_Async_Call
+            #       The result handle is OWNED BY THE FRAMEWORK.
+            #       (Pascal side: TLF_Data.New_Result_From(..., False)
+            #       inside TLF_Async_Call_Bridge.Do_Th in
+            #       Z.Net.C4.LingoFuse.pas, followed by an IMMEDIATE
+            #       TLF_Data.Free_Data(result_param_) after the OnResult
+            #       callback returns.)
+            #       The callback MUST NOT call LF_FreeData on it, and
+            #       MUST NOT retain the pointer past its own return.
+            #
+            # The previous revision of this function used the asynchronous
+            # family, handed the raw pointer to the caller thread through a
+            # future, and then read and freed it from the Flask worker
+            # thread. That is a use-after-free (reading a handle the
+            # framework had already released) AND a double-free (the
+            # framework had already released it, and we called
+            # LF_FreeData again). Depending on thread-scheduling timing,
+            # the freed TMem64 buffer was sometimes still intact when we
+            # read it (small payloads, e.g. an int) and sometimes already
+            # recycled by the allocator (larger payloads, e.g. a JSON
+            # object), which is why "add" appeared to pass while "echo"
+            # returned an empty body.
+            #
+            # The synchronous family has a single, simple ownership rule:
+            # the caller owns the returned handle and releases it. That is
+            # the rule this function is written against.
+            #
+            # ==================================================================
+            # TRADE-OFF: LOSS OF EXPLICIT TIMEOUT SIGNAL
+            # ==================================================================
+            # LF_Call signals a timeout by returning a size-0 handle,
+            # which is indistinguishable from "the peer replied with an
+            # empty payload". The asynchronous family was able to surface
+            # this as an explicit TimeoutError because the AsyncBridge
+            # imposed a Python-side deadline on the callback.
+            #
+            # For a generic HTTP passthrough this distinction is not worth
+            # the ownership hazard above:
+            #   * The timeout is a configuration value (--timeout) that
+            #     the operator can raise when the backend is slow.
+            #   * A genuinely empty response is a legitimate HTTP 200 with
+            #     an empty body, so returning 200 + empty is correct
+            #     behaviour, not a hidden failure.
+            #   * The status queue (_drain_status) still surfaces any
+            #     framework-level diagnostic that accompanied the call.
+            #
+            # The UID path additionally requires the 32-byte UID to be
+            # materialised as a TP2P_UID ctypes array. _to_tp2p_uid does
+            # this; the array is a fresh Python object whose lifetime is
+            # scoped to this function, and the C side copies its 32 bytes
+            # synchronously before the call returns, so it does not need
+            # to outlive the dispatch.
+            # ------------------------------------------------------------------
+            if mode == "uid":
+                uid_arr = _to_tp2p_uid(key)
+                res_ptr = LF_UID_Call(
+                    uid_arr, hnd_in, config.timeout_ms
+                )
+            elif mode == "p2p":
+                res_ptr = LF_P2PNAME_Call(
+                    cstr(key), hnd_in, config.timeout_ms
+                )
+            else:  # mode == "app"
+                res_ptr = LF_Call(
+                    cstr(key), hnd_in, config.timeout_ms
+                )
         finally:
             LF_FreeData(hnd_in)
 
@@ -2039,8 +2548,36 @@ def handle_call(path: str):
             raise LingoFuseError("Remote call returned a null handle")
 
         try:
+            # ------------------------------------------------------------------
+            # Reset the result handle position to 0 before reading.
+            #
+            # The synchronous Call primitive delivers a handle whose
+            # internal write cursor sits at the END of the written
+            # payload: the framework writes the response bytes into the
+            # handle, which advances the cursor, and only then returns
+            # the handle to us.
+            #
+            # lf_io.read_string_bytes() reads from the CURRENT position,
+            # so without this reset it would immediately see pos == size
+            # and return b"", producing an HTTP 200 response with an
+            # empty body.
+            #
+            # Contrast with lingofuse.core.DataHandle.read / read_json,
+            # which always reset to position 0 internally. Because the
+            # bridge operates on raw c_void_p handles (rather than
+            # wrapping them in DataHandle), that protection does not
+            # apply here and we must perform the reset explicitly.
+            #
+            # This call is safe from the Flask worker thread: the
+            # synchronous primitive has already returned, so no other
+            # thread holds this handle.
+            # ------------------------------------------------------------------
+            LF_SetPos(res_ptr, 0)
             result_bytes = read_string_bytes(res_ptr)
         finally:
+            # The handle is owned by the caller, so this is correct.
+            # (Do NOT copy this pattern to an LF_Async_Call result
+            # handle: that one belongs to the framework.)
             LF_FreeData(res_ptr)
 
         # ------------------------------------------------------------------
@@ -2137,14 +2674,42 @@ def _setup_network(cfg: BridgeConfig) -> bool:
 
     try:
         # ------------------------------------------------------------------
-        # 1. Deployment mode.
+        # 1. Connection readiness.
         #
-        # Do not block if the backend is not yet ready. Inbound
-        # requests will time out gracefully until the mesh comes
-        # online. This makes the bridge suitable for elastic clusters
-        # where startup order is unpredictable.
+        # The bridge must decide whether to block in LF_PrepareDone
+        # until the LingoFuse client-server handshake is complete.
+        #
+        #   wait_connection = True (default):
+        #       Block, bounded by wait_timeout_ms. This eliminates the
+        #       race between "HTTP listener starts accepting requests"
+        #       and "broadcast cache has caught up with the target's
+        #       API registrations". It is the correct default for
+        #       local development and LAN deployments, where the peer
+        #       is already up.
+        #
+        #   wait_connection = False:
+        #       Return immediately. The HTTP listener starts as soon
+        #       as Flask is ready. Early requests will fail with a -3
+        #       pre-check error until the broadcast cache catches up
+        #       (typically 1-3 seconds). The caller is expected to
+        #       retry -3 responses. This is the correct choice for
+        #       elastic deployments where the peer's startup order is
+        #       unpredictable.
         # ------------------------------------------------------------------
-        set_option("Wait_Connection_ReadyOk", "False")
+        if cfg.wait_connection:
+            set_option("Wait_Connection_ReadyOk", "True")
+            set_option("Wait_Connection_Timeout",
+                       str(cfg.wait_timeout_ms))
+            logger.info(
+                "Connection readiness: WAIT (timeout=%d ms)",
+                cfg.wait_timeout_ms,
+            )
+        else:
+            set_option("Wait_Connection_ReadyOk", "False")
+            logger.info(
+                "Connection readiness: DO NOT WAIT "
+                "(early requests may fail with a -3 pre-check error)"
+            )
 
         # ------------------------------------------------------------------
         # 2. Reset any leftover preparation state.
@@ -2243,10 +2808,60 @@ def _setup_network(cfg: BridgeConfig) -> bool:
 
         # ------------------------------------------------------------------
         # 6. Start the LingoFuse main thread.
+        #
+        # LF_PrepareDone blocks in this call when
+        # Wait_Connection_ReadyOk = True, up to the configured
+        # timeout. When the timeout expires without all clients being
+        # ready, it still returns 1; we detect that case below by
+        # checking LF_CheckMainThread, which is not quite the same
+        # thing but is a reasonable proxy for "did the library start
+        # at all".
         # ------------------------------------------------------------------
         ret = LF_PrepareDone()
         if ret != 1:
             raise ConnectionError(f"LF_PrepareDone returned {ret}")
+
+        # ------------------------------------------------------------------
+        # 6b. Post-startup readiness confirmation.
+        #
+        # If wait_connection is enabled and the wait was satisfied,
+        # we can be confident the handshake completed. If it was
+        # enabled but timed out, or if it was disabled entirely, we
+        # log a warning so the operator knows why early requests may
+        # fail.
+        #
+        # This is purely diagnostic; it does not change the bridge's
+        # behaviour. The definitive answer to "is the mesh online"
+        # comes from the pre-check at request time.
+        # ------------------------------------------------------------------
+        if cfg.wait_connection:
+            # A quick self-probe: ask the local cache whether our own
+            # API is visible. If the handshake and broadcast are
+            # complete, this is True. If it is False, the wait timed
+            # out or the broadcast is still in flight.
+            try:
+                own_api_visible = check_api(
+                    cfg.bridge_app_name, cfg.bridge_api_name
+                )
+            except Exception:
+                own_api_visible = False
+            if own_api_visible:
+                logger.info(
+                    "Connection readiness confirmed: bridge API "
+                    "'%s.%s' is visible on the local cache.",
+                    cfg.bridge_app_name, cfg.bridge_api_name,
+                )
+            else:
+                logger.warning(
+                    "Connection readiness was requested but the "
+                    "bridge API '%s.%s' is not yet visible on the "
+                    "local cache. The handshake may have timed out "
+                    "(%d ms). Early inbound requests may fail with a "
+                    "-3 pre-check error until the broadcast "
+                    "completes.",
+                    cfg.bridge_app_name, cfg.bridge_api_name,
+                    cfg.wait_timeout_ms,
+                )
 
         # ------------------------------------------------------------------
         # 7. All steps succeeded. Publish the globals.
@@ -2296,10 +2911,12 @@ def _log_startup_banner(cfg: BridgeConfig) -> None:
 
     The banner explicitly reports the operating mode (forward-only or
     full) so that operators can tell from a single log line whether
-    an HTTP listener is expected.
+    an HTTP listener is expected. It also lists the four supported
+    URL forms when the listener is enabled, and the connection
+    readiness mode.
     """
     logger.info("=== LingoFuse HTTP Bridge (bidirectional POST gateway "
-                "with JSON repair service) ===")
+                "with three-addressing routing and JSON repair service) ===")
     logger.info(
         "Operating mode: %s",
         'FORWARD-ONLY (HTTP listener disabled)'
@@ -2319,6 +2936,11 @@ def _log_startup_banner(cfg: BridgeConfig) -> None:
         cfg.default_app or '(must be specified in URL path)',
     )
     logger.info("Inbound call timeout: %dms", cfg.timeout_ms)
+    logger.info(
+        "Connection readiness: %s",
+        f'WAIT (timeout={cfg.wait_timeout_ms} ms)'
+        if cfg.wait_connection else 'DO NOT WAIT',
+    )
     logger.info("HTTP threaded: %s", cfg.threaded)
     logger.info("Debug: %s", cfg.debug)
     logger.info(
@@ -2340,14 +2962,13 @@ def _log_startup_banner(cfg: BridgeConfig) -> None:
     )
     if not cfg.forward_only:
         logger.info(
-            "Inbound path format: /<app>/<api>  or  /<api> "
-            "(uses default app)"
+            "Inbound routes: /<app>/<api>, /<api>, "
+            "/uid/<hex64>/<api>, /p2p/<group>/<api>"
         )
-    logger.info(
-        "Inbound routing: %s",
-        'DISABLED (forward-only mode)'
-        if cfg.forward_only else 'ENABLED',
-    )
+        logger.info(
+            "Reserved URL segments: '%s' (UID), '%s' (P2PName)",
+            RESERVED_PREFIX_UID, RESERVED_PREFIX_P2P,
+        )
 
 
 def _run_bridge(cfg: BridgeConfig) -> None:
@@ -2461,3 +3082,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+    

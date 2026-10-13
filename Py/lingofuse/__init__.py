@@ -8,23 +8,194 @@ This package exposes the following high-level components:
 - App: Application with API registration and local execution.
 - Server: Easy way to start a C4 service and expose APIs.
 - C4: Client that dynamically calls remote APIs via __getattr__.
+- Target / AppTarget / UIDTarget / P2PNameTarget: the three addressing
+  modes that the C ABI supports for remote invocation.
 - NetworkEventListener / NetworkEventQueue: process-global network event
   handling (since LingoFuse v3.0).
+- CallFuture / AsyncBridge / await_future: modern async support
+  (see the "MODERN ASYNC SUPPORT" section below).
 
 Additionally, module-level convenience functions:
 
 - generate_app_name(): generates a unique name for dynamic apps.
 - get_app_name(): retrieves the name from a raw AppHnd.
-- set_option(): adjusts runtime parameters.
+- set_option() / get_option(): adjust and read runtime parameters.
 - get_status() / post_status(): access the internal status queue.
 - check_main_thread(), check_app(), check_api(): health checks.
+- check_uid(), check_uid_api(): UID health checks (v3 addressing).
+- check_p2pname(), check_p2pname_api(): P2P name health checks.
 - set_network_event() / clear_network_event(): install or remove
   process-global network event callbacks.
+- register_p2p_call(), register_p2p_notify(), unregister_p2p():
+  process-wide P2P API registration (independent of any App).
 - repair_json_text(): the toolchain-wide JSON repair preprocessor.
 
 All functions are thread-safe. For detailed usage, see the docstrings
 in the respective modules and the Pascal import unit
 (lingofuse_import.pas).
+
+{!!!!!  THREE ADDRESSING MODES  !!!!!}
+Remote invocation can be performed through three orthogonal addressing
+modes, each with the same set of call shapes (call / async_call /
+sequenced_call / notify / sequenced_notify, plus the modern
+call_future / call_async / sequenced_call_future / sequenced_call_async):
+
+    client.app("MyApp").call("api", payload)        # App name
+    client.uid(uid_bytes).call("api", payload)      # UID
+    client.p2pname("group").notify("api", payload)  # P2PName
+
+The three addressing modes differ only in routing semantics. See
+lingofuse/address.py for the full Target contract.
+
+{!!!!!  MODERN ASYNC SUPPORT  !!!!!}
+The modern async surface is built on two layers:
+
+    * lingofuse.async_support -- the subsystem. It owns the lifetime
+      of every ctypes async callback object, tracks every outstanding
+      operation through an explicit state machine (PENDING -> FIRED |
+      ABANDONED | NOT_QUEUED), and runs a background reclamation
+      thread. Timeouts do NOT cause use-after-free, dispatch failures
+      do NOT leak, and callers can distinguish "cancelled" from
+      "timed out".
+
+    * lingofuse.address.Target -- the user-facing API. Every Target
+      exposes four modern methods in addition to the legacy surface:
+
+          call_future(api, payload, timeout_ms=...) -> CallFuture
+          call_async(api, payload, timeout_ms=...)  -> awaitable
+          sequenced_call_future(...)                -> CallFuture
+          sequenced_call_async(...)                 -> awaitable
+
+      The Future-returning methods never block. The ``async def``
+      methods are suitable for use with asyncio via ``await``.
+
+The public objects exported at package level are:
+
+    CallFuture         -- concurrent.futures.Future subclass with
+                          an ``abandoned`` flag (True when the
+                          timeout fired before the callback arrived).
+
+    AsyncBridge        -- process-wide singleton that owns every
+                          outstanding async op. Access via
+                          ``AsyncBridge.instance()``; diagnostic
+                          counters via ``AsyncBridge.instance().stats()``.
+
+    await_future       -- ``async def`` helper that awaits a
+                          CallFuture from inside a coroutine. Used
+                          internally by Target.call_async; exposed
+                          for callers who build their own Futures.
+
+    run_async_with_future
+                       -- low-level factory for callers who need to
+                          issue an async request without going
+                          through a Target. Takes an ``issue_fn``
+                          closure and returns a CallFuture.
+
+    make_legacy_op / make_future_op
+                       -- lower-level factory helpers used by the
+                          legacy and modern paths respectively. Rarely
+                          needed directly; kept public for advanced
+                          integration.
+
+Example::
+
+    import asyncio
+
+    from lingofuse import AppTarget
+
+    target = AppTarget("MyApp")
+
+    # Non-blocking, callback-free:
+    future = target.call_future("add", {"a": 1, "b": 2}, timeout_ms=3000)
+    result = future.result()
+    if future.abandoned:
+        print("timed out; C side may still be running")
+
+    # asyncio:
+    async def main():
+        result = await target.call_async(
+            "add", {"a": 1, "b": 2}, timeout_ms=3000
+        )
+        print(result)
+
+    asyncio.run(main())
+
+The subsystem is documented in full in lingofuse/async_support.py.
+
+{!!!!!  PROCESS-WIDE P2P REGISTRATION  !!!!!}
+The module-level functions register_p2p_call / register_p2p_notify
+register APIs into the process-wide P2P namespace, which is
+independent of any App. Those APIs are reachable via UID addressing
+or P2PName addressing without requiring the caller to know the target
+App name. They are NOT reachable via App-name addressing.
+
+In contrast, App.register_call / App.register_notify register APIs
+into the app-bound namespace, reachable via App-name addressing (and
+via UID addressing as well).
+
+{!!!!!  AUTO SENDER IDENTITY (SIDE DATA)  !!!!!}
+Every inbound request payload carries two identity fields that the
+SENDER'S transport layer injects automatically before transmission
+(Pascal side: TC40_LF_Client.Send_* ->
+TMemory_Param_Tool.Rebuild_UID_and_P2PName):
+
+    * FromUID      -- the sender's 32-byte session UID.
+    * FromP2PName  -- the sender's user-supplied P2P group name.
+
+These two fields are "SIDE DATA". They are NOT properties of the
+handle itself. They are metadata that the sender wrote into the
+payload header, and the receiver therefore sees them in the
+Data_Param of the INPUT handle it receives from the framework.
+
+Because of this design, the two reader functions:
+
+    DataHandle.get_p2p_uid()   -> bytes (exactly 32 bytes)
+    DataHandle.get_p2p_name()  -> str   ('' if the sender did not set a name)
+
+work ONLY on INPUT handles:
+
+    * Valid on the Input argument of a Call or Notify callback.
+    * Valid on the Input argument of a local call / notify (the
+      framework injects identity there too).
+    * INVALID on an OUTPUT handle: returns 32 zero bytes / empty
+      string, and logs a C-side warning.
+    * INVALID on a handle the caller created itself via
+      DataHandle(...) or DataHandle.create_permanent(...): those
+      handles have no "sender", so the same null result applies.
+
+The identity is populated on ALL command paths: Call, Notify,
+Sequenced_Call, Sequenced_Notify, and the UID_* / P2PName_* variants.
+
+{!!!!!  LF_Get_P2P_UID RETURNS A POINTER, NOT A VALUE  !!!!!}
+At the C ABI level, LF_Get_P2P_UID returns a POINTER to the 32-byte
+UID (Pascal signature:
+
+    function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+
+i.e. ``^TUID___``, not ``TUID___``). The pointer is allocated by the
+C side and is scheduled for automatic release about 5 seconds after
+the call.
+
+The Python high-level accessor ``DataHandle.get_p2p_uid()`` hides
+this detail: it copies the 32 bytes immediately with
+``ctypes.string_at(ptr, 32)`` and returns a fresh Python ``bytes``
+object. Callers of the high-level API do not see the transient
+pointer.
+
+Direct callers of the low-level binding in ``lingofuse._lf_native``
+must perform the copy themselves and must NOT retain the pointer
+beyond the ~5-second window, and must NOT call any deallocation
+function on it.
+
+Typical uses of the side-data accessors:
+
+    * Call admission / authorisation (compare against an allow-list).
+    * Audit logging (record the caller UID in hex).
+    * Session state (key a per-sender dict on the UID).
+    * Multi-tenancy (use the P2P group name as the tenant id).
+    * whoami probe (echo the caller's UID back to it).
+
+See lingofuse/core.py for the full DataHandle side-data contract.
 
 {!!!!!  DATA HANDLE KINDS  !!!!!}
 The library provides two kinds of data handles, both wrapped by the
@@ -150,9 +321,28 @@ makes the wire contract explicit.
 All comments, docstrings, and log messages are in English.
 """
 
+import logging
+from typing import Any, Callable, Optional
+
 from .core import DataHandle, App, generate_app_name, get_app_name
 from .server import Server
 from .client import C4
+from .address import (
+    Target,
+    AppTarget,
+    UIDTarget,
+    P2PNameTarget,
+    AsyncResultHandler,
+)
+from .async_support import (
+    AsyncBridge,
+    AsyncOp,
+    CallFuture,
+    await_future,
+    make_future_op,
+    make_legacy_op,
+    run_async_with_future,
+)
 from .errors import (
     LingoFuseError,
     ConnectionError,
@@ -168,7 +358,10 @@ from .network_events import (
     NetworkEventQueue,
     get_network_event_queue,
 )
-from ._lf_native import LF_SetOption as _LF_SetOption
+from ._lf_native import (
+    LF_SetOption as _LF_SetOption,
+    LF_GetOption as _LF_GetOption,
+)
 
 # Unified LingoFuse payload I/O.
 #
@@ -192,6 +385,10 @@ from .lf_io import cstr
 # that repair_json_text sees. Importing lingofuse therefore keeps its
 # historical startup cost.
 from .json_repair_preprocess import repair_json_text
+
+
+# Module-level logger for the process-wide P2P callback adapters.
+_log = logging.getLogger("lingofuse")
 
 
 # ======================================================================
@@ -254,6 +451,21 @@ from .json_repair_preprocess import repair_json_text
 #     value, the system falls back to the newest client to avoid
 #     starvation (integer).
 #
+# === P2P Group Name ===
+# - "LF_P2P_name" / "P2P_name" / "LF_P2P" / "P2P"
+#     The sender's user-supplied P2P group name (string). Injected
+#     into every outbound request payload, and reported to the
+#     server via the Update_UID command. Used by P2PName routing to
+#     dispatch a call to any client in the group.
+#
+#     {!!!!!  NOT TO BE CONFUSED WITH DataHandle.get_p2p_name  !!!!!}
+#     This option controls the LOCAL configuration: the P2P name
+#     that THIS process declares for itself. It is unrelated to
+#     ``DataHandle.get_p2p_name()``, which reads the SENDER'S P2P
+#     name from the INPUT handle of a registered callback (side
+#     data injected by the sender's transport layer). See the
+#     module docstring section "AUTO SENDER IDENTITY (SIDE DATA)".
+#
 # === Data Handle Pool ===
 # - "DataHandle_Idle_Timeout" / "Data_Idle_Timeout" / "Idle_Timeout"
 #     Idle timeout (in milliseconds) for automatic reclamation of
@@ -282,6 +494,17 @@ from .json_repair_preprocess import repair_json_text
 #     effective call frequency is bounded below by the main thread's
 #     tick granularity, not by this value alone.
 #
+# === Async Subsystem (environment variables, NOT LF_SetOption keys) ===
+# - "LINGOFUSE_ASYNC_RECLAIM_GRACE"
+#     Seconds to keep an abandoned async op alive after its timeout
+#     fires, giving any in-flight C callback a chance to arrive on a
+#     still-valid Python object. Default: 60. Must be >= 0.
+# - "LINGOFUSE_ASYNC_RECLAIM_PERIOD"
+#     Seconds between reclamation sweeps in the AsyncBridge
+#     background thread. Default: 1.0. Must be > 0.05.
+#   Both are read ONCE at lingofuse.async_support import time. They
+#   are listed here for operator discoverability only.
+#
 # === JSON Repair Preprocessing ===
 # - Not an LF_SetOption key. Controlled by the environment variable
 #   LINGOFUSE_JSON_REPAIR (see lingofuse.json_repair_preprocess):
@@ -306,6 +529,31 @@ def set_option(option: str, value: str) -> None:
     underlying c_char_p parameters.
     """
     _LF_SetOption(cstr(option), cstr(value))
+
+
+def get_option(option: str) -> str:
+    """
+    Read the current value of a runtime option.
+
+    Returns the option's current value as a UTF-8 ``str``. Unknown
+    option names yield an empty string, matching the underlying
+    library's behaviour.
+
+    The underlying LF_GetOption returns a pointer to a transient
+    buffer that is released ~5 seconds after the call. ctypes
+    automatically copies the C string into a fresh Python bytes
+    object on the return boundary, so the returned str is fully
+    detached from that buffer and safe to retain.
+
+    This function is the read-side companion of ``set_option``. Both
+    are routed through lingofuse.lf_io.cstr so that the wire contract
+    for c_char_p parameters is explicit and consistent across the
+    package.
+    """
+    ptr = _LF_GetOption(cstr(option))
+    if not ptr:
+        return ""
+    return ptr.decode("utf-8", errors="replace")
 
 
 # ======================================================================
@@ -411,12 +659,357 @@ def check_api(app_name: str, api_name: str) -> bool:
 
 
 # ======================================================================
+# UID / P2PName health checks
+# ----------------------------------------------------------------------
+# These four functions mirror check_app / check_api, but keyed on the
+# other two addressing modes:
+#
+#     * check_uid / check_uid_api         -> UID addressing
+#     * check_p2pname / check_p2pname_api -> P2PName addressing
+#
+# Like check_app / check_api, all four consult a locally cached view
+# of the mesh that is updated by periodic broadcasts. The cache lags
+# fresh registrations and unregistrations by roughly 3 seconds, so a
+# just-registered UID/P2PName may briefly return False and a
+# just-unregistered one may briefly return True. Callers that need a
+# definitive answer should retry, or fall back to the actual call and
+# handle the empty-result case.
+#
+# All four functions are thread-safe and may be called at any time.
+# They are meaningful only after LF_PrepareDone has been called; before
+# that, they simply see an empty cache and return False.
+#
+# {!!!!!  UID HERE IS AN ARGUMENT VALUE, NOT SIDE DATA  !!!!!}
+# The UID passed to check_uid / check_uid_api is a VALUE the caller
+# already possesses: typically the result of a prior "whoami" probe
+# or an out-of-band discovery mechanism. The C ABI declares these
+# parameters as TP2P_UID___ (a 32-byte Pascal array), which ctypes
+# passes by value in a cdecl call. The ctypes type used for the
+# argument is therefore TP2P_UID (a c_ubyte * 32 array).
+#
+# This is a DIFFERENT role from the LF_Get_P2P_UID RETURN value,
+# which is a POINTER to a 32-byte UID. See
+# lingofuse/_lf_native.py for the full explanation of the two roles.
+# ======================================================================
+
+def _normalize_uid_for_check(uid) -> "Any":
+    """
+    Normalize the ``uid`` argument accepted by ``check_uid`` and
+    ``check_uid_api`` into a ``TP2P_UID`` ctypes array.
+
+    Accepted inputs:
+        * 32-byte bytes / bytearray / memoryview.
+        * 64-character hexadecimal string.
+
+    Raises ValueError / TypeError for anything else.
+    """
+    # Imported lazily so that the module-level import list stays
+    # focused on what every user needs.
+    from .address import _normalize_uid, _to_tp2p_uid
+    return _to_tp2p_uid(_normalize_uid(uid))
+
+
+def check_uid(uid) -> bool:
+    """
+    Check whether a client with the given UID is currently known to
+    the mesh (locally or via the cached remote view).
+
+    The UID may be supplied as 32 raw bytes, a bytearray, a memoryview,
+    or a 64-character hexadecimal string.
+
+    Returns True if the UID is present in the local or cached remote
+    view, False otherwise. As with check_app, the cache may lag fresh
+    registrations by ~3 seconds.
+    """
+    from ._lf_native import LF_Check_UID
+    return LF_Check_UID(_normalize_uid_for_check(uid)) != 0
+
+
+def check_uid_api(uid, api_name: str) -> bool:
+    """
+    Check whether a client with the given UID exposes the named API.
+
+    The UID may be supplied as 32 raw bytes, a bytearray, a memoryview,
+    or a 64-character hexadecimal string.
+
+    Returns True if the API is available on at least one client with
+    the matching UID, False otherwise.
+    """
+    from ._lf_native import LF_Check_UID_Api
+    return LF_Check_UID_Api(
+        _normalize_uid_for_check(uid),
+        cstr(api_name),
+    ) != 0
+
+
+def check_p2pname(p2p_name: str) -> bool:
+    """
+    Check whether at least one client has the given P2P group name.
+
+    Returns True if the group is present in the local or cached remote
+    view, False otherwise. Cache lag applies as with check_app.
+    """
+    from ._lf_native import LF_Check_P2PNAME
+    return LF_Check_P2PNAME(cstr(p2p_name)) != 0
+
+
+def check_p2pname_api(p2p_name: str, api_name: str) -> bool:
+    """
+    Check whether at least one client in the given P2P group exposes
+    the named API.
+
+    Returns True if the API is available on at least one client in
+    the group, False otherwise.
+    """
+    from ._lf_native import LF_Check_P2PNAME_Api
+    return LF_Check_P2PNAME_Api(
+        cstr(p2p_name),
+        cstr(api_name),
+    ) != 0
+
+
+# ======================================================================
+# Process-wide P2P API registration
+# ----------------------------------------------------------------------
+# The functions in this section register APIs into the process-wide
+# P2P namespace, which is independent of any App:
+#
+#     register_p2p_call    -- register a Call API (request / response)
+#     register_p2p_notify  -- register a Notify API (one-way)
+#     unregister_p2p       -- remove a previously registered API
+#
+# APIs registered here live on the process-wide LF_P2P_APP and are
+# reachable via UID addressing or P2PName addressing without requiring
+# the caller to know the target App name. They are NOT reachable via
+# App-name addressing, even if the registered API name happens to
+# match an App name.
+#
+# Typical use: register a small set of globally-discoverable utility
+# APIs (health probes, capability discovery, identity echo, etc.)
+# that any client in the mesh can call by group name or by UID.
+#
+# Lifetime and keep-alive
+# -----------------------
+# The C library holds a raw function pointer to each installed
+# callback. If the corresponding ctypes callback object is garbage
+# collected while the pointer is still live, the next invocation will
+# crash. We therefore keep a strong reference to every registered
+# callback in the module-level ``_p2p_callbacks`` list, which is
+# never cleared until process exit. This matches the contract of
+# ``App._callbacks`` for app-bound registration, and is documented
+# here so that the difference between the two registration paths is
+# explicit.
+#
+# Threading
+# ---------
+# Registration is thread-safe and may be performed at any time, both
+# before and after LF_PrepareDone. The registered callbacks run on
+# TCompute worker threads, matching the contract of every other
+# LingoFuse callback. They MUST NOT block, and MUST NOT call any
+# synchronous LingoFuse function.
+# ======================================================================
+
+#: Strong references to every ctypes callback registered through the
+#: process-wide P2P API. The list is intentionally never cleared: the
+#: process-wide P2P namespace is by definition tied to the process
+#: lifetime, and the underlying library does not provide a way to
+#: unregister the callback object itself (only its name).
+_p2p_callbacks: list = []
+
+
+def register_p2p_call(
+    api_name: str,
+    func: Callable,
+    description: str = "",
+) -> None:
+    """
+    Register a process-wide P2P Call API.
+
+    The API becomes reachable via UID addressing or P2PName addressing
+    from any client in the mesh, without requiring the caller to know
+    the target App name. It is NOT reachable via App-name addressing.
+
+    Args:
+        api_name:
+            Unique API name within the process-wide P2P namespace.
+            Case-insensitive on the wire, stored as provided.
+        func:
+            The callback. Signature::
+
+                def func(trigger, inp: DataHandle, out: DataHandle) -> None:
+                    ...
+
+            It runs on a TCompute worker thread. It MUST NOT block,
+            and MUST NOT call any synchronous LingoFuse function
+            (LF_Call / LF_Notify / LF_LocalCall / LF_PrepareDone /
+            LF_Shutdown), on pain of deadlock.
+        description:
+            Optional human-readable description.
+
+    Raises:
+        RegistrationError:
+            If the name is already registered in the process-wide P2P
+            namespace, or if the underlying library rejects the
+            registration for any other reason.
+
+    {!!!!!  EXCEPTION ISOLATION  !!!!!}
+    Any exception raised inside ``func`` is caught and logged to the
+    "lingofuse" logger. The exception never escapes into the C stack.
+    This mirrors the behaviour of the reference C core
+    (Engine.Execute_Call) and of App.register_call.
+
+    {!!!!!  KEEP-ALIVE  !!!!!}
+    The ctypes callback object wrapping ``func`` is stored in the
+    module-level ``_p2p_callbacks`` list and never released. This is
+    required: the C library holds a raw function pointer to it, and
+    garbage-collecting the wrapper would leave that pointer dangling.
+    """
+    # Imported lazily so that the module-level import list stays
+    # focused on what every user needs, and so that the low-level
+    # binding symbols remain visibly scoped to this function.
+    from ._lf_native import LF_Register_P2P_Call, LFCallFunc
+
+    def _adapter(trigger, inp, out):
+        # Wrap the raw ctypes handles. owned=False: the framework
+        # owns these handles and will release them after the callback
+        # returns.
+        h_in = DataHandle._from_raw(inp, owned=False)
+        h_out = DataHandle._from_raw(out, owned=False)
+        try:
+            func(trigger, h_in, h_out)
+        except Exception:
+            # Match the contract of App.register_call: never let an
+            # exception escape into the C stack.
+            _log.exception(
+                "P2P Call callback for API '%s' raised an exception; "
+                "the exception has been suppressed",
+                api_name,
+            )
+
+    c_func = LFCallFunc(_adapter)
+    # Keep a strong reference before the native call, so that if the
+    # native call itself raises (unlikely but possible on OOM), the
+    # wrapper still survives until the process exits.
+    _p2p_callbacks.append(c_func)
+
+    ret = LF_Register_P2P_Call(
+        cstr(api_name),
+        cstr(description),
+        None,          # Trigger: unused in the Python binding.
+        c_func,
+    )
+    if ret != 1:
+        raise RegistrationError(
+            f"Failed to register process-wide P2P Call API "
+            f"'{api_name}'"
+        )
+
+
+def register_p2p_notify(
+    api_name: str,
+    func: Callable,
+    description: str = "",
+) -> None:
+    """
+    Register a process-wide P2P Notify API.
+
+    The API becomes reachable via UID addressing or P2PName addressing
+    from any client in the mesh. It is NOT reachable via App-name
+    addressing.
+
+    Args:
+        api_name:
+            Unique API name within the process-wide P2P namespace.
+        func:
+            The callback. Signature::
+
+                def func(trigger, inp: DataHandle) -> None:
+                    ...
+
+            It runs on a TCompute worker thread. It MUST NOT block,
+            and MUST NOT call any synchronous LingoFuse function.
+        description:
+            Optional human-readable description.
+
+    Raises:
+        RegistrationError:
+            If the name is already registered in the process-wide P2P
+            namespace, or if the underlying library rejects the
+            registration for any other reason.
+
+    {!!!!!  EXCEPTION ISOLATION  !!!!!}
+    Any exception raised inside ``func`` is caught and logged to the
+    "lingofuse" logger. The exception never escapes into the C stack.
+
+    {!!!!!  KEEP-ALIVE  !!!!!}
+    See register_p2p_call for the full rationale. The wrapper is kept
+    alive in the module-level ``_p2p_callbacks`` list.
+    """
+    from ._lf_native import LF_Register_P2P_Notify, LFNotifyFunc
+
+    def _adapter(trigger, inp):
+        h_in = DataHandle._from_raw(inp, owned=False)
+        try:
+            func(trigger, h_in)
+        except Exception:
+            _log.exception(
+                "P2P Notify callback for API '%s' raised an exception; "
+                "the exception has been suppressed",
+                api_name,
+            )
+
+    c_func = LFNotifyFunc(_adapter)
+    _p2p_callbacks.append(c_func)
+
+    ret = LF_Register_P2P_Notify(
+        cstr(api_name),
+        cstr(description),
+        None,
+        c_func,
+    )
+    if ret != 1:
+        raise RegistrationError(
+            f"Failed to register process-wide P2P Notify API "
+            f"'{api_name}'"
+        )
+
+
+def unregister_p2p(api_name: str) -> bool:
+    """
+    Remove a previously registered process-wide P2P API.
+
+    The removal is immediate locally. Remote peers may still see the
+    API for up to ~3 seconds until the network broadcast propagates.
+
+    Returns True if the API was found and removed, False otherwise.
+
+    Note: the corresponding ctypes callback wrapper stays in
+    ``_p2p_callbacks`` even after unregistration. This is deliberate:
+    the library does not expose a way to release the callback object
+    itself, and keeping the reference is harmless (a few dozen bytes)
+    while removing it would risk a use-after-free if the library
+    still holds the pointer. Use this function only when you truly
+    need to reclaim the API name; for one-shot utilities, leave the
+    registration in place for the process lifetime.
+    """
+    from ._lf_native import LF_Unregister_P2P
+    return LF_Unregister_P2P(cstr(api_name)) == 1
+
+
+# ======================================================================
 # Public exports
 # ======================================================================
 
 __all__ = [
     # Core RAII wrappers
     "DataHandle", "App",
+    # Addressing targets (three modes)
+    "Target", "AppTarget", "UIDTarget", "P2PNameTarget",
+    "AsyncResultHandler",
+    # Modern async support
+    "AsyncBridge", "AsyncOp", "CallFuture",
+    "await_future", "run_async_with_future",
+    "make_legacy_op", "make_future_op",
     # Application name helpers
     "generate_app_name", "get_app_name",
     # High-level server / client
@@ -425,10 +1018,15 @@ __all__ = [
     "LingoFuseError", "ConnectionError", "TimeoutError",
     "RegistrationError", "SerializationError",
     # Runtime options
-    "set_option",
+    "set_option", "get_option",
     # Status and diagnostics
     "get_status_num", "get_status", "post_status",
     "check_main_thread", "check_app", "check_api",
+    # UID / P2PName health checks
+    "check_uid", "check_uid_api",
+    "check_p2pname", "check_p2pname_api",
+    # Process-wide P2P API registration
+    "register_p2p_call", "register_p2p_notify", "unregister_p2p",
     # Network events (since LingoFuse v3.0)
     "set_network_event",
     "clear_network_event",

@@ -7,11 +7,13 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LingoFuse_cs", "src\LingoFu
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "test", "test\test.csproj", "{814E21BE-D91F-40EA-BD22-CDA4FA30AF47}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CrossService", "CrossService\crossService.csproj", "{CB12C107-F3D7-4D2A-8055-697405E1A2C1}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "crossService", "CrossService\crossService.csproj", "{CB12C107-F3D7-4D2A-8055-697405E1A2C1}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CrossNode", "CrossNode\CrossNode.csproj", "{E5FDFB4E-67F4-42ED-981D-7EA0F00E3600}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CrossCall", "CrossCall\CrossCall.csproj", "{020656A5-1BFA-44FF-ACA5-A57B4FE68A7A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "test2", "test2\test2.csproj", "{7614413F-8BE7-4EF9-808C-64A0D864AFC5}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -39,6 +41,10 @@ Global
 		{020656A5-1BFA-44FF-ACA5-A57B4FE68A7A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{020656A5-1BFA-44FF-ACA5-A57B4FE68A7A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{020656A5-1BFA-44FF-ACA5-A57B4FE68A7A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7614413F-8BE7-4EF9-808C-64A0D864AFC5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7614413F-8BE7-4EF9-808C-64A0D864AFC5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7614413F-8BE7-4EF9-808C-64A0D864AFC5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7614413F-8BE7-4EF9-808C-64A0D864AFC5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -21,17 +21,24 @@
     layout-independent):
 
         lf_csharp.sln
-        CrossCall/CrossCall.csproj               (Exe)
-        CrossNode/CrossNode.csproj               (Exe)
-        crossService/crossService.csproj         (Exe)
-        src/LingoFuse_cs/LingoFuse_cs.csproj     (Library, skipped)
-        test/test.csproj                         (Exe)
+        CrossCall/CrossCall.csproj                (Exe)
+        CrossNode/CrossNode.csproj                (Exe)
+        CrossService/crossService.csproj          (Exe)
+        src/LingoFuse_cs/LingoFuse_cs.csproj      (Library, skipped)
+        test/test.csproj                          (Exe, test harness)
+        test2/test2.csproj                        (Exe, test harness)
 
 .PARAMETER Configuration
     Build configuration. Default: Release.
 
 .PARAMETER Runtime
-    Target runtime identifier. Default: win-x64.
+    Target runtime identifier. When omitted, the default is chosen
+    from the host OS:
+        Windows  -> win-x64
+        macOS    -> osx-x64
+        Linux    -> linux-x64
+    Pass an explicit value (for example win-arm64, linux-arm64,
+    osx-arm64) to override.
 
 .PARAMETER SelfContained
     Bundle the .NET runtime into the output. Bigger, but no runtime
@@ -45,6 +52,11 @@
 .PARAMETER Clean
     Run clean.ps1 before publishing.
 
+.PARAMETER SkipTests
+    Skip publishing the test projects (test/ and test2/) and any
+    other project whose name or path matches the test detection rule.
+    Useful when only the demo tools are needed.
+
 .PARAMETER Project
     Optional. When set, publish only the specified .csproj, provided
     it is an executable project. Accepts an absolute path or a path
@@ -52,27 +64,33 @@
 
 .EXAMPLE
     .\publish.ps1
-    Framework-dependent Release build for win-x64.
+    Framework-dependent Release build for the host platform.
 
 .EXAMPLE
     .\publish.ps1 -SelfContained -SingleFile
-    Self-contained single-file .exe per project.
+    Self-contained single-file executable per project.
 
 .EXAMPLE
     .\publish.ps1 -Clean -SelfContained
     Clean, then publish self-contained, multi-file output.
 
 .EXAMPLE
+    .\publish.ps1 -SkipTests
+    Publish only the demo tools (CrossCall, CrossNode, CrossService).
+
+.EXAMPLE
     .\publish.ps1 -Project .\CrossNode\CrossNode.csproj
     Publish only the CrossNode tool.
 #>
+
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [string]$Runtime       = 'win-x64',
+    [string]$Runtime,
     [switch]$SelfContained,
     [switch]$SingleFile,
     [switch]$Clean,
+    [switch]$SkipTests,
     [string]$Project
 )
 
@@ -81,7 +99,7 @@ $ErrorActionPreference = 'Stop'
 # -------------------------------------------------------------------------
 # Setup
 # -------------------------------------------------------------------------
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = $PSScriptRoot
 Set-Location -LiteralPath $scriptDir
 
 $outRoot = Join-Path $scriptDir 'publish'
@@ -92,14 +110,31 @@ function Write-Warn { param([string]$m) Write-Host "[publish] $m" -ForegroundCol
 function Write-Fail { param([string]$m) Write-Host "[publish] $m" -ForegroundColor Red    }
 
 # -------------------------------------------------------------------------
-# Discover executable projects
+# Platform-adaptive default RID
 # -------------------------------------------------------------------------
 #
+# Windows PowerShell 5.1 does not expose $IsWindows / $IsMacOS /
+# $IsLinux, so the host OS is detected through environment variables
+# that are present on every supported platform.
+
+function Get-DefaultRuntimeIdentifier {
+    if ($env:OS -eq 'Windows_NT') { return 'win-x64' }
+    if ($env:OSTYPE -match 'darwin') { return 'osx-x64' }
+    return 'linux-x64'
+}
+
+if (-not $Runtime) {
+    $Runtime = Get-DefaultRuntimeIdentifier
+}
+
+# -------------------------------------------------------------------------
+# Discovery helpers
+# -------------------------------------------------------------------------
+
 # A project is publishable when its <OutputType> is Exe or WinExe.
 # SDK-style projects without an explicit <OutputType> default to
 # Library and are skipped automatically; this is how the LingoFuse_cs
 # binding library is excluded without hard-coding its name.
-
 function Test-IsExecutableProject {
     param([Parameter(Mandatory)] [string]$CsprojPath)
 
@@ -111,6 +146,21 @@ function Test-IsExecutableProject {
         return $false
     }
 }
+
+# Test projects are detected by leaf name or directory, matching the
+# rule used by build.ps1 -Target Test.
+function Test-IsTestProject {
+    param([Parameter(Mandatory)] [string]$CsprojPath)
+
+    $leaf = Split-Path -Leaf $CsprojPath
+    $dir  = Split-Path -Parent $CsprojPath
+    return ($leaf -match '(?i)(test|spec)') -or
+           ($dir  -match '(?i)[\\/](tests?)[\\/]')
+}
+
+# -------------------------------------------------------------------------
+# Discover executable projects
+# -------------------------------------------------------------------------
 
 $projects = @()
 
@@ -156,6 +206,17 @@ else {
                 }
             }
     )
+
+    if ($SkipTests) {
+        $before = $projects.Count
+        $projects = @(
+            $projects | Where-Object { -not (Test-IsTestProject $_.Csproj) }
+        )
+        $skipped = $before - $projects.Count
+        if ($skipped -gt 0) {
+            Write-Info "Skipping $skipped test project(s) (-SkipTests)."
+        }
+    }
 }
 
 # -------------------------------------------------------------------------
@@ -230,6 +291,10 @@ $index    = 0
 $failures = @()
 $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 
+# The entry point file name matches the project name; on Windows it
+# carries the .exe extension, on Linux / macOS it does not.
+$entryExtension = if ($Runtime -match '^win') { '.exe' } else { '' }
+
 foreach ($p in $projects) {
     $index++
     $projPath = $p.Csproj
@@ -266,16 +331,18 @@ foreach ($p in $projects) {
         continue
     }
 
-    # Report every .exe that was produced.
-    $exes = @(Get-ChildItem -LiteralPath $outDir -Filter *.exe -File -ErrorAction SilentlyContinue)
-    if ($exes.Count -gt 0) {
-        foreach ($exe in $exes) {
-            $sizeMB = '{0:N1}' -f ($exe.Length / 1MB)
-            Write-Ok ('OK:   {0} -> {1} ({2} MB, {3}s)' -f $p.Name, $exe.Name, $sizeMB, $secs)
-        }
+    # Report the main entry point. The assembly name equals the project
+    # name by convention across the entire repository; the extension
+    # depends on the runtime identifier.
+    $entryName = $p.Name + $entryExtension
+    $entryPath = Join-Path $outDir $entryName
+
+    if (Test-Path -LiteralPath $entryPath -PathType Leaf) {
+        $sizeMB = '{0:N1}' -f ((Get-Item -LiteralPath $entryPath).Length / 1MB)
+        Write-Ok ('OK:   {0} -> {1} ({2} MB, {3}s)' -f $p.Name, $entryName, $sizeMB, $secs)
     }
     else {
-        Write-Warn ('WARN: {0} published but no .exe found (is OutputType=Exe?)' -f $p.Name)
+        Write-Warn ('WARN: {0} published but entry point "{1}" was not found.' -f $p.Name, $entryName)
     }
 }
 

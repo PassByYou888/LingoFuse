@@ -18,9 +18,10 @@
         lf_csharp.sln
         CrossCall/CrossCall.csproj
         CrossNode/CrossNode.csproj
-        crossService/crossService.csproj
-        src/LingoFuse_cs/LingoFuse_cs.csproj
-        test/test.csproj
+        CrossService/crossService.csproj
+        src/LingoFuse_cs/LingoFuse_cs.csproj    (library)
+        test/test.csproj                        (v4.0 test suite)
+        test2/test2.csproj                      (v5.0 test suite)
 
 .PARAMETER Configuration
     The build configuration whose artefacts should be removed.
@@ -36,7 +37,8 @@
 .PARAMETER IncludePackages
     When set, also removes:
       - packages/
-      - artifacts/
+      - artifacts/       (NuGet output of build.ps1 -Target Pack)
+      - publish/         (dotnet publish output of publish.ps1)
       - TestResults/
       - any stray *.nupkg / *.snupkg under the repository root
 
@@ -50,7 +52,8 @@
 
 .EXAMPLE
     .\clean.ps1 -IncludePackages
-    Full clean, including local NuGet packages and test results.
+    Full clean, including local NuGet packages, publish output, and
+    test results.
 
 .EXAMPLE
     .\clean.ps1 -Verbose
@@ -125,7 +128,10 @@ else {
 $removedCount = 0
 
 foreach ($csproj in $csprojFiles) {
-    $projectDir = $csproj.Directory.FullName
+    # Split-Path is used instead of $csproj.Directory.FullName because
+    # it is explicit about what it returns and is not sensitive to the
+    # DirectoryInfo lazy-loading behaviour of the FileInfo object.
+    $projectDir = Split-Path -Parent $csproj.FullName
 
     if ($Configuration -eq 'All') {
         # Remove the entire bin/ and obj/ trees.
@@ -155,12 +161,15 @@ Write-Host "  Removed $removedCount $directoriesWord." -ForegroundColor Green
 # ---------------------------------------------------------------------------
 
 if ($IncludePackages) {
-    Write-Host '[2/2] Removing local NuGet packages and test artefacts...' `
+    Write-Host '[2/2] Removing local NuGet packages and build artefacts...' `
         -ForegroundColor Yellow
 
     $removedItems = 0
 
-    foreach ($dir in @('packages', 'artifacts', 'TestResults')) {
+    # 'publish' is the output of publish.ps1; 'artifacts' is the output
+    # of build.ps1 -Target Pack. Both are regenerated on demand, so it
+    # is safe (and consistent) to remove them here.
+    foreach ($dir in @('packages', 'artifacts', 'publish', 'TestResults')) {
         $target = Join-Path $RepoRoot $dir
         if (Remove-DirectoryIfExists -Path $target) {
             $removedItems++
@@ -181,7 +190,7 @@ if ($IncludePackages) {
     }
 
     $itemsWord = if ($removedItems -eq 1) { 'item' } else { 'items' }
-    Write-Host "  Removed $removedItems package $itemsWord." -ForegroundColor Green
+    Write-Host "  Removed $removedItems package/build $itemsWord." -ForegroundColor Green
 }
 else {
     Write-Host '[2/2] Skipping package cleanup (use -IncludePackages to enable).' `

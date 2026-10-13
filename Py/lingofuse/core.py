@@ -50,17 +50,57 @@ Python class:
 Both kinds are released when LF_Shutdown is called at process exit.
 
 String handling rules (critical for cross-language compatibility):
-- write_string() always appends a null terminator (\0) to match
+- write_string() always appends a null terminator (\\0) to match
   the standard wire protocol for string framing. This is required
   for the other side to correctly read the string with the
   corresponding read primitive.
-- read_string() is fault-tolerant: it scans for a \0 and returns
-  the content before it. If no \0 is found, it returns the entire
+- read_string() is fault-tolerant: it scans for a \\0 and returns
+  the content before it. If no \\0 is found, it returns the entire
   remaining buffer as a string (consuming all data). This handles
-  both null-terminated and raw data (e.g., plain JSON without \0).
+  both null-terminated and raw data (e.g., plain JSON without \\0).
 
 Atomic read/write methods (write_int32, read_int32, etc.) use little-endian
 byte order, which matches the cross-language convention.
+
+=========================== AUTO SENDER IDENTITY (SIDE DATA) ============================
+Every inbound request payload carries two identity fields that the
+SENDER'S transport layer injects automatically before transmission
+(Pascal side: TC40_LF_Client.Send_* ->
+TMemory_Param_Tool.Rebuild_UID_and_P2PName). The two fields are:
+
+    * FromUID      - the sender's 32-byte session UID.
+    * FromP2PName  - the sender's user-supplied P2P group name.
+
+These two fields are "SIDE DATA". They are NOT properties of the
+handle itself. They are metadata that the sender writes into the
+payload header, and the receiver therefore sees them in the
+Data_Param of the INPUT handle it receives from the framework.
+
+On the receiver side, a registered Call or Notify callback can read
+them from the INPUT handle via two DataHandle accessors:
+
+    inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
+    inp.get_p2p_name()  -> str   ('' if the sender did not set a name)
+
+Because this is side data, these accessors work ONLY for INPUT
+handles. Calling them on an OUTPUT handle logs a warning on the C
+side and returns a null UID / empty string. Calling them on a handle
+the caller created itself (via DataHandle(...) or
+DataHandle.create_permanent(...)) also yields a null UID / empty
+string, because such a handle has no "sender".
+
+The accessors are safe to call from any thread.
+
+The identity is populated on ALL command paths: Call, Notify,
+Sequenced_Call, Sequenced_Notify, and the UID_* / P2PName_* variants.
+Local calls (LF_LocalCall / LF_LocalNotify) also inject identity.
+
+Typical uses:
+    * Call admission / authorisation (compare against an allow-list).
+    * Audit logging (record the caller UID in hex).
+    * Session state (key a per-sender dict on the UID).
+    * Multi-tenancy (use the P2P group name as the tenant id).
+    * whoami probe (echo the caller's UID back to it).
 
 =========================== JSON I/O DELEGATION ============================
 As of this revision, the JSON and string payload I/O of DataHandle is
@@ -80,8 +120,8 @@ The public signatures of these four methods are PRESERVED exactly:
     write_string : returns bool
     read_string  : raises LingoFuseError on invalid UTF-8
     write_json   : returns the number of bytes written
-    read_json    : resets the read position to 0, then silently
-                   returns None on any parse failure
+    read_json    : resets the read position to 0, then (by default)
+                   silently returns None on any parse failure
 
 These signatures are kept for backward compatibility. The delegation
 is an internal implementation change: callers see the same observable
@@ -91,6 +131,40 @@ live in exactly one place (lingofuse.lf_io).
 The `write` / `read` methods are NOT affected by this change: they
 use the serializers module (which produces a bytes payload WITHOUT a
 trailing NUL) and belong to a different protocol layer.
+
+=========================== STRICT JSON READING ============================
+As of this revision, ``DataHandle.read_json`` accepts a ``strict``
+keyword argument (default ``False``), and a convenience wrapper
+``read_json_strict`` is provided. The behaviour is:
+
+    strict=False (default; historical behaviour preserved)
+        * Empty buffer            -> None, no log.
+        * Valid JSON              -> the decoded object.
+        * Invalid UTF-8 / JSON    -> None, AND one WARNING is logged
+                                     to the "lingofuse.core" logger.
+
+        This keeps every existing caller working unchanged, while
+        making protocol errors visible in the log stream. Before this
+        revision, the failure was completely silent, which made
+        malformed payloads indistinguishable from a legitimate
+        "empty result".
+
+    strict=True
+        * Empty buffer            -> None, no log.
+        * Valid JSON              -> the decoded object.
+        * Invalid UTF-8 / JSON    -> RuntimeError is raised, matching
+                                     the behaviour of
+                                     ``lingofuse.lf_io.read_json``.
+
+        The unified JSON repair preprocessor runs first, so a
+        repairable payload is repaired and parsed normally. An
+        unrepairable payload raises.
+
+Callers that want to see protocol failures but keep the
+``None``-on-error return contract should leave ``strict=False``
+and watch the "lingofuse.core" logger. Callers that want strict
+exception semantics should pass ``strict=True`` or call
+``read_json_strict``.
 
 =========================== APPLICATION ============================
 App represents a logical service that can host multiple APIs.
@@ -162,6 +236,7 @@ from ._lf_native import (
     LF_GetSize, LF_SetPos,
     LF_GetBuffer, LF_GetPos,
     LF_SetSize,
+    LF_Get_P2P_UID, LF_Get_P2P_Name,
     LF_CreateApp, LF_FreeApp,
     LF_RegisterCall, LF_RegisterNotify,
     LF_Unregister,
@@ -188,12 +263,21 @@ from .serializers import default_serializer, default_deserializer
 # with the DataHandle methods of the same name inside this file. The
 # public method implementations below are thin wrappers that preserve
 # the historical signatures and error behaviour of DataHandle.
+#
+# In addition to the four delegating methods, this file also exposes
+# two additional read accessors that used to be internal to lf_io:
+# peek_string_bytes (read without advancing the position) and
+# read_all_bytes (read the remaining buffer as raw bytes). They are
+# now available on DataHandle as well, for diagnostic and binary
+# passthrough use cases.
 from .lf_io import (
     cstr,
     read_json as _lf_read_json,
     read_string as _lf_read_string,
     write_json as _lf_write_json,
     write_string as _lf_write_string,
+    peek_string_bytes as _lf_peek_string_bytes,
+    read_all_bytes as _lf_read_all_bytes,
 )
 
 
@@ -285,6 +369,19 @@ class DataHandle:
     they also work when the instance was created via __new__(cls)
     without ever running __init__ (a pattern used by tests that
     exercise construction-failure paths, and by subclasses).
+
+    {!!!!!  STRICT JSON READING  !!!!!}
+    ``read_json`` accepts a ``strict`` keyword argument; see the
+    module docstring section "STRICT JSON READING" for the full
+    contract. ``read_json_strict`` is a convenience alias for
+    ``read_json(strict=True)``.
+
+    {!!!!!  AUTO SENDER IDENTITY (SIDE DATA)  !!!!!}
+    ``get_p2p_uid`` and ``get_p2p_name`` read the sender's identity
+    from the INPUT handle. These are SIDE DATA fields injected by the
+    sender's transport layer, not properties of the handle itself.
+    See the module docstring section "AUTO SENDER IDENTITY (SIDE DATA)"
+    for the full contract.
     """
 
     def __init__(self, api_name: str, data: Any = None,
@@ -640,6 +737,11 @@ class DataHandle:
         """
         Read all remaining bytes from the current position to the end
         of the buffer. Does not assume UTF-8. Moves position to end.
+
+        This method is kept for backward compatibility. New code that
+        wants a diagnostic view of the raw buffer should use
+        `read_all_bytes` instead, which delegates to lf_io and shares
+        its error behaviour with the rest of the toolchain.
         """
         pos = self.get_pos()
         size = self.get_size()
@@ -651,6 +753,31 @@ class DataHandle:
         raw = ctypes.string_at(ptr + pos, size - pos)
         self.set_pos(size)
         return raw
+
+    # ---- Raw-byte diagnostic helpers (delegated to lf_io) ----
+
+    def peek_string_bytes(self) -> bytes:
+        """
+        Read raw bytes up to the first NUL WITHOUT advancing the
+        position.
+
+        Delegates to `lingofuse.lf_io.peek_string_bytes`. Useful for
+        diagnostic and logging code that wants to inspect the current
+        payload without consuming it. The handle position is restored
+        before the function returns.
+        """
+        return _lf_peek_string_bytes(self._hnd)
+
+    def read_all_bytes(self) -> bytes:
+        """
+        Read all remaining bytes from the handle, without NUL handling.
+
+        Delegates to `lingofuse.lf_io.read_all_bytes`. The handle
+        position is advanced to the end of the buffer. Use this for
+        raw binary payloads; use `read_string_bytes` (via lf_io) for
+        NUL-terminated text/JSON payloads.
+        """
+        return _lf_read_all_bytes(self._hnd)
 
     # ---- JSON helpers (delegated to lingofuse.lf_io) ----
 
@@ -676,33 +803,185 @@ class DataHandle:
         _lf_write_json(self._hnd, obj)
         return LF_GetSize(self._hnd) - before
 
-    def read_json(self) -> Any:
+    def read_json(self, strict: bool = False) -> Any:
         """
         Read NUL-terminated UTF-8 JSON data and deserialize it.
 
-        Delegates to `lingofuse.lf_io.read_json`, but preserves two
-        historical behaviours of this specific method:
+        The read always starts from position 0, regardless of the
+        handle's current position. This is what the previous inline
+        implementation did, and some callers rely on it.
 
-          1. The read always starts from position 0, regardless of the
-             handle's current position. This is what the previous
-             inline implementation did, and some callers rely on it.
-          2. Any failure (invalid UTF-8, invalid JSON, empty payload)
-             results in a silent `None` return rather than a raised
-             exception. This is also what the previous inline
-             implementation did, and it is kept for backward
-             compatibility even though lf_io itself is strict.
+        Args:
+            strict:
+                Controls the behaviour when the payload is not valid
+                JSON (or not valid UTF-8).
 
-        Callers that want the strict lf_io behaviour should call
-        `lingofuse.lf_io.read_json` directly on the raw handle.
+                ``False`` (default; historical behaviour preserved):
+                    Any failure results in a silent ``None`` return
+                    **with one WARNING logged** to the
+                    "lingofuse.core" logger. The warning names the
+                    failure so that protocol errors are no longer
+                    invisible in the log stream.
+
+                ``True``:
+                    Any failure raises the underlying exception from
+                    ``lingofuse.lf_io.read_json`` (typically
+                    ``RuntimeError``). The unified JSON repair
+                    preprocessor runs first, so a repairable payload
+                    is repaired and parsed normally.
+
+        Returns:
+            The parsed Python object, or ``None`` if the buffer is
+            empty. With ``strict=False``, also returns ``None`` on a
+            parse failure (with a WARNING logged).
+
+        Notes:
+            ``lingofuse.lf_io.read_json`` is strict; this method
+            preserves the historical behaviour of ``DataHandle``
+            (silent ``None`` on failure) for backward compatibility,
+            while making failures observable via the log. Callers that
+            want the strict contract should pass ``strict=True`` or
+            use ``read_json_strict``.
         """
         size = LF_GetSize(self._hnd)
         if size == 0:
             return None
         LF_SetPos(self._hnd, 0)
+
+        if strict:
+            # Strict path: propagate the exception raised by lf_io.
+            return _lf_read_json(self._hnd)
+
+        # Lenient path (default): preserve the historical silent-None
+        # contract, but log the failure so it is no longer invisible.
         try:
             return _lf_read_json(self._hnd)
-        except Exception:
+        except Exception as exc:
+            _log.warning(
+                "DataHandle.read_json: payload is not valid JSON; "
+                "returning None (strict=False). Use strict=True or "
+                "read_json_strict() for exception semantics. "
+                "Underlying error: %s",
+                exc,
+            )
             return None
+
+    def read_json_strict(self) -> Any:
+        """
+        Strict variant of :meth:`read_json`.
+
+        Equivalent to ``read_json(strict=True)``: an invalid payload
+        raises ``RuntimeError`` instead of returning ``None``. An
+        empty buffer still returns ``None`` so that the no-argument
+        call path remains usable.
+
+        See :meth:`read_json` for the full contract.
+        """
+        return self.read_json(strict=True)
+
+    # ---- Sender identity (auto-injected side data) ----
+
+    def get_p2p_uid(self) -> bytes:
+        """
+        Return the 32-byte sender session UID.
+
+        {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+        This accessor reads the ``FromUID`` field that the SENDER'S
+        transport layer injects automatically before transmission
+        (Pascal side: TC40_LF_Client.Send_* ->
+        TMemory_Param_Tool.Rebuild_UID_and_P2PName). It is therefore
+        "side data": it is not a property of the handle itself; it is
+        metadata that the sender wrote into the payload header.
+
+        Because of this design, the accessor is valid ONLY on an
+        INPUT handle (i.e. the handle passed to a registered Call or
+        Notify callback). Calling it on an OUTPUT handle logs a
+        warning on the C side and returns 32 zero bytes. Calling it
+        on a handle that the caller created itself (via DataHandle or
+        DataHandle.create_permanent) also returns 32 zero bytes,
+        because such a handle has no "sender".
+
+        Returns:
+            A ``bytes`` object of length exactly 32. All-zero when the
+            handle is not an input handle, or when the sender did not
+            provide a UID (which normally should not happen for remote
+            requests that reached a callback).
+
+        Notes:
+            * The value is regenerated on every TunnelLink. Caching a
+              UID across a link loss is unsafe; callers that cache
+              must re-probe after a reconnect.
+            * The returned bytes are a fresh copy, safe to retain for
+              as long as needed.
+
+        {!!!!!  LF_Get_P2P_UID RETURNS A POINTER  !!!!!}
+        The underlying C ABI function returns a POINTER to a 32-byte
+        UID (Pascal signature:
+
+            function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+
+        i.e. ``^TUID___``, not ``TUID___``). The pointer is allocated
+        by the C side and is scheduled for automatic release about 5
+        seconds after the call (DelayFreeMem). This wrapper therefore:
+
+          1. Copies the 32 bytes immediately with
+             ``ctypes.string_at(ptr, 32)``, producing a fresh Python
+             ``bytes`` object that is fully detached from the C buffer.
+          2. Does NOT call any deallocation function on the pointer.
+          3. Does NOT retain the pointer beyond this method.
+
+        Callers never see the transient pointer.
+        """
+        uid_ptr = LF_Get_P2P_UID(self._hnd)
+        if not uid_ptr:
+            # The C side returns NULL when the handle is nil. Treat
+            # that as "no sender identity" (all-zero UID).
+            return b"\x00" * 32
+        # ctypes.string_at copies the bytes starting at the given
+        # address. The 32-byte length matches the C ABI's TUID___
+        # size exactly. The resulting bytes object is a fresh copy
+        # and does not reference the transient C buffer.
+        return ctypes.string_at(uid_ptr, 32)
+
+    def get_p2p_name(self) -> str:
+        """
+        Return the sender's P2P group name as a Python ``str``.
+
+        {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+        This accessor reads the ``FromP2PName`` field that the
+        SENDER'S transport layer injects automatically before
+        transmission. Like ``get_p2p_uid``, it is "side data", not a
+        property of the handle itself.
+
+        It is valid ONLY on an INPUT handle. Calling it on an OUTPUT
+        handle logs a warning on the C side and returns an empty
+        string. Calling it on a handle the caller created itself also
+        returns an empty string, because such a handle has no
+        "sender".
+
+        Returns:
+            The sender's P2P group name, or ``''`` if the sender did
+            not set one (which is a legitimate configuration; the
+            default P2P name is empty).
+
+        Notes:
+            * The underlying C function returns a pointer to a transient
+              buffer that is released ~5 seconds after the call. ctypes
+              automatically copies the NUL-terminated string into a
+              fresh Python bytes object on the return boundary, so the
+              resulting str is fully detached from that buffer and safe
+              to retain.
+            * The name is NOT a routing key on its own; it is an
+              identity hint. Use it for admission control, audit,
+              multi-tenancy, or logging.
+        """
+        raw = LF_Get_P2P_Name(self._hnd)
+        if not raw:
+            return ""
+        # ``raw`` is a Python bytes object (ctypes converted the
+        # c_char_p return value). It does not include the NUL
+        # terminator; decode as UTF-8.
+        return raw.decode("utf-8", errors="replace")
 
     # ---------- Low-level helpers ----------
     #
@@ -795,6 +1074,13 @@ class App:
     parameter. This removes the previous reliance on the hidden NUL
     byte inside CPython bytes objects and makes the wire contract
     explicit.
+
+    {!!!!!  PROCESS-WIDE P2P REGISTRATION  !!!!!}
+    This class registers APIs into the app-bound namespace only. To
+    register an API into the process-wide P2P namespace (which is
+    reachable via UID and P2PName addressing without requiring the
+    caller to know the App name), use the module-level functions in
+    ``lingofuse.register_p2p_call`` / ``lingofuse.register_p2p_notify``.
     """
 
     def __init__(self, name: str, description: str = ""):
@@ -1051,3 +1337,15 @@ class App:
         if not self._hnd:
             raise LingoFuseError("App already freed")
         LF_Sequenced_Notify(cstr(self._name), param.raw)
+
+
+# ======================================================================
+# Public exports
+# ======================================================================
+
+__all__ = [
+    "DataHandle",
+    "App",
+    "generate_app_name",
+    "get_app_name",
+]

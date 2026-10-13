@@ -9,6 +9,7 @@ rd /q /s .\mcp_configs
 rd /q /s .\build
 rd /q /s .\dist
 rd /q /s .\__pycache__
+rd /q /s .\.pytest_cache
 cd .\lingofuse
 call clear_.bat
 cd ..

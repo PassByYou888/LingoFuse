@@ -1,14 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-
-using LingoFuse.Native;
-
-namespace LingoFuse;
-
+﻿// ============================================================================
+// File: csharp/src/LingoFuse_cs/AppHandle.cs
 // ============================================================================
 // AppHandle — RAII wrapper around a native TAppHnd.
 // ============================================================================
-//
 // RESPONSIBILITY
 // --------------
 // Owns a native application handle and provides a managed API for
@@ -27,6 +21,27 @@ namespace LingoFuse;
 // handle (owned = false). They must NOT be disposed by the callback
 // body; the native layer releases them as soon as the callback returns.
 //
+// CALLBACK DISPATCH
+// -----------------
+// Each registration overload comes in two forms:
+//
+//   * without a dispatcher  — the handler runs inline on the native
+//                             worker thread that triggered the
+//                             callback, exactly as before this
+//                             abstraction existed;
+//
+//   * with a dispatcher     — the handler is marshalled to whatever
+//                             thread the dispatcher chooses (the
+//                             captured UI thread, a dedicated
+//                             single-threaded queue, or a
+//                             user-supplied scheduling primitive).
+//
+// The dispatcher contract is synchronous: Dispatch does not return
+// until the handler body has completed. This keeps the framework-owned
+// input and output handles alive for the entire duration of the
+// handler, even when the handler runs on another thread. See
+// CallbackDispatcher.cs for the full rationale.
+//
 // DELEGATE LIFETIME
 // -----------------
 // Two levels of keep-alive are required:
@@ -44,10 +59,11 @@ namespace LingoFuse;
 //
 // CALLBACK EXCEPTION POLICY
 // -------------------------
-// User callbacks run on native worker threads. An exception escaping a
-// callback would cross into the C stack and could destabilise the
-// process. The wrapper therefore catches every exception and reports
-// it through Framework.ReportCallbackError, which forwards to the
+// User callbacks run either on native worker threads or on whatever
+// thread a dispatcher selects. An exception escaping a callback would
+// cross into the C stack and could destabilise the process. The
+// wrapper therefore catches every exception and reports it through
+// Framework.ReportCallbackError, which forwards to the
 // application-installed handler (if any) and to Trace.WriteLine. The
 // native layer sees a callback that completed without producing
 // output.
@@ -72,6 +88,13 @@ namespace LingoFuse;
 // is invalid and must not be reused.
 //
 // ============================================================================
+
+using System;
+using System.Collections.Generic;
+
+using LingoFuse.Native;
+
+namespace LingoFuse;
 
 /// <summary>
 /// RAII wrapper around a native LingoFuse application handle.
@@ -158,12 +181,12 @@ public sealed class AppHandle : IDisposable
     public bool IsValid => !_disposed && _handle != IntPtr.Zero;
 
     // ====================================================================
-    // API registration
+    // API registration — Call mode
     // ====================================================================
 
     /// <summary>
-    /// Registers a Call (request-response) API whose handler runs on a
-    /// native worker thread.
+    /// Registers a Call (request-response) API whose handler runs
+    /// inline on the native worker thread.
     /// </summary>
     /// <param name="apiName">
     /// API name. Must not be null. Case-insensitive matching applies at
@@ -177,6 +200,13 @@ public sealed class AppHandle : IDisposable
     /// input and output. Must not be null.
     /// </param>
     /// <returns>true on success, false if the API name is already taken.</returns>
+    /// <remarks>
+    /// This overload uses <see cref="CallbackDispatcher.Inline"/>: the
+    /// handler runs synchronously on the native worker thread that
+    /// triggered the callback. It is the historical behaviour and
+    /// remains the correct default for CPU-bound handlers that do not
+    /// touch UI or single-threaded state.
+    /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="apiName"/> or
     /// <paramref name="handler"/> is null.
@@ -189,16 +219,84 @@ public sealed class AppHandle : IDisposable
         string description,
         Action<DataHandle, DataHandle> handler)
     {
+        return RegisterCall(
+            apiName, description, handler, CallbackDispatcher.Inline);
+    }
+
+    /// <summary>
+    /// Registers a Call (request-response) API whose handler runs on
+    /// the thread selected by <paramref name="dispatcher"/>.
+    /// </summary>
+    /// <param name="apiName">
+    /// API name. Must not be null.
+    /// </param>
+    /// <param name="description">
+    /// Optional description. Null is treated as an empty string.
+    /// </param>
+    /// <param name="handler">
+    /// The user callback. Receives borrowed DataHandle instances for
+    /// input and output. Must not be null.
+    /// </param>
+    /// <param name="dispatcher">
+    /// The dispatcher that decides which thread runs the handler.
+    /// Must not be null.
+    /// </param>
+    /// <returns>true on success, false if the API name is already taken.</returns>
+    /// <remarks>
+    /// <para>
+    /// The dispatcher contract is synchronous: the native worker
+    /// thread that triggered the callback blocks until the handler
+    /// body has completed on the dispatcher's chosen thread. This is
+    /// what keeps the framework-owned input and output handles alive
+    /// for the entire duration of the handler, even when the handler
+    /// runs elsewhere.
+    /// </para>
+    /// <para>
+    /// Typical uses:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="CallbackDispatcher.MainThread"/> for a
+    ///         handler that touches UI controls directly.</item>
+    ///   <item><see cref="CallbackDispatcher.CreateSingleThreadedQueue"/>
+    ///         for a handler that must serialise access to a
+    ///         single-threaded resource.</item>
+    ///   <item><see cref="CallbackDispatcher.CreateCustom"/> to plug in
+    ///         an application-specific scheduler.</item>
+    /// </list>
+    /// <para>
+    /// See <see cref="CallbackDispatcher"/> for the deadlock caveat
+    /// that applies when dispatching to the UI thread while the UI
+    /// thread is itself blocked on a synchronous LingoFuse call.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when any argument is null.
+    /// </exception>
+    /// <exception cref="LingoFuseObjectDisposedException">
+    /// Thrown when the handle has been disposed.
+    /// </exception>
+    public bool RegisterCall(
+        string apiName,
+        string description,
+        Action<DataHandle, DataHandle> handler,
+        ILingoCallbackDispatcher dispatcher)
+    {
         ArgumentNullException.ThrowIfNull(apiName);
         ArgumentNullException.ThrowIfNull(handler);
+        ArgumentNullException.ThrowIfNull(dispatcher);
 
         LfCallFunc bridge = (trigger, input, output) =>
         {
+            // Wrap the raw pointers in borrowing DataHandle instances
+            // before dispatching. Because the dispatcher contract is
+            // synchronous, the wrapped handles remain valid for the
+            // entire callback lifetime, including the portion that
+            // runs on the dispatcher's chosen thread.
             var inHandle = DataHandle.FromRaw(input, owned: false);
             var outHandle = DataHandle.FromRaw(output, owned: false);
             try
             {
-                handler(inHandle, outHandle);
+                dispatcher.Dispatch(() => handler(inHandle, outHandle));
             }
             catch (Exception ex)
             {
@@ -214,9 +312,13 @@ public sealed class AppHandle : IDisposable
         }
     }
 
+    // ====================================================================
+    // API registration — Notify mode
+    // ====================================================================
+
     /// <summary>
-    /// Registers a Notify (one-way) API whose handler runs on a native
-    /// worker thread.
+    /// Registers a Notify (one-way) API whose handler runs inline on
+    /// the native worker thread.
     /// </summary>
     /// <param name="apiName">API name. Must not be null.</param>
     /// <param name="description">
@@ -227,6 +329,12 @@ public sealed class AppHandle : IDisposable
     /// payload. Must not be null.
     /// </param>
     /// <returns>true on success, false if the API name is already taken.</returns>
+    /// <remarks>
+    /// This overload uses <see cref="CallbackDispatcher.Inline"/>. It
+    /// is the historical behaviour and remains the correct default for
+    /// CPU-bound handlers that do not touch UI or single-threaded
+    /// state.
+    /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="apiName"/> or
     /// <paramref name="handler"/> is null.
@@ -239,15 +347,55 @@ public sealed class AppHandle : IDisposable
         string description,
         Action<DataHandle> handler)
     {
+        return RegisterNotify(
+            apiName, description, handler, CallbackDispatcher.Inline);
+    }
+
+    /// <summary>
+    /// Registers a Notify (one-way) API whose handler runs on the
+    /// thread selected by <paramref name="dispatcher"/>.
+    /// </summary>
+    /// <param name="apiName">API name. Must not be null.</param>
+    /// <param name="description">
+    /// Optional description. Null is treated as an empty string.
+    /// </param>
+    /// <param name="handler">
+    /// The user callback. Receives a borrowed DataHandle for the input
+    /// payload. Must not be null.
+    /// </param>
+    /// <param name="dispatcher">
+    /// The dispatcher that decides which thread runs the handler.
+    /// Must not be null.
+    /// </param>
+    /// <returns>true on success, false if the API name is already taken.</returns>
+    /// <remarks>
+    /// Same synchronous dispatcher contract as
+    /// <see cref="RegisterCall(string, string, Action{DataHandle, DataHandle}, ILingoCallbackDispatcher)"/>.
+    /// The input handle remains valid for the entire duration of the
+    /// handler body.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when any argument is null.
+    /// </exception>
+    /// <exception cref="LingoFuseObjectDisposedException">
+    /// Thrown when the handle has been disposed.
+    /// </exception>
+    public bool RegisterNotify(
+        string apiName,
+        string description,
+        Action<DataHandle> handler,
+        ILingoCallbackDispatcher dispatcher)
+    {
         ArgumentNullException.ThrowIfNull(apiName);
         ArgumentNullException.ThrowIfNull(handler);
+        ArgumentNullException.ThrowIfNull(dispatcher);
 
         LfNotifyFunc bridge = (trigger, input) =>
         {
             var inHandle = DataHandle.FromRaw(input, owned: false);
             try
             {
-                handler(inHandle);
+                dispatcher.Dispatch(() => handler(inHandle));
             }
             catch (Exception ex)
             {
@@ -262,6 +410,10 @@ public sealed class AppHandle : IDisposable
             return RegisterBridgeLocked(apiName, description, bridge);
         }
     }
+
+    // ====================================================================
+    // Unregistration
+    // ====================================================================
 
     /// <summary>
     /// Unregisters a previously registered API. Local effect is
@@ -304,6 +456,12 @@ public sealed class AppHandle : IDisposable
     // ====================================================================
     // Local execution
     // ====================================================================
+    //
+    // Local call and notify invoke the registered handler synchronously
+    // on the CALLING thread, bypassing the native worker pool entirely.
+    // No dispatcher is involved: the caller is already in control of
+    // its own thread, and the input / output handles are the caller's
+    // own DataHandle instances, which the caller manages directly.
 
     /// <summary>
     /// Invokes a Call API locally within the same process. The input
@@ -454,7 +612,7 @@ public sealed class AppHandle : IDisposable
     }
 
     /// <summary>
-    /// Common registration path shared by the two public register
+    /// Common registration path shared by the four public register
     /// methods. Stores the bridge in <see cref="_registrations"/> and
     /// calls the appropriate native registration function based on the
     /// runtime type of <paramref name="bridge"/>.

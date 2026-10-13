@@ -1,16 +1,8 @@
-﻿using System;
-using System.Buffers.Binary;
-using System.Runtime.InteropServices;
-using System.Text;
-
-using LingoFuse.Native;
-
-namespace LingoFuse;
-
+﻿// ============================================================================
+// File: csharp/src/LingoFuse_cs/DataHandle.cs
 // ============================================================================
 // DataHandle — RAII wrapper around a native TDataHnd.
 // ============================================================================
-//
 // RESPONSIBILITY
 // --------------
 // Owns a native data handle and releases it deterministically on
@@ -53,15 +45,17 @@ namespace LingoFuse;
 // ---------
 // A DataHandle is either "owning" or "borrowing":
 //
-//   Owning    — created by the public constructor or by
-//               CreatePermanent. Dispose calls LF_FreeData on the
-//               native handle.
+//   Owning    — created by the public constructor, by
+//               CreatePermanent, or by FromRaw(raw, owned: true).
+//               Dispose calls LF_FreeData on the native handle.
 //   Borrowing — created by FromRaw(raw, owned: false). Dispose is a
 //               no-op; the native layer owns the underlying resource
 //               and releases it when the callback returns.
 //
 // Borrowing is used for the input/output handles passed into a
-// callback. Freeing them from managed code would be a double-free.
+// callback, and for the framework-owned result handle delivered to
+// the async completion callback. Freeing them from managed code
+// would be a double-free.
 //
 // BORROWED HANDLE DISPOSE IS A NO-OP
 // ----------------------------------
@@ -86,6 +80,22 @@ namespace LingoFuse;
 // U+FFFD. This keeps the reader binary-safe. Callers that need to
 // detect invalid UTF-8 must read the raw bytes via ReadBytesExact /
 // ReadAllBytes and inspect them directly.
+//
+// SENDER IDENTITY (SIDE DATA)
+// ---------------------------
+// Inside a Call or Notify callback, the `input` handle carries two
+// pieces of SENDER metadata that the framework injected into the
+// payload header before transmission:
+//
+//   * the sender's 32-byte session UID
+//   * the sender's P2P group name
+//
+// These are read through GetSenderUid() and GetSenderP2PName(). The
+// two accessors copy the data immediately and never expose the
+// transient buffers the native side allocates internally. They are
+// only meaningful on INPUT handles; on any other handle the native
+// side returns a zero-filled UID / empty string, and the accessors
+// reflect that.
 //
 // I/O FAILURE SEMANTICS
 // ---------------------
@@ -125,6 +135,15 @@ namespace LingoFuse;
 // after dispose" contract; it does not make concurrent writes safe.
 //
 // ============================================================================
+
+using System;
+using System.Buffers.Binary;
+using System.Runtime.InteropServices;
+using System.Text;
+
+using LingoFuse.Native;
+
+namespace LingoFuse;
 
 /// <summary>
 /// RAII wrapper around a native LingoFuse data handle.
@@ -1068,6 +1087,121 @@ public sealed class DataHandle : IDisposable
 
         value = ReadString();
         return true;
+    }
+
+    // ====================================================================
+    // Sender identity (side data)
+    // ====================================================================
+    //
+    // The two accessors below read the SENDER's identity from an INPUT
+    // handle. The framework injects that identity into every inbound
+    // payload header before transmission, so it is not a property of
+    // the handle itself: it only exists on the handle the receiving
+    // side gets from the framework.
+    //
+    // VALID positions:
+    //   * the `input` argument of a Call / Notify callback;
+    //   * the `input` handle of a local call / notify.
+    //
+    // INVALID positions (the native layer returns a zero-filled UID /
+    // empty string and logs a warning; no exception is raised):
+    //   * an OUTPUT handle;
+    //   * a handle the caller created itself, whether auto-recycled or
+    //     permanent.
+    //
+    // The native side returns a POINTER for each accessor, with the
+    // buffer released approximately 5 seconds after the call. Both
+    // accessors therefore copy the data immediately and never expose
+    // the transient buffer to user code.
+    // ====================================================================
+
+    /// <summary>
+    /// Returns the 32-byte session UID of the sender of the current
+    /// callback.
+    /// </summary>
+    /// <returns>
+    /// The sender's UID, or <see cref="P2PUid.Empty"/> when the
+    /// identity is not available (wrong handle role, or the framework
+    /// could not allocate the native buffer).
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Valid only on an INPUT handle.</b> On an output handle or on
+    /// a caller-created handle, the native layer logs a warning and
+    /// returns a zero-filled UID. This method reflects that behaviour
+    /// and never throws for the wrong role.
+    /// </para>
+    /// <para>
+    /// The returned value is a fully copied, independent P2PUid. It
+    /// is safe to store, to pass to another thread, and to compare
+    /// with other UIDs. The underlying native buffer is not exposed
+    /// and is not referenced after this method returns.
+    /// </para>
+    /// <para>
+    /// The UID is regenerated on every TunnelLink. Do not cache it
+    /// across a link loss and expect it to remain valid; re-probe it
+    /// after a reconnect.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="LingoFuseObjectDisposedException">
+    /// Thrown when the handle has been disposed.
+    /// </exception>
+    public P2PUid GetSenderUid()
+    {
+        EnsureNotDisposed();
+
+        IntPtr ptr = NativeMethods.LF_Get_P2P_UID(CurrentHnd);
+        if (ptr == IntPtr.Zero)
+        {
+            // The native layer returns a pointer into a
+            // library-owned buffer. A null pointer therefore means
+            // the library could not allocate that buffer. There is no
+            // identity to report in that case.
+            return P2PUid.Empty;
+        }
+
+        // Copy the 32 bytes immediately. The native buffer is released
+        // about 5 seconds after the call, and we must not retain the
+        // pointer past that window.
+        byte[] bytes = new byte[32];
+        Marshal.Copy(ptr, bytes, 0, 32);
+        return P2PUid.FromBytes(bytes);
+    }
+
+    /// <summary>
+    /// Returns the P2P group name of the sender of the current
+    /// callback.
+    /// </summary>
+    /// <returns>
+    /// The sender's P2P name, or an empty string when the identity is
+    /// not available (wrong handle role, or the sender has no P2P
+    /// name set).
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Valid only on an INPUT handle.</b> On an output handle or on
+    /// a caller-created handle, the native layer logs a warning and
+    /// returns an empty string. This method reflects that behaviour
+    /// and never throws for the wrong role.
+    /// </para>
+    /// <para>
+    /// The returned string is a fully copied, independent value. It
+    /// is safe to store and to pass to another thread. The underlying
+    /// native buffer is not exposed and is not referenced after this
+    /// method returns.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="LingoFuseObjectDisposedException">
+    /// Thrown when the handle has been disposed.
+    /// </exception>
+    public string GetSenderP2PName()
+    {
+        EnsureNotDisposed();
+
+        IntPtr ptr = NativeMethods.LF_Get_P2P_Name(CurrentHnd);
+        // Utf8Marshal.PtrToString maps IntPtr.Zero to "" already, so
+        // no extra branch is needed here.
+        return Utf8Marshal.PtrToString(ptr);
     }
 
     // ====================================================================

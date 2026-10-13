@@ -11,6 +11,7 @@
  *   - std::shared_ptr for LibraryLoader reference counting
  *   - std::optional for non-throwing tryCall()
  *   - std::runtime_error for a uniform exception type
+ *   - lambdas / std::function for the modern async call model
  *   - nlohmann::json for JSON payloads (through lf_io.hpp)
  *
  * All symbols live in the `lingofuse` namespace.
@@ -153,6 +154,137 @@
  * runtime.
  *
  * ============================================================================
+ * SIDE-DATA ACCESSORS ON DataHandle (getP2PUid / getP2PName)
+ * ============================================================================
+ * The framework injects two identity fields into every inbound request
+ * payload BEFORE transmission, on the SENDER side. Pascal side, for
+ * reference:
+ *
+ *     TC40_LF_Client.Send_*
+ *         -> TMemory_Param_Tool.Rebuild_UID_and_P2PName
+ *         -> writes two fields into the payload header:
+ *                FromUID       (32 bytes)
+ *                FromP2PName   (UTF-8 string)
+ *
+ * These are "side data": they are NOT properties of the handle itself.
+ * They are metadata the sender wrote into the payload, so the receiver
+ * sees them only on the INPUT handle it receives from the framework.
+ *
+ * DataHandle therefore exposes two accessors that are valid ONLY on an
+ * INPUT handle (i.e. the `inp` argument of a registered Call / Notify
+ * callback):
+ *
+ *     handle.getP2PUid()   -> a 32-byte std::array
+ *     handle.getP2PName()  -> a std::string (empty if unset)
+ *
+ * Calling either accessor on an OUTPUT handle or on a caller-created
+ * handle is a well-defined no-op: the library logs a warning and returns
+ * a zero-filled UID / empty string. The accessors never throw and never
+ * return a raw pointer to the caller.
+ *
+ * {!!!!!  LF_Get_P2P_UID RETURNS A POINTER, NOT A VALUE  !!!!!}
+ * At the C ABI level, LF_Get_P2P_UID returns a `const TP2P_UID*` (a
+ * pointer to a library-owned 32-byte buffer that is released about 5
+ * seconds after the call). The C++ DataHandle::getP2PUid() accessor
+ * hides that pointer entirely: it copies the 32 bytes into a fresh
+ * std::array that the caller can retain for as long as it likes. The
+ * transient pointer is never exposed.
+ *
+ * ============================================================================
+ * MODERN ASYNC CALL MODEL
+ * ============================================================================
+ *
+ * LingoFuse's C ABI provides a family of asynchronous call primitives
+ * (LF_Async_Call, LF_Async_Sequenced_Call, LF_UID_Async_Call,
+ * LF_P2PNAME_Async_Call, ...) that return immediately and deliver their
+ * result to a `LF_AsyncCallOnResult` callback on a background worker
+ * thread. The raw C ABI requires a manual trampoline and a heap-allocated
+ * "holder" object to carry a C++ lambda across the C boundary.
+ *
+ * This header hides that machinery behind a small, lambda-friendly API:
+ *
+ *     lingofuse::callAsync("CalcSvc", "add",
+ *         {{"a", 5}, {"b", 7}},
+ *         [](lingofuse::AsyncResult r) {
+ *             if (!r.ok()) { std::cerr << r.error() << "\n"; return; }
+ *             std::cout << r.handle().readJson().dump() << "\n";
+ *         });
+ *
+ * The four entry points are:
+ *
+ *     callAsync            <-> LF_Async_Call
+ *     callAsyncSequenced   <-> LF_Async_Sequenced_Call
+ *     callAsyncByUid       <-> LF_UID_Async_Call
+ *     callAsyncByP2PName   <-> LF_P2PNAME_Async_Call
+ *
+ * Each has two overloads:
+ *
+ *   A. DataHandle form:
+ *
+ *          callAsync(const std::string& app_name,
+ *                    DataHandle& param,
+ *                    F&& on_complete);
+ *
+ *      The caller owns the DataHandle. The C ABI copies the payload
+ *      synchronously inside the call, so the handle may be destroyed
+ *      immediately after callAsync() returns.
+ *
+ *   B. Convenience JSON form:
+ *
+ *          callAsync(const std::string& app_name,
+ *                    const std::string& api_name,
+ *                    const nlohmann::json& payload,
+ *                    F&& on_complete);
+ *
+ *      A DataHandle is built internally, serialized with the toolchain's
+ *      canonical JSON policy, and destroyed before callAsync() returns.
+ *
+ * {!!!!!  CALLBACK EXECUTION CONTEXT  !!!!!}
+ * Every on_complete callback runs on a TCompute WORKER THREAD, NOT on
+ * the caller's thread and NOT on the simulated main thread. Inside the
+ * callback:
+ *
+ *     - DO NOT block (no sleep, no network I/O, no lock waits).
+ *     - DO NOT call LF_Call / LF_Notify / LF_LocalCall / LF_PrepareDone
+ *       / LF_Shutdown. This will deadlock.
+ *     - DO NOT touch UI components.
+ *     - DO NOT retain the AsyncResult's handle() reference beyond the
+ *       callback body: the framework releases the underlying buffer
+ *       the instant the callback returns.
+ *
+ * To use the result on another thread, COPY THE DATA OUT:
+ *
+ *     auto j = r.handle().readJson();     // fresh nlohmann::json
+ *     my_main_thread_queue.post([j]() {   // safe to retain and use
+ *         ui_label.setText(j.dump());
+ *     });
+ *
+ * {!!!!!  DISPATCH FAILURE STILL FIRES THE CALLBACK  !!!!!}
+ * If LF_Async_Call rejects the request before dispatching it (return
+ * value 0), the wrapper invokes the user callback SYNCHRONOUSLY, on the
+ * CALLER's thread, with an error AsyncResult. This means:
+ *
+ *     - There is no separate "return code" to check on the caller side.
+ *       The "call failed" signal flows through the same error path
+ *       (`if (!r.ok())`) as a remote-side failure.
+ *     - The callback body must therefore be safe to run on ANY thread,
+ *       including the caller's own thread. In practice this is a
+ *       superset of the worker-thread restriction above, so any callback
+ *       that follows the "do not block / do not call LF_* / do not touch
+ *       UI" rule is already correct.
+ *
+ * {!!!!!  NO TIMEOUT / CANCELLATION  !!!!!}
+ * The C ABI family has no timeout parameter and no cancellation handle.
+ * If a request is dispatched but the response never arrives, the holder
+ * object leaks and the callback is never called. In practice LingoFuse's
+ * transport layer guarantees that every dispatched async request
+ * eventually produces a callback (with either a result or an
+ * empty-payload "timeout" result), so this is a theoretical rather than
+ * a practical concern. Applications that need a hard timeout should
+ * impose one at a higher layer (for example, by tracking outstanding
+ * requests and abandoning them after a configured interval).
+ *
+ * ============================================================================
  * QUICK START
  * ============================================================================
  * @code
@@ -174,15 +306,28 @@
  *         lingofuse::App app("Calculator", "Demo");
  *         app.registerCall("add", "Add two ints", nullptr, add_cb);
  *
+ *         // Synchronous local call.
  *         lingofuse::DataHandle param("add");
  *         param.write(int32_t{5});
  *         param.write(int32_t{7});
- *
  *         auto result = app.localCall(param);
  *         int32_t sum = 0;
  *         result.read(sum);
  *         std::cout << "5 + 7 = " << sum << '\n';
- *     } catch (const std::exception& e) {
+ *
+ *         // Asynchronous remote call, in the modern style.
+ *         lingofuse::callAsync("Calculator", "add",
+ *             {{"a", 5}, {"b", 7}},
+ *             [](lingofuse::AsyncResult r) {
+ *                 if (!r.ok()) {
+ *                     std::cerr << "call failed: " << r.error() << '\n';
+ *                     return;
+ *                 }
+ *                 std::cout << "async response: "
+ *                           << r.handle().readJson().dump() << '\n';
+ *             });
+ *     }
+ *     catch (const std::exception& e) {
  *         std::cerr << "Error: " << e.what() << '\n';
  *         return 1;
  *     }
@@ -203,13 +348,15 @@
  *     from any thread.
  *   - setNetworkEvent / clearNetworkEvent are protected by a process-wide
  *     mutex and can be called from any thread.
+ *   - callAsync and its siblings are safe to call from any thread. The
+ *     returned-void contract hides the trampoline and holder entirely.
  *
  * ============================================================================
  * CALLBACK CONTEXT (CRITICAL)
  * ============================================================================
  * All callbacks registered through the C API (LF_CallFunc / LF_NotifyFunc /
- * LF_NetworkEventFunc) execute on background worker threads. Inside a
- * callback:
+ * LF_NetworkEventFunc / LF_AsyncCallOnResult) execute on background worker
+ * threads. Inside a callback:
  *
  *   - DO NOT block.
  *   - DO NOT call any remote invocation (LF_Call / LF_Notify /
@@ -230,6 +377,10 @@
  *     LF_FreeLibrary is invoked only when the LAST instance is destroyed.
  *   - Call lingofuse::shutdown() at the end of your program to release
  *     the global pool held by the library.
+ *   - callAsync: the holder object that carries the user's lambda is
+ *     owned by the framework once the request is dispatched. It is
+ *     released by the trampoline when the callback fires (or by the
+ *     caller itself on a dispatch failure).
  *
  * ============================================================================
  * ERROR HANDLING
@@ -243,6 +394,12 @@
  *   } catch (const lingofuse::Error& e) {
  *       if (e.code() == lingofuse::ErrorCode::Timeout) { ... }
  *   }
+ *
+ * Async callbacks are the exception: they never throw out of the
+ * callback. Instead they deliver an `AsyncResult` whose `ok()` is false
+ * and whose `error()` carries a human-readable message. Any C++ exception
+ * raised by the user's lambda is caught and logged to stderr; it is never
+ * allowed to cross the C boundary.
  */
 
 #pragma once
@@ -250,6 +407,7 @@
 #include "LingoFuse.h"
 #include "lf_io.hpp"     // Brings in lingofuse::io and nlohmann::json.
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -400,6 +558,10 @@ namespace lingofuse {
       *   - DataHandle::createPermanent(name)      permanent handle
       * See the file-level docstring ("DATA HANDLE KINDS") for the
       * difference.
+      *
+      * The side-data accessors getP2PUid() / getP2PName() are valid ONLY
+      * on the `input` handle of a registered callback; see the file-level
+      * docstring section "SIDE-DATA ACCESSORS".
       */
     class DataHandle {
     public:
@@ -761,6 +923,62 @@ namespace lingofuse {
             }
         }
 
+        /* ---- Side-data accessors (identity of the SENDER) ----
+         *
+         * These accessors read the "side data" that the SENDER'S transport
+         * layer wrote into the payload header before transmission. They
+         * are valid ONLY on an INPUT handle:
+         *
+         *     VALID    -- the `inp` argument of a registered Call / Notify
+         *                 callback, or the input of a local call.
+         *     INVALID  -- an OUTPUT handle, or a caller-created handle.
+         *                 The library logs a warning and returns a
+         *                 zero-filled UID / empty string.
+         *
+         * Both accessors are safe to call from any thread. They never
+         * throw and never expose a raw pointer.
+         *
+         * {!!!!!  LF_Get_P2P_UID RETURNS A POINTER, NOT A VALUE  !!!!!}
+         * At the C ABI level, LF_Get_P2P_UID returns a `const TP2P_UID*`
+         * (a pointer to a library-owned 32-byte buffer released about
+         * 5 seconds after the call). getP2PUid() copies the 32 bytes
+         * into a fresh std::array that the caller owns, so the transient
+         * pointer is never exposed and the value is safe to retain.
+         */
+
+         /**
+          * @brief Return the sender's 32-byte UID.
+          *
+          * Valid ONLY on the `inp` argument of a registered callback.
+          * On any other handle, returns a zero-filled UID.
+          *
+          * The returned std::array is a fresh copy; it is fully detached
+          * from the library's transient buffer and safe to retain.
+          */
+        std::array<std::uint8_t, 32> getP2PUid() const {
+            std::array<std::uint8_t, 32> out{};
+            const TP2P_UID* uid_ptr = LF_Get_P2P_UID(h_);
+            if (uid_ptr != nullptr) {
+                std::memcpy(out.data(), uid_ptr->bytes, 32);
+            }
+            return out;
+        }
+
+        /**
+         * @brief Return the sender's P2P group name as a std::string.
+         *
+         * Valid ONLY on the `inp` argument of a registered callback.
+         * On any other handle, returns an empty string.
+         *
+         * The returned std::string is a fresh copy; it is fully detached
+         * from the library's transient buffer and safe to retain.
+         */
+        std::string getP2PName() const {
+            const char* name_ptr = LF_Get_P2P_Name(h_);
+            if (name_ptr == nullptr) return {};
+            return std::string(name_ptr);
+        }
+
         /* ---- Cursor and size ---- */
 
         /// Set the read/write cursor.
@@ -787,6 +1005,98 @@ namespace lingofuse {
     private:
         TDataHnd h_ = nullptr;
         bool     owned_ = false;
+    };
+
+    /* ============================================================================
+     * AsyncResult - outcome of an asynchronous call
+     * ============================================================================
+     *
+     * NOTE ON DECLARATION ORDER:
+     * This class is defined AFTER DataHandle, because it stores a
+     * DataHandle by value. Defining it before DataHandle would require
+     * a forward declaration plus out-of-line method definitions, which
+     * adds noise without benefit. Keeping the definition here makes the
+     * member type fully visible and lets the compiler lay out AsyncResult
+     * directly.
+     *
+     * Every on_complete callback registered through callAsync and its
+     * siblings receives an AsyncResult by value. The AsyncResult carries
+     * either a SUCCESS handle (borrowed from the framework; valid only
+     * inside the callback body) or a failure message.
+     *
+     * Success path:
+     *
+     *     AsyncResult r = ...;   // constructed internally by the trampoline
+     *     if (r.ok()) {
+     *         auto j = r.handle().readJson();  // fresh object, safe to keep
+     *     }
+     *
+     * Failure path:
+     *
+     *     if (!r.ok()) {
+     *         std::cerr << "async call failed: " << r.error() << '\n';
+     *     }
+     *
+     * {!!!!!  OWNERSHIP OF handle()  !!!!!}
+     * The DataHandle returned by handle() is BORROWED (owned = false).
+     * The framework releases the underlying buffer the instant the
+     * callback returns. Any data the caller wants to keep MUST be copied
+     * out of the handle inside the callback body.
+     *
+     * Do NOT:
+     *   - call LF_FreeData on it (it is not yours),
+     *   - retain the DataHandle or its buffer pointer across the callback,
+     *   - hand the handle to another thread.
+     * ============================================================================ */
+    class AsyncResult {
+    public:
+        /** Success constructor. Used by the trampoline. */
+        explicit AsyncResult(TDataHnd raw_handle) noexcept
+            : handle_(raw_handle, false)
+            , ok_(true) {
+        }
+
+        /** Failure constructor. Used for dispatch failure / internal error. */
+        explicit AsyncResult(std::string error_msg) noexcept
+            : handle_(nullptr, false)
+            , ok_(false)
+            , error_(std::move(error_msg)) {
+        }
+
+        AsyncResult(AsyncResult&&) noexcept = default;
+        AsyncResult& operator=(AsyncResult&&) noexcept = default;
+
+        AsyncResult(const AsyncResult&) = delete;
+        AsyncResult& operator=(const AsyncResult&) = delete;
+
+        /** True if the call succeeded and a result handle is available. */
+        bool ok() const noexcept { return ok_; }
+
+        /** Same as ok(). Enables `if (!r) { ... }`. */
+        explicit operator bool() const noexcept { return ok_; }
+
+        /**
+         * @brief The result handle (borrowed; only valid inside the callback).
+         *
+         * Throws Error(NullHandle) if the call failed. Callers that are
+         * unsure should check ok() first.
+         */
+        DataHandle& handle() noexcept { return handle_; }
+        const DataHandle& handle() const noexcept { return handle_; }
+
+        /**
+         * @brief Human-readable error message, empty on success.
+         *
+         * The exact strings are not part of a public contract. They are
+         * suitable for logging and diagnostics but should not be compared
+         * for equality by callers.
+         */
+        const std::string& error() const noexcept { return error_; }
+
+    private:
+        DataHandle  handle_;
+        bool        ok_;
+        std::string error_;
     };
 
     /* ============================================================================
@@ -1050,6 +1360,122 @@ namespace lingofuse {
     inline void clearNetworkEvent();
 
     /* ============================================================================
+     * MODERN ASYNC CALL MODEL - internal machinery
+     * ============================================================================
+     *
+     * The C ABI's async family takes a raw function pointer plus a caller
+     * supplied `void* data`. To carry a C++ lambda across that boundary we
+     * allocate a small heap holder, hand its address to the C library as
+     * `data`, and reconstruct the holder inside a static trampoline that
+     * the C library calls back.
+     *
+     * The holder is type-erased behind AsyncCallHolderBase so that a single
+     * trampoline works for any callable type. Ownership is transferred to
+     * the trampoline the instant the C library invokes it: the trampoline
+     * wraps the raw `void*` in a unique_ptr and destroys it after the user
+     * callback returns.
+     *
+     * If the dispatch itself fails (LF_Async_Call returns 0, or throws),
+     * ownership stays with the caller-side helper, which invokes the
+     * callback synchronously with an error AsyncResult and then destroys
+     * the holder.
+     * ============================================================================ */
+
+    namespace detail {
+
+        class AsyncCallHolderBase {
+        public:
+            virtual ~AsyncCallHolderBase() = default;
+            virtual void invoke_result(TDataHnd h) noexcept = 0;
+            virtual void invoke_error(std::string msg) noexcept = 0;
+        };
+
+        template <typename F>
+        class AsyncCallHolder final : public AsyncCallHolderBase {
+        public:
+            explicit AsyncCallHolder(F&& f) noexcept(
+                std::is_nothrow_move_constructible<F>::value)
+                : cb_(std::move(f)) {
+            }
+
+            void invoke_result(TDataHnd h) noexcept override {
+                try {
+                    cb_(AsyncResult(h));
+                }
+                catch (...) {
+                    // A user callback must never let an exception escape
+                    // into the C stack. Swallow and continue.
+                }
+            }
+
+            void invoke_error(std::string msg) noexcept override {
+                try {
+                    cb_(AsyncResult(std::move(msg)));
+                }
+                catch (...) {
+                }
+            }
+
+        private:
+            F cb_;
+        };
+
+        /*
+         * The single static trampoline used by every callAsync* entry
+         * point. It reconstructs the holder from `data`, invokes it, and
+         * then destroys it. The C library passes `result` as an opaque
+         * DataHnd that is OWNED BY THE FRAMEWORK for the duration of the
+         * callback; AsyncResult wraps it with owned = false.
+         */
+        inline void LF_CDECL async_call_trampoline(void* data, void* result) {
+            std::unique_ptr<AsyncCallHolderBase> owner(
+                static_cast<AsyncCallHolderBase*>(data));
+            if (owner) {
+                owner->invoke_result(static_cast<TDataHnd>(result));
+            }
+        }
+
+        /*
+         * Shared submission helper.
+         *
+         * `issue` is a callable that takes the holder's address as a void*
+         * and returns the C ABI's int result code (1 = dispatched,
+         * anything else = not dispatched). It must NOT throw; if it does,
+         * the helper treats it as a dispatch failure.
+         *
+         * On success, ownership of the holder passes to the framework.
+         * On failure, the helper invokes the user callback synchronously
+         * with an error AsyncResult and then destroys the holder.
+         */
+        template <typename IssueFn, typename F>
+        void submit_async_call(IssueFn&& issue, F&& on_complete) {
+            using DecayedF = std::decay_t<F>;
+
+            auto* holder = new AsyncCallHolder<DecayedF>(
+                std::forward<F>(on_complete));
+
+            int ret = 0;
+            try {
+                ret = issue(static_cast<void*>(holder));
+            }
+            catch (...) {
+                ret = 0;
+            }
+
+            if (ret != 1) {
+                // Dispatch failed; the framework will never invoke the
+                // callback. Invoke it ourselves with an error result so
+                // that the user has a single, unified error path.
+                std::unique_ptr<AsyncCallHolderBase> owner(holder);
+                owner->invoke_error(
+                    "async call was not dispatched "
+                    "(LF_Async_Call returned 0 or threw)");
+            }
+        }
+
+    } // namespace detail
+
+    /* ============================================================================
      * Global functions - thin forwarders to the C API
      * ============================================================================ */
 
@@ -1099,7 +1525,7 @@ namespace lingofuse {
         LF_ExitMainThread();
     }
 
-    /* ---- Remote invocation ---- */
+    /* ---- Remote invocation (synchronous) ---- */
 
     /**
      * @brief Call a remote API synchronously.
@@ -1141,6 +1567,297 @@ namespace lingofuse {
     inline void sequencedNotify(const std::string& app_name,
         const DataHandle& param) {
         LF_Sequenced_Notify(app_name.c_str(), param.get());
+    }
+
+    /* ============================================================================
+     * MODERN ASYNC CALL MODEL - public API
+     * ============================================================================
+     *
+     * Four entry points, each with two overloads (DataHandle form and
+     * convenience JSON form). See the file-level docstring section
+     * "MODERN ASYNC CALL MODEL" for the callback contract, the dispatch
+     * failure semantics, and the lifetime rules.
+     * ============================================================================ */
+
+     /* ---- callAsync: LF_Async_Call ---- */
+
+     /**
+      * @brief Issue an asynchronous call by App name; the DataHandle form.
+      *
+      * The C ABI copies the payload synchronously inside LF_Async_Call, so
+      * the caller-owned DataHandle may be destroyed the moment this
+      * function returns.
+      *
+      * The callback is guaranteed to be invoked exactly once, either:
+      *   - asynchronously on a TCompute worker thread, with the result, or
+      *   - synchronously on the caller's thread, with a dispatch error.
+      *
+      * @param app_name     Target application name (UTF-8).
+      * @param param        Caller-owned DataHandle containing the request.
+      * @param on_complete  Callable; invoked as `void(AsyncResult)`.
+      */
+    template <typename F>
+    inline void callAsync(const std::string& app_name,
+        const DataHandle& param,
+        F&& on_complete) {
+        const std::string app_copy = app_name;   // decouple from caller
+        TDataHnd raw = param.get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                // cstr() returns a NUL-terminated std::string whose
+                // lifetime extends to the end of the full-expression,
+                // which is the LF_Async_Call call below. Safe.
+                return LF_Async_Call(
+                    io::cstr(app_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::forward<F>(on_complete));
+    }
+
+    /**
+     * @brief Issue an asynchronous call by App name; the convenience
+     *        JSON form.
+     *
+     * A DataHandle is built internally, serialized with the toolchain's
+     * canonical JSON policy, and destroyed before this function returns.
+     * If building or serializing the payload fails (for example on OOM),
+     * the callback is still invoked, synchronously, with an error result.
+     *
+     * @param app_name     Target application name (UTF-8).
+     * @param api_name     Target API name (UTF-8).
+     * @param payload      Request payload, serialized as canonical JSON.
+     * @param on_complete  Callable; invoked as `void(AsyncResult)`.
+     */
+    template <typename F>
+    inline void callAsync(const std::string& app_name,
+        const std::string& api_name,
+        const nlohmann::json& payload,
+        F&& on_complete) {
+        using DecayedF = std::decay_t<F>;
+        DecayedF cb(std::forward<F>(on_complete));
+
+        std::unique_ptr<DataHandle> param;
+        try {
+            param = std::make_unique<DataHandle>(api_name);
+            param->writeJson(payload);
+        }
+        catch (const std::exception& e) {
+            auto* h = new detail::AsyncCallHolder<DecayedF>(std::move(cb));
+            std::unique_ptr<detail::AsyncCallHolderBase> owner(h);
+            owner->invoke_error(
+                std::string("failed to build request payload: ") + e.what());
+            return;
+        }
+
+        const std::string app_copy = app_name;
+        TDataHnd raw = param->get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_Async_Call(
+                    io::cstr(app_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::move(cb));
+    }
+
+    /* ---- callAsyncSequenced: LF_Async_Sequenced_Call ---- */
+
+    /**
+     * @brief Issue an asynchronous sequenced call; FIFO ordering per
+     *        (app, api) pair.
+     */
+    template <typename F>
+    inline void callAsyncSequenced(const std::string& app_name,
+        const DataHandle& param,
+        F&& on_complete) {
+        const std::string app_copy = app_name;
+        TDataHnd raw = param.get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_Async_Sequenced_Call(
+                    io::cstr(app_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::forward<F>(on_complete));
+    }
+
+    /**
+     * @brief Issue an asynchronous sequenced call; convenience JSON form.
+     */
+    template <typename F>
+    inline void callAsyncSequenced(const std::string& app_name,
+        const std::string& api_name,
+        const nlohmann::json& payload,
+        F&& on_complete) {
+        using DecayedF = std::decay_t<F>;
+        DecayedF cb(std::forward<F>(on_complete));
+
+        std::unique_ptr<DataHandle> param;
+        try {
+            param = std::make_unique<DataHandle>(api_name);
+            param->writeJson(payload);
+        }
+        catch (const std::exception& e) {
+            auto* h = new detail::AsyncCallHolder<DecayedF>(std::move(cb));
+            std::unique_ptr<detail::AsyncCallHolderBase> owner(h);
+            owner->invoke_error(
+                std::string("failed to build request payload: ") + e.what());
+            return;
+        }
+
+        const std::string app_copy = app_name;
+        TDataHnd raw = param->get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_Async_Sequenced_Call(
+                    io::cstr(app_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::move(cb));
+    }
+
+    /* ---- callAsyncByUid: LF_UID_Async_Call ---- */
+
+    /**
+     * @brief Issue an asynchronous call addressed by session UID.
+     *
+     * `uid` is the ARGUMENT-role 32-byte struct (TP2P_UID), passed by
+     * value to the C ABI. The value can be obtained from a prior call's
+     * AsyncResult handle via `getP2PUid()` (or from an equivalent source).
+     */
+    template <typename F>
+    inline void callAsyncByUid(const TP2P_UID& uid,
+        const DataHandle& param,
+        F&& on_complete) {
+        const TP2P_UID uid_copy = uid;
+        TDataHnd raw = param.get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_UID_Async_Call(
+                    uid_copy,
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::forward<F>(on_complete));
+    }
+
+    /**
+     * @brief Issue an asynchronous call addressed by session UID;
+     *        convenience JSON form.
+     */
+    template <typename F>
+    inline void callAsyncByUid(const TP2P_UID& uid,
+        const std::string& api_name,
+        const nlohmann::json& payload,
+        F&& on_complete) {
+        using DecayedF = std::decay_t<F>;
+        DecayedF cb(std::forward<F>(on_complete));
+
+        std::unique_ptr<DataHandle> param;
+        try {
+            param = std::make_unique<DataHandle>(api_name);
+            param->writeJson(payload);
+        }
+        catch (const std::exception& e) {
+            auto* h = new detail::AsyncCallHolder<DecayedF>(std::move(cb));
+            std::unique_ptr<detail::AsyncCallHolderBase> owner(h);
+            owner->invoke_error(
+                std::string("failed to build request payload: ") + e.what());
+            return;
+        }
+
+        const TP2P_UID uid_copy = uid;
+        TDataHnd raw = param->get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_UID_Async_Call(
+                    uid_copy,
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::move(cb));
+    }
+
+    /* ---- callAsyncByP2PName: LF_P2PNAME_Async_Call ---- */
+
+    /**
+     * @brief Issue an asynchronous call addressed by P2P group name.
+     *
+     * Routing is NOT local-first: even if the caller process itself
+     * hosts a client in the target group, the call is forwarded to the
+     * server for dispatch (the server owns the load-balancing state).
+     */
+    template <typename F>
+    inline void callAsyncByP2PName(const std::string& group_name,
+        const DataHandle& param,
+        F&& on_complete) {
+        const std::string group_copy = group_name;
+        TDataHnd raw = param.get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_P2PNAME_Async_Call(
+                    io::cstr(group_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::forward<F>(on_complete));
+    }
+
+    /**
+     * @brief Issue an asynchronous call addressed by P2P group name;
+     *        convenience JSON form.
+     */
+    template <typename F>
+    inline void callAsyncByP2PName(const std::string& group_name,
+        const std::string& api_name,
+        const nlohmann::json& payload,
+        F&& on_complete) {
+        using DecayedF = std::decay_t<F>;
+        DecayedF cb(std::forward<F>(on_complete));
+
+        std::unique_ptr<DataHandle> param;
+        try {
+            param = std::make_unique<DataHandle>(api_name);
+            param->writeJson(payload);
+        }
+        catch (const std::exception& e) {
+            auto* h = new detail::AsyncCallHolder<DecayedF>(std::move(cb));
+            std::unique_ptr<detail::AsyncCallHolderBase> owner(h);
+            owner->invoke_error(
+                std::string("failed to build request payload: ") + e.what());
+            return;
+        }
+
+        const std::string group_copy = group_name;
+        TDataHnd raw = param->get();
+
+        detail::submit_async_call(
+            [&](void* holder) -> int {
+                return LF_P2PNAME_Async_Call(
+                    io::cstr(group_copy).c_str(),
+                    raw,
+                    holder,
+                    detail::async_call_trampoline);
+            },
+            std::move(cb));
     }
 
     /* ---- Options and diagnostics ---- */

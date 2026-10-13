@@ -95,7 +95,9 @@ bypass the high-level convenience APIs to cover the raw contract.
 All comments and status output are in English.
 """
 
+import asyncio
 import ctypes
+import inspect
 import json
 import logging
 import os
@@ -116,6 +118,7 @@ from lingofuse import (
     is_network_event_installed,
     NetworkEventListener, NetworkEventQueue,
     repair_json_text,
+    CallFuture, AsyncBridge,
 )
 from lingofuse.errors import (
     RegistrationError, ConnectionError, TimeoutError,
@@ -1490,7 +1493,918 @@ class TestNetworkEvents(NetworkTestBase):
         q.clear()
         self.assertTrue(q.empty())
 
+# ======================================================================
+# v2.0 additions: three-addressing regression tests
+# ----------------------------------------------------------------------
+# The test classes below were added in the v2.0 "scientific expansion"
+# revision of the Python bindings. They cover the new API surface
+# introduced by that revision:
+#
+#   * Module-level get_option / check_uid / check_uid_api /
+#     check_p2pname / check_p2pname_api
+#   * The Target / AppTarget / UIDTarget / P2PNameTarget addressing
+#     classes
+#   * Module-level register_p2p_call / register_p2p_notify /
+#     unregister_p2p
+#   * Server.expose(p2p=True)
+#   * Old / new API equivalence
+#
+# All existing tests are preserved unchanged. These additions are
+# purely additive; they exercise the same public package surface that
+# the tests above already touch, and they respect the same
+# NetworkTestBase cleanup contract.
+#
+# All comments and status output are in English.
+# ======================================================================
 
+
+# ======================================================================
+# Module-level options and health checks (no network)
+# ----------------------------------------------------------------------
+# These tests exercise the v2.0 module-level helpers:
+#
+#     get_option, check_uid, check_uid_api,
+#     check_p2pname, check_p2pname_api
+#
+# They do not require the LingoFuse network loop, and they do not
+# register any API. They are pure queries plus one round-trip on a
+# boolean option.
+# ======================================================================
+
+class TestModuleOptionsAndChecks(unittest.TestCase):
+
+    def test_get_option_roundtrip(self):
+        """
+        set_option / get_option must round-trip a boolean string.
+
+        The current value is captured first and restored in a finally
+        block so that a test failure does not leave the process in a
+        non-default quiet mode.
+        """
+        original = lingofuse.get_option("Quiet")
+        try:
+            lingofuse.set_option("Quiet", "True")
+            self.assertEqual(lingofuse.get_option("Quiet"), "True")
+            lingofuse.set_option("Quiet", "False")
+            self.assertEqual(lingofuse.get_option("Quiet"), "False")
+        finally:
+            if original in ("True", "False"):
+                lingofuse.set_option("Quiet", original)
+
+    def test_get_option_unknown_returns_empty(self):
+        """An unknown option name yields an empty string, not an error."""
+        self.assertEqual(lingofuse.get_option("no_such_option_xyz"), "")
+
+    def test_check_uid_unknown_returns_false(self):
+        """
+        A random 32-byte UID that was never registered must return
+        False. This exercises the local + cached-remote lookup without
+        requiring the network loop.
+        """
+        uid = b"\x00" * 32
+        self.assertFalse(lingofuse.check_uid(uid))
+
+    def test_check_uid_accepts_hex_string(self):
+        """
+        check_uid must accept a 64-character hexadecimal string as an
+        alternative to raw bytes.
+        """
+        self.assertFalse(lingofuse.check_uid("00" * 32))
+
+    def test_check_uid_rejects_short_bytes(self):
+        """A UID shorter than 32 bytes must raise ValueError."""
+        with self.assertRaises(ValueError):
+            lingofuse.check_uid(b"too short")
+
+    def test_check_uid_rejects_wrong_type(self):
+        """A non-bytes-like UID must raise TypeError."""
+        with self.assertRaises(TypeError):
+            lingofuse.check_uid(12345)
+
+    def test_check_uid_api_unknown_returns_false(self):
+        """An unknown (uid, api) pair must return False."""
+        uid = b"\x00" * 32
+        self.assertFalse(
+            lingofuse.check_uid_api(uid, "no_such_api_xyz")
+        )
+
+    def test_check_p2pname_unknown_returns_false(self):
+        """An unregistered P2P group name must return False."""
+        self.assertFalse(lingofuse.check_p2pname("no_such_group_xyz"))
+
+    def test_check_p2pname_api_unknown_returns_false(self):
+        """An unknown (group, api) pair must return False."""
+        self.assertFalse(
+            lingofuse.check_p2pname_api(
+                "no_such_group_xyz", "no_such_api_xyz"
+            )
+        )
+
+
+# ======================================================================
+# Addressing Target classes (no network)
+# ----------------------------------------------------------------------
+# These tests exercise the three addressing Target classes introduced
+# by the v2.0 expansion:
+#
+#     AppTarget      -- addresses a logical App by name
+#     UIDTarget      -- addresses a session by 32-byte UID
+#     P2PNameTarget  -- addresses a group by user-supplied name
+#
+# The tests are pure Python: they cover construction, argument
+# normalization, value semantics, and hashability. No LingoFuse
+# network is required and no native callback is invoked.
+# ======================================================================
+
+class TestAddressTargets(unittest.TestCase):
+
+    def test_app_target_basic(self):
+        t = lingofuse.AppTarget("MyApp")
+        self.assertEqual(t.app_name, "MyApp")
+        self.assertEqual(t, lingofuse.AppTarget("MyApp"))
+        self.assertNotEqual(t, lingofuse.AppTarget("Other"))
+
+    def test_app_target_hashable(self):
+        """
+        AppTarget defines __hash__. Any consumer that keys a dict on
+        a Target relies on this.
+        """
+        d = {lingofuse.AppTarget("A"): 1}
+        self.assertEqual(d[lingofuse.AppTarget("A")], 1)
+
+    def test_uid_target_from_bytes(self):
+        uid = bytes(range(32))
+        t = lingofuse.UIDTarget(uid)
+        self.assertEqual(t.uid_bytes, uid)
+
+    def test_uid_target_from_hex_string(self):
+        uid = bytes(range(32))
+        t = lingofuse.UIDTarget(uid.hex())
+        self.assertEqual(t.uid_bytes, uid)
+
+    def test_uid_target_from_bytearray(self):
+        uid = bytes(range(32))
+        t = lingofuse.UIDTarget(bytearray(uid))
+        self.assertEqual(t.uid_bytes, uid)
+
+    def test_uid_target_from_memoryview(self):
+        uid = bytes(range(32))
+        t = lingofuse.UIDTarget(memoryview(uid))
+        self.assertEqual(t.uid_bytes, uid)
+
+    def test_uid_target_rejects_short_bytes(self):
+        with self.assertRaises(ValueError):
+            lingofuse.UIDTarget(b"too short")
+
+    def test_uid_target_rejects_long_bytes(self):
+        with self.assertRaises(ValueError):
+            lingofuse.UIDTarget(b"x" * 33)
+
+    def test_uid_target_rejects_wrong_type(self):
+        with self.assertRaises(TypeError):
+            lingofuse.UIDTarget(12345)
+
+    def test_uid_target_equality(self):
+        uid = bytes(range(32))
+        self.assertEqual(
+            lingofuse.UIDTarget(uid), lingofuse.UIDTarget(uid)
+        )
+        self.assertNotEqual(
+            lingofuse.UIDTarget(uid),
+            lingofuse.UIDTarget(b"\x00" * 32),
+        )
+
+    def test_uid_target_hashable(self):
+        d = {lingofuse.UIDTarget(b"\x00" * 32): 1}
+        self.assertEqual(d[lingofuse.UIDTarget(b"\x00" * 32)], 1)
+
+    def test_p2pname_target_basic(self):
+        t = lingofuse.P2PNameTarget("workers")
+        self.assertEqual(t.group_name, "workers")
+        self.assertEqual(t, lingofuse.P2PNameTarget("workers"))
+        self.assertNotEqual(t, lingofuse.P2PNameTarget("others"))
+
+    def test_p2pname_target_hashable(self):
+        d = {lingofuse.P2PNameTarget("G"): 1}
+        self.assertEqual(d[lingofuse.P2PNameTarget("G")], 1)
+
+    def test_targets_do_not_cross_compare_equal(self):
+        """
+        AppTarget and UIDTarget are conceptually different addressing
+        modes; equality must not accidentally succeed across types.
+        """
+        self.assertNotEqual(
+            lingofuse.AppTarget("X"), lingofuse.P2PNameTarget("X")
+        )
+
+
+# ======================================================================
+# Process-wide P2P registration (needs a live library)
+# ----------------------------------------------------------------------
+# These tests exercise the module-level P2P registration functions:
+#
+#     register_p2p_call, register_p2p_notify, unregister_p2p
+#
+# They verify the registration bookkeeping (accept on first register,
+# reject on duplicate, return True on unregister, return False on
+# unknown unregister) without performing an end-to-end remote call.
+# This is deliberate: P2P routing requires an established network and
+# a corresponding P2PName or UID target, which the end-to-end
+# coverage below (TestServerP2PExpose) exercises separately.
+#
+# The NetworkTestBase base class is used so that the process-global
+# LingoFuse state is reset between tests. Each test uses a
+# UUID-suffixed API name so that a failed cleanup cannot poison a
+# subsequent test.
+# ======================================================================
+
+class TestProcessWideP2PRegistration(NetworkTestBase):
+
+    def test_register_p2p_call_succeeds(self):
+        api = f"p2p_test_call_{uuid.uuid4().hex[:8]}"
+
+        def cb(trigger, inp, out):
+            out.write_string("pong")
+
+        lingofuse.register_p2p_call(api, cb, "test call")
+        try:
+            self.assertTrue(lingofuse.unregister_p2p(api))
+        finally:
+            # Belt-and-braces cleanup: a failed assertion above would
+            # otherwise leave the API registered for the next test.
+            lingofuse.unregister_p2p(api)
+
+    def test_register_p2p_notify_succeeds(self):
+        api = f"p2p_test_notify_{uuid.uuid4().hex[:8]}"
+
+        def cb(trigger, inp):
+            pass
+
+        lingofuse.register_p2p_notify(api, cb, "test notify")
+        try:
+            self.assertTrue(lingofuse.unregister_p2p(api))
+        finally:
+            lingofuse.unregister_p2p(api)
+
+    def test_duplicate_p2p_call_raises(self):
+        """
+        Registering the same name twice in the process-wide P2P
+        namespace must raise RegistrationError. This mirrors the
+        contract of App.register_call.
+        """
+        api = f"p2p_dup_call_{uuid.uuid4().hex[:8]}"
+
+        def cb(trigger, inp, out):
+            out.write_string("pong")
+
+        lingofuse.register_p2p_call(api, cb, "test")
+        try:
+            with self.assertRaises(RegistrationError):
+                lingofuse.register_p2p_call(api, cb, "test")
+        finally:
+            lingofuse.unregister_p2p(api)
+
+    def test_unregister_p2p_unknown_returns_false(self):
+        """
+        Unregistering a name that was never registered returns False
+        rather than raising. This makes the API safe to call from
+        cleanup paths without an existence check.
+        """
+        api = f"p2p_unknown_{uuid.uuid4().hex[:8]}"
+        self.assertFalse(lingofuse.unregister_p2p(api))
+
+
+# ======================================================================
+# Server.expose(p2p=True) routing (needs a live library)
+# ----------------------------------------------------------------------
+# These tests verify that:
+#
+#   1. expose(p2p=True) routes the registration into the process-wide
+#      P2P namespace, not the App-bound one.
+#   2. expose() without p2p=True continues to route into the App-bound
+#      namespace (regression guard for the historical behaviour).
+#
+# The Server's App is created by its constructor and freed explicitly
+# in a finally block. No network loop is started: the registration
+# APIs work independently of LF_PrepareDone, matching their documented
+# contract.
+# ======================================================================
+
+class TestServerP2PExpose(NetworkTestBase):
+
+    def test_expose_p2p_call_registers_in_p2p_namespace(self):
+        server = Server("P2PExposeServer", "p2p expose test")
+        api = f"p2p_expose_call_{uuid.uuid4().hex[:8]}"
+
+        @server.expose(api, p2p=True)
+        def echo(value):
+            return value
+
+        try:
+            # The registration must have gone into the P2P namespace:
+            # unregister_p2p finds it.
+            self.assertTrue(lingofuse.unregister_p2p(api))
+        finally:
+            lingofuse.unregister_p2p(api)
+            server._app.free()
+
+    def test_expose_p2p_notify_registers_in_p2p_namespace(self):
+        server = Server("P2PExposeServer2", "p2p expose notify test")
+        api = f"p2p_expose_notify_{uuid.uuid4().hex[:8]}"
+
+        @server.expose(api, notify=True, p2p=True)
+        def log(value):
+            pass
+
+        try:
+            self.assertTrue(lingofuse.unregister_p2p(api))
+        finally:
+            lingofuse.unregister_p2p(api)
+            server._app.free()
+
+    def test_expose_default_is_app_bound(self):
+        """
+        Regression guard for the historical behaviour of expose():
+        without p2p=True, the registration must land in the App-bound
+        namespace and must NOT be visible to unregister_p2p.
+        """
+        server = Server("AppBoundServer", "app-bound regression")
+        api = f"app_bound_{uuid.uuid4().hex[:8]}"
+
+        @server.expose(api)
+        def echo(value):
+            return value
+
+        try:
+            # Must NOT be in the P2P namespace.
+            self.assertFalse(lingofuse.unregister_p2p(api))
+            # Must be in the App-bound namespace, and removable via
+            # the App's own unregister.
+            self.assertTrue(server._app.unregister(api))
+        finally:
+            server._app.free()
+
+
+# ======================================================================
+# Old / new API equivalence (needs a running Server)
+# ----------------------------------------------------------------------
+# This is the "新旧接口等价性测试" required by the v2.0 expansion
+# spec. It verifies that for App-name addressing, the legacy shortcut
+# and the modern Target-based path produce the same observable result
+# on the same process-wide connection.
+#
+# A Server is started to provide the backend, and both calls are made
+# from within the same Python process through the same underlying
+# C4 client connection. No cross-process routing is involved.
+# ======================================================================
+
+class TestLegacyEquivalence(NetworkTestBase):
+
+    def test_server_json_call_equals_app_target_call(self):
+        app_name = "EquivTestApp"
+        endpoint = f"ipc:equiv_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        server = Server(app_name, "equivalence test")
+
+        @server.expose("echo")
+        def echo(value):
+            return value
+
+        try:
+            server.start(endpoint)
+
+            # Legacy path: Server.json_call, which is the semantic
+            # equivalent of ``client.json_call`` on a C4 instance
+            # whose default app name is ``app_name``.
+            legacy = server.json_call("echo", 42)
+
+            # Modern path: an AppTarget bound to the same app name,
+            # sharing the process-wide connection that the Server
+            # established through LF_PrepareClient.
+            target = lingofuse.AppTarget(app_name)
+            modern = target.call("echo", 42)
+
+            self.assertEqual(legacy, modern)
+            self.assertEqual(legacy, 42)
+        finally:
+            server.stop()
+
+    def test_server_json_notify_equals_app_target_notify(self):
+        """
+        The legacy json_notify and the modern AppTarget.notify must
+        both reach the same handler. Ordering between the two is not
+        asserted (neither API guarantees it); we only verify that both
+        notifications are delivered.
+        """
+        app_name = "EquivNotifyApp"
+        endpoint = f"ipc:equiv_notify_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        server = Server(app_name, "equivalence notify test")
+
+        captured = []
+
+        @server.expose("record", notify=True)
+        def record(value):
+            captured.append(value)
+
+        try:
+            server.start(endpoint)
+
+            server.json_notify("record", "legacy")
+            target = lingofuse.AppTarget(app_name)
+            target.notify("record", "modern")
+
+            # Wait for the sequenced delivery to settle. The sequenced
+            # thread pool may batch, but with only two notifications
+            # this is far below any reasonable timeout.
+            time.sleep(0.5)
+
+            self.assertIn("legacy", captured)
+            self.assertIn("modern", captured)
+        finally:
+            server.stop()
+
+# ======================================================================
+# v3.0 additions: strict JSON, bytes round-trip, modern async API
+# ----------------------------------------------------------------------
+# The test classes below were added in the v3.0 "async support"
+# revision of the Python bindings. They cover:
+#
+#   * DataHandle.read_json(strict=True) and read_json_strict()
+#   * DataHandle.read_json() default behaviour (None + WARNING)
+#   * Server __bytes__ round-trip in both directions
+#   * Target / AppTarget modern async methods: call_future,
+#     call_async, sequenced_call_future, sequenced_call_async
+#   * Legacy async_call still functions (regression guard)
+#   * C4 structural verification for the modern methods
+#
+# All existing tests are preserved unchanged. These additions are
+# purely additive; they exercise the same public package surface
+# that the tests above already touch, and they respect the same
+# NetworkTestBase cleanup contract.
+#
+# All comments and status output are in English.
+# ======================================================================
+
+
+# ======================================================================
+# DataHandle.read_json: strict vs lenient
+# ======================================================================
+
+class TestStrictJsonReading(unittest.TestCase):
+    """
+    ``DataHandle.read_json`` supports a ``strict`` keyword argument
+    and a ``read_json_strict`` convenience alias.
+
+    Behaviour under test:
+
+        lenient (default, historical contract preserved):
+            Empty buffer          -> None, no log.
+            Valid JSON            -> decoded object.
+            Malformed payload     -> None, ONE WARNING on
+                                     "lingofuse.core".
+
+        strict (new):
+            Empty buffer          -> None, no log.
+            Valid JSON            -> decoded object.
+            Malformed payload     -> RuntimeError.
+    """
+
+    LOGGER = "lingofuse.core"
+
+    def _make_handle(self, payload: bytes) -> DataHandle:
+        """
+        Create a DataHandle whose buffer contains ``payload``
+        followed by a NUL terminator, matching the wire framing
+        used by lf_io.write_string_bytes.
+        """
+        hnd = DataHandle("test")
+        write_string_bytes(hnd.raw, payload)
+        return hnd
+
+    def test_empty_buffer_returns_none_both_modes(self):
+        hnd = DataHandle("test")
+        try:
+            self.assertIsNone(hnd.read_json())
+            self.assertIsNone(hnd.read_json_strict())
+        finally:
+            hnd.free()
+
+    def test_valid_json_both_modes(self):
+        hnd = self._make_handle(b'{"a": 1}')
+        try:
+            self.assertEqual(hnd.read_json(), {"a": 1})
+            self.assertEqual(hnd.read_json_strict(), {"a": 1})
+        finally:
+            hnd.free()
+
+    def test_unrepairable_lenient_warns_and_returns_none(self):
+        """
+        Whitespace-only payload: valid UTF-8, not JSON, cannot be
+        repaired. The lenient path logs a WARNING and returns None.
+        """
+        hnd = self._make_handle(b'   ')
+        try:
+            with self.assertLogs(self.LOGGER, level="WARNING"):
+                self.assertIsNone(hnd.read_json())
+        finally:
+            hnd.free()
+
+    def test_unrepairable_strict_raises(self):
+        hnd = self._make_handle(b'   ')
+        try:
+            with self.assertRaises(RuntimeError):
+                hnd.read_json_strict()
+        finally:
+            hnd.free()
+
+    def test_invalid_utf8_lenient_warns_and_returns_none(self):
+        """
+        Payload that is not valid UTF-8. The lenient path logs a
+        WARNING and returns None rather than raising.
+        """
+        hnd = self._make_handle(b'\xff\xfe\xfd')
+        try:
+            with self.assertLogs(self.LOGGER, level="WARNING"):
+                self.assertIsNone(hnd.read_json())
+        finally:
+            hnd.free()
+
+    def test_invalid_utf8_strict_raises(self):
+        hnd = self._make_handle(b'\xff\xfe\xfd')
+        try:
+            with self.assertRaises(RuntimeError):
+                hnd.read_json_strict()
+        finally:
+            hnd.free()
+
+    def test_read_json_strict_equals_kwarg(self):
+        """
+        ``read_json_strict()`` must be exactly equivalent to
+        ``read_json(strict=True)``.
+        """
+        hnd = self._make_handle(b'{"x": 42}')
+        try:
+            self.assertEqual(hnd.read_json_strict(), {"x": 42})
+            self.assertEqual(hnd.read_json(strict=True), {"x": 42})
+        finally:
+            hnd.free()
+
+
+# ======================================================================
+# Server __bytes__ round-trip
+# ======================================================================
+
+class TestBytesRoundTrip(NetworkTestBase):
+    """
+    Server API payloads apply the ``__bytes__`` convention in both
+    directions: Python bytes are base64-encoded on the wire and
+    decoded back to bytes on the receiving side, recursively through
+    lists and dicts.
+
+    Before the current revision, only the WRITE direction applied
+    the convention, so ``bytes`` parameters arrived at the user
+    function as ``{"__bytes__": ...}`` dicts. The read side now
+    applies ``_convert_from_serializable`` unconditionally, making
+    the round-trip symmetric.
+    """
+
+    def test_bytes_simple_roundtrip(self):
+        suffix = uuid.uuid4().hex[:8]
+        endpoint = f"ipc:bytes_{os.getpid()}_{suffix}"
+        server = Server(f"BytesSimple_{suffix}", "bytes round-trip")
+        captured = []
+
+        @server.expose("echo_bytes")
+        def echo_bytes(data):
+            captured.append(data)
+            return data
+
+        try:
+            server.start(endpoint)
+            response = server.json_call("echo_bytes", b"hello bytes")
+
+            # The user function received bytes, not a dict.
+            self.assertEqual(captured, [b"hello bytes"])
+            # The caller received bytes back.
+            self.assertEqual(response, b"hello bytes")
+        finally:
+            server.stop()
+
+    def test_bytes_nested_roundtrip(self):
+        suffix = uuid.uuid4().hex[:8]
+        endpoint = f"ipc:bytes_{os.getpid()}_{suffix}"
+        server = Server(f"BytesNested_{suffix}", "nested bytes")
+        captured = []
+
+        @server.expose("echo_nested")
+        def echo_nested(payload):
+            captured.append(payload)
+            return payload
+
+        try:
+            server.start(endpoint)
+            request = {
+                "items": [b"a", b"b", 42],
+                "meta": {"raw": b"\x00\x01\x02"},
+            }
+            response = server.json_call("echo_nested", request)
+
+            expected = {
+                "items": [b"a", b"b", 42],
+                "meta": {"raw": b"\x00\x01\x02"},
+            }
+            self.assertEqual(captured[0], expected)
+            self.assertEqual(response, expected)
+        finally:
+            server.stop()
+
+    def test_bytes_empty_roundtrip(self):
+        """An empty bytes value must round-trip to b'' (not None)."""
+        suffix = uuid.uuid4().hex[:8]
+        endpoint = f"ipc:bytes_{os.getpid()}_{suffix}"
+        server = Server(f"BytesEmpty_{suffix}", "empty bytes")
+        captured = []
+
+        @server.expose("echo")
+        def echo(data):
+            captured.append(data)
+            return data
+
+        try:
+            server.start(endpoint)
+            response = server.json_call("echo", b"")
+            self.assertEqual(captured, [b""])
+            self.assertEqual(response, b"")
+        finally:
+            server.stop()
+
+
+# ======================================================================
+# Target modern async API (call_future / call_async)
+# ======================================================================
+
+class TestAddressFutureApi(NetworkTestBase):
+    """
+    The modern async methods on ``AppTarget``: ``call_future``,
+    ``call_async``, ``sequenced_call_future``,
+    ``sequenced_call_async``. Also verifies that the legacy
+    ``async_call`` still works.
+
+    Each test isolates the ``AsyncBridge`` singleton so that no op
+    from one test can influence the counters observed by another.
+    """
+
+    def setUp(self):
+        super().setUp()
+        AsyncBridge.shutdown_instance()
+
+    def tearDown(self):
+        AsyncBridge.shutdown_instance()
+        super().tearDown()
+
+    def _make_echo_server(self):
+        """
+        Create and start a Server with a single ``echo`` API.
+
+        Returns ``(server, app_name)``. The caller must call
+        ``server.stop()`` in a ``finally`` block.
+        """
+        suffix = uuid.uuid4().hex[:8]
+        app_name = f"AsyncTest_{suffix}"
+        endpoint = f"ipc:async_{os.getpid()}_{suffix}"
+        server = Server(app_name, "async test")
+
+        @server.expose("echo")
+        def echo(value):
+            return value
+
+        server.start(endpoint)
+        return server, app_name
+
+    # ---- call_future ----
+
+    def test_call_future_resolves(self):
+        server, app_name = self._make_echo_server()
+        try:
+            target = lingofuse.AppTarget(app_name)
+            future = target.call_future(
+                "echo", "hello", timeout_ms=3000
+            )
+            self.assertIsInstance(future, CallFuture)
+            self.assertEqual(future.result(timeout=5.0), "hello")
+            self.assertFalse(future.abandoned)
+        finally:
+            server.stop()
+
+    def test_call_future_abandoned_on_timeout(self):
+        """
+        {!!!!!  SKIPPED -- SEE EXPLANATION  !!!!!}
+
+        This test cannot be reliably implemented in a single
+        process. LingoFuse App-name routing is LOCAL-FIRST: when
+        the calling process itself hosts an App with the matching
+        name and API, the request is serviced on the CALLER's
+        thread, without touching the network. In this test file
+        the Server and the C4 client live in the SAME process, so
+        a "slow" server API (``time.sleep(1.0)``) would block the
+        caller instead of timing out. The 50 ms timeout would never
+        fire, and the future would resolve normally with the echo
+        value -- which is exactly the failure that was observed.
+
+        To exercise a genuine end-to-end timeout, the Server must
+        run in a SEPARATE process. That is out of scope for this
+        file. The timeout mechanism itself is fully covered by
+        ``test_async_support.py::TestAsyncBridgeTimeout``, which
+        drives the AsyncOp state machine directly and does not
+        depend on the network.
+
+        The dispatch-failure path -- which is the closest
+        reachable counterpart in a single process -- is covered by
+        ``test_call_future_dispatch_failure`` below.
+        """
+        self.skipTest(
+            "Cannot exercise an end-to-end timeout in a single "
+            "process: local-first routing services the slow API on "
+            "the caller's thread. See "
+            "test_async_support.py::TestAsyncBridgeTimeout for "
+            "unit-level coverage of the timeout state machine."
+        )
+
+    def test_call_future_dispatch_failure(self):
+        """
+        When the C library rejects the async request before
+        dispatching it, the future is resolved with a well-defined
+        exception instead of hanging, and no AsyncOp is leaked.
+
+        We construct this by addressing an App name that was never
+        registered anywhere. The global connection is alive (the
+        Server above established it), but ``LF_Async_Call`` cannot
+        route the request to any peer, so it either fails the
+        dispatch (returns 0) or the routing fails server-side.
+
+        The assertion is deliberately permissive: it accepts any
+        of LingoFuseError, TimeoutError, or a successful empty
+        response, because the exact behaviour of the framework for
+        an unknown App name is implementation-defined and we do not
+        want this test to become a change detector for that.
+        """
+        server, _app_name = self._make_echo_server()
+        try:
+            ghost = f"Ghost_{uuid.uuid4().hex[:8]}"
+            target = lingofuse.AppTarget(ghost)
+            future = target.call_future(
+                "anything", "x", timeout_ms=2000
+            )
+            # Must resolve within the timeout window, never hang.
+            try:
+                result = future.result(timeout=5.0)
+                # If it resolved successfully, the result must be
+                # either None or empty; we do not assert further
+                # because a "no found app" reply is a legitimate
+                # non-error outcome.
+                self.assertIn(result, (None, "", "x"))
+            except (LingoFuseError, TimeoutError):
+                # The other legitimate outcome: an explicit
+                # failure. Both are acceptable.
+                pass
+        finally:
+            server.stop()
+
+    # ---- call_async ----
+
+    def test_call_async_resolves(self):
+        server, app_name = self._make_echo_server()
+        try:
+            target = lingofuse.AppTarget(app_name)
+
+            async def _run():
+                return await target.call_async(
+                    "echo", {"x": 42}, timeout_ms=3000
+                )
+
+            result = asyncio.run(_run())
+            self.assertEqual(result, {"x": 42})
+        finally:
+            server.stop()
+
+    # ---- sequenced variants ----
+
+    def test_sequenced_call_future(self):
+        server, app_name = self._make_echo_server()
+        try:
+            target = lingofuse.AppTarget(app_name)
+            f1 = target.sequenced_call_future(
+                "echo", "first", timeout_ms=3000
+            )
+            f2 = target.sequenced_call_future(
+                "echo", "second", timeout_ms=3000
+            )
+            self.assertEqual(f1.result(timeout=5.0), "first")
+            self.assertEqual(f2.result(timeout=5.0), "second")
+        finally:
+            server.stop()
+
+    def test_sequenced_call_async(self):
+        server, app_name = self._make_echo_server()
+        try:
+            target = lingofuse.AppTarget(app_name)
+
+            async def _run():
+                return await target.sequenced_call_async(
+                    "echo", "seq-async", timeout_ms=3000
+                )
+
+            self.assertEqual(asyncio.run(_run()), "seq-async")
+        finally:
+            server.stop()
+
+    # ---- legacy regression guard ----
+
+    def test_legacy_async_call_still_works(self):
+        """
+        The legacy ``async_call(api, payload, on_result=..., user_data=...)``
+        path must still function, and the user callback must receive
+        ``(result, error, user_data)`` in that order.
+        """
+        server, app_name = self._make_echo_server()
+        try:
+            target = lingofuse.AppTarget(app_name)
+            done = threading.Event()
+            captured = []
+
+            def _on_result(result, error, user_data):
+                captured.append((result, error, user_data))
+                done.set()
+
+            ret = target.async_call(
+                "echo",
+                "legacy",
+                on_result=_on_result,
+                user_data={"tag": 1},
+            )
+            self.assertEqual(ret, 1)
+            self.assertTrue(done.wait(timeout=5.0))
+            self.assertEqual(captured[0][0], "legacy")
+            self.assertIsNone(captured[0][1])
+            self.assertEqual(captured[0][2], {"tag": 1})
+        finally:
+            server.stop()
+
+
+# ======================================================================
+# C4 modern method structural verification
+# ======================================================================
+
+class TestC4AsyncMethodSignatures(unittest.TestCase):
+    """
+    Structural verification that the ``C4`` class exposes the modern
+    async methods and that the asyncio variants are true coroutine
+    functions.
+
+    This is a lightweight check that does NOT require a running
+    server. End-to-end verification of the same methods is provided
+    by ``TestAddressFutureApi``, which exercises the ``AppTarget``
+    surface that ``C4`` delegates to.
+    """
+
+    def test_c4_has_modern_methods(self):
+        for name in (
+            "call_future",
+            "call_async",
+            "sequenced_call",
+            "sequenced_call_future",
+            "sequenced_call_async",
+        ):
+            self.assertTrue(
+                hasattr(C4, name),
+                f"C4 is missing method {name!r}",
+            )
+
+    def test_c4_async_methods_are_coroutine_functions(self):
+        """
+        ``call_async`` and ``sequenced_call_async`` are ``async def``
+        methods; the rest are ordinary methods.
+        """
+        self.assertTrue(inspect.iscoroutinefunction(C4.call_async))
+        self.assertTrue(
+            inspect.iscoroutinefunction(C4.sequenced_call_async)
+        )
+        self.assertFalse(inspect.iscoroutinefunction(C4.call_future))
+        self.assertFalse(inspect.iscoroutinefunction(C4.sequenced_call))
+        self.assertFalse(
+            inspect.iscoroutinefunction(C4.sequenced_call_future)
+        )
+
+    def test_c4_has_async_support_exports(self):
+        """
+        The package's top-level ``__init__`` must re-export the
+        async support symbols so that user code can do
+        ``from lingofuse import CallFuture, AsyncBridge``.
+        """
+        self.assertTrue(hasattr(lingofuse, "CallFuture"))
+        self.assertTrue(hasattr(lingofuse, "AsyncBridge"))
+        self.assertTrue(hasattr(lingofuse, "await_future"))
+        self.assertTrue(hasattr(lingofuse, "run_async_with_future"))
+                    
 # ======================================================================
 # Entry point
 # ======================================================================

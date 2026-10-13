@@ -3,9 +3,10 @@
 //! This module is the Rust mirror of `LingoFuse.h`. It contains:
 //!
 //! - The two opaque handle types: [`DataHnd`] and [`AppHnd`].
-//! - The three callback prototypes: [`LfCallFunc`], [`LfNotifyFunc`],
-//!   [`LfNetworkEventFunc`].
-//! - The 37 function-pointer typedefs, one per exported C function.
+//! - The 32-byte P2P identity struct: [`LfP2PUid`].
+//! - The four callback prototypes: [`LfCallFunc`], [`LfNotifyFunc`],
+//!   [`LfNetworkEventFunc`], [`LfAsyncCallOnResult`].
+//! - The 59 function-pointer typedefs, one per exported C function.
 //!
 //! Every declaration in this file is a **pure declaration**. There is no
 //! runtime state, no loading, and no function call. The loader in
@@ -36,6 +37,43 @@
 //! byte count. The buffer is **not** NUL-terminated; the count is
 //! authoritative. This is a different protocol layer from the string
 //! parameter convention above.
+//!
+//! ## UID type - `LfP2PUid`
+//!
+//! The Pascal-side type `TP2P_UID___` is `array[0..31] of Byte`. In C
+//! there are no function-returnable arrays, so the C header wraps the
+//! 32-byte value in a struct, and this module mirrors that struct as
+//! [`LfP2PUid`].
+//!
+//! The same Pascal type plays **two distinct roles** at the C ABI:
+//!
+//! | Role     | Where it appears                                             | C type               |
+//! |----------|--------------------------------------------------------------|----------------------|
+//! | Argument | `LF_UID_Call`, `LF_UID_Notify`, `LF_Check_UID`, `LF_WriteUid`| `TP2P_UID` (by value)|
+//! | Return   | `LF_Get_P2P_UID`                                             | `const TP2P_UID*`    |
+//!
+//! The two roles must **not** be unified at the typedef level:
+//!
+//! - Argument-role typedefs take `LfP2PUid` **by value**.
+//! - Return-role typedefs return `*const LfP2PUid`.
+//!
+//! The higher-level `Uid` newtype in [`crate::uid`] provides a safe
+//! Rust abstraction over both roles.
+//!
+//! ## Async callback contract
+//!
+//! [`LfAsyncCallOnResult`] is the prototype for every asynchronous call
+//! result delivery. The `result` parameter is a `DataHnd` **owned by the
+//! framework**; it is released immediately after the callback returns.
+//! The callback MUST:
+//!
+//! - Read or copy everything it needs inside the callback body.
+//! - NOT call `LF_FreeData` on the handle.
+//! - NOT retain the handle past its own return.
+//!
+//! This is the opposite of the synchronous family (`LF_Call` /
+//! `LF_UID_Call` / `LF_P2PNAME_Call`), whose returned handle is owned by
+//! the caller and MUST be released with `LF_FreeData`.
 //!
 //! ## Handle lifetime summary
 //!
@@ -156,6 +194,65 @@ impl Default for AppHnd {
 }
 
 // ============================================================================
+// P2P UID value type
+// ============================================================================
+
+/// The 32-byte P2P session identifier, in ABI form.
+///
+/// This is the C-ABI mirror of the Pascal type `TP2P_UID___`
+/// (`array[0..31] of Byte`). The C header wraps the array in a struct so
+/// that it can be passed by value across the cdecl boundary; this Rust
+/// type mirrors that struct exactly.
+///
+/// ## Role distinction
+///
+/// This type is used **by value** in argument position only. The
+/// return-role instance (`LF_Get_P2P_UID`) returns a `*const LfP2PUid`,
+/// not a value.
+///
+/// See the module-level documentation for the full ABI note, and
+/// [`crate::uid::Uid`] for the safe Rust abstraction that unifies both
+/// roles.
+///
+/// ## Layout
+///
+/// `#[repr(C)]` with a single `[u8; 32]` field. On x86-64 (both System V
+/// AMD64 and Microsoft x64), a >16-byte aggregate is classified MEMORY
+/// by the psABI and is therefore passed on the stack. FPC's
+/// `array[0..31] of Byte` falls into the same MEMORY class, so this
+/// struct is ABI-compatible for the argument-role positions.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LfP2PUid {
+    /// The 32 raw UID octets, in wire order.
+    pub bytes: [u8; 32],
+}
+
+impl LfP2PUid {
+    /// The all-zero UID ("null UID").
+    pub const NULL: LfP2PUid = LfP2PUid { bytes: [0u8; 32] };
+
+    /// Builds a `LfP2PUid` from a fixed-size byte array.
+    #[inline]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        LfP2PUid { bytes }
+    }
+
+    /// Returns `true` when all 32 bytes are zero.
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        self.bytes.iter().all(|&b| b == 0)
+    }
+}
+
+impl Default for LfP2PUid {
+    #[inline]
+    fn default() -> Self {
+        LfP2PUid::NULL
+    }
+}
+
+// ============================================================================
 // Callback prototypes
 // ============================================================================
 
@@ -238,8 +335,56 @@ pub type LfNotifyFunc = unsafe extern "C" fn(
 /// - Must not touch UI controls directly.
 pub type LfNetworkEventFunc = unsafe extern "C" fn(addr: *const c_char);
 
+/// Callback for an asynchronous Call result.
+///
+/// Used by every `LF_Async_*` function:
+///
+/// - `LF_Async_Call`
+/// - `LF_Async_Sequenced_Call`
+/// - `LF_UID_Async_Call`
+/// - `LF_UID_Async_Sequenced_Call`
+/// - `LF_P2PNAME_Async_Call`
+/// - `LF_P2PNAME_Async_Sequenced_Call`
+///
+/// # Parameters
+///
+/// - `data`: The opaque pointer supplied by the caller at the call site.
+///   The library neither owns nor frees it; ownership transfer is the
+///   caller's responsibility, as documented at each call site.
+/// - `result`: A `DataHnd` **owned by the framework**.
+///
+/// # Contract
+///
+/// The `result` handle is released IMMEDIATELY after this callback
+/// returns. The callback MUST:
+///
+/// - Read or copy everything it needs inside the callback body.
+/// - NOT call `LF_FreeData` on `result`.
+/// - NOT retain the handle past the callback body.
+///
+/// This is the **opposite** of the synchronous family
+/// (`LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call`), whose returned
+/// handle is owned by the caller and MUST be released with
+/// `LF_FreeData`.
+///
+/// # Threading
+///
+/// The callback runs on a `TCompute` worker thread. It is **not** the
+/// caller's thread and **not** the simulated main thread. It must return
+/// promptly and must not call any blocking LingoFuse function.
+///
+/// # Panic isolation
+///
+/// Rust wrappers around this ABI type wrap the user closure in
+/// `std::panic::catch_unwind`. A panic is converted into a silent no-op
+/// rather than undefined behaviour at the FFI boundary.
+pub type LfAsyncCallOnResult = unsafe extern "C" fn(
+    data: *mut c_void,
+    result: DataHnd,
+);
+
 // ============================================================================
-// Data handle function pointers (10)
+// Data handle function pointers (12)
 // ============================================================================
 
 /// `LF_CreateData` — create a new **auto-recycled** data handle.
@@ -278,11 +423,6 @@ pub type LfCreateDataFn = unsafe extern "C" fn(
 /// for an unbounded period (cached request templates, long-lived scratch
 /// buffers, global registries).
 ///
-/// # When not to use
-///
-/// Short-lived or one-shot handles. Use `LF_CreateData` for those, so
-/// the pool can reclaim any handle you forget to free.
-///
 /// # Pitfall: `Permanent` means "not auto-reclaimed"
 ///
 /// It does **not** mean "never released". You are responsible for
@@ -317,8 +457,12 @@ pub type LfCreateDataPermanentFn = unsafe extern "C" fn(
 ///
 /// This call is a **no-op** while the simulated main thread is not
 /// active, i.e. before `LF_PrepareDone` or after `LF_ExitMainThread`.
-/// Permanent handles created in that window stay allocated until the
-/// process terminates, or until `LF_Shutdown` runs.
+///
+/// # Pitfall: async result handles
+///
+/// Do **not** call this function on the `result` argument of an
+/// [`LfAsyncCallOnResult`] callback. That handle is owned by the
+/// framework and released automatically when the callback returns.
 pub type LfFreeDataFn = unsafe extern "C" fn(hnd: DataHnd);
 
 /// `LF_GetBuffer` — return a raw pointer to the handle's internal buffer.
@@ -401,6 +545,66 @@ pub type LfGetSizeFn = unsafe extern "C" fn(hnd: DataHnd) -> i64;
 /// buffer discards the trailing bytes.
 pub type LfSetSizeFn = unsafe extern "C" fn(hnd: DataHnd, size: i64);
 
+/// `LF_Get_P2P_UID` — read the sender's injected UID from an INPUT handle.
+///
+/// # Side-data semantics
+///
+/// This function does **not** read a property of the handle itself. It
+/// reads the "side data" that the sender's transport layer writes into
+/// every request payload before transmission. The receiver therefore
+/// sees the UID only inside the `Data_Param` of the **input** handle
+/// that the framework delivers to a registered callback.
+///
+/// **Valid only on input handles:**
+///
+/// - The `input` argument of a `LfCallFunc` callback.
+/// - The `input` argument of a `LfNotifyFunc` callback.
+/// - The input handle of a local call / notify.
+///
+/// **Invalid on:**
+///
+/// - Output handles (no `Data_Param`).
+/// - Caller-created handles (`LF_CreateData` / `LF_CreateData_Permanent`).
+///
+/// In the invalid cases the native library logs a warning and returns a
+/// pointer to a zero-filled UID.
+///
+/// # Return value
+///
+/// A pointer to a 32-byte [`LfP2PUid`], allocated by the native library
+/// and scheduled for automatic release approximately **5 seconds** after
+/// the call. The caller MUST:
+///
+/// 1. Copy the 32 bytes immediately if the value is to be retained.
+/// 2. NOT call any deallocation function on the pointer.
+/// 3. NOT retain the pointer beyond the ~5-second window.
+///
+/// [`crate::uid::Uid::from_ptr`] (added in a later batch) encapsulates
+/// all three rules.
+pub type LfGetP2PUidFn = unsafe extern "C" fn(hnd: DataHnd) -> *const LfP2PUid;
+
+/// `LF_Get_P2P_Name` — read the sender's injected P2P name from an INPUT handle.
+///
+/// # Side-data semantics
+///
+/// Same identity-injection mechanism as [`LfGetP2PUidFn`]. This function
+/// reads the `FromP2PName` field that the sender's transport layer wrote
+/// into the payload header; it does NOT read a property of the handle
+/// itself.
+///
+/// **Valid only on input handles**: the `input` argument of a
+/// `LfCallFunc` / `LfNotifyFunc` callback, or the input of a local call.
+/// On output handles and on caller-created handles, the native library
+/// logs a warning and returns an empty string.
+///
+/// # Return value
+///
+/// A pointer to a UTF-8, NUL-terminated string in a transient buffer
+/// released approximately **5 seconds** after the call. The caller MUST
+/// copy the string immediately if it is to be retained, and MUST NOT
+/// free the pointer.
+pub type LfGetP2PNameFn = unsafe extern "C" fn(hnd: DataHnd) -> *const c_char;
+
 // ============================================================================
 // Application handle function pointers (5)
 // ============================================================================
@@ -437,7 +641,7 @@ pub type LfCreateAppFn = unsafe extern "C" fn(
 /// # Shutdown guard
 ///
 /// The native implementation returns immediately (does nothing) when
-/// the framework is not active — i.e. before `LF_PrepareDone` or after
+/// the framework is not active - i.e. before `LF_PrepareDone` or after
 /// `LF_Shutdown`. Always call `LF_FreeApp` **before** `LF_Shutdown`.
 pub type LfFreeAppFn = unsafe extern "C" fn(app_hnd: AppHnd);
 
@@ -484,7 +688,7 @@ pub type LfGetAppNameFn = unsafe extern "C" fn(
 pub type LfBindAppFn = unsafe extern "C" fn(app_hnd: AppHnd) -> i32;
 
 // ============================================================================
-// API registration function pointers (3)
+// API registration function pointers (3 + 3)
 // ============================================================================
 
 /// `LF_RegisterCall` — register a Call (request-response) API.
@@ -535,6 +739,53 @@ pub type LfRegisterNotifyFn = unsafe extern "C" fn(
 /// empty response.
 pub type LfUnregisterFn = unsafe extern "C" fn(
     app_hnd: AppHnd,
+    method_name: *const c_char,
+) -> i32;
+
+/// `LF_Register_P2P_Call` — register a process-wide P2P Call API.
+///
+/// # Difference from `LF_RegisterCall`
+///
+/// P2P APIs are registered on the process-wide `LF_P2P_APP` and are
+/// reachable via UID addressing and P2PName addressing only. They are
+/// **not** reachable via App-name addressing, even if the API name
+/// happens to match a registered App name.
+///
+/// # Typical use
+///
+/// Globally discoverable utility APIs (health probes, capability
+/// discovery, identity echo) that any client in the mesh can call by
+/// UID or by P2PName without knowing the target's App name.
+///
+/// # Returns
+///
+/// `1` on success, `0` on failure (usually a duplicate name in the P2P
+/// namespace).
+pub type LfRegisterP2PCallFn = unsafe extern "C" fn(
+    method_name: *const c_char,
+    desc: *const c_char,
+    trigger: *mut c_void,
+    on_call: LfCallFunc,
+) -> i32;
+
+/// `LF_Register_P2P_Notify` — register a process-wide P2P Notify API.
+///
+/// Same contract as [`LfRegisterP2PCallFn`], minus the output handle.
+pub type LfRegisterP2PNotifyFn = unsafe extern "C" fn(
+    method_name: *const c_char,
+    desc: *const c_char,
+    trigger: *mut c_void,
+    on_notify: LfNotifyFunc,
+) -> i32;
+
+/// `LF_Unregister_P2P` — remove a process-wide P2P API by name.
+///
+/// Does **not** affect app-bound APIs of the same name.
+///
+/// # Return value
+///
+/// `1` if the API was found and removed, `0` otherwise.
+pub type LfUnregisterP2PFn = unsafe extern "C" fn(
     method_name: *const c_char,
 ) -> i32;
 
@@ -658,7 +909,7 @@ pub type LfPrepareDoneFn = unsafe extern "C" fn() -> i32;
 /// # Pitfall
 ///
 /// This also **flushes the data-handle pool**, releasing every
-/// outstanding handle — including handles created with
+/// outstanding handle - including handles created with
 /// `LF_CreateData_Permanent`. Do not use any data handle after this
 /// call has returned.
 ///
@@ -667,7 +918,7 @@ pub type LfPrepareDoneFn = unsafe extern "C" fn() -> i32;
 pub type LfExitMainThreadFn = unsafe extern "C" fn();
 
 // ============================================================================
-// Remote invocation function pointers (3)
+// Remote invocation function pointers (5 + 5 + 5)
 // ============================================================================
 
 /// `LF_Call` — synchronous remote call.
@@ -697,6 +948,42 @@ pub type LfCallFn = unsafe extern "C" fn(
     param: DataHnd,
     timeout_ms: u64,
 ) -> DataHnd;
+
+/// `LF_Async_Call` — asynchronous remote call.
+///
+/// # Parameters
+///
+/// - `app_name`: Target application name (UTF-8, NUL-terminated).
+/// - `param`: Input data handle. Not consumed; the caller retains
+///   ownership. The framework copies the payload synchronously inside
+///   this call, so the handle may be destroyed immediately afterwards.
+/// - `data`: Opaque pointer forwarded verbatim to `on_result`. The
+///   library neither owns nor frees it.
+/// - `on_result`: The callback. See [`LfAsyncCallOnResult`] for the
+///   ownership contract of the delivered handle.
+///
+/// # Returns
+///
+/// `1` if the request was queued, `0` otherwise. On `0` the callback is
+/// never invoked; the Rust wrapper is responsible for releasing the
+/// `data` allocation and delivering a synchronous error to the caller.
+pub type LfAsyncCallFn = unsafe extern "C" fn(
+    app_name: *const c_char,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
+
+/// `LF_Async_Sequenced_Call` — asynchronous call with FIFO ordering per
+/// `(app, api)` pair.
+///
+/// Same ownership and threading contract as [`LfAsyncCallFn`].
+pub type LfAsyncSequencedCallFn = unsafe extern "C" fn(
+    app_name: *const c_char,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
 
 /// `LF_Notify` — send a one-way notification.
 ///
@@ -728,6 +1015,114 @@ pub type LfNotifyFn = unsafe extern "C" fn(
 /// recreates it with a small startup latency.
 pub type LfSequencedNotifyFn = unsafe extern "C" fn(
     app_name: *const c_char,
+    param: DataHnd,
+);
+
+// ----------------------------------------------------------------------------
+// UID addressing
+// ----------------------------------------------------------------------------
+//
+// All four functions below take an ARGUMENT-role `LfP2PUid` **by value**.
+// The typedef must not be changed to a pointer: FPC passes a 32-byte
+// Pascal array by value on the stack, and the Rust signature must match
+// that convention exactly.
+
+/// `LF_UID_Call` — synchronous remote call addressed by session UID.
+///
+/// UID routing is LOCAL-FIRST, matching App-name routing. A UID can
+/// address any API registered on the target - whether app-bound or
+/// process-wide - without the caller knowing the target's App name.
+///
+/// Same ownership contract as [`LfCallFn`].
+pub type LfUidCallFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    param: DataHnd,
+    timeout_ms: u64,
+) -> DataHnd;
+
+/// `LF_UID_Async_Call` — asynchronous call addressed by session UID.
+///
+/// Same ownership contract as [`LfAsyncCallFn`].
+pub type LfUidAsyncCallFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
+
+/// `LF_UID_Async_Sequenced_Call` — asynchronous, FIFO-ordered call
+/// addressed by session UID.
+pub type LfUidAsyncSequencedCallFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
+
+/// `LF_UID_Notify` — one-way notification addressed by session UID.
+pub type LfUidNotifyFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    param: DataHnd,
+);
+
+/// `LF_UID_Sequenced_Notify` — FIFO-ordered one-way notification
+/// addressed by session UID.
+pub type LfUidSequencedNotifyFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    param: DataHnd,
+);
+
+// ----------------------------------------------------------------------------
+// P2PName addressing
+// ----------------------------------------------------------------------------
+//
+// P2PName routing is **NOT** local-first: the call is always forwarded
+// to the server, which owns the load-balancing state. The server picks
+// a target from the group using either Cycle_Anchor round-robin or the
+// FixedSequenced sticky-affinity window, controlled by the
+// `Fixed_Sequenced_Time` runtime option (default 20 seconds).
+
+/// `LF_P2PNAME_Call` — synchronous remote call addressed by P2P group
+/// name.
+///
+/// Same ownership contract as [`LfCallFn`].
+pub type LfP2PNameCallFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+    param: DataHnd,
+    timeout_ms: u64,
+) -> DataHnd;
+
+/// `LF_P2PNAME_Async_Call` — asynchronous call addressed by P2P group
+/// name.
+///
+/// Same ownership contract as [`LfAsyncCallFn`].
+pub type LfP2PNameAsyncCallFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
+
+/// `LF_P2PNAME_Async_Sequenced_Call` — asynchronous, FIFO-ordered call
+/// addressed by P2P group name.
+pub type LfP2PNameAsyncSequencedCallFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+    param: DataHnd,
+    data: *mut c_void,
+    on_result: LfAsyncCallOnResult,
+) -> i32;
+
+/// `LF_P2PNAME_Notify` — one-way notification addressed by P2P group
+/// name.
+pub type LfP2PNameNotifyFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+    param: DataHnd,
+);
+
+/// `LF_P2PNAME_Sequenced_Notify` — FIFO-ordered one-way notification
+/// addressed by P2P group name.
+pub type LfP2PNameSequencedNotifyFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
     param: DataHnd,
 );
 
@@ -768,6 +1163,28 @@ pub type LfSetOptionFn = unsafe extern "C" fn(
     option: *const c_char,
     value: *const c_char,
 );
+
+/// `LF_GetOption` — read a global runtime option.
+///
+/// # Parameters
+///
+/// - `option`: UTF-8, NUL-terminated option name. Case-insensitive.
+///
+/// # Return value
+///
+/// A pointer to a UTF-8, NUL-terminated string in a transient buffer
+/// released approximately **5 seconds** after the call. The caller MUST
+/// copy the string immediately if it is to be retained, and MUST NOT
+/// free the pointer.
+///
+/// Unknown option names return an empty string. Some options are
+/// write-only; the `debug` option, for example, returns a fixed
+/// placeholder string.
+///
+/// Boolean options are returned as `"True"` / `"False"`.
+pub type LfGetOptionFn = unsafe extern "C" fn(
+    option: *const c_char,
+) -> *const c_char;
 
 /// `LF_GetStatusCount` — number of pending log messages.
 ///
@@ -827,6 +1244,40 @@ pub type LfCheckApiFn = unsafe extern "C" fn(
     api_name: *const c_char,
 ) -> i32;
 
+/// `LF_Check_UID` — `1` if a client with the given UID is registered.
+///
+/// The UID is passed as the ARGUMENT-role `LfP2PUid` (the struct, by
+/// value).
+///
+/// Same cache semantics and propagation delay as `LfCheckAppFn`.
+pub type LfCheckUidFn = unsafe extern "C" fn(uid: LfP2PUid) -> i32;
+
+/// `LF_Check_UID_Api` — `1` if a client with the given UID exposes the
+/// named API.
+///
+/// Same cache semantics and propagation delay as `LfCheckAppFn`.
+pub type LfCheckUidApiFn = unsafe extern "C" fn(
+    uid: LfP2PUid,
+    api_name: *const c_char,
+) -> i32;
+
+/// `LF_Check_P2PNAME` — `1` if a client with the given P2P group name
+/// is registered.
+///
+/// Same cache semantics and propagation delay as `LfCheckAppFn`.
+pub type LfCheckP2PNameFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+) -> i32;
+
+/// `LF_Check_P2PNAME_Api` — `1` if a client in the given P2P group
+/// exposes the named API.
+///
+/// Same cache semantics and propagation delay as `LfCheckAppFn`.
+pub type LfCheckP2PNameApiFn = unsafe extern "C" fn(
+    p2p_name: *const c_char,
+    api_name: *const c_char,
+) -> i32;
+
 // ============================================================================
 // Shutdown function pointer (1)
 // ============================================================================
@@ -837,7 +1288,7 @@ pub type LfCheckApiFn = unsafe extern "C" fn(
 ///
 /// 1. Clears the network-event callbacks.
 /// 2. Stops all sequenced-notification threads.
-/// 3. Frees all remaining data handles — **including any permanent
+/// 3. Frees all remaining data handles - **including any permanent
 ///    handle still alive**.
 /// 4. Exits the simulated main thread.
 /// 5. Clears the global application pool (destroying every `TLF_App`).

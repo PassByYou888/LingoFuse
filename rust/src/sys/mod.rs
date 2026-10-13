@@ -7,7 +7,7 @@
 //! ## Structure
 //!
 //! - [`bindings`]: Type definitions and function-pointer aliases for
-//!   the 37 C-ABI exports. Pure declarations; no runtime state.
+//!   the 59 C-ABI exports. Pure declarations; no runtime state.
 //!
 //! - [`loader`]: Runtime loading of the platform-specific shared
 //!   library (`LingoFuse64.dll` / `liblingofuse.so` /
@@ -28,6 +28,33 @@
 //! lingofuse::sys::load_library().expect("LingoFuse runtime not available");
 //! ```
 //!
+//! ## Export count
+//!
+//! `LingoFuse.h` declares **59** exported `LF_*` functions across seven
+//! groups:
+//!
+//! | Group                                    | Count |
+//! |------------------------------------------|:-----:|
+//! | Data handle operations                   |  12   |
+//! | Application handle operations            |   5   |
+//! | API registration, app-bound              |   3   |
+//! | API registration, process-wide P2P       |   3   |
+//! | Local execution                          |   2   |
+//! | Network preparation                      |   5   |
+//! | Remote invocation, app-name addressing   |   5   |
+//! | Remote invocation, UID addressing        |   5   |
+//! | Remote invocation, P2PName addressing    |   5   |
+//! | Queries                                  |   7   |
+//! | Options                                  |   2   |
+//! | Status                                   |   3   |
+//! | Network events                           |   1   |
+//! | Shutdown                                 |   1   |
+//! | **Total**                                | **59**|
+//!
+//! The corresponding function-pointer table is
+//! [`loader::NativeLibrary`], whose fields are laid out in the same
+//! order as the `RESOLVE` sequence in `LingoFuse.c`.
+//!
 //! ## Unsafe
 //!
 //! Every native function call is `unsafe`. The caller must respect the
@@ -42,18 +69,37 @@
 //!   (`LF_Call`, `LF_LocalCall`, `LF_PrepareDone`, `LF_Shutdown`); doing
 //!   so deadlocks.
 //!
-//! The Stage 2 safe wrappers enforce these invariants.
+//! The higher-level safe wrappers enforce these invariants.
 
 pub mod bindings;
 pub mod loader;
 
-// Re-export the raw handle types and callback prototypes so that a
-// Stage 2 wrapper only needs `use lingofuse::sys::{DataHnd, AppHnd, ...}`.
+// ---------------------------------------------------------------------------
+// Raw handle types, the UID value type, and callback prototypes
+// ---------------------------------------------------------------------------
+//
+// Re-exported here so that a higher-level wrapper only needs
+// `use lingofuse::sys::{AppHnd, DataHnd, LfP2PUid, ...}` instead of
+// reaching into `bindings` directly.
+
 pub use bindings::{
-    AppHnd, DataHnd, LfCallFunc, LfNetworkEventFunc, LfNotifyFunc,
+    AppHnd,
+    DataHnd,
+    LfAsyncCallOnResult,
+    LfCallFunc,
+    LfNetworkEventFunc,
+    LfNotifyFunc,
+    LfP2PUid,
 };
 
-// Re-export the loader surface.
+// ---------------------------------------------------------------------------
+// Loader surface
+// ---------------------------------------------------------------------------
+
 pub use loader::{
-    get_library, is_loaded, load_library, LoadError, NativeLibrary,
+    get_library,
+    is_loaded,
+    load_library,
+    LoadError,
+    NativeLibrary,
 };

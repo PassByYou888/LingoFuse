@@ -11,12 +11,13 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
- * FFM downcall handles for the 37 exported functions of the LingoFuse
+ * FFM downcall handles for the 59 exported functions of the LingoFuse
  * C ABI.
  *
  * <p>This class is the ONLY place in the Java binding where native
  * code is invoked. Every higher-level wrapper ({@code DataHandle},
- * {@code AppHandle}, {@code Framework}, ...) goes through the
+ * {@code AppHandle}, {@code Framework}, {@code Options},
+ * {@code P2PRegistry}, {@code LingoFuseStatus}, ...) goes through the
  * {@link MethodHandle}s declared here.
  *
  * <p>Every symbol is resolved exactly once, during class
@@ -28,20 +29,29 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * fail loudly at the first touch of this class, rather than silently
  * producing a null pointer at some later call site.
  *
- * <p>Type mapping (C ABI to Java):
+ * <h2>Type mapping (C ABI to Java)</h2>
  * <ul>
  *   <li>{@code void*}, {@code TDataHnd}, {@code TAppHnd},
- *       {@code const char*} -&gt; {@link MemorySegment}</li>
+ *       {@code const char*}, {@code PP2P_UID___} -&gt;
+ *       {@link MemorySegment}</li>
+ *   <li>{@code TP2P_UID___} as an argument -&gt; {@link MemorySegment}
+ *       pointing at 32 bytes (see {@link NativeTypes} for the full
+ *       rationale of the argument-role representation)</li>
  *   <li>{@code int} -&gt; {@code int}</li>
  *   <li>{@code int64_t}, {@code uint64_t} -&gt; {@code long}</li>
  *   <li>{@code void} -&gt; no return value</li>
  * </ul>
  *
- * <p>All handles are represented uniformly as {@link MemorySegment}
- * values. The semantic distinction between a data handle and an
- * application handle is enforced by the RAII layer, not here.
+ * <h2>Symbol count</h2>
  *
- * <p>Threading: every {@link MethodHandle} returned by
+ * <p>The C ABI exports exactly 59 symbols. This class declares one
+ * {@link MethodHandle} per symbol. The binding completeness check
+ * ({@code _lf_native_check.py} in the Python bindings) has the same
+ * authoritative list; the two must stay in lockstep.
+ *
+ * <h2>Threading</h2>
+ *
+ * <p>Every {@link MethodHandle} returned by
  * {@code Linker.downcallHandle} is thread-safe and may be invoked
  * concurrently from any number of threads. This matches the native
  * library's documented guarantee.
@@ -86,7 +96,7 @@ public final class NativeMethods {
     }
 
     // ==================================================================
-    // Data handle operations (10 exports)
+    // Data handle operations (12 exports)
     // ==================================================================
 
     /**
@@ -219,6 +229,77 @@ public final class NativeMethods {
             "LF_SetSize",
             FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG));
 
+    /**
+     * {@code PP2P_UID___ LF_Get_P2P_UID(TDataHnd hnd);}
+     *
+     * <p>Reads the auto-injected sender identity (SIDE DATA) from an
+     * INPUT data handle.
+     *
+     * <h2>Side-data semantics</h2>
+     *
+     * <p>This function does NOT read a property of the handle itself.
+     * Instead, it reads the {@code FromUID} field that the SENDER'S
+     * transport layer writes into every request payload before
+     * transmission (Pascal side: {@code TC40_LF_Client.Send_*} -&gt;
+     * {@code TMemory_Param_Tool.Rebuild_UID_and_P2PName}).
+     *
+     * <p>Because of this design, the function works ONLY on INPUT
+     * handles. Calling it on an OUTPUT handle, or on a handle the
+     * caller created itself, causes the C side to log a warning and
+     * return a null pointer / null UID.
+     *
+     * <h2>Return role: pointer, not value</h2>
+     *
+     * <p>The Pascal signature is:
+     * <pre>{@code
+     * function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+     * }</pre>
+     * i.e. {@code ^TUID___} (a pointer to a 32-byte UID), NOT
+     * {@code TUID___} (the value itself). The pointer is allocated by
+     * the C side via {@code New} and is scheduled for automatic
+     * release about 5 seconds after the call ({@code DelayFreeMem}).
+     * Callers MUST:
+     *
+     * <ol>
+     *   <li>Copy the 32 bytes immediately if they want to retain them
+     *       ({@code ptr.reinterpret(32).toArray(JAVA_BYTE)}).</li>
+     *   <li>NOT call any deallocation function on the pointer.</li>
+     *   <li>NOT retain the pointer beyond the ~5-second window.</li>
+     * </ol>
+     *
+     * <p>The higher-level wrapper {@code DataHandle.getP2pUid()}
+     * performs all three of these steps and exposes the result as a
+     * fresh {@code byte[32]}. Prefer that wrapper in application code.
+     *
+     * <p>Return: a pointer to a 32-byte UID, or
+     * {@link MemorySegment#NULL} when the handle is nil.
+     */
+    public static final MethodHandle LF_Get_P2P_UID = resolve(
+            "LF_Get_P2P_UID",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+
+    /**
+     * {@code const char* LF_Get_P2P_Name(TDataHnd hnd);}
+     *
+     * <p>Reads the auto-injected sender P2P group name (SIDE DATA)
+     * from an INPUT data handle.
+     *
+     * <p>Same side-data semantics as {@link #LF_Get_P2P_UID}: the
+     * value is populated by the SENDER'S transport layer, and it is
+     * valid ONLY on an INPUT handle. Calling this on an OUTPUT handle
+     * or a self-created handle causes the C side to log a warning and
+     * return an empty string.
+     *
+     * <p>Return: a pointer to a NUL-terminated UTF-8 string. The
+     * backing buffer is released by the C side after approximately
+     * 5 seconds; the caller MUST copy the string immediately. The
+     * higher-level wrapper {@code DataHandle.getP2pName()} does this
+     * automatically.
+     */
+    public static final MethodHandle LF_Get_P2P_Name = resolve(
+            "LF_Get_P2P_Name",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+
     // ==================================================================
     // Application handle operations (5 exports)
     // ==================================================================
@@ -288,7 +369,7 @@ public final class NativeMethods {
             FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
     // ==================================================================
-    // API registration (3 exports)
+    // API registration (app-bound) (3 exports)
     // ==================================================================
 
     /**
@@ -345,6 +426,70 @@ public final class NativeMethods {
     public static final MethodHandle LF_Unregister = resolve(
             "LF_Unregister",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+
+    // ==================================================================
+    // API registration (process-wide P2P) (3 exports)
+    // ==================================================================
+    //
+    // The process-wide P2P namespace is independent of any App. APIs
+    // registered here live on the process-wide LF_P2P_APP and are
+    // reachable via UID addressing or P2PName addressing from any
+    // client, without requiring the caller to know the target App
+    // name. They are NOT reachable via App-name addressing.
+    //
+    // Typical use: register a small set of globally-discoverable
+    // utility APIs (health probes, capability discovery, identity
+    // echo) that any client in the mesh can call by group name or by
+    // UID.
+
+    /**
+     * {@code int LF_Register_P2P_Call(const char* method_name,
+     *                                 const char* desc, void* trigger,
+     *                                 LF_CallFunc on_call);}
+     *
+     * <p>Registers a Call-mode API in the process-wide P2P namespace.
+     *
+     * <p>Return: 1 on success, 0 if the name is already taken within
+     * the P2P namespace.
+     */
+    public static final MethodHandle LF_Register_P2P_Call = resolve(
+            "LF_Register_P2P_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS,  // const char* method_name
+                    ADDRESS,  // const char* desc
+                    ADDRESS,  // void* trigger
+                    ADDRESS));// LF_CallFunc
+
+    /**
+     * {@code int LF_Register_P2P_Notify(const char* method_name,
+     *                                   const char* desc, void* trigger,
+     *                                   LF_NotifyFunc on_notify);}
+     *
+     * <p>Registers a Notify-mode API in the process-wide P2P
+     * namespace.
+     *
+     * <p>Return: 1 on success, 0 if the name is already taken within
+     * the P2P namespace.
+     */
+    public static final MethodHandle LF_Register_P2P_Notify = resolve(
+            "LF_Register_P2P_Notify",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS,  // const char* method_name
+                    ADDRESS,  // const char* desc
+                    ADDRESS,  // void* trigger
+                    ADDRESS));// LF_NotifyFunc
+
+    /**
+     * {@code int LF_Unregister_P2P(const char* method_name);}
+     *
+     * <p>Removes a previously registered P2P API. Local effect is
+     * immediate; a network broadcast propagates within a few seconds.
+     *
+     * <p>Return: 1 if the API was found and removed, 0 otherwise.
+     */
+    public static final MethodHandle LF_Unregister_P2P = resolve(
+            "LF_Unregister_P2P",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
 
     // ==================================================================
     // Local execution (2 exports)
@@ -447,8 +592,12 @@ public final class NativeMethods {
             FunctionDescriptor.ofVoid());
 
     // ==================================================================
-    // Remote invocation (3 exports)
+    // Remote invocation by App name (5 exports)
     // ==================================================================
+    //
+    // Routing is LOCAL-FIRST: if the caller process itself hosts an
+    // App with the matching name and API, the call is serviced
+    // locally without touching the network.
 
     /**
      * {@code TDataHnd LF_Call(const char* app_name, TDataHnd param,
@@ -466,6 +615,54 @@ public final class NativeMethods {
     public static final MethodHandle LF_Call = resolve(
             "LF_Call",
             FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_LONG));
+
+    /**
+     * {@code int LF_Async_Call(const char* app_name, TDataHnd param,
+     *                          void* data,
+     *                          LF_Async_Call_OnResult on_result);}
+     *
+     * <p>Schedules an asynchronous remote call.
+     *
+     * <p>Return: 1 immediately after the request is queued. The
+     * {@code on_result} callback fires later on a native worker
+     * thread once the response arrives. Return value 0 means the
+     * request could not be queued; the callback will never fire.
+     *
+     * <p>The {@code data} argument is passed through to the callback
+     * unchanged. The library neither owns nor frees it.
+     *
+     * <p>The callback's {@code Result_} argument is owned by the
+     * framework and is released IMMEDIATELY after the callback
+     * returns. See {@link NativeTypes#LF_ASYNC_CALL_ON_RESULT} for
+     * the full lifetime contract.
+     *
+     * <p>The input handle {@code param} is NOT consumed by this call.
+     * The caller retains ownership and may release it as soon as this
+     * method returns.
+     */
+    public static final MethodHandle LF_Async_Call = resolve(
+            "LF_Async_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS,  // const char* app_name
+                    ADDRESS,  // TDataHnd param
+                    ADDRESS,  // void* data
+                    ADDRESS));// LF_Async_Call_OnResult
+
+    /**
+     * {@code int LF_Async_Sequenced_Call(const char* app_name,
+     *                                    TDataHnd param, void* data,
+     *                                    LF_Async_Call_OnResult on_result);}
+     *
+     * <p>Like {@link #LF_Async_Call}, but requests are delivered to
+     * the target in FIFO order per (app, api) pair. The framework
+     * maintains a dedicated dispatch thread per (app, api) key on the
+     * target side, so concurrency is preserved across keys while
+     * ordering is preserved within each key.
+     */
+    public static final MethodHandle LF_Async_Sequenced_Call = resolve(
+            "LF_Async_Sequenced_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS, ADDRESS, ADDRESS, ADDRESS));
 
     /**
      * {@code void LF_Notify(const char* app_name, TDataHnd param);}
@@ -489,48 +686,154 @@ public final class NativeMethods {
             FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
 
     // ==================================================================
-    // Options and diagnostics (7 exports)
+    // Remote invocation by UID (5 exports)
     // ==================================================================
+    //
+    // UID addressing routes to the exact client whose TunnelLink
+    // produced the given 32-byte UID. Like App-name routing, UID
+    // routing is LOCAL-FIRST.
+    //
+    // {UID ARGUMENT ROLE}
+    // The first parameter is {@code TP2P_UID___} in the C ABI. In
+    // cdecl an array parameter decays to a pointer, so the FFM
+    // representation is a single ADDRESS that points at 32 bytes of
+    // UID data. Callers allocate the 32 bytes in an Arena and copy
+    // the UID into them before invoking the handle.
+    //
+    // This is a DIFFERENT role from the LF_Get_P2P_UID RETURN value,
+    // which is also an ADDRESS but means "pointer to a 32-byte UID
+    // owned by the framework". See {@link NativeTypes} for the full
+    // rationale.
 
     /**
-     * {@code void LF_SetOption(const char* option, const char* value);}
+     * {@code TDataHnd LF_UID_Call(TP2P_UID___ uid, TDataHnd param,
+     *                              uint64_t timeout_ms);}
      *
-     * <p>Adjusts a global runtime option. Unknown option names are
-     * silently ignored by the native side.
+     * <p>Synchronous call addressed by UID.
+     *
+     * <p>Same return-handle contract as {@link #LF_Call}: an empty
+     * handle (size 0) signals a timeout or unreachable target.
      */
-    public static final MethodHandle LF_SetOption = resolve(
-            "LF_SetOption",
+    public static final MethodHandle LF_UID_Call = resolve(
+            "LF_UID_Call",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_LONG));
+
+    /**
+     * {@code int LF_UID_Async_Call(TP2P_UID___ uid, TDataHnd param,
+     *                               void* data,
+     *                               LF_Async_Call_OnResult on_result);}
+     *
+     * <p>Asynchronous call addressed by UID. Same dispatch-failure
+     * and callback-lifetime contract as {@link #LF_Async_Call}.
+     */
+    public static final MethodHandle LF_UID_Async_Call = resolve(
+            "LF_UID_Async_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+
+    /**
+     * {@code int LF_UID_Async_Sequenced_Call(TP2P_UID___ uid,
+     *                                         TDataHnd param, void* data,
+     *                                         LF_Async_Call_OnResult on_result);}
+     *
+     * <p>Asynchronous, FIFO-ordered call addressed by UID.
+     */
+    public static final MethodHandle LF_UID_Async_Sequenced_Call = resolve(
+            "LF_UID_Async_Sequenced_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+
+    /**
+     * {@code void LF_UID_Notify(TP2P_UID___ uid, TDataHnd param);}
+     *
+     * <p>One-way notification addressed by UID. No ordering
+     * guarantee.
+     */
+    public static final MethodHandle LF_UID_Notify = resolve(
+            "LF_UID_Notify",
             FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
 
     /**
-     * {@code int LF_GetStatusCount(void);}
+     * {@code void LF_UID_Sequenced_Notify(TP2P_UID___ uid, TDataHnd param);}
      *
-     * <p>Returns the number of pending log messages in the status
-     * queue. The queue holds up to 1000 messages.
+     * <p>One-way notification addressed by UID, with FIFO ordering
+     * guaranteed for the same (uid, api) pair.
      */
-    public static final MethodHandle LF_GetStatusCount = resolve(
-            "LF_GetStatusCount",
-            FunctionDescriptor.of(JAVA_INT));
+    public static final MethodHandle LF_UID_Sequenced_Notify = resolve(
+            "LF_UID_Sequenced_Notify",
+            FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+
+    // ==================================================================
+    // Remote invocation by P2P name (5 exports)
+    // ==================================================================
+    //
+    // P2PName addressing routes to any client in a user-defined group.
+    // The server-side dispatcher picks a target using one of two
+    // strategies (load balancing via Cycle_Anchor, or sticky affinity
+    // via FixedSequenced). P2PName routing is NOT local-first: even
+    // when the caller itself is in the group, the call is forwarded
+    // to the server for dispatch.
 
     /**
-     * {@code const char* LF_GetStatus(void);}
+     * {@code TDataHnd LF_P2PNAME_Call(const char* p2p_name,
+     *                                  TDataHnd param,
+     *                                  uint64_t timeout_ms);}
      *
-     * <p>Returns a pointer to the next log message in a static buffer
-     * that the next call will overwrite. Copy the string immediately
-     * via {@code MemorySegment.getString(0)}.
+     * <p>Synchronous call addressed by P2P group name.
      */
-    public static final MethodHandle LF_GetStatus = resolve(
-            "LF_GetStatus",
-            FunctionDescriptor.of(ADDRESS));
+    public static final MethodHandle LF_P2PNAME_Call = resolve(
+            "LF_P2PNAME_Call",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_LONG));
 
     /**
-     * {@code void LF_PostStatus(const char* status);}
+     * {@code int LF_P2PNAME_Async_Call(const char* p2p_name,
+     *                                   TDataHnd param, void* data,
+     *                                   LF_Async_Call_OnResult on_result);}
      *
-     * <p>Injects a custom log message into the status queue.
+     * <p>Asynchronous call addressed by P2P group name.
      */
-    public static final MethodHandle LF_PostStatus = resolve(
-            "LF_PostStatus",
-            FunctionDescriptor.ofVoid(ADDRESS));
+    public static final MethodHandle LF_P2PNAME_Async_Call = resolve(
+            "LF_P2PNAME_Async_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+
+    /**
+     * {@code int LF_P2PNAME_Async_Sequenced_Call(const char* p2p_name,
+     *                                             TDataHnd param,
+     *                                             void* data,
+     *                                             LF_Async_Call_OnResult on_result);}
+     *
+     * <p>Asynchronous, FIFO-ordered call addressed by P2P group name.
+     */
+    public static final MethodHandle LF_P2PNAME_Async_Sequenced_Call = resolve(
+            "LF_P2PNAME_Async_Sequenced_Call",
+            FunctionDescriptor.of(JAVA_INT,
+                    ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+
+    /**
+     * {@code void LF_P2PNAME_Notify(const char* p2p_name,
+     *                                TDataHnd param);}
+     *
+     * <p>One-way notification addressed by P2P group name.
+     */
+    public static final MethodHandle LF_P2PNAME_Notify = resolve(
+            "LF_P2PNAME_Notify",
+            FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+
+    /**
+     * {@code void LF_P2PNAME_Sequenced_Notify(const char* p2p_name,
+     *                                          TDataHnd param);}
+     *
+     * <p>One-way notification addressed by P2P group name, with FIFO
+     * ordering guaranteed for the same (group, api) pair.
+     */
+    public static final MethodHandle LF_P2PNAME_Sequenced_Notify = resolve(
+            "LF_P2PNAME_Sequenced_Notify",
+            FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+
+    // ==================================================================
+    // Health checks (7 exports)
+    // ==================================================================
 
     /**
      * {@code int LF_CheckMainThread(void);}
@@ -562,27 +865,112 @@ public final class NativeMethods {
             "LF_CheckApi",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
 
+    /**
+     * {@code int LF_Check_UID(TP2P_UID___ uid);}
+     *
+     * <p>Returns 1 if a client with the given UID is currently
+     * registered on the mesh. Same cache caveat as
+     * {@link #LF_CheckApp}.
+     */
+    public static final MethodHandle LF_Check_UID = resolve(
+            "LF_Check_UID",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+
+    /**
+     * {@code int LF_Check_UID_Api(TP2P_UID___ uid,
+     *                              const char* api_name);}
+     *
+     * <p>Returns 1 if a client with the given UID exposes the named
+     * API.
+     */
+    public static final MethodHandle LF_Check_UID_Api = resolve(
+            "LF_Check_UID_Api",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+
+    /**
+     * {@code int LF_Check_P2PNAME(const char* p2p_name);}
+     *
+     * <p>Returns 1 if at least one client in the mesh has the given
+     * P2P group name.
+     */
+    public static final MethodHandle LF_Check_P2PNAME = resolve(
+            "LF_Check_P2PNAME",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS));
+
+    /**
+     * {@code int LF_Check_P2PNAME_Api(const char* p2p_name,
+     *                                  const char* api_name);}
+     *
+     * <p>Returns 1 if at least one client in the given P2P group
+     * exposes the named API.
+     */
+    public static final MethodHandle LF_Check_P2PNAME_Api = resolve(
+            "LF_Check_P2PNAME_Api",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+
     // ==================================================================
-    // Shutdown (1 export)
+    // Runtime options (2 exports)
     // ==================================================================
 
     /**
-     * {@code void LF_Shutdown(void);}
+     * {@code void LF_SetOption(const char* option, const char* value);}
      *
-     * <p>Gracefully terminates the framework, releasing all
-     * resources. Clears network event callbacks, stops sequenced
-     * threads, frees all remaining data handles (including permanent
-     * ones), exits the main thread, clears the global app pool, and
-     * unloads the IPC library.
+     * <p>Adjusts a global runtime option. Unknown option names are
+     * silently ignored by the native side. Changes are not persisted
+     * across {@link #LF_Shutdown}.
      *
-     * <p>Safe to call multiple times. After this call, the library
-     * may be re-initialised by calling {@link #LF_ResetPrepare} /
-     * {@link #LF_PrepareService} / {@link #LF_PrepareClient} /
-     * {@link #LF_PrepareDone} again.
+     * <p>See {@code lingofuse.Options} for the typed shortcuts that
+     * hard-code every canonical option key.
      */
-    public static final MethodHandle LF_Shutdown = resolve(
-            "LF_Shutdown",
-            FunctionDescriptor.ofVoid());
+    public static final MethodHandle LF_SetOption = resolve(
+            "LF_SetOption",
+            FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+
+    /**
+     * {@code const char* LF_GetOption(const char* option);}
+     *
+     * <p>Reads the current value of a runtime option. Returns an
+     * empty string for unknown option names. The returned pointer is
+     * backed by a transient buffer released approximately 5 seconds
+     * after the call; callers must copy the string immediately.
+     */
+    public static final MethodHandle LF_GetOption = resolve(
+            "LF_GetOption",
+            FunctionDescriptor.of(ADDRESS, ADDRESS));
+
+    // ==================================================================
+    // Status / diagnostics (3 exports)
+    // ==================================================================
+
+    /**
+     * {@code int LF_GetStatusCount(void);}
+     *
+     * <p>Returns the number of pending log messages in the status
+     * queue. The queue holds up to 1000 messages.
+     */
+    public static final MethodHandle LF_GetStatusCount = resolve(
+            "LF_GetStatusCount",
+            FunctionDescriptor.of(JAVA_INT));
+
+    /**
+     * {@code const char* LF_GetStatus(void);}
+     *
+     * <p>Returns a pointer to the next log message in a static buffer
+     * that the next call will overwrite. Copy the string immediately
+     * via {@code MemorySegment.getString(0)}.
+     */
+    public static final MethodHandle LF_GetStatus = resolve(
+            "LF_GetStatus",
+            FunctionDescriptor.of(ADDRESS));
+
+    /**
+     * {@code void LF_PostStatus(const char* status);}
+     *
+     * <p>Injects a custom log message into the status queue.
+     */
+    public static final MethodHandle LF_PostStatus = resolve(
+            "LF_PostStatus",
+            FunctionDescriptor.ofVoid(ADDRESS));
 
     // ==================================================================
     // Network events (1 export)
@@ -604,4 +992,26 @@ public final class NativeMethods {
     public static final MethodHandle LF_Set_Network_Event = resolve(
             "LF_Set_Network_Event",
             FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
+
+    // ==================================================================
+    // Shutdown (1 export)
+    // ==================================================================
+
+    /**
+     * {@code void LF_Shutdown(void);}
+     *
+     * <p>Gracefully terminates the framework, releasing all
+     * resources. Clears network event callbacks, stops sequenced
+     * threads, frees all remaining data handles (including permanent
+     * ones), exits the main thread, clears the global app pool, and
+     * unloads the IPC library.
+     *
+     * <p>Safe to call multiple times. After this call, the library
+     * may be re-initialised by calling {@link #LF_ResetPrepare} /
+     * {@link #LF_PrepareService} / {@link #LF_PrepareClient} /
+     * {@link #LF_PrepareDone} again.
+     */
+    public static final MethodHandle LF_Shutdown = resolve(
+            "LF_Shutdown",
+            FunctionDescriptor.ofVoid());
 }

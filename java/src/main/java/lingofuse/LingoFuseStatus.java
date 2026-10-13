@@ -2,9 +2,11 @@ package lingofuse;
 
 import lingofuse.ffi.NativeCall;
 import lingofuse.ffi.NativeMethods;
+import lingofuse.ffi.NativeTypes;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -21,11 +23,15 @@ import java.util.Objects;
  *       {@link #drainStatus(int)}, {@link #postStatus(String)});</li>
  *   <li>the main-thread liveness check
  *       ({@link #checkMainThread()});</li>
- *   <li>the application and API availability probes
- *       ({@link #checkApp(String)}, {@link #checkApi(String, String)}).</li>
+ *   <li>the App-name availability probes
+ *       ({@link #checkApp(String)}, {@link #checkApi(String, String)});</li>
+ *   <li>the UID availability probes
+ *       ({@link #checkUid(byte[])},
+ *       {@link #checkUidApi(byte[], String)});</li>
+ *   <li>the P2PName availability probes
+ *       ({@link #checkP2pName(String)},
+ *       {@link #checkP2pNameApi(String, String)}).</li>
  * </ul>
- *
- * <p>It mirrors the role of {@code LingoFuseStatus} in the C# binding.
  *
  * <h2>Status queue</h2>
  *
@@ -55,12 +61,21 @@ import java.util.Objects;
  * <h2>Health checks</h2>
  *
  * <p>{@link #checkMainThread()} reports whether the simulated main
- * thread is running. {@link #checkApp(String)} and
- * {@link #checkApi(String, String)} perform cache-based lookups that
+ * thread is running. All other probes are cache-based lookups that
  * are updated by network broadcasts with an approximate 3-second
  * delay. They are suitable for probing and diagnostics, not for
  * authoritative availability decisions. For critical paths, issue
  * the call and handle timeouts explicitly.
+ *
+ * <h2>UID argument representation</h2>
+ *
+ * <p>The C ABI declares the UID parameter of {@code LF_Check_UID} and
+ * {@code LF_Check_UID_Api} as {@code TP2P_UID___} (a 32-byte array).
+ * In cdecl an array parameter decays to a pointer, so this class
+ * accepts the UID as a Java {@code byte[]} of length exactly 32,
+ * copies it into a confined Arena on every call, and passes the
+ * resulting segment. Length mismatches are rejected with
+ * {@link IllegalArgumentException} before any native call is made.
  */
 public final class LingoFuseStatus {
 
@@ -235,5 +250,141 @@ public final class LingoFuseStatus {
             return NativeCall.callInt(
                     NativeMethods.LF_CheckApi, appSeg, apiSeg) != 0;
         }
+    }
+
+    /**
+     * Probes whether a client with the given UID is currently known to
+     * the mesh (locally or via the cached remote view).
+     *
+     * <p>Same cache-based caveat as {@link #checkApp(String)}: fresh
+     * registrations may produce a false negative for a short window,
+     * and fresh unregistrations may produce a false positive.
+     *
+     * @param uid the 32-byte UID; must not be null and must be exactly
+     *            32 bytes long
+     * @return true when the UID is present in the local or cached
+     *         remote view
+     * @throws NullPointerException     if {@code uid} is null
+     * @throws IllegalArgumentException if {@code uid.length != 32}
+     */
+    public static boolean checkUid(byte[] uid) {
+        checkUidLength(uid, "uid");
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment uidSeg = allocateUid(arena, uid);
+            return NativeCall.callInt(
+                    NativeMethods.LF_Check_UID, uidSeg) != 0;
+        }
+    }
+
+    /**
+     * Probes whether a client with the given UID exposes the named
+     * API.
+     *
+     * <p>Same cache-based caveat as {@link #checkApp(String)}.
+     *
+     * @param uid     the 32-byte UID; must not be null and must be
+     *                exactly 32 bytes long
+     * @param apiName the API name; must not be null
+     * @return true when the API is available on at least one client
+     *         with the matching UID
+     * @throws NullPointerException     if any argument is null
+     * @throws IllegalArgumentException if {@code uid.length != 32}
+     */
+    public static boolean checkUidApi(byte[] uid, String apiName) {
+        checkUidLength(uid, "uid");
+        Objects.requireNonNull(apiName, "apiName must not be null");
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment uidSeg = allocateUid(arena, uid);
+            MemorySegment apiSeg = arena.allocateFrom(apiName);
+            return NativeCall.callInt(
+                    NativeMethods.LF_Check_UID_Api,
+                    uidSeg,
+                    apiSeg) != 0;
+        }
+    }
+
+    /**
+     * Probes whether at least one client has the given P2P group name.
+     *
+     * <p>Same cache-based caveat as {@link #checkApp(String)}.
+     *
+     * @param p2pName the P2P group name; must not be null
+     * @return true when the group is present in the local or cached
+     *         remote view
+     * @throws NullPointerException if {@code p2pName} is null
+     */
+    public static boolean checkP2pName(String p2pName) {
+        Objects.requireNonNull(p2pName, "p2pName must not be null");
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment seg = arena.allocateFrom(p2pName);
+            return NativeCall.callInt(
+                    NativeMethods.LF_Check_P2PNAME, seg) != 0;
+        }
+    }
+
+    /**
+     * Probes whether at least one client in the given P2P group
+     * exposes the named API.
+     *
+     * <p>Same cache-based caveat as {@link #checkApp(String)}.
+     *
+     * @param p2pName the P2P group name; must not be null
+     * @param apiName the API name; must not be null
+     * @return true when the API is available on at least one client in
+     *         the group
+     * @throws NullPointerException if either argument is null
+     */
+    public static boolean checkP2pNameApi(String p2pName, String apiName) {
+        Objects.requireNonNull(p2pName, "p2pName must not be null");
+        Objects.requireNonNull(apiName, "apiName must not be null");
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment groupSeg = arena.allocateFrom(p2pName);
+            MemorySegment apiSeg = arena.allocateFrom(apiName);
+            return NativeCall.callInt(
+                    NativeMethods.LF_Check_P2PNAME_Api,
+                    groupSeg,
+                    apiSeg) != 0;
+        }
+    }
+
+    // ==================================================================
+    // Internal helpers
+    // ==================================================================
+
+    /**
+     * Validates that a UID argument has exactly the expected length.
+     *
+     * @param uid     the UID argument
+     * @param argName the parameter name to use in the error message
+     * @throws NullPointerException     if {@code uid} is null
+     * @throws IllegalArgumentException if {@code uid.length} does not
+     *                                  match {@link NativeTypes#UID_BYTES}
+     */
+    private static void checkUidLength(byte[] uid, String argName) {
+        Objects.requireNonNull(uid, argName + " must not be null");
+        if (uid.length != NativeTypes.UID_BYTES) {
+            throw new IllegalArgumentException(
+                    argName + " must be exactly " + NativeTypes.UID_BYTES
+                            + " bytes, got " + uid.length);
+        }
+    }
+
+    /**
+     * Allocates a 32-byte segment in the given arena and copies the
+     * UID into it.
+     *
+     * @param arena the arena to allocate from
+     * @param uid   the 32-byte UID; must have been validated already
+     * @return a segment that holds the 32 UID bytes
+     */
+    private static MemorySegment allocateUid(Arena arena, byte[] uid) {
+        MemorySegment seg = arena.allocate(NativeTypes.UID_BYTES);
+        MemorySegment.copy(uid, 0, seg, ValueLayout.JAVA_BYTE, 0,
+                (int) NativeTypes.UID_BYTES);
+        return seg;
     }
 }

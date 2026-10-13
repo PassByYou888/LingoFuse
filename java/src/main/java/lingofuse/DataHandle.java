@@ -116,6 +116,40 @@ import java.util.Objects;
  * <p>The atomic-type readers are exact by default, because a
  * partially read integer is never useful.
  *
+ * <h2>Auto sender identity (side data)</h2>
+ *
+ * <p>Every inbound request payload carries two identity fields that
+ * the SENDER'S transport layer injects automatically before
+ * transmission (Pascal side: {@code TC40_LF_Client.Send_*} -&gt;
+ * {@code TMemory_Param_Tool.Rebuild_UID_and_P2PName}). The two fields
+ * are:
+ *
+ * <ul>
+ *   <li>{@code FromUID} - the sender's 32-byte session UID.</li>
+ *   <li>{@code FromP2PName} - the sender's user-supplied P2P group
+ *       name.</li>
+ * </ul>
+ *
+ * <p>These two fields are "SIDE DATA". They are NOT properties of the
+ * handle itself. They are metadata that the sender wrote into the
+ * payload header, and the receiver therefore sees them in the
+ * {@code Data_Param} of the INPUT handle it receives from the
+ * framework.
+ *
+ * <p>The two accessors {@link #getP2pUid()} and {@link #getP2pName()}
+ * read those fields. Because this is side data, they work ONLY for
+ * INPUT handles. Calling them on an OUTPUT handle logs a warning on
+ * the C side and returns a null UID / empty string. Calling them on a
+ * handle the caller created itself also yields a null UID / empty
+ * string, because such a handle has no "sender".
+ *
+ * <p>The accessors are safe to call from any thread.
+ *
+ * <p>The identity is populated on ALL command paths: Call, Notify,
+ * Sequenced_Call, Sequenced_Notify, and the UID_* / P2PName_*
+ * variants. Local calls (LF_LocalCall / LF_LocalNotify) also inject
+ * identity.
+ *
  * <h2>Thread safety</h2>
  *
  * <p>The native library is thread-safe, but a single data handle
@@ -855,6 +889,158 @@ public final class DataHandle implements AutoCloseable {
             return ReadResult.failure();
         }
         return ReadResult.success(readString());
+    }
+
+    // ==================================================================
+    // Auto sender identity (side data)
+    // ==================================================================
+
+    /**
+     * Returns the 32-byte sender session UID.
+     *
+     * <h2>Side data, not a handle property</h2>
+     *
+     * <p>This accessor reads the {@code FromUID} field that the
+     * SENDER'S transport layer injects automatically before
+     * transmission (Pascal side:
+     * {@code TC40_LF_Client.Send_*} -&gt;
+     * {@code TMemory_Param_Tool.Rebuild_UID_and_P2PName}). It is
+     * therefore "side data": it is not a property of the handle
+     * itself; it is metadata that the sender wrote into the payload
+     * header.
+     *
+     * <p>Because of this design, the accessor is valid ONLY on an
+     * INPUT handle (i.e. the handle passed to a registered Call or
+     * Notify callback). Calling it on an OUTPUT handle logs a warning
+     * on the C side and returns 32 zero bytes. Calling it on a handle
+     * that the caller created itself (via {@link #DataHandle(String)}
+     * or {@link #createPermanent(String)}) also returns 32 zero
+     * bytes, because such a handle has no "sender".
+     *
+     * <h2>Pointer return, not value return</h2>
+     *
+     * <p>The underlying C ABI function returns a POINTER to a 32-byte
+     * UID (Pascal signature:
+     * <pre>{@code
+     * function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+     * }</pre>
+     * i.e. {@code ^TUID___}, not {@code TUID___}). The pointer is
+     * allocated by the C side and is scheduled for automatic release
+     * about 5 seconds after the call ({@code DelayFreeMem}). This
+     * wrapper therefore:
+     *
+     * <ol>
+     *   <li>Copies the 32 bytes immediately with
+     *       {@code MemorySegment.reinterpret(32).toArray(JAVA_BYTE)},
+     *       producing a fresh Java {@code byte[]} that is fully
+     *       detached from the C buffer.</li>
+     *   <li>Does NOT call any deallocation function on the
+     *       pointer.</li>
+     *   <li>Does NOT retain the pointer beyond this method.</li>
+     * </ol>
+     *
+     * <p>Callers never see the transient pointer.
+     *
+     * <h2>Typical uses</h2>
+     *
+     * <ul>
+     *   <li>Call admission / authorisation (compare against an
+     *       allow-list).</li>
+     *   <li>Audit logging (record the caller UID in hex).</li>
+     *   <li>Session state (key a per-sender dict on the UID).</li>
+     *   <li>Multi-tenancy (use the P2P group name as the tenant
+     *       id).</li>
+     *   <li>whoami probe (echo the caller's UID back to it).</li>
+     * </ul>
+     *
+     * <h2>UID lifecycle</h2>
+     *
+     * <p>The value is regenerated on every TunnelLink. Caching a UID
+     * across a link loss is unsafe; callers that cache must re-probe
+     * after a reconnect.
+     *
+     * @return a fresh {@code byte[]} of length exactly 32. All-zero
+     *         when the handle is not an input handle, or when the
+     *         sender did not provide a UID (which normally should not
+     *         happen for remote requests that reached a callback).
+     * @throws LingoFuseObjectDisposedException if the handle has been
+     *                                          closed
+     */
+    public byte[] getP2pUid() {
+        ensureOpen();
+
+        MemorySegment ptr = NativeCall.callSeg(
+                NativeMethods.LF_Get_P2P_UID, handle);
+
+        if (isNull(ptr)) {
+            // The C side returns a NULL pointer when the handle is
+            // nil. Treat that as "no sender identity" (all-zero UID).
+            return new byte[32];
+        }
+
+        // The C side returns a POINTER to a 32-byte UID. The 32-byte
+        // length matches the C ABI's TUID___ size exactly. The
+        // resulting byte[] is a fresh copy and does not reference the
+        // transient C buffer.
+        return ptr.reinterpret(32).toArray(ValueLayout.JAVA_BYTE);
+    }
+
+    /**
+     * Returns the sender's P2P group name as a Java {@code String}.
+     *
+     * <h2>Side data, not a handle property</h2>
+     *
+     * <p>This accessor reads the {@code FromP2PName} field that the
+     * SENDER'S transport layer injects automatically before
+     * transmission. Like {@link #getP2pUid()}, it is "side data", not
+     * a property of the handle itself.
+     *
+     * <p>It is valid ONLY on an INPUT handle. Calling it on an OUTPUT
+     * handle logs a warning on the C side and returns an empty
+     * string. Calling it on a handle the caller created itself also
+     * returns an empty string, because such a handle has no
+     * "sender".
+     *
+     * <h2>Relation to Options.getP2pName</h2>
+     *
+     * <p>This method is completely unrelated to
+     * {@link Options#getP2pName()}, which reads the LOCAL
+     * configuration (the P2P name THIS process declared for itself).
+     * In short:
+     *
+     * <pre>
+     * Options.getP2pName()         -&gt; MY name (local config)
+     * DataHandle.getP2pName()      -&gt; the SENDER's name (side data)
+     * </pre>
+     *
+     * <h2>Buffer lifetime</h2>
+     *
+     * <p>The underlying C function returns a pointer to a transient
+     * buffer that is released about 5 seconds after the call. This
+     * wrapper copies the NUL-terminated string into a fresh Java
+     * {@code String} immediately, so the returned value is fully
+     * detached from that buffer.
+     *
+     * @return the sender's P2P group name, or {@code ""} if the
+     *         sender did not set one (which is a legitimate
+     *         configuration; the default P2P name is empty)
+     * @throws LingoFuseObjectDisposedException if the handle has been
+     *                                          closed
+     */
+    public String getP2pName() {
+        ensureOpen();
+
+        MemorySegment ptr = NativeCall.callSeg(
+                NativeMethods.LF_Get_P2P_Name, handle);
+
+        if (isNull(ptr)) {
+            return "";
+        }
+
+        // The C side returns a pointer to a NUL-terminated UTF-8
+        // string. getString(0) walks the string in place and copies
+        // the decoded characters into a fresh Java String.
+        return ptr.reinterpret(Long.MAX_VALUE).getString(0);
     }
 
     // ==================================================================

@@ -2,17 +2,19 @@
 #  clean.ps1 — remove build artifacts and Go caches
 # -----------------------------------------------------------------------------
 #  Removes:
-#    - go\bin\                (built cross-demo executables)
+#    - go\bin\                (cross-demo executables + copied DLL)
 #    - Go build cache
 #    - Go test cache
 #
 #  Does NOT remove:
-#    - go\LingoFuse64.dll     (manually placed; keep it)
+#    - ..\Binary\LingoFuse64.dll   (the canonical runtime location)
 #    - go.sum / go.mod
 #    - Any source files
 #
 #  Usage:
 #    .\clean.ps1
+#
+#  Exit code is non-zero when any step fails.
 # =============================================================================
 
 $ErrorActionPreference = 'Stop'

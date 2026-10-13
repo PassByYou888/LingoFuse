@@ -12,7 +12,8 @@ package lingofuse
 import "fmt"
 
 // ErrorCode categorises a LingoFuse failure. The set mirrors the
-// C++ lingofuse::ErrorCode and the Rust error::ErrorCode.
+// C++ lingofuse::ErrorCode and the Rust error::ErrorCode, and adds
+// the codes introduced by the v2.0 Go upgrade.
 type ErrorCode int
 
 const (
@@ -58,6 +59,18 @@ const (
 	// size-0 handle. Framework.TryCall converts an empty response
 	// into ErrTimeout.
 	ErrTimeout
+
+	// ErrAsyncDispatchFailed means an asynchronous request was
+	// rejected by the native layer before dispatch. This is the
+	// failure path of LF_Async_Call and its UID_* / P2PName_*
+	// siblings: the native function returned a value other than 1,
+	// which by contract means the OnResult callback will NEVER fire.
+	//
+	// The Go dispatch helper detects this and invokes the user
+	// callback synchronously with ErrAsyncDispatchFailed, so that
+	// there is a single error path for every async call (dispatched
+	// successfully or not).
+	ErrAsyncDispatchFailed
 )
 
 func (c ErrorCode) String() string {
@@ -82,6 +95,8 @@ func (c ErrorCode) String() string {
 		return "not connected"
 	case ErrTimeout:
 		return "timeout"
+	case ErrAsyncDispatchFailed:
+		return "async dispatch failed"
 	default:
 		return fmt.Sprintf("unknown error code %d", int(c))
 	}

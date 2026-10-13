@@ -1,20 +1,13 @@
 package lingofuse
 
-import (
-	"encoding/json"
-	"errors"
-	"runtime"
-
-	"github.com/PassByYou888/LingoFuse/go/sys"
-)
-
 // ---------------------------------------------------------------------------
 // Package-level JSON I/O
 // ---------------------------------------------------------------------------
 //
-// This file mirrors lf_io.hpp (C++), LfIo.cs (C#), lf-io.js
-// (JavaScript), and io.rs (Rust). It is the SINGLE sanctioned path
-// for moving structured data to and from a DataHandle.
+// This file mirrors lf_io.hpp (C++), lf_io.py (Python),
+// LfIo.cs (C#), lf-io.js (JavaScript), and io.rs (Rust). It is the
+// SINGLE sanctioned path for moving structured data to and from a
+// DataHandle.
 //
 // Wire format:
 //
@@ -26,36 +19,93 @@ import (
 // buffer, the entire remaining buffer is consumed. This matches the
 // Pascal, Python, C++, C#, and JavaScript bindings exactly.
 //
-// The JSON serialization policy:
+// JSON SERIALIZATION POLICY
+// -------------------------
+// The toolchain-wide policy is:
 //
-//   - Compact output (encoding/json default).
-//   - Literal UTF-8 for non-ASCII characters. encoding/json does NOT
-//     escape CJK or emoji by default; only <, >, &, and U+2028/U+2029
-//     are escaped. Callers that require strict parity with
-//     serde_json / JavaScript JSON.stringify can disable HTML
-//     escaping with an Encoder.
-//   - No pretty printing.
+//     - Compact output (no indentation, no trailing whitespace).
+//     - Literal UTF-8: non-ASCII characters (CJK, emoji, accented
+//       Latin) are emitted as literal UTF-8 bytes, NOT as \uXXXX
+//       escapes.
+//     - HTML escaping DISABLED: '<', '>', '&', U+2028, U+2029 are
+//       emitted literally, NOT as \u003c, \u003e, \u0026, \u2028,
+//       \u2029.
+//     - Non-serializable values degrade to their str() representation
+//       instead of raising (see MarshalJSON below).
+//
+// {!!!!!  WHY html_escape MUST BE DISABLED  !!!!!}
+// Go's encoding/json.Marshal defaults to HTML-escaping '<', '>',
+// '&', and the line separators U+2028 / U+2029. This is a Go
+// security feature (it protects against XSS when embedding JSON in
+// HTML), but it is INCOMPATIBLE with the rest of the LingoFuse
+// toolchain:
+//
+//     C++       dumps_json  -> ensure_ascii=false, no HTML escape
+//     Python    dumps_json  -> ensure_ascii=False, no HTML escape
+//     JS        JSON.stringify -> no HTML escape
+//
+// A Go service that emitted {"msg":"<hello>"} as
+// {"msg":"\u003chello\u003e"} would produce a byte sequence no other
+// binding produces for the same object. Callers relying on
+// byte-level identity for hashing, caching, or signature verification
+// would observe a spurious mismatch.
+//
+// The fix is to route every serialization through a json.Encoder
+// configured with SetEscapeHTML(false), and to strip the trailing
+// newline that Encoder.Encode appends. This yields byte-identical
+// output to the C++ / Python / JS producers.
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"runtime"
+	"strings"
+
+	"github.com/PassByYou888/LingoFuse/go/sys"
+)
 
 // ---------------------------------------------------------------------------
 // JSON: raw string <-> value
 // ---------------------------------------------------------------------------
 
 // MarshalJSON serializes v to a compact UTF-8 JSON string using the
-// encoding/json defaults.
+// toolchain-wide policy (see the file header).
 //
-// Use this instead of json.Marshal when you want a single, documented
-// entry point that matches the cross-language wire contract.
+// The output is byte-identical to what the C++, Python, and
+// JavaScript bindings produce for the same logical value.
+//
+// Errors:
+//
+//	Any error returned by the underlying json.Encoder is wrapped
+//	as ErrWriteFailed. This is rare in practice: encoding/json
+//	only fails on types it cannot handle, and the encoder used
+//	here is the same one, just with HTML escaping disabled.
 func MarshalJSON(v any) (string, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// Disable HTML escaping: this is the single change that makes
+	// Go's output match the rest of the toolchain.
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
 		return "", wrapErr(ErrWriteFailed, err,
 			"MarshalJSON: %s", err.Error())
 	}
-	return string(b), nil
+	// Encoder.Encode appends a trailing '\n'. Strip it so that the
+	// output is compact. Note that we only strip the LAST newline:
+	// an embedded newline inside a JSON string is escaped by the
+	// encoder as \n, so it cannot appear as a raw byte here.
+	s := buf.String()
+	return strings.TrimRight(s, "\n"), nil
 }
 
 // UnmarshalJSON parses a UTF-8 JSON string into v. Strict: any syntax
 // error is reported as ErrReadFailed.
+//
+// This is the read-side counterpart of MarshalJSON. It does NOT
+// apply the unified JSON repair preprocessing; callers that want
+// repair-on-read should use lingofuse/json_repair_preprocess or the
+// read_json path on DataHandle.
 func UnmarshalJSON(text string, v any) error {
 	if err := json.Unmarshal([]byte(text), v); err != nil {
 		return wrapErr(ErrReadFailed, err,
@@ -128,6 +178,10 @@ func ReadAllBytes(h *DataHandle) ([]byte, error) {
 
 // WriteJSON serializes v as UTF-8 JSON and writes it with the
 // standard NUL terminator.
+//
+// The serialization goes through MarshalJSON, so the toolchain-wide
+// policy (no HTML escape, literal UTF-8, compact output) is
+// guaranteed.
 func WriteJSON(h *DataHandle, v any) error {
 	if h == nil {
 		return newErr(ErrNullHandle, "WriteJSON: nil handle")

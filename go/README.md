@@ -8,7 +8,9 @@
 - **交叉编译友好**：`GOOS=windows go build` 即可，不需要工具链切换
 - **RAII 风格 API**：`DataHandle` / `AppHandle` 显式 `Close()`，不依赖 `runtime.SetFinalizer`
 - **类型安全**：`sys` 层是唯一涉及原生调用的地方，上层全部走 `lingofuse` 包
-- **完整测试**：18 个测试覆盖 ABI smoke、标量/字符串/JSON I/O、错误层级、同进程 E2E 全流程
+- **三种寻址模式**：App 名 / UID / P2PName，统一的 `Target` 接口，可自由切换
+- **现代异步模型**：`AsyncResult` + `CallAsync` / `CallAsyncWithTimeout` / `SequencedCallAsync`
+- **完整测试**：60+ 测试覆盖 ABI smoke、标量/字符串/JSON I/O、错误层级、寻址目标、异步分派、同进程 E2E 全流程
 
 ---
 
@@ -23,7 +25,7 @@
 - [七、跨语言 Cross Demo](#七跨语言-cross-demo)
 - [八、API 速查](#八api-速查)
 - [九、核心概念](#九核心概念)
-- [十、六条铁律](#十六条铁律)
+- [十、铁律](#十铁律)
 - [十一、故障排查](#十一故障排查)
 - [十二、与其它语言绑定的差异](#十二与其它语言绑定的差异)
 
@@ -79,21 +81,27 @@ go/
 ├── LingoFuse64.dll             # 原生库（手动放置，见 §3）
 │
 ├── sys/                        # ① 低层 FFI 层
-│   ├── bindings.go             #   37 个 C 导出函数指针
-│   ├── loader.go               #   purego 动态加载 + 符号解析
+│   ├── bindings.go             #   59 个 C 导出函数指针
+│   ├── uid.go                  #   TP2P_UID 类型 + Parse/Format/IsNull 辅助
+│   ├── loader.go               #   purego 动态加载 + 逐符号解析 + 逐路径错误收集
 │   ├── loader_windows.go       #   Windows 平台绑定
 │   ├── loader_unix.go          #   Unix 平台绑定
-│   ├── callbacks.go            #   回调桥接（trigger ID ↔ Go 函数）
-│   └── strings.go              #   C 字符串辅助
+│   ├── callbacks.go            #   回调桥接（trigger ID ↔ Go 函数）+ 死锁看门狗
+│   └── strings.go              #   C 字符串辅助（CStringScope / GoString）
 │
 ├── lingofuse/                  # ② 高层 RAII 层
 │   ├── errors.go               #   Error / ErrorCode 层级
-│   ├── data_handle.go          #   RAII DataHandle
+│   ├── data_handle.go          #   RAII DataHandle（含侧数据访问器）
 │   ├── app_handle.go           #   RAII AppHandle
 │   ├── io.go                   #   JSON / 字符串 / 字节统一 I/O
-│   ├── framework.go            #   进程级 Facade
+│   ├── framework.go            #   进程级 Facade + 看门狗控制
+│   ├── options.go              #   类型化选项快捷方式（SetOpt* / GetOpt*）
+│   ├── status.go               #   状态队列 + 健康检查（含 UID / P2PName）
 │   ├── network_events.go       #   进程级网络事件回调
-│   └── status.go               #   状态队列 + 健康检查
+│   ├── p2p_registration.go     #   进程级 P2P API 注册
+│   ├── address.go              #   Target 接口 + 三种寻址模式
+│   ├── async.go                #   AsyncResult + 异步分派原语
+│   └── client.go               #   Client 高层门面 + 进程级连接
 │
 ├── cross/                      # ③ 跨语言演示
 │   ├── cross-service/main.go   #   协调器
@@ -102,13 +110,18 @@ go/
 │   └── README.md
 │
 ├── test/                       # ④ 测试
-│   ├── abi_smoke_test.go
-│   ├── data_handle_test.go
-│   ├── errors_test.go
-│   └── e2e_test.go
+│   ├── abi_smoke_test.go       #   库加载 + 句柄创建/读写/释放
+│   ├── abi_probe_test.go       #   UID 参数 ABI 探针
+│   ├── data_handle_test.go     #   标量 I/O、NUL 三态、JSON、JsonOrBytes
+│   ├── errors_test.go          #   ErrorCode 分类、errors.Is/As/Unwrap
+│   ├── options_test.go         #   选项 round-trip
+│   ├── address_test.go         #   Target / UID 辅助 / 三个寻址类
+│   ├── async_test.go           #   异步参数校验 + context + 分派失败路径
+│   └── e2e_test.go             #   同进程 service+client 全流程
 │
 ├── build.ps1                   # 编译脚本
 ├── test.ps1                    # 测试脚本
+├── dev_test.ps1                # 快速开发反馈循环
 └── clean.ps1                   # 清理脚本
 ```
 
@@ -242,7 +255,15 @@ Remove-Item Env:\GOOS, Env:\GOARCH
 
 **注意**：交叉编译只编译 Go 代码；运行时仍需目标平台的原生库（`liblingofuse.so` / `liblingofuse.dylib`）。
 
-### 4.4 清理
+### 4.4 快速开发反馈
+
+```powershell
+.\dev_test.ps1
+```
+
+一次执行 `go build ./... && go vet ./... && go test ./... -count=1`，几秒内给出红/绿信号，不做 `-v` 的详细输出。
+
+### 4.5 清理
 
 ```powershell
 .\clean.ps1
@@ -260,8 +281,11 @@ Remove-Item Env:\GOOS, Env:\GOARCH
 # 全量测试（单元 + E2E 集成）
 .\test.ps1
 
-# 只跑单元测试，跳过 E2E（约 1 秒）
+# 只跑单元测试，跳过 E2E 与 ABI 探针（约 1 秒）
 .\test.ps1 -Short
+
+# 只跑 ABI 探针（升级共享库后验证 UID 参数 ABI 仍正确）
+.\test.ps1 -Probe
 
 # 启用 race detector（需要 gcc 在 PATH 中）
 .\test.ps1 -Race
@@ -281,20 +305,33 @@ go test ./... -v
 # 只跑 ABI smoke
 go test ./test/ -run 'TestLibrary|TestDataHandle|TestPermanent' -v
 
+# 只跑 ABI 探针
+go test ./test/ -run 'TestProbe' -v
+
 # 只跑 E2E（约 25 秒）
 go test ./test/ -run 'TestE2E_' -v
 
 # 只跑错误层级测试
 go test ./test/ -run 'TestError|TestNullHandle|TestInvalid' -v
+
+# 只跑寻址目标测试
+go test ./test/ -run 'TestAppTarget|TestUIDTarget|TestP2PNameTarget|TestTarget' -v
+
+# 只跑异步测试
+go test ./test/ -run 'TestCallAsync|TestSequencedCallAsync|TestAsyncResult|TestCallCtx' -v
 ```
 
 ### 5.3 测试矩阵
 
 | 测试文件 | 覆盖范围 | 耗时 |
 |---------|---------|:----:|
-| `abi_smoke_test.go` | 库加载、句柄创建/读写/释放 | < 1 s |
-| `data_handle_test.go` | 标量 I/O、NUL 三态、exact-read、JSON、JsonOrBytes | < 1 s |
-| `errors_test.go` | ErrorCode 分类、errors.Is/As/Unwrap、null-handle 检测 | < 1 s |
+| `abi_smoke_test.go` | 库加载、句柄创建/读写/释放、永久句柄 | < 1 s |
+| `abi_probe_test.go` | UID 参数 ABI 探针、UID 十六进制 round-trip | < 1 s |
+| `data_handle_test.go` | 标量 I/O、NUL 三态、exact-read、JSON、JsonOrBytes、Unicode 保真 | < 1 s |
+| `errors_test.go` | ErrorCode 分类、errors.Is/As/Unwrap、null-handle、invalid-argument | < 1 s |
+| `options_test.go` | 布尔/整数/字符串选项 round-trip、password 掩码、未知选项 | < 1 s |
+| `address_test.go` | 三个寻址类属性、UID 辅助、Target 接口一致性 | < 1 s |
+| `async_test.go` | 参数校验、Context 取消、异步分派失败同步回调路径 | < 1 s |
 | `e2e_test.go` | 同进程 service+client、LocalCall、Notify、回调 panic 隔离、TryCall 空响应、Shutdown 幂等 | ~25 s |
 
 **跳过逻辑**：若原生库不可用，所有测试会打印 `[SKIP]` 并**视为通过**，不报错。这样在没有原生库的 CI 环境里也能保持绿色。
@@ -406,32 +443,67 @@ go run main.go
 5 + 7 = 12
 ```
 
-### 6.2 远程调用
+### 6.2 远程调用（Client 门面）
 
-把服务端和客户端拆成两个进程：
-
-**服务端**：把上面的 `app.LocalCall` 部分去掉，保留 `PrepareService` / `PrepareClient` / `PrepareDone`，然后阻塞等待 Enter。
-
-**客户端**：不创建 `AppHandle`，`PrepareClient(endpoint, nil)` 传 nil，然后：
+推荐用 `Client` 门面简化进程级连接管理。它会自动完成 `PrepareClient` + `PrepareDone`，且后续调用复用同一个进程级连接：
 
 ```go
-req, _ := lingofuse.NewDataHandle("add")
-defer req.Close()
-_ = lingofuse.WriteJSON(req, AddArgs{A: 5, B: 7})
-_ = req.SetPosition(0)
+package main
 
-res, ok, err := lingofuse.TryCall("Calc", req, 3000)
-if err != nil {
-    log.Fatal(err)
-}
-if !ok {
-    log.Fatal("timeout or app not found")
-}
-defer res.Close()
+import (
+    "fmt"
+    "log"
+    "time"
 
-var out AddResult
-_ = lingofuse.ReadJSON(res, &out)
-fmt.Printf("5 + 7 = %d\n", out.Sum)
+    "github.com/PassByYou888/LingoFuse/go/lingofuse"
+)
+
+type AddArgs struct {
+    A int `json:"a"`
+    B int `json:"b"`
+}
+
+type AddResult struct {
+    Sum int `json:"sum"`
+}
+
+func main() {
+    // 第一次 Connect 做实际的网络设置；第二次及以后返回同一连接。
+    c := lingofuse.MustConnect("Calc", "ipc:go_calc",
+        lingofuse.WithTimeout(3*time.Second))
+
+    // 同步调用：5 + 7
+    res, err := c.Call("add", AddArgs{A: 5, B: 7}, 0)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer res.Close()
+
+    var out AddResult
+    _ = lingofuse.ReadJSON(res, &out)
+    fmt.Printf("5 + 7 = %d\n", out.Sum)
+
+    // 异步调用：fire-and-forget，结果在回调中处理
+    done := make(chan struct{})
+    err = c.CallAsync("add", AddArgs{A: 40, B: 2},
+        func(r lingofuse.AsyncResult) {
+            defer close(done)
+            if r.Err != nil {
+                log.Printf("async failed: %v", r.Err)
+                return
+            }
+            var v AddResult
+            _ = lingofuse.ReadJSON(r.Value, &v)
+            fmt.Printf("40 + 2 = %d (async)\n", v.Sum)
+        })
+    if err != nil {
+        log.Fatal(err)
+    }
+    <-done
+
+    _ = lingofuse.ExitMainThread()
+    _ = lingofuse.Shutdown()
+}
 ```
 
 `TryCall` 返回 `(*DataHandle, bool, error)`：
@@ -439,6 +511,56 @@ fmt.Printf("5 + 7 = %d\n", out.Sum)
 - `(handle, true, nil)` — 成功
 - `(nil, false, nil)` — 超时或目标不可达
 - `(nil, false, err)` — 空句柄或加载失败
+
+### 6.3 三种寻址模式
+
+除了 App 名寻址，LingoFuse 还支持 UID 和 P2PName 寻址。三者共用同一个 `Target` 接口：
+
+```go
+// App 名寻址：本地优先
+app := lingofuse.App("Calc")
+res, _ := app.Call("add", AddArgs{A: 1, B: 2}, 3000)
+
+// UID 寻址：定向到具体会话（本地优先）
+var uid sys.TP2P_UID = ...  // 通过 whoami 探测获得
+uidTgt := lingofuse.UID(uid)
+res, _ = uidTgt.Call("add", AddArgs{A: 1, B: 2}, 3000)
+
+// P2PName 寻址：组内负载均衡（始终走网络）
+p2p := lingofuse.P2P("workers")
+res, _ = p2p.Call("add", AddArgs{A: 1, B: 2}, 3000)
+```
+
+三者都通过 `Client` 门面也能拿到：
+
+```go
+c := lingofuse.MustConnect("Calc", "ipc:go_calc")
+app := c.App("Calc")
+uidTgt := c.UID(uid)
+p2p := c.P2P("workers")
+```
+
+### 6.4 whoami 模式（探测自身 UID）
+
+客户端要获得自身 UID，需要服务端提供一个读取侧数据的 API：
+
+```go
+// 服务端：读取调用方 UID 并回传
+app.RegisterCall("whoami", "echo caller identity",
+    func(inp, out *lingofuse.DataHandle) {
+        uid, _ := inp.GetP2PUID()   // 32-byte 侧数据
+        name, _ := inp.GetP2PName() // 发送方 P2P 名
+        _ = lingofuse.WriteJSON(out, map[string]string{
+            "uid_hex":  sys.FormatUIDHex(uid),
+            "p2p_name": name,
+        })
+    })
+
+// 客户端：调用 whoami 并缓存返回的 UID
+res, _ := lingofuse.App("WhoamiSvc").Call("whoami", nil, 3000)
+```
+
+**注意**：UID 在每次 `TunnelLink` 时都会重新生成。链路断开重连后必须重新探测。
 
 ---
 
@@ -543,15 +665,19 @@ cd D:\CoreLibrary\LingoFuse\go\bin
 | `WriteSingle/WriteDouble` | 小端浮点 |
 | `Position() / SetPosition(pos)` | 读写游标 |
 | `Size() / SetSize(n)` | 缓冲区大小 |
+| `GetP2PUID() (sys.TP2P_UID, error)` | 读取发送方 UID（**仅限回调的 input 句柄**） |
+| `GetP2PName() (string, error)` | 读取发送方 P2P 名（**仅限回调的 input 句柄**） |
 
 #### JSON I/O
 
 | 函数 | 说明 |
 |------|------|
-| `WriteJSON(h, v) error` | 序列化 + 写入 + NUL 结尾 |
+| `WriteJSON(h, v) error` | 序列化 + 写入 + NUL 结尾（**HTML 转义关闭**） |
 | `ReadJSON(h, &v) error` | 读到 NUL + 反序列化 |
 | `TryReadJSON(h, &v) (bool, error)` | 非抛出版本 |
 | `ReadJSONOrBytes(h) (JsonOrBytes, error)` | 宽容读取（Empty / JSON / Bytes 三态） |
+| `MarshalJSON(v) (string, error)` | 序列化为紧凑 UTF-8 字符串 |
+| `UnmarshalJSON(text, &v) error` | 反序列化 |
 
 #### `AppHandle`
 
@@ -579,9 +705,48 @@ cd D:\CoreLibrary\LingoFuse\go\bin
 | `Notify(appName, param) error` | 单向通知 |
 | `SequencedNotify(appName, param) error` | FIFO 单向通知 |
 | `SetOption(name, value) error` | 设置运行时选项 |
+| `GetOption(name) (string, error)` | 读取运行时选项 |
 | `GenerateAppName() (string, error)` | 生成全局唯一应用名 |
 | `GetAppName(app) (string, error)` | 查询应用名 |
-| `Shutdown() error` | 完全关闭，幂等 |
+| `Shutdown() error` | 完全关闭；**同时清空本地 P2P 注册表**；幂等 |
+
+#### 看门狗控制
+
+| 函数 | 说明 |
+|------|------|
+| `DisableDeadlockWatchdog()` | 关闭 LingoFuse 死锁看门狗（**谨慎使用**，见 §9.7） |
+| `IsDeadlockWatchdogEnabled() bool` | 查询看门狗状态 |
+
+#### 类型化选项（`options.go`）
+
+| 函数 | 选项键 | 类型 |
+|------|--------|------|
+| `SetOptQuiet(bool) / GetOptQuiet()` | `Quiet` | bool |
+| `SetOptShowThreadID(bool) / GetOptShowThreadID()` | `ShowThreadID` | bool |
+| `SetOptConsoleOutput(bool) / GetOptConsoleOutput()` | `ConsoleOutput` | bool |
+| `SetOptOverlapConnection(bool) / GetOptOverlapConnection()` | `Overlap_Connection` | bool |
+| `SetOptWaitConnectionReadyOk(bool) / GetOptWaitConnectionReadyOk()` | `Wait_Connection_ReadyOk` | bool |
+| `SetOptWaitConnectionTimeout(ms) / GetOptWaitConnectionTimeout()` | `Wait_Connection_Timeout` | uint64 |
+| `SetOptP2PName(str) / GetOptP2PName()` | `LF_P2P_name` | string |
+| `SetOptPassword(str) / GetOptPassword()` | `password` | string（掩码） |
+| `SetOptDebug(str) / GetOptDebug()` | `debug` | string（只写） |
+| `SetOptIPCServThreadCount(int) / GetOptIPCServThreadCount()` | `IPC_Serv_ThreadCount` | int |
+| `SetOptIPCServMaxQueueLength(int) / GetOptIPCServMaxQueueLength()` | `IPC_Serv_MaxQueueLength` | int |
+| `SetOptIPCServMaxMsgSize(int) / GetOptIPCServMaxMsgSize()` | `IPC_Serv_MaxMsgSize` | int |
+| `SetOptFixedSequencedTime(ms) / GetOptFixedSequencedTime()` | `Fixed_Sequenced_Time` | uint64 |
+| `SetOptDataHandleIdleTimeout(ms) / GetOptDataHandleIdleTimeout()` | `DataHandle_Idle_Timeout` | uint64 |
+| `SetOptDataHandlePoolScanInterval(ms) / GetOptDataHandlePoolScanInterval()` | `DataHandle_Pool_Scan_Interval` | uint64 |
+| `SetOptNoReponseCmdNullFlushThreshold(int) / GetOptNoReponseCmdNullFlushThreshold()` | `No_Reponse_Cmd_NULL_Flush_Threshold` | int |
+
+#### 进程级 P2P 注册（`p2p_registration.go`）
+
+| 函数 | 说明 |
+|------|------|
+| `RegisterP2PCall(name, desc, handler) error` | 注册进程级 P2P Call API |
+| `RegisterP2PNotify(name, desc, handler) error` | 注册进程级 P2P Notify API |
+| `UnregisterP2P(name) (bool, error)` | 注销单个 P2P API |
+| `ResetP2PRegistrations()` | **批量释放**所有本地 P2P 注册（`Shutdown` 会自动调用） |
+| `IsP2PRegistered(name) bool` | 诊断：某 API 是否已注册 |
 
 #### 状态与健康检查
 
@@ -594,6 +759,10 @@ cd D:\CoreLibrary\LingoFuse\go\bin
 | `CheckMainThread() (bool, error)` | 主线程是否运行 |
 | `CheckApp(name) (bool, error)` | 应用是否可见（有 ~3 秒缓存延迟） |
 | `CheckApi(app, api) (bool, error)` | API 是否可见（同上） |
+| `CheckUID(uid) (bool, error)` | UID 是否在线（同上） |
+| `CheckUIDApi(uid, api) (bool, error)` | UID 是否暴露某 API（同上） |
+| `CheckP2PName(name) (bool, error)` | P2P 组是否存在（同上） |
+| `CheckP2PNameApi(name, api) (bool, error)` | P2P 组是否暴露某 API（同上） |
 
 #### 网络事件
 
@@ -602,6 +771,65 @@ cd D:\CoreLibrary\LingoFuse\go\bin
 | `SetNetworkEvent(onConnect, onDisconnect) error` | 安装全局回调；传 nil 表示禁用 |
 | `ClearNetworkEvent() error` | 移除两个回调 |
 | `IsNetworkEventInstalled() bool` | 是否有回调 |
+
+#### 寻址目标（`address.go`）
+
+| 类型 / 函数 | 说明 |
+|-------------|------|
+| `Target` | 三种寻址模式共用的接口 |
+| `AppTarget` / `NewAppTarget(name)` / `App(name)` | App 名寻址（本地优先） |
+| `UIDTarget` / `NewUIDTarget(uid)` / `UID(uid)` | UID 寻址（本地优先） |
+| `P2PNameTarget` / `NewP2PNameTarget(group)` / `P2P(group)` | P2PName 寻址（非本地优先） |
+| `(*AppTarget).Name() / (*UIDTarget).UID() / (*P2PNameTarget).Group()` | 访问寻址键 |
+
+**`Target` 接口方法**：
+
+| 方法 | 阻塞？ | 回调内可调用？ | 说明 |
+|------|:------:|:--------------:|------|
+| `Call(api, payload, timeoutMs) (*DataHandle, error)` | 是 | ❌ | 同步请求-响应 |
+| `CallCtx(ctx, api, payload) (*DataHandle, error)` | 是 | ❌ | 带 context 的同步请求 |
+| `CallAsync(api, payload, cb func(AsyncResult)) error` | 否 | ✅ | 异步请求（回调式） |
+| `CallAsyncWithTimeout(api, payload, timeout, cb) error` | 否 | ✅ | 异步 + Go 侧超时 |
+| `SequencedCall(api, payload, timeoutMs) (*DataHandle, error)` | 是 | ❌ | FIFO 同步请求 |
+| `SequencedCallCtx(ctx, api, payload) (*DataHandle, error)` | 是 | ❌ | FIFO + context |
+| `SequencedCallAsync(api, payload, cb func(AsyncResult)) error` | 否 | ✅ | FIFO 异步请求 |
+| `Notify(api, payload) error` | 否 | ✅ | 单向通知 |
+| `SequencedNotify(api, payload) error` | 否 | ✅ | FIFO 单向通知 |
+| `Describe() string` | 否 | ✅ | 返回寻址描述 |
+
+#### `AsyncResult`
+
+```go
+type AsyncResult struct {
+    Value *DataHandle // 响应句柄（**借用**，回调返回后即失效）
+    Err   error       // 非 nil 时 Value 必为 nil
+}
+```
+
+**所有权契约**：
+- `Value` 是**借用**句柄，只在回调体内有效；**回调返回后立即失效**。
+- **禁止** `Close()` 该句柄。
+- **禁止**把 `Value` 或其裸指针传出回调体。
+
+#### `Client` 高层门面（`client.go`）
+
+| 函数 / 方法 | 说明 |
+|------------|------|
+| `Connect(app, endpoint, opts...) (*Client, error)` | 首次调用做实际网络设置；后续调用复用连接 |
+| `MustConnect(...) *Client` | Connect 的 panic 版本，适合 `main()` 或包级初始化 |
+| `IsConnected() bool` | 进程级连接是否已建立 |
+| `LastConnectError() error` | 返回最近一次 Connect 失败的 err |
+| `WithTimeout(d) ClientOption` | 设置默认调用超时 |
+| `(*Client).App(name) *AppTarget` | 构造 App 名寻址目标 |
+| `(*Client).UID(uid) *UIDTarget` | 构造 UID 寻址目标 |
+| `(*Client).P2P(group) *P2PNameTarget` | 构造 P2PName 寻址目标 |
+| `(*Client).DefaultTarget() *AppTarget` | 默认目标的快捷构造 |
+| `(*Client).Call / TryCall / Notify / ...` | 转发到 `DefaultTarget()` |
+| `(*Client).DefaultAppName() / Endpoint() / Timeout()` | 访问只读属性 |
+
+**约束**：
+- **一个进程只有一个连接**。第一次 `Connect` 决定 endpoint；后续 `Connect` 忽略 endpoint 参数。
+- `Client` **没有 `Close()`**：连接的生命周期是进程级的，不由 `Client` 实例拥有。
 
 #### 错误
 
@@ -615,7 +843,7 @@ type Error struct {
 
 `ErrorCode` 常量：`ErrGeneric` / `ErrLibraryLoadFailed` / `ErrNullHandle` / `ErrInvalidArgument`
 / `ErrWriteFailed` / `ErrReadFailed` / `ErrCallFailed` / `ErrRegistrationFailed`
-/ `ErrNotConnected` / `ErrTimeout`
+/ `ErrNotConnected` / `ErrTimeout` / `ErrAsyncDispatchFailed`
 
 用 `errors.Is(err, &lingofuse.Error{Code: lingofuse.ErrTimeout})` 按类别判断，或
 `errors.As(err, &le)` 取回 `*lingofuse.Error` 结构体。
@@ -625,9 +853,11 @@ type Error struct {
 `sys` 是低层 FFI 层，普通用户**不应**直接使用。它暴露：
 
 - `sys.LoadLibrary() error` — 显式加载原生库
-- 37 个函数变量（`LF_CreateData` / `LF_Call` / ...），全部是 C ABI 的镜像
-- `sys.CStringScope` / `sys.GoString` — C 字符串辅助
-- `sys.RegisterCallCallback` / `sys.RegisterNotifyCallback` — 回调注册
+- 59 个函数变量（`LF_CreateData` / `LF_Call` / ...），全部是 C ABI 的镜像
+- `sys.CStringScope` / `sys.CString` / `sys.GoString` — C 字符串辅助
+- `sys.TP2P_UID` / `sys.NullUID` / `sys.IsNullUID` / `sys.ParseUIDHex` / `sys.FormatUIDHex` — UID 辅助
+- `sys.RegisterCallCallback` / `sys.RegisterNotifyCallback` / `sys.RegisterAsyncCallback` — 回调注册
+- `sys.DisableDeadlockWatchdog` / `sys.IsDeadlockWatchdogEnabled` — 看门狗控制（已通过 `lingofuse` 重导出）
 
 ---
 
@@ -637,11 +867,23 @@ type Error struct {
 
 | 模式 | 语义 | 顺序保证 | 返回值 |
 |------|------|:--------:|:------:|
-| **Call** | 请求-响应，同步 | — | ✅ |
+| **Call** | 请求-响应，同步或异步 | — | ✅ |
 | **Notify** | 单向通知 | ❌ | ❌ |
 | **Sequenced Notify** | 单向通知 | ✅（同一 `(app, api)` 对内 FIFO） | ❌ |
 
-### 9.2 数据句柄的生命周期
+### 9.2 三种寻址模式
+
+| 模式 | 路由键 | 本地优先？ | 负载均衡？ | 典型用途 |
+|------|--------|:----------:|:----------:|---------|
+| **AppTarget** | App 名字符串 | ✅ | ❌ | 固定服务发现 |
+| **UIDTarget** | 32 字节 UID | ✅ | ❌ | 定向到具体会话 |
+| **P2PNameTarget** | 组名字符串 | ❌ | ✅（服务端） | 同质服务集群 |
+
+- **App 名 / UID**：本地优先。若本进程已注册同名 App 或同 UID 客户端，直接本地执行。
+- **P2PName**：**不做本地查找**。即使本进程内就有同组客户端，调用也会转发到服务端进行负载均衡。
+- **UID 每次 TunnelLink 重新生成**：跨重连缓存 UID 是不安全的，必须重新探测。
+
+### 9.3 数据句柄的生命周期
 
 ```
 NewDataHandle(api)        →  自动回收池，10 分钟空闲后回收（扫描间隔 5 秒）
@@ -651,36 +893,124 @@ Close()                   →  自动回收：只标记 deleted；永久：同�
 
 **不要依赖自动回收**。自动回收是安全网，不是替代方案。生产中必须显式 `Close()`。
 
-### 9.3 回调契约
+### 9.4 回调契约
 
 回调在原生库的后台工作线程上执行。回调内**禁止**：
 
 - ❌ 阻塞（`time.Sleep`、等待 channel、长时间 IO）
-- ❌ 调用任何阻塞型 LingoFuse 函数（`Call` / `LocalCall` / `PrepareDone` / `Shutdown`）——会死锁
+- ❌ 调用任何**同步** LingoFuse 函数：
+  - `lingofuse.Call` / `TryCall`
+  - `Target.Call` / `CallCtx` / `SequencedCall` / `SequencedCallCtx`
+  - `AppHandle.LocalCall` / `LocalNotify`
+  - `lingofuse.PrepareDone` / `Shutdown` / `ExitMainThread`
+  - **会自锁死锁** —— 回调持有内部锁，同步调用需要同一把锁才能投递响应
 - ❌ 访问 UI（若绑定到 GUI）
 - ❌ `Close()` 借用的句柄（input / output 由原生层管理）
 
 回调内**可以**：
 
 - ✅ 读 `input`、写 `output`
+- ✅ 通过 `input.GetP2PUID()` / `input.GetP2PName()` 读取发送方侧数据
 - ✅ 访问 `sync.Mutex` 保护的共享状态
+- ✅ **调用异步 API**：`Target.CallAsync` / `SequencedCallAsync`
+- ✅ **发送单向通知**：`Target.Notify` / `SequencedNotify` / `lingofuse.Notify`
 - ✅ panic —— Go 包装会在 trampoline 中 recover，原生层看到的是"回调正常返回"，输出为空
 
-### 9.4 清理顺序（LF-CLEAN-001）
+### 9.5 侧数据：UID / P2PName
 
+LingoFuse 框架会在**发送方**把两个身份字段自动写入每个请求载荷的头部：
+
+- `FromUID`（32 字节）—— 发送方的会话 UID
+- `FromP2PName`（UTF-8 字符串）—— 发送方的 P2P 组名
+
+接收方只能在**触发事件的回调的 `input` 参数**上读取：
+
+| 位置 | 有效？ |
+|------|:------:|
+| `On_Call` / `On_Notify` 回调的 `input` | ✅ |
+| `LocalCall` / `LocalNotify` 回调的 `input` | ✅ |
+| 回调的 `output` | ❌（零填充 / 空） |
+| 自己 `NewDataHandle()` 创建的句柄 | ❌（同上） |
+
+调用无效位置时，原生层**不抛异常**，只打印警告并返回零 UID / 空字符串。
+
+**C ABI 层**：`LF_Get_P2P_UID` 返回 `const TP2P_UID*`（**指针**，不是值）。指针由框架在调用后约 5 秒自动释放。Go 包装层 `DataHandle.GetP2PUID()` 会立即拷贝 32 字节到 Go 值，调用者从未接触裸指针。
+
+### 9.6 JSON 序列化策略（跨语言字节级一致）
+
+Go 绑定的 JSON 输出与 C++ / Python / JavaScript **逐字节一致**：
+
+| 特性 | Go 实现 | 与其它语言对比 |
+|------|---------|---------------|
+| **紧凑输出** | `strings.TrimRight(buf, "\n")` | ✅ 与 C++ `dump(-1)` / JS `JSON.stringify` 一致 |
+| **非 ASCII 字面 UTF-8** | 默认（`encoding/json` 不转义 CJK / emoji） | ✅ 与 C++ `ensure_ascii=false` / Python `ensure_ascii=False` 一致 |
+| **HTML 转义关闭** | `enc.SetEscapeHTML(false)` | ✅ 与其它语言一致（**Go 默认会转义 `<` `>` `&` U+2028 U+2029，需显式关闭**） |
+
+**关键点**：Go 的 `encoding/json.Marshal` 默认会对 `<`、`>`、`&`、`U+2028`、`U+2029` 做 HTML 转义。这是 Go 的安全特性（防止 XSS），但与 LingoFuse 工具链的其它语言不一致。Go 绑定通过 `json.Encoder.SetEscapeHTML(false)` 显式关闭了它，保证跨语言字节级一致。
+
+### 9.7 死锁看门狗
+
+**问题**：`purego` 不使用 cgo，Go runtime **看不见** LingoFuse 的原生 worker 线程。当用户 goroutine 阻塞等待异步回调时（例如在 `sync.WaitGroup` 上），runtime 会误判"所有 goroutine 都在 sleep"，然后 `throw("all goroutines are asleep - deadlock!")` 硬崩溃整个进程——即使 C 端实际上工作正常，几微秒后就会回调。
+
+**方案**：Go 绑定在 `init()` 中启动一个**递归定时器**（每小时触发一次，立即重新调度自己）。这会在 runtime 的定时器堆中始终保留一个待处理事件，从而让 runtime 认定"程序还有工作要做"，不会误判死锁。
+
+**可控性**：
+
+```go
+// 默认开启。若无异步回调阻塞场景，可关闭。
+lingofuse.DisableDeadlockWatchdog()
+
+// 查询当前状态
+lingofuse.IsDeadlockWatchdogEnabled()
 ```
-ExitMainThread  →  app.Close  →  Shutdown
+
+**关闭的代价**：恢复 Go runtime 内置的死锁检测。**若应用存在"某个 goroutine 阻塞等待原生异步回调，同时没有其它 goroutine 可运行"的场景，runtime 会硬崩溃**。
+
+**建议**：
+- **保留默认（开启）**：更安全，代价可忽略（每小时一个定时器事件）。
+- **只有明确不使用异步回调，或应用自身有其它 always-pending 定时器**时才关闭。
+
+### 9.8 AsyncResult 的所有权
+
+`AsyncResult` 由异步回调接收：
+
+```go
+tgt.CallAsync("api", payload, func(r AsyncResult) {
+    if r.Err != nil {
+        // 错误分支：r.Value 必为 nil
+        return
+    }
+    // 成功分支：r.Value 是**借用**句柄
+    // ✅ 允许：在回调体内读取数据
+    data, _ := lingofuse.ReadStringBytes(r.Value)
+    // ...
+    // ❌ 禁止：Close(r.Value) —— double-free
+    // ❌ 禁止：把 r.Value 存到全局变量、传给其它 goroutine
+})
 ```
 
-| 步骤 | 作用 |
-|------|------|
-| `ExitMainThread` | 停止模拟主线程；**会清空所有 DataHandle**（包括永久句柄） |
-| `app.Close` | 解绑应用、停止顺序通知线程、释放回调槽位 |
-| `Shutdown` | 释放原生全局池、卸载 IPC 库 |
+**四条硬规则**：
+1. **在回调体内**读或拷贝数据。
+2. **禁止** `Close(r.Value)`。
+3. **禁止**把 `r.Value`（或其裸指针）传出回调体。
+4. **禁止**在回调体外的任何时刻访问 `r.Value`。
 
-三步都是幂等的。推荐用 `defer` 保证任何退出路径都执行。
+### 9.9 Client 门面（单例语义）
 
-### 9.5 NUL-framed 字符串三态
+LingoFuse 框架是**进程级单例**：一个模拟主线程、一个客户端池、一个服务池。`Client` 因此不是独立连接：
+
+```go
+c1 := lingofuse.MustConnect("AppA", "ipc:endpoint1")
+c2 := lingofuse.MustConnect("AppB", "ipc:endpoint2")
+// c2 复用 c1 建立的进程级连接；endpoint2 参数被忽略
+```
+
+**约束**：
+- 第一次 `Connect` 决定 endpoint，后续 `Connect` 只做诊断记录。
+- `Client` **没有 `Close()`**：连接不随 `Client` 释放。
+- 释放连接用包级函数 `ExitMainThread` 或 `Shutdown`。
+
+### 9.10 NUL-framed 字符串三态
 
 `ReadString()` / `ReadStringBytes()` / `ReadJSON()` 遵循同一套三态规则：
 
@@ -692,7 +1022,7 @@ ExitMainThread  →  app.Close  →  Shutdown
 
 这与其他五种语言的绑定**完全一致**，因此 HTTP bridge、浏览器、手写客户端都能正确互通。
 
-### 9.6 `PrepareDone` 的单次语义
+### 9.11 `PrepareDone` 的单次语义
 
 `PrepareDone` 在同一个进程里**只返回 `true` 一次**。第二次调用会返回 `(false, nil)`——**这不是失败**，而是框架已经在运行。
 
@@ -705,15 +1035,17 @@ _ = lingofuse.ResetPrepare()
 started, _ := lingofuse.PrepareDone()  // 又会返回 true
 ```
 
+**`Shutdown` 会清空本地 P2P 注册表**，这是 Go 绑定的特有修复：若不清理，重启后无法再次注册同名 P2P API。
+
 ---
 
-## 十、六条铁律
+## 十、铁律
 
 违反任何一条都会导致崩溃、死锁或数据损坏。
 
-1. **回调必须用原生签名**：`sys` 层的 `LfCallFunc` / `LfNotifyFunc` 是 `cdecl` 调用约定，Go 包装已经在 `purego.NewCallback` 中处理。用户只需使用 `lingofuse.CallHandler` / `NotifyHandler` 的 Go 签名。
+1. **回调必须用原生签名**：`sys` 层的 `LfCallFunc` / `LfNotifyFunc` / `LfAsyncCallOnResult` 是 `cdecl` 调用约定，Go 包装已经在 `purego.NewCallback` 中处理。用户只需使用 `lingofuse.CallHandler` / `NotifyHandler` 的 Go 签名。
 
-2. **回调中禁止调用阻塞型 LingoFuse 函数**：`Call` / `LocalCall` / `PrepareDone` / `Shutdown` 都会导致自锁死锁。
+2. **回调中禁止调用同步 LingoFuse 函数**：`lingofuse.Call` / `Target.Call` / `Target.CallCtx` / `Target.SequencedCall` / `AppHandle.LocalCall` / `PrepareDone` / `Shutdown` 都会导致自锁死锁。**在回调中如需发起后续调用，必须用 `CallAsync` / `SequencedCallAsync`**。
 
 3. **数据句柄必须显式 `Close()`**：自动回收是 10 分钟空闲 + 5 秒扫描延迟，不是替代方案。
 
@@ -722,6 +1054,14 @@ started, _ := lingofuse.PrepareDone()  // 又会返回 true
 5. **`PrepareDone` 每进程只成功一次**：第二次返回 `false` 不代表失败。要重启必须先 `Shutdown`。
 
 6. **`LingoFuse64.dll` 必须在运行时可发现**：可执行文件目录 / `native/` 子目录 / 当前工作目录 / 系统加载器路径，四选一。
+
+7. **异步 `AsyncResult.Value` 是借用句柄**：只在回调体内有效。回调返回后立即失效。禁止 `Close`，禁止传出回调体。
+
+8. **侧数据只在 `input` 上有效**：`GetP2PUID` / `GetP2PName` 只能对回调的 `input` 参数调用。对 `output` 或自建句柄调用返回零值 + 警告。
+
+9. **`Client` 是进程级单例，没有 `Close()`**：连接不随 `Client` 释放。释放连接用包级 `ExitMainThread` / `Shutdown`。
+
+10. **`Shutdown` 后本地 P2P 注册表被清空**：这是有意设计（保证框架重启可用）。若需在运行中重置注册表，用 `ResetP2PRegistrations`。
 
 ---
 
@@ -732,17 +1072,25 @@ started, _ := lingofuse.PrepareDone()  // 又会返回 true
 ```
 lingofuse: failed to load the native library; tried:
   - D:\myproj\myapp.exe (as dir) \ LingoFuse64.dll
-  ...
+      error: The specified module could not be found.
+  - D:\myproj\native\LingoFuse64.dll
+      error: The specified module could not be found.
+  - D:\myproj\LingoFuse64.dll
+      error: %1 is not a valid Win32 application.
+system-loader fallback error: The specified module could not be found.
 ```
 
-**原因**：DLL 不在任何搜索路径中。
+**原因**：DLL 不在任何搜索路径中，或路径下存在**架构不匹配**的 DLL。
 
-**处理**：把 `LingoFuse64.dll` 拷贝到可执行文件所在目录。
+**处理**：
+- 逐行阅读错误信息：`%1 is not a valid Win32 application` 说明该路径下找到了 DLL 但架构不对（例如 64 位程序找到了 32 位 DLL）。
+- 把正确的 DLL 拷贝到可执行文件所在目录。
 
 ### 11.2 符号缺失
 
 ```
-lingofuse: native library is missing a required symbol: LF_CreateData_Permanent
+lingofuse: failed to register symbol "LF_CreateData_Permanent"
+    (panic: purego: symbol LF_CreateData_Permanent not found)
 ```
 
 **原因**：本地的 `LingoFuse64.dll` 版本过旧（低于 3.09）。`LF_CreateData_Permanent` 是 3.09 引入的。
@@ -751,7 +1099,7 @@ lingofuse: native library is missing a required symbol: LF_CreateData_Permanent
 
 ### 11.3 调用超时
 
-```
+```go
 res, ok, err := lingofuse.TryCall("MyApp", req, 3000)
 // ok == false, err == nil  →  超时或目标不可达
 ```
@@ -784,7 +1132,29 @@ for i := 0; i < 15; i++ {
 - `RegisterCall` 返回 error 时立即检查（通常是 API 名重复）
 - 回调内**不要用裸 `panic`**，用 `fmt.Fprintf(os.Stderr, ...)` 打印诊断信息
 
-### 11.5 IPC 队列已被占用
+### 11.5 死锁（回调内调用了同步函数）
+
+**症状**：进程挂起，无日志输出，Ctrl+C 也无法退出（除非强杀）。
+
+**原因**：回调中调用了 `lingofuse.Call` / `Target.Call` / `AppHandle.LocalCall` 等**同步**函数。回调持有内部锁，同步调用需要同一把锁才能投递响应 → 自锁。
+
+**处理**：
+- 把同步调用替换成 **`CallAsync` / `SequencedCallAsync`**。
+- 或者从回调中返回，让调用方（在回调外的线程）发起同步调用。
+
+**验证**：`$env:GOTRACEBACK = "all"; go run main.go`，卡住时按 `Ctrl+\`（Unix）或 `Ctrl+Break`（Windows）打印所有 goroutine 栈，找到阻塞在 `lingofuse.Call` 的 goroutine。
+
+### 11.6 JSON 输出与其它语言不一致
+
+**症状**：Go 服务返回 `{"msg":"\u003chello\u003e"}`，而 C++ / Python 服务返回 `{"msg":"<hello>"}`。
+
+**原因**：使用了**未关闭 HTML 转义**的自定义序列化（例如直接调 `json.Marshal`）。
+
+**处理**：
+- 使用 `lingofuse.WriteJSON` / `lingofuse.MarshalJSON`（已关闭 HTML 转义）。
+- 如果自定义序列化，请确认使用 `json.Encoder` + `SetEscapeHTML(false)`。
+
+### 11.7 IPC 队列已被占用
 
 ```
 [IPC] Queue "ipc:cross0" is already occupied...
@@ -797,11 +1167,58 @@ for i := 0; i < 15; i++ {
 - 关闭所有残留的进程
 - 或换一个 endpoint 名（例如 `ipc:cross_v2`）
 
-### 11.6 `go mod tidy` 超时
+### 11.8 框架重启后 P2P 注册失败
+
+**症状**：`Shutdown` → `PrepareDone` 之后，`RegisterP2PCall` 返回 `ErrRegistrationFailed`，报"already registered"。
+
+**原因**（**已修复**）：旧版本的 `Shutdown` 没有清理 Go 侧的 `p2pRegistry`。
+
+**当前状态**：Go 绑定的 `Shutdown` 会自动调用 `ResetP2PRegistrations`。若你在使用过程中发现了这个症状，请确认使用的是最新版本。
+
+**手动处理**（若需要）：在 `Shutdown` 之前显式调用 `lingofuse.ResetP2PRegistrations()`。
+
+### 11.9 异步回调外使用 `AsyncResult.Value`
+
+**症状**：回调返回后再访问 `r.Value` → 读到垃圾数据、崩溃、或偶发成功。
+
+**原因**：`AsyncResult.Value` 是**借用**句柄，回调返回后框架**立即**释放底层缓冲区。回调返回后使用它是 use-after-free；`Close()` 它是 double-free。
+
+**表现取决于 payload 大小**：小 payload 看起来"正常"（分配器尚未复用该内存），大 payload 返回垃圾（已被复用）。
+
+**处理**：在回调体内**立即拷贝数据**，回调外使用拷贝后的字节。
+
+### 11.10 `go mod tidy` 超时
 
 **原因**：`proxy.golang.org` 被墙。
 
 **处理**：见 §3.2，配置 `GOPROXY` 到国内镜像。
+
+### 11.11 交叉编译成功但运行时崩溃
+
+**症状**：`GOOS=windows GOARCH=amd64 go build` 成功，运行时 panic `invalid memory address`。
+
+**原因**：交叉编译只编译了 Go 代码。若你在非 Windows 平台编译 Windows 二进制，但把 Linux 的 `liblingofuse.so` 拷贝到可执行文件旁边，运行时会因架构或格式不匹配失败。
+
+**处理**：目标平台运行需要**目标平台的原生库**：
+- Windows → `LingoFuse64.dll`
+- Linux → `liblingofuse.so`
+- macOS → `liblingofuse.dylib`
+
+### 11.12 死锁看门狗误报
+
+**症状**：程序在阻塞等待异步回调时，runtime 打印 `fatal error: all goroutines are asleep - deadlock!` 并硬崩溃。
+
+**原因**：死锁看门狗被显式关闭了（`lingofuse.DisableDeadlockWatchdog()`），或用户代码中覆盖了 watchdog timer。
+
+**处理**：确认看门狗已启用：
+
+```go
+if !lingofuse.IsDeadlockWatchdogEnabled() {
+    log.Println("warning: deadlock watchdog is disabled")
+}
+```
+
+若已关闭，重新启用需要重启进程（看门狗一旦关闭不可重新开启）。
 
 ---
 
@@ -817,13 +1234,19 @@ for i := 0; i < 15; i++ {
 | 回调 panic 隔离 | 库内 `try/except` | 用户 `try/catch` | 自动隔离 | 用户 `catch_unwind` | **包装自动 recover** |
 | 数据句柄类型 | `PLF_Data` record | `lingofuse::DataHandle` 类 | `DataHandle` 类 | `DataHandle` 结构体 | **`*DataHandle` 指针** |
 | 标量 I/O | `LF_WriteInt32` 等 | `write<int32_t>` | `WriteInt32` | `write(42i32)` | **`WriteInt32(42)`** |
+| 三种寻址 | 内建 | 内建 | 内建 | 内建 | **`Target` 接口** |
+| JSON HTML 转义 | N/A（无此概念） | **关闭** | **关闭** | **关闭** | **关闭**（需显式配置） |
+| 死锁看门狗 | N/A（无 runtime） | N/A（无 runtime） | N/A（无 runtime） | N/A（无 runtime） | **可配置**（Go 特有） |
 
 **Go 独有的设计**：
 
 - **错误返回而非异常**：Go 没有异常机制，全部通过 `(value, error)` 返回。`TryCall` / `TryReadBytes` / `TryReadString` 提供"无错误"版本，返回 `(value, bool, error)` 三态。
 - **回调通过 `trigger` ID 映射**：`LF_RegisterCall` 接收的 `trigger` 指针被复用为一个自增 ID，回调触发时通过 `sys` 包的 `sync.Map` 找回 Go 函数。这避免了把 Go 闭包指针暴露给 C 层的复杂性和安全风险。
-- **借用句柄 `Close()` 是 no-op**：`app.LocalCall` / 回调内的 `input`/`output` 是借用句柄，`Close()` 会检测到 `owned == false` 并直接返回，防止二次释放。
+- **借用句柄 `Close()` 是 no-op**：`app.LocalCall` / 回调内的 `input`/`output` / 异步回调的 `AsyncResult.Value` 都是借用句柄，`Close()` 会检测到 `owned == false` 并直接返回，防止二次释放。
 - **无 `runtime.SetFinalizer` 依赖**：所有资源必须显式释放。这是 Go 社区的标准做法，避免 Finalizer 执行时机不确定的问题。
+- **死锁看门狗**：Go runtime 看不见 purego 的 C 层 worker 线程，会误判死锁。看门狗通过始终保持一个待处理定时器事件来规避误报。这是 Go 绑定特有的补偿机制。
+- **HTML 转义显式关闭**：Go 的 `encoding/json` 默认转义 `<` `>` `&` U+2028 U+2029，与工具链其它语言不一致。Go 绑定显式通过 `json.Encoder.SetEscapeHTML(false)` 关闭，保证跨语言字节级一致。
+- **P2P 注册表在 `Shutdown` 中清空**：Go 绑定在 `Shutdown` 时同步清理本地 `p2pRegistry`，保证框架重启后可以重新注册同名 P2P API。其它语言绑定可能没有这一层本地状态，因此行为可能略有不同。
 
 ---
 

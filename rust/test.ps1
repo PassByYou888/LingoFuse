@@ -3,14 +3,27 @@
     Run the lingofuse Rust test suite.
 
 .DESCRIPTION
-    Runs up to four test layers:
+    Runs up to eight test layers:
 
-      1. unit    - Unit tests (parallel-safe).
-      2. ignored - Ignored unit tests (mutate process-global native
-                   state; serial).
-      3. abi     - ABI smoke tests (tests/abi_smoke.rs).
-      4. e2e     - End-to-end framework tests (tests/framework_e2e.rs;
-                   serial).
+      1. unit       - Unit tests (parallel-safe).
+      2. ignored    - Ignored unit tests (mutate process-global native
+                      state; serial).
+      3. abi        - ABI smoke tests (tests/abi_smoke.rs).
+      4. e2e        - Framework end-to-end tests
+                      (tests/framework_e2e.rs; serial).
+      5. e2e_opts   - Typed options end-to-end
+                      (tests/options_e2e.rs; serial).
+      6. e2e_ident  - P2P identity side data end-to-end
+                      (tests/identity_e2e.rs; serial).
+      7. e2e_addr   - Three addressing schemes end-to-end
+                      (tests/addressing_e2e.rs; serial).
+      8. e2e_async  - Asynchronous call family end-to-end
+                      (tests/async_e2e.rs; serial).
+
+    The four new e2e layers cover the v0.3 API additions:
+    typed options, P2P identity side data, the three addressing
+    schemes (App name / UID / P2PName), process-wide P2P
+    registration, and the asynchronous call family.
 
     The script never copies the native LingoFuse library. It checks
     whether the library is discoverable through PATH (or sitting in
@@ -26,8 +39,8 @@
 
 .PARAMETER Layer
     Which layer(s) to run. Accepted values: all (default), unit,
-    ignored, abi, e2e. Comma-separated for multiple, e.g.
-    -Layer unit,abi.
+    ignored, abi, e2e, e2e_opts, e2e_ident, e2e_addr, e2e_async.
+    Comma-separated for multiple, e.g. -Layer unit,abi.
 
 .PARAMETER RequireNative
     Fail if the native library is not discoverable. Default: warn.
@@ -43,6 +56,10 @@
 .EXAMPLE
     .\test.ps1 -Layer unit,abi
     Runs only the unit and ABI smoke layers.
+
+.EXAMPLE
+    .\test.ps1 -Layer e2e_addr,e2e_async
+    Runs only the addressing and async end-to-end layers.
 
 .EXAMPLE
     .\test.ps1 -RequireNative -NoCapture
@@ -74,13 +91,26 @@ foreach ($entry in $Layer) {
             [void]$layerSet.Add("ignored")
             [void]$layerSet.Add("abi")
             [void]$layerSet.Add("e2e")
+            [void]$layerSet.Add("e2e_opts")
+            [void]$layerSet.Add("e2e_ident")
+            [void]$layerSet.Add("e2e_addr")
+            [void]$layerSet.Add("e2e_async")
         } else {
             [void]$layerSet.Add($trimmed)
         }
     }
 }
 
-$validLayers = @("unit", "ignored", "abi", "e2e")
+$validLayers = @(
+    "unit",
+    "ignored",
+    "abi",
+    "e2e",
+    "e2e_opts",
+    "e2e_ident",
+    "e2e_addr",
+    "e2e_async"
+)
 foreach ($l in $layerSet) {
     if ($validLayers -notcontains $l) {
         Write-Host "[FAIL] Unknown layer '$l'. Valid: $($validLayers -join ', ')" -ForegroundColor Red
@@ -140,24 +170,54 @@ Write-Host ""
 $harnessArgs = @()
 if ($NoCapture) { $harnessArgs += "--nocapture" }
 
-# Layer definitions. Order matters: unit first, ignored last among unit
-# layers because the ignored set mutates native global state.
+# Layer definitions.
+#
+# Order matters:
+#   - `unit` runs first (parallel-safe, no native state).
+#   - `ignored` runs next (serial; mutates process-global native state).
+#   - Then the integration layers, each serial:
+#       abi        -- low-level C-ABI smoke
+#       e2e        -- framework lifecycle
+#       e2e_opts   -- typed options round-trip
+#       e2e_ident  -- P2P identity side data
+#       e2e_addr   -- three addressing schemes + P2P registration
+#       e2e_async  -- asynchronous call family
+#
+# The integration layers each start and tear down the process-global
+# framework, so they MUST run serially. `--test-threads=1` is passed
+# to every layer that touches the framework.
 $layers = [ordered]@{
-    unit    = @{
+    unit       = @{
         Label = "Unit tests (parallel-safe)"
         Args  = @("test", "--lib")
     }
-    ignored = @{
+    ignored    = @{
         Label = "Ignored unit tests (serial; mutates native global state)"
         Args  = @("test", "--lib", "--", "--ignored", "--test-threads=1")
     }
-    abi     = @{
+    abi        = @{
         Label = "ABI smoke tests (tests/abi_smoke.rs)"
         Args  = @("test", "--test", "abi_smoke")
     }
-    e2e     = @{
-        Label = "End-to-end framework tests (tests/framework_e2e.rs; serial)"
+    e2e        = @{
+        Label = "Framework end-to-end tests (tests/framework_e2e.rs; serial)"
         Args  = @("test", "--test", "framework_e2e", "--", "--ignored", "--test-threads=1")
+    }
+    e2e_opts   = @{
+        Label = "Typed options end-to-end (tests/options_e2e.rs; serial)"
+        Args  = @("test", "--test", "options_e2e", "--", "--ignored", "--test-threads=1")
+    }
+    e2e_ident  = @{
+        Label = "P2P identity side data end-to-end (tests/identity_e2e.rs; serial)"
+        Args  = @("test", "--test", "identity_e2e", "--", "--ignored", "--test-threads=1")
+    }
+    e2e_addr   = @{
+        Label = "Addressing schemes end-to-end (tests/addressing_e2e.rs; serial)"
+        Args  = @("test", "--test", "addressing_e2e", "--", "--ignored", "--test-threads=1")
+    }
+    e2e_async  = @{
+        Label = "Asynchronous call family end-to-end (tests/async_e2e.rs; serial)"
+        Args  = @("test", "--test", "async_e2e", "--", "--ignored", "--test-threads=1")
     }
 }
 

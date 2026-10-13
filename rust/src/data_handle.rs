@@ -31,8 +31,8 @@
 //!
 //! Borrowing is used for the `input` / `output` handles passed into a
 //! registered callback. Freeing them from Rust would be a double-free.
-//! The Stage 2 [`crate::app_handle`] layer constructs borrows through
-//! [`DataHandle::from_raw`].
+//! The [`crate::app_handle`] and [`crate::p2p`] layers construct
+//! borrows through [`DataHandle::from_raw`].
 //!
 //! ## Threading
 //!
@@ -62,11 +62,49 @@
 //! [`Scalar`] trait, so `handle.write(42i32)` and
 //! `handle.read::<i32>()` work for every supported type. See
 //! [`Scalar`] for the implementor list.
+//!
+//! ## P2P identity side data
+//!
+//! The framework injects two identity fields into every inbound request
+//! payload on the **sender** side, before transmission:
+//!
+//! - `FromUID` — the sender's 32-byte session UID.
+//! - `FromP2PName` — the sender's P2P group name (UTF-8).
+//!
+//! These are **side data**: they are metadata the sender wrote into the
+//! payload header, not properties of the handle itself. A receiver can
+//! therefore read them only on the **input** handle that the framework
+//! delivered to a registered callback.
+//!
+//! [`DataHandle::p2p_uid`] and [`DataHandle::p2p_name`] expose these
+//! fields:
+//!
+//! | Handle                                       | Are the accessors valid? |
+//! |----------------------------------------------|:------------------------:|
+//! | `input` of a `Call` / `Notify` callback      |            yes           |
+//! | `input` of a local call / notify             |            yes           |
+//! | `output` of a `Call` callback                |  no (zero UID / empty)   |
+//! | caller-created (`DataHandle::new` / `_permanent`) |  no (zero UID / empty) |
+//!
+//! The two accessors never throw for the invalid cases: the native
+//! library logs a warning and returns a pointer to a zero-filled UID /
+//! an empty string, which these wrappers translate to `Uid::NULL` and
+//! `""` respectively.
+//!
+//! ### Pointer lifetime
+//!
+//! `LF_Get_P2P_UID` returns a `*const LfP2PUid` allocated by the native
+//! library and scheduled for automatic release about **5 seconds**
+//! after the call. `LF_Get_P2P_Name` returns a `*const c_char` with the
+//! same release rule. Both accessors in this module **copy immediately**
+//! and never expose the raw pointer to the caller, so the returned
+//! values are safe to retain indefinitely.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use crate::error::{Error, ErrorCode};
-use crate::sys::{self, DataHnd, NativeLibrary};
+use crate::sys::{self, DataHnd, LfP2PUid, NativeLibrary};
+use crate::uid::Uid;
 
 // ============================================================================
 // DataHandle
@@ -471,6 +509,85 @@ impl DataHandle {
     }
 
     // -----------------------------------------------------------------
+    // P2P identity side data
+    // -----------------------------------------------------------------
+
+    /// Returns the sender's 32-byte session UID.
+    ///
+    /// # Contract
+    ///
+    /// This reads **side data** injected by the sender's transport
+    /// layer into the payload header; it is not a property of the
+    /// handle itself. It is therefore meaningful only on the **input**
+    /// handle of a registered callback (or the input of a local call).
+    ///
+    /// On any other handle — an output handle, or a caller-created
+    /// handle — the native library logs a warning and returns a
+    /// pointer to a zero-filled UID. This wrapper translates that to
+    /// `Uid::NULL`.
+    ///
+    /// # Pointer lifetime
+    ///
+    /// The native pointer is valid for about 5 seconds; this method
+    /// **copies the 32 bytes immediately**, so the returned value is
+    /// safe to retain indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorCode::NullHandle`] if this handle is not valid.
+    pub fn p2p_uid(&self) -> Result<Uid, Error> {
+        let hnd = self.require_handle("DataHandle::p2p_uid")?;
+        // SAFETY: `hnd` is a live handle. `LF_Get_P2P_UID` returns a
+        // pointer to a library-owned 32-byte buffer that may be null
+        // when the handle is not an input handle; both cases are
+        // handled below.
+        let ptr: *const LfP2PUid = unsafe { (self.lib.lf_get_p2p_uid)(hnd) };
+        if ptr.is_null() {
+            return Ok(Uid::NULL);
+        }
+        // SAFETY: the pointer is non-null and points to a valid
+        // `LfP2PUid`. We copy the 32 bytes out immediately; the native
+        // pointer is not retained.
+        let lf_uid: LfP2PUid = unsafe { *ptr };
+        Ok(Uid::from_bytes(lf_uid.bytes))
+    }
+
+    /// Returns the sender's P2P group name.
+    ///
+    /// # Contract
+    ///
+    /// Same side-data rule as [`DataHandle::p2p_uid`]: this is
+    /// meaningful only on the **input** handle of a registered
+    /// callback. On any other handle the native library logs a warning
+    /// and returns an empty string.
+    ///
+    /// # Pointer lifetime
+    ///
+    /// The native pointer is valid for about 5 seconds; this method
+    /// **copies the string immediately**, so the returned value is safe
+    /// to retain indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorCode::NullHandle`] if this handle is not valid.
+    pub fn p2p_name(&self) -> Result<String, Error> {
+        let hnd = self.require_handle("DataHandle::p2p_name")?;
+        // SAFETY: `hnd` is a live handle. The native function returns
+        // either null or a NUL-terminated UTF-8 string in a transient
+        // buffer; both cases are handled below.
+        let ptr = unsafe { (self.lib.lf_get_p2p_name)(hnd) };
+        if ptr.is_null() {
+            return Ok(String::new());
+        }
+        // SAFETY: the pointer is non-null and points to a
+        // NUL-terminated UTF-8 string valid for the duration of the
+        // call. We copy it into an owned `String` immediately; the
+        // native pointer is not retained.
+        let cs = unsafe { CStr::from_ptr(ptr) };
+        Ok(cs.to_string_lossy().into_owned())
+    }
+
+    // -----------------------------------------------------------------
     // Lifetime
     // -----------------------------------------------------------------
 
@@ -558,9 +675,10 @@ impl Drop for DataHandle {
 //   possible during the move.
 // - `Sync`: every mutating method takes `&mut self`, which the borrow
 //   checker prevents from being called concurrently. The methods that
-//   take `&self` (`size`, `position`, `raw`, `is_valid`, `is_owning`)
-//   call into the native layer in a way that the native documentation
-//   describes as thread-safe; none of them mutate the handle.
+//   take `&self` (`size`, `position`, `raw`, `is_valid`, `is_owning`,
+//   `p2p_uid`, `p2p_name`) call into the native layer in a way that the
+//   native documentation describes as thread-safe; none of them mutate
+//   the handle.
 unsafe impl Send for DataHandle {}
 unsafe impl Sync for DataHandle {}
 
@@ -667,6 +785,10 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------
+    // Existing tests (unchanged)
+    // -----------------------------------------------------------------
+
     #[test]
     fn byte_roundtrip() {
         let Some(mut h) = try_handle("test_bytes") else { return; };
@@ -740,5 +862,64 @@ mod tests {
         drop(h);
         // A second drop would be UB, but the borrow checker prevents
         // it. This test only confirms the first drop did not panic.
+    }
+
+    // -----------------------------------------------------------------
+    // New: P2P identity accessors
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn p2p_uid_on_owning_handle_returns_null_uid() {
+        // A caller-created handle has no "sender", so the native layer
+        // logs a warning and returns a pointer to a zero-filled UID.
+        let Some(h) = try_handle("test_p2p_uid_own") else { return; };
+        let uid = h.p2p_uid().unwrap();
+        assert!(uid.is_null(), "expected Uid::NULL, got {:?}", uid);
+    }
+
+    #[test]
+    fn p2p_name_on_owning_handle_returns_empty_string() {
+        let Some(h) = try_handle("test_p2p_name_own") else { return; };
+        let name = h.p2p_name().unwrap();
+        assert!(name.is_empty(), "expected empty name, got {:?}", name);
+    }
+
+    #[test]
+    fn p2p_uid_on_disposed_handle_fails_cleanly() {
+        let Some(mut h) = try_handle("test_p2p_uid_disposed") else { return; };
+        h.dispose();
+        let err = h.p2p_uid().unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NullHandle);
+    }
+
+    #[test]
+    fn p2p_name_on_disposed_handle_fails_cleanly() {
+        let Some(mut h) = try_handle("test_p2p_name_disposed") else { return; };
+        h.dispose();
+        let err = h.p2p_name().unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NullHandle);
+    }
+
+    #[test]
+    fn p2p_accessors_are_callable_on_borrowed_handle() {
+        // Borrowing a handle (owned = false) and then reading the
+        // identity is the intended in-callback use case. This test
+        // uses a caller-created handle as the underlying raw value, so
+        // the identity fields are still absent — but the call must
+        // succeed without panic, proving the borrow path works.
+        let Some(owning) = try_handle("test_p2p_borrow") else { return; };
+        let raw = owning.raw().expect("live handle");
+        let borrowed = DataHandle::from_raw(raw, false).unwrap();
+
+        // Both accessors return well-defined values on a borrowed
+        // handle even when the side data is absent.
+        assert!(borrowed.p2p_uid().unwrap().is_null());
+        assert!(borrowed.p2p_name().unwrap().is_empty());
+
+        // The borrowed handle must not have freed the underlying
+        // resource: `owning` is still valid.
+        assert!(owning.is_valid());
+        // `borrowed` goes out of scope here with `owned = false`, so
+        // its `Drop` is a no-op.
     }
 }

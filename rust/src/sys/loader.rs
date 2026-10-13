@@ -1,7 +1,7 @@
 //! Runtime loading of the LingoFuse native shared library.
 //!
 //! This module locates, loads, and resolves the platform-specific
-//! LingoFuse shared library, exposing every one of the 37 C-ABI exports
+//! LingoFuse shared library, exposing every one of the 59 C-ABI exports
 //! as a typed function pointer in [`NativeLibrary`].
 //!
 //! ## Loading model
@@ -51,6 +51,15 @@
 //! that the load runs exactly once, even under concurrent first use.
 //! The native functions themselves are documented as thread-safe; only
 //! a single data handle's write path requires external serialisation.
+//!
+//! ## Symbol order
+//!
+//! The fields of [`NativeLibrary`] and the `resolve!` calls in
+//! [`load_native`] are both laid out in the same order as the
+//! `RESOLVE` sequence in `LingoFuse.c`. This one-to-one correspondence
+//! is intentional: it makes a visual diff between the C loader and the
+//! Rust loader trivial, and it makes any missing symbol immediately
+//! obvious.
 
 use std::error::Error;
 use std::fmt;
@@ -60,16 +69,57 @@ use std::sync::OnceLock;
 use libloading::{Library, Symbol};
 
 use super::bindings::{
-    LfBindAppFn, LfCallFn, LfCheckApiFn, LfCheckAppFn,
-    LfCheckMainThreadFn, LfCreateAppFn, LfCreateDataFn,
-    LfCreateDataPermanentFn, LfExitMainThreadFn, LfFreeAppFn, LfFreeDataFn,
-    LfGenerateAppNameFn, LfGetAppNameFn, LfGetBufferFn, LfGetPosFn,
-    LfGetSizeFn, LfGetStatusCountFn, LfGetStatusFn, LfLocalCallFn,
-    LfLocalNotifyFn, LfNotifyFn, LfPostStatusFn, LfPrepareClientFn,
-    LfPrepareDoneFn, LfPrepareServiceFn, LfReadBufferFn, LfRegisterCallFn,
-    LfRegisterNotifyFn, LfResetPrepareFn, LfSequencedNotifyFn,
-    LfSetNetworkEventFn, LfSetOptionFn, LfSetPosFn, LfSetSizeFn,
-    LfShutdownFn, LfUnregisterFn, LfWriteBufferFn,
+    // Data handle operations (12)
+    LfCreateDataFn, LfCreateDataPermanentFn, LfFreeDataFn,
+    LfGetBufferFn, LfWriteBufferFn, LfReadBufferFn,
+    LfGetPosFn, LfSetPosFn, LfGetSizeFn, LfSetSizeFn,
+    LfGetP2PUidFn, LfGetP2PNameFn,
+
+    // Application handle operations (5)
+    LfCreateAppFn, LfFreeAppFn,
+    LfGenerateAppNameFn, LfGetAppNameFn, LfBindAppFn,
+
+    // API registration, app-bound (3)
+    LfRegisterCallFn, LfRegisterNotifyFn, LfUnregisterFn,
+
+    // API registration, process-wide P2P (3)
+    LfRegisterP2PCallFn, LfRegisterP2PNotifyFn, LfUnregisterP2PFn,
+
+    // Local execution (2)
+    LfLocalCallFn, LfLocalNotifyFn,
+
+    // Network preparation (5)
+    LfPrepareServiceFn, LfPrepareClientFn,
+    LfResetPrepareFn, LfPrepareDoneFn, LfExitMainThreadFn,
+
+    // Remote invocation, app-name (5)
+    LfCallFn, LfAsyncCallFn, LfAsyncSequencedCallFn,
+    LfNotifyFn, LfSequencedNotifyFn,
+
+    // Remote invocation, UID (5)
+    LfUidCallFn, LfUidAsyncCallFn, LfUidAsyncSequencedCallFn,
+    LfUidNotifyFn, LfUidSequencedNotifyFn,
+
+    // Remote invocation, P2PName (5)
+    LfP2PNameCallFn, LfP2PNameAsyncCallFn, LfP2PNameAsyncSequencedCallFn,
+    LfP2PNameNotifyFn, LfP2PNameSequencedNotifyFn,
+
+    // Queries (7)
+    LfCheckMainThreadFn, LfCheckAppFn, LfCheckApiFn,
+    LfCheckUidFn, LfCheckUidApiFn,
+    LfCheckP2PNameFn, LfCheckP2PNameApiFn,
+
+    // Options (2)
+    LfSetOptionFn, LfGetOptionFn,
+
+    // Status (3)
+    LfGetStatusCountFn, LfGetStatusFn, LfPostStatusFn,
+
+    // Network events (1)
+    LfSetNetworkEventFn,
+
+    // Shutdown (1)
+    LfShutdownFn,
 };
 
 // ============================================================================
@@ -193,8 +243,15 @@ impl Error for LoadError {
 ///
 /// The instance is a `'static` singleton. It is never dropped; the
 /// underlying shared object is unloaded only when the process exits.
+///
+/// ## Order
+///
+/// Fields are laid out in the same order as the `RESOLVE` sequence in
+/// `LingoFuse.c`, so that a missing entry can be spotted by eye.
 pub struct NativeLibrary {
-    // --- Data handle operations (10) ---
+    // ------------------------------------------------------------------------
+    // Data handle operations (12)
+    // ------------------------------------------------------------------------
 
     /// `LF_CreateData` — create a new auto-recycled data handle.
     pub lf_create_data: LfCreateDataFn,
@@ -226,7 +283,19 @@ pub struct NativeLibrary {
     /// `LF_SetSize` — resize the buffer.
     pub lf_set_size: LfSetSizeFn,
 
-    // --- Application handle operations (5) ---
+    /// `LF_Get_P2P_UID` — read the sender's injected UID from an input
+    /// handle. Returns a **pointer** to a library-owned 32-byte buffer
+    /// released about 5 seconds after the call.
+    pub lf_get_p2p_uid: LfGetP2PUidFn,
+
+    /// `LF_Get_P2P_Name` — read the sender's injected P2P name from an
+    /// input handle. Returns a **pointer** to a transient UTF-8 string
+    /// buffer released about 5 seconds after the call.
+    pub lf_get_p2p_name: LfGetP2PNameFn,
+
+    // ------------------------------------------------------------------------
+    // Application handle operations (5)
+    // ------------------------------------------------------------------------
 
     /// `LF_CreateApp` — create a new application.
     pub lf_create_app: LfCreateAppFn,
@@ -243,7 +312,9 @@ pub struct NativeLibrary {
     /// `LF_BindApp` — bind an application to unbound clients.
     pub lf_bind_app: LfBindAppFn,
 
-    // --- API registration (3) ---
+    // ------------------------------------------------------------------------
+    // API registration, app-bound (3)
+    // ------------------------------------------------------------------------
 
     /// `LF_RegisterCall` — register a Call (request-response) API.
     pub lf_register_call: LfRegisterCallFn,
@@ -254,7 +325,22 @@ pub struct NativeLibrary {
     /// `LF_Unregister` — remove a registered API.
     pub lf_unregister: LfUnregisterFn,
 
-    // --- Local execution (2) ---
+    // ------------------------------------------------------------------------
+    // API registration, process-wide P2P (3)
+    // ------------------------------------------------------------------------
+
+    /// `LF_Register_P2P_Call` — register a process-wide P2P Call API.
+    pub lf_register_p2p_call: LfRegisterP2PCallFn,
+
+    /// `LF_Register_P2P_Notify` — register a process-wide P2P Notify API.
+    pub lf_register_p2p_notify: LfRegisterP2PNotifyFn,
+
+    /// `LF_Unregister_P2P` — remove a process-wide P2P API.
+    pub lf_unregister_p2p: LfUnregisterP2PFn,
+
+    // ------------------------------------------------------------------------
+    // Local execution (2)
+    // ------------------------------------------------------------------------
 
     /// `LF_LocalCall` — in-process Call, no network hop.
     pub lf_local_call: LfLocalCallFn,
@@ -262,7 +348,9 @@ pub struct NativeLibrary {
     /// `LF_LocalNotify` — in-process Notify, no network hop.
     pub lf_local_notify: LfLocalNotifyFn,
 
-    // --- Network preparation (5) ---
+    // ------------------------------------------------------------------------
+    // Network preparation (5)
+    // ------------------------------------------------------------------------
 
     /// `LF_ResetPrepare` — clear the preparation queue.
     pub lf_reset_prepare: LfResetPrepareFn,
@@ -280,11 +368,19 @@ pub struct NativeLibrary {
     /// Also flushes the data-handle pool.
     pub lf_exit_main_thread: LfExitMainThreadFn,
 
-    // --- Remote invocation (3) ---
+    // ------------------------------------------------------------------------
+    // Remote invocation, app-name addressing (5)
+    // ------------------------------------------------------------------------
 
-    /// `LF_Call` — synchronous remote call. Never returns a null
-    /// handle; on timeout it returns a size-0 handle.
+    /// `LF_Call` — synchronous remote call. Never returns a null handle;
+    /// on timeout it returns a size-0 handle.
     pub lf_call: LfCallFn,
+
+    /// `LF_Async_Call` — asynchronous remote call.
+    pub lf_async_call: LfAsyncCallFn,
+
+    /// `LF_Async_Sequenced_Call` — asynchronous FIFO call.
+    pub lf_async_sequenced_call: LfAsyncSequencedCallFn,
 
     /// `LF_Notify` — best-effort one-way notification.
     pub lf_notify: LfNotifyFn,
@@ -292,19 +388,50 @@ pub struct NativeLibrary {
     /// `LF_Sequenced_Notify` — FIFO-ordered one-way notification.
     pub lf_sequenced_notify: LfSequencedNotifyFn,
 
-    // --- Options and diagnostics (7) ---
+    // ------------------------------------------------------------------------
+    // Remote invocation, UID addressing (5)
+    // ------------------------------------------------------------------------
 
-    /// `LF_SetOption` — adjust a global runtime option.
-    pub lf_set_option: LfSetOptionFn,
+    /// `LF_UID_Call` — synchronous remote call addressed by session UID.
+    pub lf_uid_call: LfUidCallFn,
 
-    /// `LF_GetStatusCount` — pending log-message count.
-    pub lf_get_status_count: LfGetStatusCountFn,
+    /// `LF_UID_Async_Call` — asynchronous call addressed by session UID.
+    pub lf_uid_async_call: LfUidAsyncCallFn,
 
-    /// `LF_GetStatus` — retrieve the next log message (static buffer).
-    pub lf_get_status: LfGetStatusFn,
+    /// `LF_UID_Async_Sequenced_Call` — asynchronous FIFO call addressed
+    /// by session UID.
+    pub lf_uid_async_sequenced_call: LfUidAsyncSequencedCallFn,
 
-    /// `LF_PostStatus` — inject a log message.
-    pub lf_post_status: LfPostStatusFn,
+    /// `LF_UID_Notify` — one-way notification addressed by session UID.
+    pub lf_uid_notify: LfUidNotifyFn,
+
+    /// `LF_UID_Sequenced_Notify` — FIFO notification by session UID.
+    pub lf_uid_sequenced_notify: LfUidSequencedNotifyFn,
+
+    // ------------------------------------------------------------------------
+    // Remote invocation, P2PName addressing (5)
+    // ------------------------------------------------------------------------
+
+    /// `LF_P2PNAME_Call` — synchronous call addressed by P2P group name.
+    pub lf_p2pname_call: LfP2PNameCallFn,
+
+    /// `LF_P2PNAME_Async_Call` — asynchronous call by P2P group name.
+    pub lf_p2pname_async_call: LfP2PNameAsyncCallFn,
+
+    /// `LF_P2PNAME_Async_Sequenced_Call` — asynchronous FIFO call by P2P
+    /// group name.
+    pub lf_p2pname_async_sequenced_call: LfP2PNameAsyncSequencedCallFn,
+
+    /// `LF_P2PNAME_Notify` — one-way notification by P2P group name.
+    pub lf_p2pname_notify: LfP2PNameNotifyFn,
+
+    /// `LF_P2PNAME_Sequenced_Notify` — FIFO notification by P2P group
+    /// name.
+    pub lf_p2pname_sequenced_notify: LfP2PNameSequencedNotifyFn,
+
+    // ------------------------------------------------------------------------
+    // Queries (7)
+    // ------------------------------------------------------------------------
 
     /// `LF_CheckMainThread` — is the simulated main thread running?
     pub lf_check_main_thread: LfCheckMainThreadFn,
@@ -315,15 +442,56 @@ pub struct NativeLibrary {
     /// `LF_CheckApi` — is the named API visible on the mesh?
     pub lf_check_api: LfCheckApiFn,
 
-    // --- Shutdown (1) ---
+    /// `LF_Check_UID` — is a client with the given UID registered?
+    pub lf_check_uid: LfCheckUidFn,
 
-    /// `LF_Shutdown` — full shutdown and resource release.
-    pub lf_shutdown: LfShutdownFn,
+    /// `LF_Check_UID_Api` — does the given UID expose the named API?
+    pub lf_check_uid_api: LfCheckUidApiFn,
 
-    // --- Network events (1) ---
+    /// `LF_Check_P2PNAME` — is a client in the given P2P group present?
+    pub lf_check_p2pname: LfCheckP2PNameFn,
+
+    /// `LF_Check_P2PNAME_Api` — does the P2P group expose the named API?
+    pub lf_check_p2pname_api: LfCheckP2PNameApiFn,
+
+    // ------------------------------------------------------------------------
+    // Options (2)
+    // ------------------------------------------------------------------------
+
+    /// `LF_SetOption` — adjust a global runtime option.
+    pub lf_set_option: LfSetOptionFn,
+
+    /// `LF_GetOption` — read a global runtime option. Returns a pointer
+    /// to a transient UTF-8 string buffer released ~5 seconds after the
+    /// call.
+    pub lf_get_option: LfGetOptionFn,
+
+    // ------------------------------------------------------------------------
+    // Status (3)
+    // ------------------------------------------------------------------------
+
+    /// `LF_GetStatusCount` — pending log-message count.
+    pub lf_get_status_count: LfGetStatusCountFn,
+
+    /// `LF_GetStatus` — retrieve the next log message (static buffer).
+    pub lf_get_status: LfGetStatusFn,
+
+    /// `LF_PostStatus` — inject a log message.
+    pub lf_post_status: LfPostStatusFn,
+
+    // ------------------------------------------------------------------------
+    // Network events (1)
+    // ------------------------------------------------------------------------
 
     /// `LF_Set_Network_Event` — install/replace network event callbacks.
     pub lf_set_network_event: LfSetNetworkEventFn,
+
+    // ------------------------------------------------------------------------
+    // Shutdown (1)
+    // ------------------------------------------------------------------------
+
+    /// `LF_Shutdown` — full shutdown and resource release.
+    pub lf_shutdown: LfShutdownFn,
 }
 
 // The function pointers are plain `Copy` values (they are `extern "C"`
@@ -343,7 +511,7 @@ impl fmt::Debug for NativeLibrary {
         // Deliberately do not print the function pointer values: they
         // are ASLR-dependent and add no diagnostic value.
         f.debug_struct("NativeLibrary")
-            .field("exports", &37usize)
+            .field("exports", &59usize)
             .finish_non_exhaustive()
     }
 }
@@ -515,6 +683,10 @@ static INSTANCE: OnceLock<Result<NativeLibrary, LoadError>> = OnceLock::new();
 /// pointers resolved from it acquire a `'static` lifetime. The native
 /// library is therefore loaded for the entire process lifetime, exactly
 /// as the C++, C#, Python, and JavaScript bindings do.
+///
+/// The order of the `resolve!` calls below mirrors the `RESOLVE`
+/// sequence in `LingoFuse.c` exactly. Any reordering here must be
+/// mirrored there, and vice versa.
 fn load_native() -> Result<NativeLibrary, LoadError> {
     let file_name = select_platform_file_name();
     let lib: &'static Library = Box::leak(Box::new(load_raw(file_name)?));
@@ -523,7 +695,7 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
     // a safe dereference, so no outer `unsafe` block is needed here.
     // The safety argument is captured in the macro's own doc comment.
     let native = NativeLibrary {
-        // --- Data handle operations (10) ---
+        // --- Data handle operations (12) ---
         lf_create_data: resolve!(lib, "LF_CreateData", LfCreateDataFn),
         lf_create_data_permanent: resolve!(
             lib,
@@ -538,6 +710,8 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
         lf_set_pos: resolve!(lib, "LF_SetPos", LfSetPosFn),
         lf_get_size: resolve!(lib, "LF_GetSize", LfGetSizeFn),
         lf_set_size: resolve!(lib, "LF_SetSize", LfSetSizeFn),
+        lf_get_p2p_uid: resolve!(lib, "LF_Get_P2P_UID", LfGetP2PUidFn),
+        lf_get_p2p_name: resolve!(lib, "LF_Get_P2P_Name", LfGetP2PNameFn),
 
         // --- Application handle operations (5) ---
         lf_create_app: resolve!(lib, "LF_CreateApp", LfCreateAppFn),
@@ -550,7 +724,7 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
         lf_get_app_name: resolve!(lib, "LF_Get_AppName", LfGetAppNameFn),
         lf_bind_app: resolve!(lib, "LF_BindApp", LfBindAppFn),
 
-        // --- API registration (3) ---
+        // --- API registration, app-bound (3) ---
         lf_register_call: resolve!(
             lib,
             "LF_RegisterCall",
@@ -562,6 +736,23 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
             LfRegisterNotifyFn
         ),
         lf_unregister: resolve!(lib, "LF_Unregister", LfUnregisterFn),
+
+        // --- API registration, process-wide P2P (3) ---
+        lf_register_p2p_call: resolve!(
+            lib,
+            "LF_Register_P2P_Call",
+            LfRegisterP2PCallFn
+        ),
+        lf_register_p2p_notify: resolve!(
+            lib,
+            "LF_Register_P2P_Notify",
+            LfRegisterP2PNotifyFn
+        ),
+        lf_unregister_p2p: resolve!(
+            lib,
+            "LF_Unregister_P2P",
+            LfUnregisterP2PFn
+        ),
 
         // --- Local execution (2) ---
         lf_local_call: resolve!(lib, "LF_LocalCall", LfLocalCallFn),
@@ -590,8 +781,14 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
             LfExitMainThreadFn
         ),
 
-        // --- Remote invocation (3) ---
+        // --- Remote invocation, app-name addressing (5) ---
         lf_call: resolve!(lib, "LF_Call", LfCallFn),
+        lf_async_call: resolve!(lib, "LF_Async_Call", LfAsyncCallFn),
+        lf_async_sequenced_call: resolve!(
+            lib,
+            "LF_Async_Sequenced_Call",
+            LfAsyncSequencedCallFn
+        ),
         lf_notify: resolve!(lib, "LF_Notify", LfNotifyFn),
         lf_sequenced_notify: resolve!(
             lib,
@@ -599,15 +796,53 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
             LfSequencedNotifyFn
         ),
 
-        // --- Options and diagnostics (7) ---
-        lf_set_option: resolve!(lib, "LF_SetOption", LfSetOptionFn),
-        lf_get_status_count: resolve!(
+        // --- Remote invocation, UID addressing (5) ---
+        lf_uid_call: resolve!(lib, "LF_UID_Call", LfUidCallFn),
+        lf_uid_async_call: resolve!(
             lib,
-            "LF_GetStatusCount",
-            LfGetStatusCountFn
+            "LF_UID_Async_Call",
+            LfUidAsyncCallFn
         ),
-        lf_get_status: resolve!(lib, "LF_GetStatus", LfGetStatusFn),
-        lf_post_status: resolve!(lib, "LF_PostStatus", LfPostStatusFn),
+        lf_uid_async_sequenced_call: resolve!(
+            lib,
+            "LF_UID_Async_Sequenced_Call",
+            LfUidAsyncSequencedCallFn
+        ),
+        lf_uid_notify: resolve!(lib, "LF_UID_Notify", LfUidNotifyFn),
+        lf_uid_sequenced_notify: resolve!(
+            lib,
+            "LF_UID_Sequenced_Notify",
+            LfUidSequencedNotifyFn
+        ),
+
+        // --- Remote invocation, P2PName addressing (5) ---
+        lf_p2pname_call: resolve!(
+            lib,
+            "LF_P2PNAME_Call",
+            LfP2PNameCallFn
+        ),
+        lf_p2pname_async_call: resolve!(
+            lib,
+            "LF_P2PNAME_Async_Call",
+            LfP2PNameAsyncCallFn
+        ),
+        lf_p2pname_async_sequenced_call: resolve!(
+            lib,
+            "LF_P2PNAME_Async_Sequenced_Call",
+            LfP2PNameAsyncSequencedCallFn
+        ),
+        lf_p2pname_notify: resolve!(
+            lib,
+            "LF_P2PNAME_Notify",
+            LfP2PNameNotifyFn
+        ),
+        lf_p2pname_sequenced_notify: resolve!(
+            lib,
+            "LF_P2PNAME_Sequenced_Notify",
+            LfP2PNameSequencedNotifyFn
+        ),
+
+        // --- Queries (7) ---
         lf_check_main_thread: resolve!(
             lib,
             "LF_CheckMainThread",
@@ -615,9 +850,35 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
         ),
         lf_check_app: resolve!(lib, "LF_CheckApp", LfCheckAppFn),
         lf_check_api: resolve!(lib, "LF_CheckApi", LfCheckApiFn),
+        lf_check_uid: resolve!(lib, "LF_Check_UID", LfCheckUidFn),
+        lf_check_uid_api: resolve!(
+            lib,
+            "LF_Check_UID_Api",
+            LfCheckUidApiFn
+        ),
+        lf_check_p2pname: resolve!(
+            lib,
+            "LF_Check_P2PNAME",
+            LfCheckP2PNameFn
+        ),
+        lf_check_p2pname_api: resolve!(
+            lib,
+            "LF_Check_P2PNAME_Api",
+            LfCheckP2PNameApiFn
+        ),
 
-        // --- Shutdown (1) ---
-        lf_shutdown: resolve!(lib, "LF_Shutdown", LfShutdownFn),
+        // --- Options (2) ---
+        lf_set_option: resolve!(lib, "LF_SetOption", LfSetOptionFn),
+        lf_get_option: resolve!(lib, "LF_GetOption", LfGetOptionFn),
+
+        // --- Status (3) ---
+        lf_get_status_count: resolve!(
+            lib,
+            "LF_GetStatusCount",
+            LfGetStatusCountFn
+        ),
+        lf_get_status: resolve!(lib, "LF_GetStatus", LfGetStatusFn),
+        lf_post_status: resolve!(lib, "LF_PostStatus", LfPostStatusFn),
 
         // --- Network events (1) ---
         lf_set_network_event: resolve!(
@@ -625,6 +886,9 @@ fn load_native() -> Result<NativeLibrary, LoadError> {
             "LF_Set_Network_Event",
             LfSetNetworkEventFn
         ),
+
+        // --- Shutdown (1) ---
+        lf_shutdown: resolve!(lib, "LF_Shutdown", LfShutdownFn),
     };
 
     Ok(native)

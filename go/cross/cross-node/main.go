@@ -1,240 +1,249 @@
-// =============================================================================
-//  main.go
-// -----------------------------------------------------------------------------
-//  Worker node that registers the "add" and "inv_seri" Call APIs.
+// Command cross-node is the worker node of the cross-language demo.
 //
-//  Go port of CrossNode.cpp / CrossNode.cs / cross-node.js /
-//  cross_node.lpr. Wire format is byte-for-byte identical to every
-//  other LingoFuse binding:
+// It connects to the coordinator at the IPC endpoint "ipc:cross" and
+// registers the two Call APIs that every other language binds exposes:
 //
-//    add       (int32 a, int32 b)                       -> int32
-//        Reads two 32-bit signed integers (little-endian) and writes
-//        their sum.
+//	add      (int32 a, int32 b)                    -> int32
+//	inv_seri (uint8, uint16, uint32, uint64,
+//	          string(NUL), float32)                 -> reversed
 //
-//    inv_seri  (uint8, uint16, uint32, uint64,
-//               string(NUL), float)                      -> same types reversed
-//        Reads a fixed sequence of typed values and echoes them back
-//        in reverse order. Used to exercise the binary wire format.
+// {!!!!!  WIRE FORMAT IS BYTE-FOR-BYTE IDENTICAL  !!!!!}
+// The Go node reads and writes exactly the same bytes as the C++, C#,
+// Pascal, Rust, and JavaScript demos. All integers and floats are
+// little-endian; the string is UTF-8 with a trailing NUL.
 //
-//  A Go CrossNode is directly interoperable with a C++ / C# / Pascal
-//  / Python / JS CrossCall client, and vice versa.
+// There is NO JSON on the wire. The high-level WriteJSON / ReadJSON
+// helpers are deliberately not used here, because the cross-language
+// demo validates the raw ABI channel.
 //
-//  Startup:
-//      1. Start the coordinator first (any language).
-//      2. Run this program. It connects as a client, exposes "demo",
-//         and waits for Enter.
-//      3. Run one or more callers (any language).
+// {!!!!!  INTEROP  !!!!!}
+// Any combination works:
 //
-//  The two APIs MUST be registered before PrepareClient because the
-//  Init_App_Info broadcast carries the API list as a snapshot.
+//	C++ CrossCall.exe  -> Go cross-node   (this file)
+//	Go cross-call      -> C++ CrossNode.exe
+//	C# CrossCall.exe   -> Rust cross_node
+//	...
 //
-//  Cleanup order (matching Pascal LF-CLEAN-001):
-//      ExitMainThread  ->  app.Close  ->  Shutdown
+// The only requirements are that the coordinator endpoint matches and
+// the API names and wire format are agreed on -- which they are, by
+// construction of the demo.
 //
-//  All operations are idempotent.
-// =============================================================================
-
+// Usage:
+//
+//	cross-node
+//	cross-node -endpoint ipc:cross -app demo
+//
+// Press Ctrl+C to shut down.
 package main
 
 import (
-	"bufio"
+	"flag"
 	"fmt"
 	"os"
-	"strconv"
-	"sync"
+	"os/signal"
+	"syscall"
 
 	"github.com/PassByYou888/LingoFuse/go/lingofuse"
 )
 
 const (
-	endpoint = "ipc:cross"
-	appName  = "demo"
+	// defaultEndpoint MUST match the other language demos.
+	defaultEndpoint = "ipc:cross"
+
+	// defaultAppName MUST match the other language demos.
+	defaultAppName = "demo"
 )
 
-// logMu serialises multi-line output from the native callback
-// worker threads. fmt.Printf to os.Stdout is atomic for small
-// writes on all supported platforms, but the mutex makes the
-// guarantee explicit and keeps output readable.
-var logMu sync.Mutex
-
-func logf(format string, args ...any) {
-	logMu.Lock()
-	fmt.Printf(format, args...)
-	logMu.Unlock()
-}
-
 func main() {
-	fmt.Println("=== Cross Node (Worker, Go) ===")
+	endpoint := flag.String("endpoint", defaultEndpoint,
+		"LingoFuse endpoint of the coordinator.")
+	appName := flag.String("app", defaultAppName,
+		"Name of the App this node exposes.")
+	flag.Parse()
 
-	if err := run(); err != nil {
+	if err := run(*endpoint, *appName); err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("[Node] Bye.")
 }
 
-func run() error {
-	// Deployment mode: do not block PrepareDone waiting for the
-	// service endpoint. The node can start before the coordinator; it
-	// connects automatically once the endpoint becomes reachable.
-	if err := lingofuse.SetOption("Wait_Ready", "False"); err != nil {
-		return err
-	}
-	if err := lingofuse.SetOption("Overlap_Connection", "True"); err != nil {
-		return err
-	}
+// ---------------------------------------------------------------------------
+// add(int32, int32) -> int32
+// ---------------------------------------------------------------------------
 
-	if err := lingofuse.ResetPrepare(); err != nil {
-		return err
-	}
-
-	app, err := lingofuse.NewAppHandle(appName, "Go worker node (ABI wire format)")
+// addCallback reads two little-endian int32 values and writes their
+// sum as a little-endian int32. The exact byte sequence:
+//
+//	request : [a: 4 bytes LE] [b: 4 bytes LE]
+//	response: [sum: 4 bytes LE]
+func addCallback(in, out *lingofuse.DataHandle) {
+	a, err := in.ReadInt32()
 	if err != nil {
-		return fmt.Errorf("NewAppHandle: %w", err)
-	}
-
-	// Cleanup runs on every exit path. The framework teardown is
-	// idempotent, so calling it unconditionally is safe.
-	defer func() {
-		_ = lingofuse.ExitMainThread()
-		app.Close()
-		_ = lingofuse.Shutdown()
-	}()
-
-	// Register the two Call APIs. Registration MUST complete before
-	// PrepareClient so the Init_App_Info broadcast carries the API
-	// list.
-	if err := app.RegisterCall("add",
-		"add(int a, int b) -> int", handleAdd); err != nil {
-		return fmt.Errorf("RegisterCall(add): %w", err)
-	}
-	if err := app.RegisterCall("inv_seri",
-		"inv_seri() -> reversed typed sequence", handleInvSeri); err != nil {
-		return fmt.Errorf("RegisterCall(inv_seri): %w", err)
-	}
-
-	// Connect to the coordinator as a client and expose "demo".
-	if _, err := lingofuse.PrepareClient(endpoint, app); err != nil {
-		return fmt.Errorf("PrepareClient(%q): %w", endpoint, err)
-	}
-
-	// Start the framework.
-	started, err := lingofuse.PrepareDone()
-	if err != nil {
-		return fmt.Errorf("PrepareDone: %w", err)
-	}
-	if !started {
-		return fmt.Errorf("PrepareDone returned false")
-	}
-
-	fmt.Printf("[Node] Registered APIs 'add' and 'inv_seri' under application '%s'.\n",
-		appName)
-	fmt.Println("[Node] Online. Press Enter to exit...")
-
-	reader := bufio.NewReader(os.Stdin)
-	_, _ = reader.ReadString('\n')
-
-	fmt.Println("[Node] Shutting down...")
-	return nil
-}
-
-// -----------------------------------------------------------------------------
-//  Callbacks
-// -----------------------------------------------------------------------------
-//  Callbacks execute on native worker threads. Inside them:
-//    - DO NOT block.
-//    - DO NOT call any blocking LingoFuse function (Call, LocalCall,
-//      PrepareDone, Shutdown) — deadlock risk.
-//    - DO NOT close the borrowed input / output handles.
-// -----------------------------------------------------------------------------
-
-// handleAdd implements add(int32, int32) -> int32.
-func handleAdd(input, output *lingofuse.DataHandle) {
-	a, err := input.ReadInt32()
-	if err != nil {
-		logf("[Node] add: failed to read first int32: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] add: failed to read parameter a")
 		return
 	}
-	b, err := input.ReadInt32()
+	b, err := in.ReadInt32()
 	if err != nil {
-		logf("[Node] add: failed to read second int32: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] add: failed to read parameter b")
 		return
 	}
 	c := a + b
-	logf("[Node] add(%d, %d) = %d\n", a, b, c)
-	if err := output.WriteInt32(c); err != nil {
-		logf("[Node] add: write failed: %v\n", err)
-	}
+
+	fmt.Printf("[Node] add(%d, %d) = %d\n", a, b, c)
+
+	_ = out.WriteInt32(c)
 }
 
-// handleInvSeri implements inv_seri -> reversed typed sequence.
-func handleInvSeri(input, output *lingofuse.DataHandle) {
-	b, err := input.ReadUint8()
+// ---------------------------------------------------------------------------
+// inv_seri() -> reversed typed sequence
+// ---------------------------------------------------------------------------
+
+// invSeriCallback reads a fixed sequence of typed values and writes
+// them back in reverse order. The exact byte sequence:
+//
+//	request :
+//	    [b:   uint8]
+//	    [w:   uint16 LE]
+//	    [c:   uint32 LE]
+//	    [u64: uint64 LE]
+//	    [s:   UTF-8 with a trailing NUL]
+//	    [f:   float32 LE]
+//
+//	response:
+//	    [f:   float32 LE]
+//	    [s:   UTF-8 with a trailing NUL]
+//	    [u64: uint64 LE]
+//	    [c:   uint32 LE]
+//	    [w:   uint16 LE]
+//	    [b:   uint8]
+func invSeriCallback(in, out *lingofuse.DataHandle) {
+	b, err := in.ReadUint8()
 	if err != nil {
-		logf("[Node] inv_seri: read uint8: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read b")
 		return
 	}
-	w, err := input.ReadUint16()
+	w, err := in.ReadUint16()
 	if err != nil {
-		logf("[Node] inv_seri: read uint16: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read w")
 		return
 	}
-	c, err := input.ReadUint32()
+	c, err := in.ReadUint32()
 	if err != nil {
-		logf("[Node] inv_seri: read uint32: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read c")
 		return
 	}
-	u64, err := input.ReadUint64()
+	u64, err := in.ReadUint64()
 	if err != nil {
-		logf("[Node] inv_seri: read uint64: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read u64")
 		return
 	}
-	s, err := input.ReadString()
+	s, err := in.ReadString()
 	if err != nil {
-		logf("[Node] inv_seri: read string: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read s")
 		return
 	}
-	f, err := input.ReadSingle()
+	f, err := in.ReadSingle()
 	if err != nil {
-		logf("[Node] inv_seri: read single: %v\n", err)
+		fmt.Fprintln(os.Stderr, "[Node] inv_seri: failed to read f")
 		return
 	}
 
-	logf("[Node] inv_seri received: [%d, %d, %d, %d, \"%s\", %s]\n",
-		b, w, c, u64, s, formatFloat32(f))
+	fmt.Printf(
+		"[Node] inv_seri received: [%d, %d, %d, %d, %q, %v]\n",
+		b, w, c, u64, s, f,
+	)
 
-	// Reply in reverse field order, matching CrossNode.cpp.
-	if err := output.WriteSingle(f); err != nil {
-		logf("[Node] inv_seri: write single: %v\n", err)
-		return
-	}
-	if err := output.WriteString(s); err != nil {
-		logf("[Node] inv_seri: write string: %v\n", err)
-		return
-	}
-	if err := output.WriteUint64(u64); err != nil {
-		logf("[Node] inv_seri: write uint64: %v\n", err)
-		return
-	}
-	if err := output.WriteUint32(c); err != nil {
-		logf("[Node] inv_seri: write uint32: %v\n", err)
-		return
-	}
-	if err := output.WriteUint16(w); err != nil {
-		logf("[Node] inv_seri: write uint16: %v\n", err)
-		return
-	}
-	if err := output.WriteUint8(b); err != nil {
-		logf("[Node] inv_seri: write uint8: %v\n", err)
-		return
-	}
+	// Reply in reverse order, matching CrossNode.cpp exactly.
+	_ = out.WriteSingle(f)
+	_ = out.WriteString(s)
+	_ = out.WriteUint64(u64)
+	_ = out.WriteUint32(c)
+	_ = out.WriteUint16(w)
+	_ = out.WriteUint8(b)
 
-	logf("[Node] inv_seri replied:  [%s, \"%s\", %d, %d, %d, %d]\n",
-		formatFloat32(f), s, u64, c, w, b)
+	fmt.Printf(
+		"[Node] inv_seri replied:  [%v, %q, %d, %d, %d, %d]\n",
+		f, s, u64, c, w, b,
+	)
 }
 
-// formatFloat32 matches the C++ std::ostream default: six significant
-// digits, no trailing zeros.
-func formatFloat32(v float32) string {
-	return strconv.FormatFloat(float64(v), 'g', 6, 32)
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+
+func run(endpoint, appName string) error {
+	fmt.Println("=== Cross Node (Worker) ===")
+
+	if err := lingofuse.SetOptQuiet(true); err != nil {
+		return fmt.Errorf("SetOptQuiet: %w", err)
+	}
+	// The node is a client. When multiple nodes run against the same
+	// coordinator from the same host, they must not collide on the
+	// local endpoint; Overlap_Connection allows multiple client
+	// tunnels per physical address.
+	if err := lingofuse.SetOptOverlapConnection(true); err != nil {
+		return fmt.Errorf("SetOptOverlapConnection: %w", err)
+	}
+	// Deployment mode: do not block PrepareDone waiting for the
+	// coordinator. The node may start before the coordinator is up.
+	if err := lingofuse.SetOptWaitConnectionReadyOk(false); err != nil {
+		return fmt.Errorf("SetOptWaitConnectionReadyOk: %w", err)
+	}
+
+	// Register the APIs BEFORE preparing the client, so the App is
+	// visible on the mesh the moment the client comes online.
+	app, err := lingofuse.NewAppHandle(appName, "Go worker node")
+	if err != nil {
+		return fmt.Errorf("NewAppHandle: %w", err)
+	}
+	defer app.Close()
+
+	if err := app.RegisterCall("add",
+		"add(int a, int b) -> int", addCallback); err != nil {
+		return fmt.Errorf("RegisterCall(add): %w", err)
+	}
+	if err := app.RegisterCall("inv_seri",
+		"inv_seri() -> reversed typed sequence",
+		invSeriCallback); err != nil {
+		return fmt.Errorf("RegisterCall(inv_seri): %w", err)
+	}
+
+	if err := lingofuse.ResetPrepare(); err != nil {
+		return fmt.Errorf("ResetPrepare: %w", err)
+	}
+	if _, err := lingofuse.PrepareClient(endpoint, app); err != nil {
+		return fmt.Errorf("PrepareClient: %w", err)
+	}
+
+	ok, err := lingofuse.PrepareDone()
+	if err != nil {
+		return fmt.Errorf("PrepareDone: %w", err)
+	}
+	if !ok {
+		active, _ := lingofuse.CheckMainThread()
+		if !active {
+			return fmt.Errorf(
+				"PrepareDone returned false and the main thread " +
+					"is not running")
+		}
+	}
+
+	fmt.Printf(
+		"[Node] Registered APIs 'add' and 'inv_seri' under "+
+			"application '%s'.\n", appName)
+	fmt.Println("[Node] Online. Press Ctrl+C to exit...")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+
+	fmt.Println("\n[Node] Shutting down...")
+	if err := lingofuse.ExitMainThread(); err != nil {
+		fmt.Fprintf(os.Stderr, "[Node] ExitMainThread: %v\n", err)
+	}
+	if err := lingofuse.Shutdown(); err != nil {
+		return fmt.Errorf("Shutdown: %w", err)
+	}
+	fmt.Println("[Node] Bye.")
+	return nil
 }

@@ -2,21 +2,32 @@
 #  build.ps1 — build every Go package and the cross-demo executables
 # -----------------------------------------------------------------------------
 #  Steps:
-#    1. go build ./...             compile every package
-#    2. go vet ./...               static checks (skip with -SkipVet)
-#    3. go build -o bin\...        three cross executables into go\bin\
-#    4. copy LingoFuse64.dll       from ..\Binary\ into go\bin\
+#    1. (optional) go clean -cache        when -Clean is passed
+#    2. go build ./...                    compile every package
+#    3. go vet ./...                      static checks (skip with -SkipVet)
+#    4. go build -o bin\...               three cross executables into go\bin\
+#    5. copy LingoFuse64.dll              from ..\Binary\ into go\bin\
+#
+#  The three cross-demo executables mirror the C++ / C# / Pascal / Rust
+#  / JavaScript demos byte-for-byte on the wire:
+#
+#      cross-service   coordinator for endpoint ipc:cross
+#      cross-node      worker exposing App "demo" with add / inv_seri
+#      cross-call      load tester (32 goroutines, 10 seconds)
 #
 #  Usage:
 #    .\build.ps1
 #    .\build.ps1 -SkipVet
+#    .\build.ps1 -Clean
+#    .\build.ps1 -Clean -SkipVet
 #
 #  Exit code is non-zero when any step fails.
 # =============================================================================
 
 [CmdletBinding()]
 param(
-    [switch]$SkipVet
+    [switch]$SkipVet,
+    [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +35,15 @@ $root = $PSScriptRoot
 
 Push-Location $root
 try {
+    # -------------------------------------------------------------------------
+    # 0. Optional cache clean
+    # -------------------------------------------------------------------------
+    if ($Clean) {
+        Write-Host "=== go clean -cache ===" -ForegroundColor Cyan
+        go clean -cache
+        if ($LASTEXITCODE -ne 0) { throw "go clean -cache failed" }
+    }
+
     # -------------------------------------------------------------------------
     # 1. Compile every package
     # -------------------------------------------------------------------------
@@ -61,6 +81,11 @@ try {
 
     # -------------------------------------------------------------------------
     # 4. Copy the native runtime next to the cross executables
+    #
+    #    The Go loader looks for LingoFuse64.dll in the executable's
+    #    directory first, then on the system loader search path. Placing
+    #    a copy next to the cross binaries makes them runnable without
+    #    any PATH modification.
     # -------------------------------------------------------------------------
     $dllSrc = Join-Path $root '..\Binary\LingoFuse64.dll'
     if (Test-Path $dllSrc) {

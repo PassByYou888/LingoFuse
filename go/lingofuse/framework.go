@@ -15,7 +15,7 @@ import (
 //
 //   - Network preparation (ResetPrepare, PrepareService,
 //     PrepareClient, PrepareDone, ExitMainThread).
-//   - Runtime options (SetOption).
+//   - Runtime options (SetOption, GetOption).
 //   - Application name generation and query (GenerateAppName,
 //     GetAppName).
 //   - Remote invocation (Call, TryCall, Notify, SequencedNotify).
@@ -80,8 +80,8 @@ func PrepareService(listeningAddr, physicsAddr string) (int, error) {
 // Without Overlap_Connection=True, the same physical address can host
 // only one client per process. A second PrepareClient on the same
 // address returns an error and silently discards the app. Set
-// Overlap_Connection=True via SetOption before the call to allow
-// multiple independent tunnels to the same address.
+// Overlap_Connection=True via SetOptOverlapConnection before the call
+// to allow multiple independent tunnels to the same address.
 //
 // Returns the internal tag assigned to this client.
 func PrepareClient(physicsAddr string, app *AppHandle) (int, error) {
@@ -124,7 +124,8 @@ func PrepareClient(physicsAddr string, app *AppHandle) (int, error) {
 // Blocking: by default (Wait_Connection_ReadyOk=True), this call
 // blocks until every prepared client is online, or until
 // Wait_Connection_Timeout milliseconds have elapsed. Configure both
-// via SetOption before calling.
+// via SetOptWaitConnectionReadyOk / SetOptWaitConnectionTimeout before
+// calling.
 func PrepareDone() (bool, error) {
 	if err := sys.LoadLibrary(); err != nil {
 		return false, wrapErr(ErrLibraryLoadFailed, err,
@@ -158,7 +159,9 @@ func ExitMainThread() error {
 // SetOption adjusts a global runtime option.
 //
 // Unknown option names are silently ignored by the native layer (no
-// error, no warning). Double-check the name.
+// error, no warning). Double-check the name. Callers that want a
+// type-checked, name-safe interface should use the SetOpt* / GetOpt*
+// shortcuts in options.go instead of this generic function.
 //
 // Common options:
 //
@@ -183,6 +186,33 @@ func SetOption(option, value string) error {
 	sys.LF_SetOption(opt, val)
 	scope.Release()
 	return nil
+}
+
+// GetOption reads the current value of a global runtime option.
+//
+// {!!!!!  TRANSIENT BUFFER  !!!!!}
+// The native function returns a pointer to a process-wide buffer that
+// is released about 5 seconds after the call. This wrapper copies the
+// string into a Go string immediately, so the returned value is
+// fully detached from that buffer and safe to hold indefinitely.
+//
+// Unknown option names yield an empty string, matching the native
+// behaviour.
+//
+// Callers that want a type-checked, name-safe interface should use
+// the SetOpt* / GetOpt* shortcuts in options.go instead of this
+// generic function.
+func GetOption(option string) (string, error) {
+	if err := sys.LoadLibrary(); err != nil {
+		return "", wrapErr(ErrLibraryLoadFailed, err,
+			"GetOption: native library not available")
+	}
+	var scope sys.CStringScope
+	opt := scope.Add(option)
+	ptr := sys.LF_GetOption(opt)
+	result := sys.GoString(ptr)
+	scope.Release()
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +271,11 @@ func GetAppName(app *AppHandle) (string, error) {
 //
 // The param handle is NOT consumed; the caller retains ownership.
 //
-// Deadlock warning: do not call this function from inside a
-// registered callback. See AppHandle.
+// {!!!!!  MUST NOT BE CALLED FROM WITHIN A CALLBACK  !!!!!}
+// Calling this from inside a registered LingoFuse callback
+// (CallHandler, NotifyHandler, AsyncResult handler, or a network
+// event handler) deadlocks the worker thread that is servicing the
+// callback. Use CallAsync (from the Target API) instead.
 func Call(appName string, param *DataHandle, timeoutMs uint64) (*DataHandle, error) {
 	if param == nil {
 		return nil, newErr(ErrInvalidArgument,
@@ -282,6 +315,8 @@ func Call(appName string, param *DataHandle, timeoutMs uint64) (*DataHandle, err
 // Ownership: when the function returns a non-nil handle, the caller
 // is responsible for calling Close on it. When it returns nil, the
 // underlying empty handle has already been released by this function.
+//
+// Same callback-safety restriction as Call.
 func TryCall(appName string, param *DataHandle, timeoutMs uint64) (*DataHandle, bool, error) {
 	res, err := Call(appName, param, timeoutMs)
 	if err != nil {
@@ -305,6 +340,10 @@ func TryCall(appName string, param *DataHandle, timeoutMs uint64) (*DataHandle, 
 // ordering is required for a given (app_name, api_name) pair.
 //
 // The param handle is NOT consumed; the caller retains ownership.
+//
+// Unlike Call, Notify does not wait for a response; it is therefore
+// safe to call from inside a callback, subject to the general rule
+// that a callback must return promptly.
 func Notify(appName string, param *DataHandle) error {
 	if param == nil {
 		return newErr(ErrInvalidArgument,
@@ -335,6 +374,9 @@ func Notify(appName string, param *DataHandle) error {
 // other.
 //
 // The param handle is NOT consumed; the caller retains ownership.
+//
+// Same callback-safety profile as Notify: safe from inside a
+// callback, but the callback should return promptly.
 func SequencedNotify(appName string, param *DataHandle) error {
 	if param == nil {
 		return newErr(ErrInvalidArgument,
@@ -359,6 +401,49 @@ func SequencedNotify(appName string, param *DataHandle) error {
 }
 
 // ---------------------------------------------------------------------------
+// Deadlock watchdog (re-export from sys)
+// ---------------------------------------------------------------------------
+//
+// The sys package installs a recursive timer that keeps the Go
+// runtime's timer heap non-empty, preventing the runtime's deadlock
+// detector from firing a FALSE POSITIVE when a goroutine blocks on
+// a native async callback. See sys/callbacks.go for the full
+// rationale.
+//
+// These two functions re-export the watchdog controls at the
+// lingofuse package level, so that user code does not need to
+// import the internal sys package for this one feature.
+
+// DisableDeadlockWatchdog turns off the LingoFuse deadlock watchdog.
+//
+// {!!!!!  READ THE TRADE-OFF  !!!!!}
+// Disabling the watchdog restores the Go runtime's built-in
+// deadlock detector, which WILL fire (and abort the process) when a
+// goroutine blocks on a native async callback and no other goroutine
+// is runnable. This is a hard crash with no recovery path.
+//
+// Call this only when:
+//   - the application never blocks on a native async callback, OR
+//   - the application installs its own always-pending timer (for
+//     example, a real periodic heartbeat) and therefore does not
+//     need the watchdog.
+//
+// Safe to call multiple times, before or after the watchdog has
+// started. Once disabled, the watchdog cannot be re-enabled; call
+// this at process start if you need it.
+func DisableDeadlockWatchdog() {
+	sys.DisableDeadlockWatchdog()
+}
+
+// IsDeadlockWatchdogEnabled reports whether the watchdog is currently
+// enabled. The value reflects the last call to
+// DisableDeadlockWatchdog, or the default (enabled) if no such call
+// has been made.
+func IsDeadlockWatchdogEnabled() bool {
+	return sys.IsDeadlockWatchdogEnabled()
+}
+
+// ---------------------------------------------------------------------------
 // Shutdown
 // ---------------------------------------------------------------------------
 
@@ -375,6 +460,15 @@ func SequencedNotify(appName string, param *DataHandle) error {
 //  5. Clears the global application pool.
 //  6. Unloads the IPC library.
 //
+// {!!!!!  LOCAL P2P REGISTRY IS ALSO CLEARED  !!!!!}
+// Before invoking the native shutdown, this function calls
+// ResetP2PRegistrations, which drops every Go-side P2P registration
+// held by this process. Without this step, a framework restart in
+// the same process (Shutdown -> PrepareDone) would be unable to
+// re-register any P2P API name: the native side was reset by
+// Shutdown, but the Go-side p2pRegistry would still hold stale
+// entries and reject the new registration as a duplicate.
+//
 // After Shutdown, every AppHandle still alive becomes invalid. The
 // framework may be re-initialised by calling the preparation
 // functions again. Safe to call multiple times.
@@ -383,6 +477,10 @@ func Shutdown() error {
 		return wrapErr(ErrLibraryLoadFailed, err,
 			"Shutdown: native library not available")
 	}
+	// Release every process-wide P2P callback slot before the
+	// native library is torn down. See the docstring above for why
+	// this is required for a clean framework restart.
+	ResetP2PRegistrations()
 	sys.LF_Shutdown()
 	return nil
 }

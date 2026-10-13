@@ -555,3 +555,120 @@ func (d *DataHandle) TryReadString() (string, bool, error) {
 	}
 	return string(b), true, nil
 }
+
+// ---------------------------------------------------------------------------
+// Sender identity (auto-injected side data)
+// ---------------------------------------------------------------------------
+//
+// {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+// Every inbound request payload carries two identity fields that the
+// SENDER'S transport layer injects automatically before transmission
+// (Pascal side: TC40_LF_Client.Send_* ->
+// TMemory_Param_Tool.Rebuild_UID_and_P2PName):
+//
+//	FromUID      -- the sender's 32-byte session UID.
+//	FromP2PName  -- the sender's user-supplied P2P group name.
+//
+// These two fields are "side data". They are NOT properties of the
+// handle itself. They are metadata that the sender writes into the
+// payload header, and the receiver therefore sees them in the
+// Data_Param of the INPUT handle it receives from the framework.
+//
+// The two accessors below are therefore valid ONLY on an INPUT
+// handle:
+//
+//	VALID    the `input` argument of a registered Call / Notify
+//	         callback.
+//	VALID    the input handle of a local call / notify.
+//	INVALID  an OUTPUT handle. The C side logs a warning and
+//	         returns a zero-filled UID / empty name.
+//	INVALID  a handle the caller created itself via NewDataHandle
+//	         or CreatePermanent. Such a handle has no "sender".
+//
+// The accessors are safe to call from any goroutine.
+
+// GetP2PUID returns the 32-byte sender session UID.
+//
+// {!!!!!  LF_Get_P2P_UID RETURNS A POINTER  !!!!!}
+// The underlying C ABI function returns a POINTER to a 32-byte UID
+// (Pascal signature:
+//
+//	function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+//
+// i.e. ^TUID___, not TUID___). The pointer is allocated by the C side
+// and is scheduled for automatic release about 5 seconds after the
+// call (DelayFreeMem). This wrapper therefore:
+//
+//  1. Copies the 32 bytes immediately into a Go value.
+//  2. Does NOT call any deallocation function on the pointer.
+//  3. Does NOT retain the pointer beyond this method.
+//
+// Callers never see the transient pointer.
+//
+// The value is regenerated on every TunnelLink. Caching a UID across
+// a link loss is unsafe; callers that cache must re-probe after a
+// reconnect.
+//
+// Returns a [32]byte array. When the handle is not an INPUT handle,
+// or when the sender did not provide a UID, the returned value is
+// the all-zero UID (see sys.NullUID and sys.IsNullUID).
+func (d *DataHandle) GetP2PUID() (sys.TP2P_UID, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var zero sys.TP2P_UID
+
+	h, err := d.requireHandle("DataHandle.GetP2PUID")
+	if err != nil {
+		return zero, err
+	}
+
+	ptr := sys.LF_Get_P2P_UID(h)
+	if ptr == nil {
+		// The C side returns NULL when the handle is nil. We
+		// already rejected nil above, so this branch is defensive.
+		return zero, nil
+	}
+
+	// Copy the 32 bytes into a fresh Go value. The pointer is
+	// transient; we must not retain it.
+	return *ptr, nil
+}
+
+// GetP2PName returns the sender's P2P group name.
+//
+// {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+// Same side-data contract as GetP2PUID. This accessor reads the
+// FromP2PName field that the sender's transport layer injected into
+// the payload. It is valid ONLY on an INPUT handle.
+//
+// {!!!!!  NOT TO BE CONFUSED WITH GetOptP2PName  !!!!!}
+// This function reads the SENDER's P2P name (side data). It is
+// unrelated to GetOptP2PName, which reads the LOCAL configuration:
+// the value this process set for itself through SetOptP2PName.
+//
+//	GetP2PName()      -> the SENDER's name (side data, INPUT handle)
+//	GetOptP2PName()   -> MY name (local config, any time)
+//
+// Returns "" when the sender did not set a name, or when the handle
+// is not an INPUT handle.
+//
+// The underlying C function returns a pointer to a transient buffer
+// that is released about 5 seconds after the call. This wrapper
+// copies the string into a fresh Go string immediately, so the
+// returned value is fully detached and safe to hold indefinitely.
+func (d *DataHandle) GetP2PName() (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	h, err := d.requireHandle("DataHandle.GetP2PName")
+	if err != nil {
+		return "", err
+	}
+
+	ptr := sys.LF_Get_P2P_Name(h)
+	if ptr == nil {
+		return "", nil
+	}
+	return sys.GoString(ptr), nil
+}

@@ -1,44 +1,47 @@
-// =============================================================================
-//  main.go
-// -----------------------------------------------------------------------------
-//  Concurrent load tester for the "ipc:cross" endpoint.
+// Command cross-call is the concurrent load tester of the
+// cross-language demo.
 //
-//  Go port of CrossCall.cpp / CrossCall.cs / cross-call.js /
-//  cross_call.lpr. It connects as a pure consumer (no application is
-//  exposed) and spawns several goroutines. Each goroutine repeatedly
-//  invokes one of two remote APIs on the "demo" application at random:
+// It connects to the coordinator at "ipc:cross" as a pure consumer
+// (no application attached) and spawns 32 goroutines. Each goroutine
+// repeatedly invokes one of two remote APIs on the "demo" application
+// at random:
 //
-//    add       (int32 a, int32 b)                       -> int32
-//    inv_seri  (uint8, uint16, uint32, uint64,
-//               string(NUL), float)                      -> reversed types
+//	add      (int32 a, int32 b)                    -> int32
+//	inv_seri (uint8, uint16, uint32, uint64,
+//	          string(NUL), float32)                 -> reversed
 //
-//  Both APIs use the raw ABI channel. No JSON is involved at any
-//  point. Every byte written matches what the C++ / C# / Pascal /
-//  Python / JS clients write for the same logical call, so this
-//  program can drive a node written in any of those languages.
+// {!!!!!  WIRE FORMAT IS BYTE-FOR-BYTE IDENTICAL  !!!!!}
+// Both APIs use the raw ABI channel. No JSON is involved at any
+// point. Every byte written matches what the C++, C#, Pascal, Rust,
+// and JavaScript clients write for the same logical call.
 //
-//  Log sampling:
-//      With 32 goroutines and a 1 ms pause, the process issues tens of
-//      thousands of calls per second. Printing every call would make
-//      the log I/O itself the bottleneck. Each worker therefore only
-//      logs one out of every logEveryNthCall iterations; the aggregate
-//      counters remain exact.
+// {!!!!!  INTEROP  !!!!!}
+// The load test may be run against a Go node (this language), or
+// against a worker implemented in any other language:
 //
-//  Cleanup order (matching Pascal LF-CLEAN-001):
-//      ExitMainThread  ->  Shutdown
+//	./cross-call            -> Go cross-node
+//	./cross-call            -> C++ CrossNode.exe
+//	./cross-call            -> C# CrossNode.exe
+//	...
 //
-//  Both operations are idempotent; the deferred call runs them on
-//  every exit path.
-// =============================================================================
-
+// The only requirement is that the coordinator endpoint matches and
+// the wire format is as documented above -- which it is, by
+// construction of the demo.
+//
+// Usage:
+//
+//	cross-call
+//	cross-call -endpoint ipc:cross -app demo
+//
+// Press Ctrl+C to stop the load test early; otherwise it runs for the
+// configured duration and prints a summary.
 package main
 
 import (
-	"bufio"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,222 +49,74 @@ import (
 	"github.com/PassByYou888/LingoFuse/go/lingofuse"
 )
 
-// -----------------------------------------------------------------------------
-//  Configuration (must match the other language demos)
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Configuration (MUST match the other language demos)
+// ---------------------------------------------------------------------------
 
 const (
-	targetApp = "demo"
-	endpoint  = "ipc:cross"
+	defaultEndpoint = "ipc:cross"
+	defaultAppName  = "demo"
 
-	workerThreads   = 32
-	testSeconds     = 10
-	callTimeoutMs   = 1000
-	pauseMs         = 1
-	logEveryNthCall = 5000
+	// kWorkerThreads is the number of concurrent caller goroutines.
+	kWorkerThreads = 32
 
-	numberMin = 1
-	numberMax = 1000
+	// kTestSeconds is the total load-test duration.
+	kTestSeconds = 10
+
+	// kCallTimeoutMs is the per-call timeout in milliseconds.
+	kCallTimeoutMs = 1000
+
+	// kPauseMs is the pause between iterations, in milliseconds.
+	kPauseMs = 1
+
+	// kLogEveryNthCall samples the per-call log to avoid making I/O
+	// the bottleneck. Aggregate counters remain exact.
+	kLogEveryNthCall = 5000
+
+	// Range for the random integers passed to add.
+	kNumberMin = 1
+	kNumberMax = 1000
 )
 
-// -----------------------------------------------------------------------------
-//  Thread-safe line output
-// -----------------------------------------------------------------------------
-
-var logMu sync.Mutex
-
-func logf(format string, args ...any) {
-	logMu.Lock()
-	fmt.Printf(format, args...)
-	logMu.Unlock()
-}
-
-// -----------------------------------------------------------------------------
-//  Aggregate statistics
-// -----------------------------------------------------------------------------
-
-type stats struct {
-	totalCalls   atomic.Int64
-	successCalls atomic.Int64
-	failedCalls  atomic.Int64
-	addCalls     atomic.Int64
-	invSeriCalls atomic.Int64
-}
-
-// -----------------------------------------------------------------------------
-//  main
-// -----------------------------------------------------------------------------
-
 func main() {
-	fmt.Println("=== Cross Call (Client, Go) ===")
-	if err := run(); err != nil {
+	endpoint := flag.String("endpoint", defaultEndpoint,
+		"LingoFuse endpoint of the coordinator.")
+	appName := flag.String("app", defaultAppName,
+		"Name of the target App.")
+	flag.Parse()
+
+	if err := run(*endpoint, *appName); err != nil {
 		fmt.Fprintf(os.Stderr, "[FATAL] %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("[Call] Bye.")
 }
 
-func run() error {
-	if err := lingofuse.SetOption("Wait_Connection_ReadyOk", "True"); err != nil {
-		return err
-	}
-	if err := lingofuse.SetOption("Overlap_Connection", "True"); err != nil {
-		return err
-	}
-	if err := lingofuse.SetOption("Wait_Connection_Timeout", "10000"); err != nil {
-		return err
-	}
-
-	if err := lingofuse.ResetPrepare(); err != nil {
-		return err
-	}
-
-	defer func() {
-		_ = lingofuse.ExitMainThread()
-		_ = lingofuse.Shutdown()
-	}()
-
-	// Pure consumer: no application is exposed.
-	if _, err := lingofuse.PrepareClient(endpoint, nil); err != nil {
-		return fmt.Errorf("PrepareClient(%q): %w", endpoint, err)
-	}
-
-	started, err := lingofuse.PrepareDone()
-	if err != nil {
-		return fmt.Errorf("PrepareDone: %w", err)
-	}
-	if !started {
-		return fmt.Errorf("PrepareDone returned false")
-	}
-
-	fmt.Printf("[Call] Connected to %s. Starting %d-second load test with %d goroutines...\n",
-		endpoint, testSeconds, workerThreads)
-
-	var st stats
-	var stop atomic.Bool
-
-	startTime := time.Now()
-
-	var wg sync.WaitGroup
-	wg.Add(workerThreads)
-	for i := 0; i < workerThreads; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			worker(idx, &stop, &st)
-		}(i)
-	}
-
-	time.Sleep(testSeconds * time.Second)
-	stop.Store(true)
-	wg.Wait()
-
-	elapsed := time.Since(startTime).Seconds()
-
-	total := st.totalCalls.Load()
-	success := st.successCalls.Load()
-	failed := st.failedCalls.Load()
-	addCalls := st.addCalls.Load()
-	invSeriCalls := st.invSeriCalls.Load()
-
-	successRate := 0.0
-	if total > 0 {
-		successRate = 100.0 * float64(success) / float64(total)
-	}
-	throughput := 0.0
-	if elapsed > 0 {
-		throughput = float64(total) / elapsed
-	}
-	successThroughput := 0.0
-	if elapsed > 0 {
-		successThroughput = float64(success) / elapsed
-	}
-
-	fmt.Println()
-	fmt.Println("[Call] Load test summary")
-	fmt.Printf("         duration          : %.3f s\n", elapsed)
-	fmt.Printf("         total calls       : %d\n", total)
-	fmt.Printf("         success           : %d (%.2f %%)\n", success, successRate)
-	fmt.Printf("         failed            : %d\n", failed)
-	fmt.Printf("         add calls         : %d\n", addCalls)
-	fmt.Printf("         inv_seri calls    : %d\n", invSeriCalls)
-	fmt.Printf("         throughput        : %.2f calls/s\n", throughput)
-	fmt.Printf("         success throughput: %.2f calls/s\n", successThroughput)
-
-	fmt.Println("[Call] Press Enter to exit...")
-	reader := bufio.NewReader(os.Stdin)
-	_, _ = reader.ReadString('\n')
-
-	return nil
-}
-
-// -----------------------------------------------------------------------------
-//  Worker body
-// -----------------------------------------------------------------------------
-
-func worker(idx int, stop *atomic.Bool, st *stats) {
-	// Per-goroutine rand source: safer than the global source under
-	// concurrency (Go 1.20+ auto-seeds the global source, but explicit
-	// per-goroutine seeding removes any doubt).
-	rng := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(idx)))
-
-	iter := int64(0)
-	for !stop.Load() {
-		iter++
-		doLog := (iter % logEveryNthCall) == 0
-
-		if rng.Intn(2) == 0 {
-			// ---- add ----
-			a := numberMin + rng.Intn(numberMax-numberMin+1)
-			b := numberMin + rng.Intn(numberMax-numberMin+1)
-			sum, ok := remoteAdd(int32(a), int32(b))
-
-			st.totalCalls.Add(1)
-			st.addCalls.Add(1)
-			if ok {
-				st.successCalls.Add(1)
-				if doLog {
-					logf("[Call %d] add(%d, %d) = %d\n", idx, a, b, sum)
-				}
-			} else {
-				st.failedCalls.Add(1)
-				if doLog {
-					logf("[Call %d] add(%d, %d) timed out or failed.\n", idx, a, b)
-				}
-			}
-		} else {
-			// ---- inv_seri ----
-			text, ok := remoteInvSeri()
-
-			st.totalCalls.Add(1)
-			st.invSeriCalls.Add(1)
-			if ok {
-				st.successCalls.Add(1)
-				if doLog {
-					logf("[Call %d] %s\n", idx, text)
-				}
-			} else {
-				st.failedCalls.Add(1)
-				if doLog {
-					logf("[Call %d] inv_seri timed out or failed.\n", idx)
-				}
-			}
-		}
-
-		if pauseMs > 0 {
-			time.Sleep(time.Duration(pauseMs) * time.Millisecond)
-		}
-	}
-}
-
-// -----------------------------------------------------------------------------
-//  Remote call wrappers — raw ABI
-// -----------------------------------------------------------------------------
-
-// remoteAdd invokes the remote "add" API.
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
 //
-// Request : int32 (little-endian) + int32 (little-endian)
-// Reply   : int32 (little-endian)
-func remoteAdd(a, b int32) (int32, bool) {
+// Pure counters. Configuration values such as the target App name are
+// passed to `worker` as ordinary function parameters, so the stats
+// struct stays a plain aggregate with no mixed concerns.
+type stats struct {
+	total    atomic.Uint64
+	success  atomic.Uint64
+	failed   atomic.Uint64
+	addCalls atomic.Uint64
+	invCalls atomic.Uint64
+}
+
+// ---------------------------------------------------------------------------
+// Remote call wrappers (raw ABI, no JSON)
+// ---------------------------------------------------------------------------
+
+// remoteAdd invokes the remote "add" API via the raw ABI channel.
+//
+//	request : [a: int32 LE] [b: int32 LE]
+//	reply   : [sum: int32 LE]
+//
+// Returns (sum, true) on success, (0, false) on timeout or failure.
+func remoteAdd(appName string, a, b int32) (int32, bool) {
 	param, err := lingofuse.NewDataHandle("add")
 	if err != nil {
 		return 0, false
@@ -275,33 +130,38 @@ func remoteAdd(a, b int32) (int32, bool) {
 		return 0, false
 	}
 
-	res, ok, err := lingofuse.TryCall(targetApp, param, callTimeoutMs)
-	if err != nil || !ok || res == nil {
+	res, err := lingofuse.Call(appName, param, kCallTimeoutMs)
+	if err != nil {
 		return 0, false
 	}
 	defer res.Close()
 
-	sum, err := res.ReadInt32()
+	sz, err := res.Size()
+	if err != nil || sz == 0 {
+		return 0, false
+	}
+	if err := res.SetPosition(0); err != nil {
+		return 0, false
+	}
+	v, err := res.ReadInt32()
 	if err != nil {
 		return 0, false
 	}
-	return sum, true
+	return v, true
 }
 
-// remoteInvSeri invokes the remote "inv_seri" API.
-//
-// Request : uint8, uint16, uint32, uint64, string(NUL), float
-// Reply   : float, string(NUL), uint64, uint32, uint16, uint8
-//
-// Same constants as the C++ / C# / Pascal / JS counterparts.
-func remoteInvSeri() (string, bool) {
+// remoteInvSeri invokes the remote "inv_seri" API and formats the
+// reply. The reply format is a string identical to what CrossCall.cpp
+// prints.
+func remoteInvSeri(appName string) (string, bool) {
+	// Same constants as the C++ / C# / Pascal / Rust / JS counterparts.
 	const (
-		b   uint8   = 200
-		w   uint16  = 0x10
-		c   uint32  = 0x2F
-		u64 uint64  = 0x3F
-		s           = "hello world"
-		f   float32 = 3.14
+		b uint8   = 200
+		w uint16  = 0x10
+		c uint32  = 0x2F
+		u uint64  = 0x3F
+		s string  = "hello world"
+		f float32 = 3.14
 	)
 
 	param, err := lingofuse.NewDataHandle("inv_seri")
@@ -319,7 +179,7 @@ func remoteInvSeri() (string, bool) {
 	if err := param.WriteUint32(c); err != nil {
 		return "", false
 	}
-	if err := param.WriteUint64(u64); err != nil {
+	if err := param.WriteUint64(u); err != nil {
 		return "", false
 	}
 	if err := param.WriteString(s); err != nil {
@@ -329,13 +189,20 @@ func remoteInvSeri() (string, bool) {
 		return "", false
 	}
 
-	res, ok, err := lingofuse.TryCall(targetApp, param, callTimeoutMs)
-	if err != nil || !ok || res == nil {
+	res, err := lingofuse.Call(appName, param, kCallTimeoutMs)
+	if err != nil {
 		return "", false
 	}
 	defer res.Close()
 
-	// Read the reply fields in the reverse order the node wrote them.
+	sz, err := res.Size()
+	if err != nil || sz == 0 {
+		return "", false
+	}
+	if err := res.SetPosition(0); err != nil {
+		return "", false
+	}
+
 	rf, err := res.ReadSingle()
 	if err != nil {
 		return "", false
@@ -344,7 +211,7 @@ func remoteInvSeri() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	ru64, err := res.ReadUint64()
+	ru, err := res.ReadUint64()
 	if err != nil {
 		return "", false
 	}
@@ -362,14 +229,179 @@ func remoteInvSeri() (string, bool) {
 	}
 
 	return fmt.Sprintf(
-		"reply: [%d, %d, %d, %d, \"%s\", %s]  original: [%d, %d, %d, %d, \"%s\", %s]",
-		rb, rw, rc, ru64, rs, formatFloat32(rf),
-		b, w, c, u64, s, formatFloat32(f),
+		"reply: [%d, %d, %d, %d, %q, %v]  original: [%d, %d, %d, %d, %q, %v]",
+		rb, rw, rc, ru, rs, rf,
+		b, w, c, u, s, f,
 	), true
 }
 
-// formatFloat32 matches the C++ std::ostream default: six significant
-// digits, no trailing zeros.
-func formatFloat32(v float32) string {
-	return strconv.FormatFloat(float64(v), 'g', 6, 32)
+// ---------------------------------------------------------------------------
+// Worker goroutine
+// ---------------------------------------------------------------------------
+
+func worker(index int, targetApp string, stop *atomic.Bool, st *stats) {
+	rng := rand.New(rand.NewSource(
+		int64(index)*2654435761 + time.Now().UnixNano(),
+	))
+
+	iter := uint64(0)
+	for !stop.Load() {
+		iter++
+		doLog := (iter % kLogEveryNthCall) == 0
+
+		if rng.Intn(2) == 0 {
+			// --- add ---
+			a := int32(rng.Intn(kNumberMax-kNumberMin+1) + kNumberMin)
+			b := int32(rng.Intn(kNumberMax-kNumberMin+1) + kNumberMin)
+
+			result, ok := remoteAdd(targetApp, a, b)
+			st.total.Add(1)
+			st.addCalls.Add(1)
+			if ok {
+				st.success.Add(1)
+				if doLog {
+					fmt.Printf("[Call %d] add(%d, %d) = %d\n",
+						index, a, b, result)
+				}
+			} else {
+				st.failed.Add(1)
+				if doLog {
+					fmt.Printf(
+						"[Call %d] add(%d, %d) timed out or failed.\n",
+						index, a, b)
+				}
+			}
+		} else {
+			// --- inv_seri ---
+			text, ok := remoteInvSeri(targetApp)
+			st.total.Add(1)
+			st.invCalls.Add(1)
+			if ok {
+				st.success.Add(1)
+				if doLog {
+					fmt.Printf("[Call %d] %s\n", index, text)
+				}
+			} else {
+				st.failed.Add(1)
+				if doLog {
+					fmt.Printf(
+						"[Call %d] inv_seri timed out or failed.\n",
+						index)
+				}
+			}
+		}
+
+		if kPauseMs > 0 {
+			time.Sleep(time.Duration(kPauseMs) * time.Millisecond)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Main logic
+// ---------------------------------------------------------------------------
+
+func run(endpoint, appName string) error {
+	fmt.Println("=== Cross Call (Client) ===")
+
+	if err := lingofuse.SetOptQuiet(true); err != nil {
+		return fmt.Errorf("SetOptQuiet: %w", err)
+	}
+	if err := lingofuse.SetOptWaitConnectionReadyOk(true); err != nil {
+		return fmt.Errorf("SetOptWaitConnectionReadyOk: %w", err)
+	}
+	if err := lingofuse.SetOptOverlapConnection(true); err != nil {
+		return fmt.Errorf("SetOptOverlapConnection: %w", err)
+	}
+	if err := lingofuse.SetOptWaitConnectionTimeout(10000); err != nil {
+		return fmt.Errorf("SetOptWaitConnectionTimeout: %w", err)
+	}
+
+	if err := lingofuse.ResetPrepare(); err != nil {
+		return fmt.Errorf("ResetPrepare: %w", err)
+	}
+	// Pure consumer: no application is exposed.
+	if _, err := lingofuse.PrepareClient(endpoint, nil); err != nil {
+		return fmt.Errorf("PrepareClient: %w", err)
+	}
+
+	ok, err := lingofuse.PrepareDone()
+	if err != nil {
+		return fmt.Errorf("PrepareDone: %w", err)
+	}
+	if !ok {
+		active, _ := lingofuse.CheckMainThread()
+		if !active {
+			return fmt.Errorf(
+				"PrepareDone returned false and the main thread " +
+					"is not running")
+		}
+	}
+
+	fmt.Printf(
+		"[Call] Connected to %s. Starting %d-second load test "+
+			"with %d threads...\n",
+		endpoint, kTestSeconds, kWorkerThreads,
+	)
+
+	st := &stats{}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	start := time.Now()
+
+	for i := 0; i < kWorkerThreads; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			worker(idx, appName, &stop, st)
+		}(i)
+	}
+
+	time.Sleep(time.Duration(kTestSeconds) * time.Second)
+	stop.Store(true)
+	wg.Wait()
+
+	elapsed := time.Since(start).Seconds()
+
+	total := st.total.Load()
+	success := st.success.Load()
+	failed := st.failed.Load()
+	addCalls := st.addCalls.Load()
+	invCalls := st.invCalls.Load()
+
+	var successRate, throughput, successThroughput float64
+	if total > 0 {
+		successRate = 100.0 * float64(success) / float64(total)
+	}
+	if elapsed > 0 {
+		throughput = float64(total) / elapsed
+		successThroughput = float64(success) / elapsed
+	}
+
+	fmt.Println()
+	fmt.Println("[Call] Load test summary")
+	fmt.Printf("         duration          : %.3f s\n", elapsed)
+	fmt.Printf("         total calls       : %d\n", total)
+	fmt.Printf("         success           : %d (%.2f %%)\n",
+		success, successRate)
+	fmt.Printf("         failed            : %d\n", failed)
+	fmt.Printf("         add calls         : %d\n", addCalls)
+	fmt.Printf("         inv_seri calls    : %d\n", invCalls)
+	fmt.Printf("         throughput        : %.2f calls/s\n", throughput)
+	fmt.Printf("         success throughput: %.2f calls/s\n",
+		successThroughput)
+
+	fmt.Println()
+	fmt.Println("[Call] Shutting down...")
+
+	if err := lingofuse.ExitMainThread(); err != nil {
+		fmt.Fprintf(os.Stderr, "[Call] ExitMainThread: %v\n", err)
+	}
+	if err := lingofuse.Shutdown(); err != nil {
+		return fmt.Errorf("Shutdown: %w", err)
+	}
+	fmt.Println("[Call] Bye.")
+	return nil
 }

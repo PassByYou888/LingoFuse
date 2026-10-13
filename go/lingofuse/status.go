@@ -41,7 +41,7 @@ func GetStatus() (string, error) {
 
 // DrainStatus retrieves up to maxMessages pending status messages in
 // FIFO order. Stops early when the native queue returns an empty
-// message, matching the historical behaviour of the C# binding.
+// message.
 //
 // A maxMessages value of 0 returns an empty slice without touching
 // the queue.
@@ -96,7 +96,7 @@ func PostStatus(message string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Health checks
+// Health checks — App name addressing
 // ---------------------------------------------------------------------------
 
 // CheckMainThread reports whether the simulated main thread is
@@ -113,8 +113,7 @@ func CheckMainThread() (bool, error) {
 // available on the mesh.
 //
 // The lookup uses a local cache updated by network broadcasts with an
-// approximate 3-second propagation delay. Do not use this as an
-// authoritative existence test for critical paths.
+// approximate 3-second propagation delay.
 func CheckApp(appName string) (bool, error) {
 	if err := sys.LoadLibrary(); err != nil {
 		return false, wrapErr(ErrLibraryLoadFailed, err,
@@ -138,6 +137,83 @@ func CheckApi(appName, apiName string) (bool, error) {
 	app := scope.Add(appName)
 	api := scope.Add(apiName)
 	ok := sys.LF_CheckApi(app, api) != 0
+	scope.Release()
+	return ok, nil
+}
+
+// ---------------------------------------------------------------------------
+// Health checks — UID addressing
+// ---------------------------------------------------------------------------
+//
+// {!!!!!  UID HERE IS AN ARGUMENT VALUE, NOT SIDE DATA  !!!!!}
+// The UID passed to CheckUID / CheckUIDApi is a VALUE the caller
+// already possesses: typically the result of a prior "whoami" probe
+// or an out-of-band discovery mechanism.
+//
+// {!!!!!  UID IS PASSED BY POINTER  !!!!!}
+// The C ABI passes the 32-byte UID by reference. purego does not
+// support struct arguments on Windows amd64, so the FFI layer
+// declares the parameter as `*sys.TP2P_UID` and this wrapper takes
+// the address of a local copy. See sys/bindings.go for the rationale.
+//
+// Like CheckApp / CheckApi, the four functions below consult a
+// locally cached view of the mesh with a ~3-second propagation delay.
+
+// CheckUID reports whether a client with the given UID is currently
+// known to the mesh (locally or via the cached remote view).
+func CheckUID(uid sys.TP2P_UID) (bool, error) {
+	if err := sys.LoadLibrary(); err != nil {
+		return false, wrapErr(ErrLibraryLoadFailed, err,
+			"CheckUID: native library not available")
+	}
+	localUID := uid
+	return sys.LF_Check_UID(&localUID) != 0, nil
+}
+
+// CheckUIDApi reports whether a client with the given UID exposes
+// the named API.
+func CheckUIDApi(uid sys.TP2P_UID, apiName string) (bool, error) {
+	if err := sys.LoadLibrary(); err != nil {
+		return false, wrapErr(ErrLibraryLoadFailed, err,
+			"CheckUIDApi: native library not available")
+	}
+	var scope sys.CStringScope
+	api := scope.Add(apiName)
+	localUID := uid
+	ok := sys.LF_Check_UID_Api(&localUID, api) != 0
+	scope.Release()
+	return ok, nil
+}
+
+// ---------------------------------------------------------------------------
+// Health checks — P2PName addressing
+// ---------------------------------------------------------------------------
+
+// CheckP2PName reports whether at least one client has the given P2P
+// group name.
+func CheckP2PName(p2pName string) (bool, error) {
+	if err := sys.LoadLibrary(); err != nil {
+		return false, wrapErr(ErrLibraryLoadFailed, err,
+			"CheckP2PName: native library not available")
+	}
+	var scope sys.CStringScope
+	name := scope.Add(p2pName)
+	ok := sys.LF_Check_P2PNAME(name) != 0
+	scope.Release()
+	return ok, nil
+}
+
+// CheckP2PNameApi reports whether at least one client in the given
+// P2P group exposes the named API.
+func CheckP2PNameApi(p2pName, apiName string) (bool, error) {
+	if err := sys.LoadLibrary(); err != nil {
+		return false, wrapErr(ErrLibraryLoadFailed, err,
+			"CheckP2PNameApi: native library not available")
+	}
+	var scope sys.CStringScope
+	group := scope.Add(p2pName)
+	api := scope.Add(apiName)
+	ok := sys.LF_Check_P2PNAME_Api(group, api) != 0
 	scope.Release()
 	return ok, nil
 }

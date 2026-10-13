@@ -50,8 +50,6 @@ type NetworkHandler func(addr string)
 var (
 	netEventMu        sync.Mutex
 	netEventInstalled bool
-	netEventOnConnect NetworkHandler
-	netEventOnDisc    NetworkHandler
 )
 
 // SetNetworkEvent installs the process-global connect and disconnect
@@ -68,9 +66,6 @@ func SetNetworkEvent(onConnect, onDisconnect NetworkHandler) error {
 
 	netEventMu.Lock()
 	defer netEventMu.Unlock()
-
-	netEventOnConnect = onConnect
-	netEventOnDisc = onDisconnect
 
 	// Build the C trampoline wrappers. They capture the handler via
 	// the closure and copy the C string before dispatching.

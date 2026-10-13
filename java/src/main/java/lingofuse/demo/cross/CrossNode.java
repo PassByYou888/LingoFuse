@@ -5,39 +5,18 @@ import lingofuse.Framework;
 import lingofuse.LingoFuseStatus;
 import lingofuse.NetworkEvents;
 
+import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Worker node that registers the {@code add} and {@code inv_seri} Call
  * APIs and connects to the IPC endpoint {@code ipc:cross} as a client.
  *
- * <p>Every invocation is logged, unconditionally. There is no
- * sampling and no toggle.
- *
- * <h2>Wire format</h2>
- *
- * <pre>
- * add:
- *   input : int32 (LE) + int32 (LE)
- *   output: int32 (LE)
- *
- * inv_seri:
- *   input : uint8 + uint16 + uint32 + uint64 + string(NUL) + float
- *   output: float + string(NUL) + uint64 + uint32 + uint16 + uint8
- * </pre>
- *
- * <h2>Running</h2>
- *
- * <pre>
- * java --enable-native-access=ALL-UNNAMED \
- *      -cp target\classes lingofuse.demo.cross.CrossNode
- * </pre>
- *
- * <p>Note: with a high-concurrency client (32 threads), the log
- * volume will be very large. For a readable verification run, use a
- * low-concurrency client.
+ * <p>Installs a JVM shutdown hook so cleanup runs exactly once on
+ * every exit path.
  */
 public final class CrossNode {
 
@@ -47,10 +26,9 @@ public final class CrossNode {
     private static final AtomicLong ADD_COUNT = new AtomicLong(0);
     private static final AtomicLong INV_SERI_COUNT = new AtomicLong(0);
 
-    // -----------------------------------------------------------------
-    // Logging: single-consumer queue + one daemon writer thread.
-    // Native worker threads only enqueue; they never touch System.out.
-    // -----------------------------------------------------------------
+    private static final AtomicBoolean CLEANED_UP = new AtomicBoolean(false);
+    private static volatile AppHandle application = null;
+    private static volatile boolean frameworkStarted = false;
 
     private static final BlockingQueue<String> LOG_QUEUE =
             new LinkedBlockingQueue<>();
@@ -70,6 +48,10 @@ public final class CrossNode {
         }, "CrossNode-log");
         t.setDaemon(true);
         t.start();
+
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(CrossNode::cleanupOnce,
+                        "CrossNode-shutdown-hook"));
     }
 
     private static void log(String line) {
@@ -79,13 +61,41 @@ public final class CrossNode {
     private CrossNode() {
     }
 
+    private static void cleanupOnce() {
+        if (!CLEANED_UP.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            NetworkEvents.clear();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.exitMainThread();
+            }
+        } catch (Throwable ignored) {
+        }
+        AppHandle app = application;
+        if (app != null) {
+            try {
+                app.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.shutdown();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static void main(String[] args) {
         System.out.println("=== Cross Node (Worker) ===");
         System.out.println("[Node] Every invocation will be logged.");
         System.out.println();
 
-        AppHandle app = null;
-        boolean started = false;
+        int exitCode = 0;
 
         try {
             Framework.setOption("Wait_Connection_ReadyOk", "True");
@@ -94,13 +104,14 @@ public final class CrossNode {
 
             Framework.resetPrepare();
 
-            app = new AppHandle(APP_NAME, "Java worker node (ABI wire format)");
+            AppHandle app = new AppHandle(
+                    APP_NAME, "Java worker node (ABI wire format)");
+            application = app;
 
             registerAdd(app);
             registerInvSeri(app);
 
-            int clientTag = Framework.prepareClient(ENDPOINT, app);
-            if (clientTag == -1) {
+            if (Framework.prepareClient(ENDPOINT, app) == -1) {
                 throw new IllegalStateException(
                         "prepareClient returned -1 for " + ENDPOINT);
             }
@@ -112,13 +123,17 @@ public final class CrossNode {
                                 + " and the main thread is not running.");
             }
 
-            started = true;
+            frameworkStarted = true;
 
             log("[Node] Registered APIs 'add' and 'inv_seri' "
                     + "under application '" + APP_NAME + "'.");
             log("[Node] Online. Press Enter to exit...");
 
-            System.in.read();
+            try (Scanner scanner = new Scanner(System.in)) {
+                if (scanner.hasNextLine()) {
+                    scanner.nextLine();
+                }
+            }
 
             log("[Node] Shutting down...");
             log("[Node] Handled " + ADD_COUNT.get() + " add calls, "
@@ -128,16 +143,9 @@ public final class CrossNode {
             System.err.println("[FATAL] "
                     + t.getClass().getSimpleName() + ": " + t.getMessage());
             t.printStackTrace(System.err);
-            System.exit(1);
+            exitCode = 1;
         } finally {
-            if (started) {
-                try { NetworkEvents.clear(); } catch (Throwable ignored) {}
-                try { Framework.exitMainThread(); } catch (Throwable ignored) {}
-                try { if (app != null) app.close(); } catch (Throwable ignored) {}
-                try { Framework.shutdown(); } catch (Throwable ignored) {}
-            } else {
-                try { if (app != null) app.close(); } catch (Throwable ignored) {}
-            }
+            cleanupOnce();
         }
 
         try {
@@ -147,10 +155,13 @@ public final class CrossNode {
         }
 
         System.out.println("[Node] Bye.");
+        if (exitCode != 0) {
+            System.exit(exitCode);
+        }
     }
 
     private static void registerAdd(AppHandle app) {
-        boolean ok = app.registerCall(
+        if (!app.registerCall(
                 "add",
                 "add(int a, int b) -> int",
                 (input, output) -> {
@@ -162,15 +173,14 @@ public final class CrossNode {
                     log("[Node] add #" + n + "(" + a + ", " + b + ") = " + c);
 
                     output.writeInt32(c);
-                });
-        if (!ok) {
+                })) {
             throw new IllegalStateException(
                     "Failed to register API 'add'");
         }
     }
 
     private static void registerInvSeri(AppHandle app) {
-        boolean ok = app.registerCall(
+        if (!app.registerCall(
                 "inv_seri",
                 "inv_seri() -> reversed typed sequence",
                 (input, output) -> {
@@ -196,8 +206,7 @@ public final class CrossNode {
                     log("[Node] inv_seri #" + n + " replied: ["
                             + f + ", \"" + s + "\", " + u64 + ", "
                             + c + ", " + w + ", " + b + "]");
-                });
-        if (!ok) {
+                })) {
             throw new IllegalStateException(
                     "Failed to register API 'inv_seri'");
         }

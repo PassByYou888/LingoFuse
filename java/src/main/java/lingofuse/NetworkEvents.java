@@ -1,5 +1,6 @@
 package lingofuse;
 
+import lingofuse.ffi.ArenaReaper;
 import lingofuse.ffi.NativeCall;
 import lingofuse.ffi.NativeMethods;
 import lingofuse.ffi.NativeTypes;
@@ -15,69 +16,17 @@ import java.util.function.Consumer;
 /**
  * Process-global connect / disconnect event handlers.
  *
- * <p>This class wraps {@code LF_Set_Network_Event}, which installs a
- * pair of process-wide callbacks that fire when a LingoFuse client
- * becomes online or goes offline.
- *
- * <h2>Semantics</h2>
- *
- * <ul>
- *   <li><b>Connect</b> fires the FIRST time a client receives a
- *       service API-info broadcast. It is NOT the TCP handshake; it
- *       is the earliest point at which remote calls can be routed.
- *       Fires once per connection lifecycle, and again after an
- *       auto-reconnect.</li>
- *   <li><b>Disconnect</b> fires once per physical link loss. An
- *       automatic reconnect does NOT emit a Disconnect for the
- *       reconnect attempt itself; it emits a new Connect once the
- *       client is back online.</li>
- * </ul>
- *
- * <h2>Threading contract</h2>
- *
- * <p>Callbacks run on a background worker thread owned by the native
- * library. They must never block, never touch UI, and never call a
- * blocking LingoFuse function. The wrapper catches every exception
- * raised by a user handler and reports it through
- * {@link Framework#reportCallbackError(String, Throwable)}.
- *
- * <h2>Global scope</h2>
- *
- * <p>{@code LF_Set_Network_Event} is a process-global slot. There is
- * no per-client registration API. Installing new handlers replaces
- * the previous ones entirely; passing {@code null} for a handler
- * disables that event.
- *
- * <h2>Delegate lifetime</h2>
- *
- * <p>Upcall stubs are owned by a private {@link Arena#ofShared()}
- * instance that lives for the entire JVM lifetime. The arena is
- * released when the JVM exits.
+ * <p>Wraps {@code LF_Set_Network_Event}. Each install creates its own
+ * shared arena; replacing or clearing retires the previous arena
+ * through {@link ArenaReaper} so a still-in-flight native callback
+ * never sees freed memory.
  */
 public final class NetworkEvents {
 
-    // ------------------------------------------------------------------
-    // Static initialization
-    // ------------------------------------------------------------------
+    private static final long MAX_C_STRING_LENGTH = 1024L * 1024L;
 
     private static final Linker LINKER = Linker.nativeLinker();
 
-    /**
-     * The arena that owns every upcall stub created by this class.
-     * Shared (not confined) because callbacks run on native worker
-     * threads. Never closed; released on JVM exit.
-     */
-    private static final Arena CALLBACK_ARENA = Arena.ofShared();
-
-    /**
-     * The static bridge method that each network event upcall stub
-     * invokes. Signature:
-     * {@code (RegisteredCallback, MemorySegment) -> void}.
-     *
-     * <p>Referenced only through
-     * {@link MethodHandles.Lookup#findStatic} at class initialisation
-     * time.
-     */
     private static final MethodHandle NETWORK_EVENT_BRIDGE;
 
     static {
@@ -94,71 +43,90 @@ public final class NetworkEvents {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Module-level state
-    // ------------------------------------------------------------------
-
     private static final Object LOCK = new Object();
 
+    /*
+     * ==================================================================
+     * CROSS-LANGUAGE COMPATIBILITY NOTE
+     * ------------------------------------------------------------------
+     * Each install of a network-event handler creates its own Arena
+     * so that a stale trampoline can be retired without touching the
+     * currently active one. This is a JAVA-PRIVATE resource strategy.
+     *
+     * The wire-visible behaviour of LF_Set_Network_Event is
+     * unchanged: it still receives two function pointers (or NULL),
+     * it still runs the callbacks on native worker threads, and the
+     * `addr` argument is still a transient UTF-8, NUL-terminated C
+     * string. Other bindings manage their own callbacks however
+     * their runtime requires; the wire contract is identical.
+     * ==================================================================
+     */
     private static MemorySegment connectStub;
     private static MemorySegment disconnectStub;
+    private static Arena connectArena;
+    private static Arena disconnectArena;
 
     private static RegisteredCallback connectHolder;
     private static RegisteredCallback disconnectHolder;
 
     private NetworkEvents() {
-        // Utility class; no instances.
     }
 
-    // ==================================================================
-    // Public API
-    // ==================================================================
-
-    /**
-     * Installs the process-global connect and disconnect handlers.
-     *
-     * <p>Passing {@code null} for either argument disables that event.
-     * This is a REPLACE operation, not a patch.
-     *
-     * @param onConnect    handler for online events; may be null
-     * @param onDisconnect handler for offline events; may be null
-     */
     public static void setNetworkEvent(
             Consumer<String> onConnect,
             Consumer<String> onDisconnect) {
 
         synchronized (LOCK) {
+            if (connectArena != null) {
+                ArenaReaper.retire(connectArena);
+                connectArena = null;
+            }
+            if (disconnectArena != null) {
+                ArenaReaper.retire(disconnectArena);
+                disconnectArena = null;
+            }
+
             connectHolder = (onConnect == null)
                     ? null
-                    : new RegisteredCallback("NetworkEvents.connect", onConnect);
+                    : new RegisteredCallback(
+                            "NetworkEvents.connect", onConnect);
             disconnectHolder = (onDisconnect == null)
                     ? null
-                    : new RegisteredCallback("NetworkEvents.disconnect",
-                            onDisconnect);
+                    : new RegisteredCallback(
+                            "NetworkEvents.disconnect", onDisconnect);
 
-            connectStub = (connectHolder == null)
-                    ? MemorySegment.NULL
-                    : buildStub(connectHolder);
-            disconnectStub = (disconnectHolder == null)
-                    ? MemorySegment.NULL
-                    : buildStub(disconnectHolder);
+            if (connectHolder != null) {
+                connectArena = Arena.ofShared();
+                connectStub = buildStub(connectHolder, connectArena);
+            } else {
+                connectStub = MemorySegment.NULL;
+            }
 
-            NativeCall.callVoid(
-                    NativeMethods.LF_Set_Network_Event,
-                    connectStub,
-                    disconnectStub);
+            if (disconnectHolder != null) {
+                disconnectArena = Arena.ofShared();
+                disconnectStub = buildStub(disconnectHolder, disconnectArena);
+            } else {
+                disconnectStub = MemorySegment.NULL;
+            }
+
+            NativeCall.callVoid(NativeMethods.LF_Set_Network_Event,
+                    connectStub, disconnectStub);
         }
     }
 
-    /**
-     * Removes both handlers. Safe to call multiple times.
-     */
     public static void clear() {
         synchronized (LOCK) {
-            NativeCall.callVoid(
-                    NativeMethods.LF_Set_Network_Event,
-                    MemorySegment.NULL,
-                    MemorySegment.NULL);
+            NativeCall.callVoid(NativeMethods.LF_Set_Network_Event,
+                    MemorySegment.NULL, MemorySegment.NULL);
+
+            if (connectArena != null) {
+                ArenaReaper.retire(connectArena);
+                connectArena = null;
+            }
+            if (disconnectArena != null) {
+                ArenaReaper.retire(disconnectArena);
+                disconnectArena = null;
+            }
 
             connectHolder = null;
             disconnectHolder = null;
@@ -167,50 +135,31 @@ public final class NetworkEvents {
         }
     }
 
-    /**
-     * Returns whether at least one handler is currently installed.
-     *
-     * @return true when either handler is installed
-     */
     public static boolean isInstalled() {
         synchronized (LOCK) {
             return connectHolder != null || disconnectHolder != null;
         }
     }
 
-    // ==================================================================
-    // Internal helpers
-    // ==================================================================
-
-    private static MemorySegment buildStub(RegisteredCallback holder) {
+    private static MemorySegment buildStub(
+            RegisteredCallback holder, Arena arena) {
         MethodHandle bound = MethodHandles.insertArguments(
                 NETWORK_EVENT_BRIDGE, 0, holder);
         return LINKER.upcallStub(
-                bound, NativeTypes.LF_NETWORK_EVENT, CALLBACK_ARENA);
+                bound, NativeTypes.LF_NETWORK_EVENT, arena);
     }
 
-    /**
-     * Static bridge method for network event callbacks.
-     *
-     * <p>Referenced only through
-     * {@link MethodHandles.Lookup#findStatic} at class initialisation
-     * time.
-     *
-     * @param holder the per-registration holder
-     * @param addrSegment the UTF-8, NUL-terminated endpoint string
-     */
     @SuppressWarnings("unused")
     private static void dispatchNetworkEvent(
             RegisteredCallback holder,
             MemorySegment addrSegment) {
-
         String endpoint;
         try {
             if (addrSegment == null || addrSegment.address() == 0L) {
                 endpoint = "";
             } else {
                 endpoint = addrSegment
-                        .reinterpret(Long.MAX_VALUE)
+                        .reinterpret(MAX_C_STRING_LENGTH)
                         .getString(0);
             }
         } catch (Throwable t) {
@@ -221,23 +170,13 @@ public final class NetworkEvents {
 
         try {
             @SuppressWarnings("unchecked")
-            Consumer<String> handler =
-                    (Consumer<String>) holder.userHandler;
+            Consumer<String> handler = (Consumer<String>) holder.userHandler;
             handler.accept(endpoint);
         } catch (Throwable t) {
             Framework.reportCallbackError(holder.source, t);
         }
     }
 
-    // ==================================================================
-    // Internal holder
-    // ==================================================================
-
-    /**
-     * Per-registration holder. Keeps the user-supplied lambda and a
-     * diagnostic source label alive for as long as the registration
-     * is active.
-     */
     private static final class RegisteredCallback {
         final String source;
         final Object userHandler;
@@ -248,41 +187,14 @@ public final class NetworkEvents {
         }
     }
 
-    // ==================================================================
-    // Object-oriented listener (optional convenience)
-    // ==================================================================
-
-    /**
-     * Base class for object-oriented network event listeners.
-     *
-     * <p>Subclass and override {@link #onConnect(String)} /
-     * {@link #onDisconnect(String)} as needed. Both methods run on a
-     * native worker thread.
-     */
     public abstract static class NetworkEventListener {
-
-        /**
-         * Called when a client becomes online. Default does nothing.
-         *
-         * @param addr the endpoint string
-         */
         public void onConnect(String addr) {
         }
 
-        /**
-         * Called when a client goes offline. Default does nothing.
-         *
-         * @param addr the endpoint string
-         */
         public void onDisconnect(String addr) {
         }
     }
 
-    /**
-     * Installs a {@link NetworkEventListener}.
-     *
-     * @param listener the listener, or null to uninstall
-     */
     public static void setNetworkEventListener(NetworkEventListener listener) {
         if (listener == null) {
             clear();

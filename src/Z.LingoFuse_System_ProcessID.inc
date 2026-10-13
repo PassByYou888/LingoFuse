@@ -1,7 +1,7 @@
 ﻿function System_ProcessID: Cardinal;
 begin
 {$IFDEF FPC}
-  // Free Pascal 全平台通用
+  // Free Pascal
   Result := GetProcessID;
 {$ELSE FPC}
 {$IFDEF MSWINDOWS}

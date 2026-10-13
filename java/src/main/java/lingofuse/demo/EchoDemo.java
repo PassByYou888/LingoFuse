@@ -5,54 +5,18 @@ import lingofuse.DataHandle;
 import lingofuse.Framework;
 import lingofuse.LfIo;
 import lingofuse.LingoFuseStatus;
+import lingofuse.NetworkEvents;
 
 import java.util.Scanner;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Minimal end-to-end demonstration of the LingoFuse Java binding.
  *
- * <p>This program runs a single process that acts as both a service
- * and a client, self-connected over a local IPC endpoint. It
- * exercises the complete lifecycle:
- *
- * <ol>
- *   <li>Create an {@link AppHandle} and register a Call API.</li>
- *   <li>Prepare a C4 service and a client on the same endpoint.</li>
- *   <li>Start the framework.</li>
- *   <li>Wait for the application to become visible on the mesh.</li>
- *   <li>Invoke the API through {@link Framework#call(String, DataHandle, long)}.</li>
- *   <li>Invoke the API locally through {@link AppHandle#localCall(DataHandle)}.</li>
- *   <li>Perform a clean shutdown in the documented order.</li>
- * </ol>
- *
- * <h2>Registered APIs</h2>
- *
- * <ul>
- *   <li>{@code echo}: receives a JSON string, returns the same JSON
- *       string.</li>
- *   <li>{@code add}: receives a JSON array of two integers, returns
- *       a JSON object {@code {"result": a + b}}.</li>
- * </ul>
- *
- * <h2>Running</h2>
- *
- * <pre>
- * # From the project root:
- * mvn -q exec:java -Dexec.mainClass=lingofuse.demo.EchoDemo
- *
- * # Or after `mvn package`:
- * java --enable-native-access=ALL-UNNAMED \
- *      -cp target/classes:target/dependency/* \
- *      lingofuse.demo.EchoDemo
- * </pre>
- *
- * <h2>Native library placement</h2>
- *
- * <p>The program requires {@code LingoFuse64.dll} (and its
- * dependencies {@code z_ipc_64.dll} and {@code mimalloc64.dll}) to be
- * discoverable. Place them next to the executable, in the current
- * working directory, on {@code java.library.path}, or on the system
- * {@code PATH}.
+ * <p>Lifecycle: installs a JVM shutdown hook that runs a single-shot
+ * {@code cleanupOnce()} action. The same action runs from the
+ * {@code finally} block, so cleanup is guaranteed exactly once on
+ * every exit path, including {@code System.exit()}.
  */
 public final class EchoDemo {
 
@@ -60,8 +24,37 @@ public final class EchoDemo {
     private static final String APP_NAME = "EchoApp";
     private static final long CALL_TIMEOUT_MS = 3000L;
 
+    private static final AtomicBoolean CLEANED_UP = new AtomicBoolean(false);
+    private static volatile boolean frameworkStarted = false;
+
+    static {
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(EchoDemo::cleanupOnce, "EchoDemo-shutdown-hook"));
+    }
+
     private EchoDemo() {
-        // Entry point; no instances.
+    }
+
+    private static void cleanupOnce() {
+        if (!CLEANED_UP.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            NetworkEvents.clear();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.exitMainThread();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.shutdown();
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     public static void main(String[] args) {
@@ -69,65 +62,43 @@ public final class EchoDemo {
         System.out.println();
 
         AppHandle app = null;
-        boolean started = false;
+        int exitCode = 0;
 
         try {
-            // -----------------------------------------------------------------
-            // 1. Deployment mode options.
-            //
-            // Wait_Connection_ReadyOk is left at its default (True) so
-            // that prepareDone() blocks until the client is online.
-            // Overlap_Connection is enabled so that the same endpoint
-            // can host both the service and the client.
-            // -----------------------------------------------------------------
             Framework.setOption("Wait_Connection_ReadyOk", "True");
             Framework.setOption("Overlap_Connection", "True");
             Framework.setOption("Wait_Connection_Timeout", "10000");
 
             Framework.resetPrepare();
 
-            // -----------------------------------------------------------------
-            // 2. Create the AppHandle and register the APIs.
-            //
-            // Registration MUST happen before prepareClient so that the
-            // Init_App_Info broadcast carries the complete API list.
-            // -----------------------------------------------------------------
             app = new AppHandle(APP_NAME, "Java demo echo service");
 
-            boolean okEcho = app.registerCall("echo", "Echo a string",
+            if (!app.registerCall("echo", "Echo a string",
                     (input, output) -> {
                         String s = LfIo.readString(input);
                         LfIo.writeString(output, s);
-                    });
-            if (!okEcho) {
+                    })) {
                 throw new IllegalStateException(
                         "Failed to register API 'echo'");
             }
 
-            boolean okAdd = app.registerCall("add", "Add two integers",
+            if (!app.registerCall("add", "Add two integers",
                     (input, output) -> {
                         int a = input.readInt32();
                         int b = input.readInt32();
                         output.writeInt32(a + b);
-                    });
-            if (!okAdd) {
+                    })) {
                 throw new IllegalStateException(
                         "Failed to register API 'add'");
             }
 
             System.out.println("[Setup] Registered APIs 'echo' and 'add'.");
 
-            // -----------------------------------------------------------------
-            // 3. Prepare the service and the client.
-            // -----------------------------------------------------------------
-            int serviceTag = Framework.prepareService(ENDPOINT, ENDPOINT);
-            if (serviceTag == -1) {
+            if (Framework.prepareService(ENDPOINT, ENDPOINT) == -1) {
                 throw new IllegalStateException(
                         "prepareService returned -1 for " + ENDPOINT);
             }
-
-            int clientTag = Framework.prepareClient(ENDPOINT, app);
-            if (clientTag == -1) {
+            if (Framework.prepareClient(ENDPOINT, app) == -1) {
                 throw new IllegalStateException(
                         "prepareClient returned -1 for " + ENDPOINT);
             }
@@ -135,38 +106,22 @@ public final class EchoDemo {
             System.out.println("[Setup] Service and client prepared on "
                     + ENDPOINT + ".");
 
-            // -----------------------------------------------------------------
-            // 4. Start the framework.
-            // -----------------------------------------------------------------
             int done = Framework.prepareDone();
             if (done != 1 && !LingoFuseStatus.checkMainThread()) {
                 throw new IllegalStateException(
                         "prepareDone returned " + done
                                 + " and the main thread is not running.");
             }
-
-            started = true;
+            frameworkStarted = true;
             System.out.println("[Setup] Framework started.");
 
-            // -----------------------------------------------------------------
-            // 5. Wait for the app to become visible on the mesh.
-            //
-            // The mesh discovers applications via broadcast with a
-            // typical propagation delay of about 3 seconds. Retry for
-            // up to 10 seconds.
-            // -----------------------------------------------------------------
             boolean visible = false;
             for (int i = 0; i < 50; i++) {
                 if (LingoFuseStatus.checkApi(APP_NAME, "echo")) {
                     visible = true;
                     break;
                 }
-                try {
-                    Thread.sleep(200);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                Thread.sleep(200);
             }
             if (!visible) {
                 System.out.println(
@@ -176,9 +131,6 @@ public final class EchoDemo {
                         + "' is visible on the mesh.");
             }
 
-            // -----------------------------------------------------------------
-            // 6. Exercise the registered APIs.
-            // -----------------------------------------------------------------
             System.out.println();
             System.out.println("--- Remote call via Framework.call() ---");
             demonstrateEchoViaRemoteCall();
@@ -201,53 +153,22 @@ public final class EchoDemo {
         } catch (Throwable t) {
             System.err.println("[Fatal] " + t);
             t.printStackTrace(System.err);
-            System.exit(1);
+            exitCode = 1;
         } finally {
-            // -----------------------------------------------------------------
-            // 7. Clean shutdown.
-            //
-            // The order matches the documented LF-CLEAN-001 contract:
-            //   NetworkEvents.clear() -> Framework.exitMainThread()
-            //   -> app.close() -> Framework.shutdown()
-            //
-            // Every call is idempotent, so this block is safe to run
-            // even on partial-init paths.
-            // -----------------------------------------------------------------
-            System.out.println();
-            System.out.println("[Cleanup] Shutting down...");
-            try {
-                lingofuse.NetworkEvents.clear();
-            } catch (Throwable ignored) {
-                // Not fatal; continue with the rest of the sequence.
-            }
-            try {
-                if (started) {
-                    Framework.exitMainThread();
-                }
-            } catch (Throwable t) {
-                System.err.println("[Cleanup] exitMainThread failed: " + t);
-            }
-            try {
-                if (app != null) {
+            if (app != null) {
+                try {
                     app.close();
+                } catch (Throwable ignored) {
                 }
-            } catch (Throwable t) {
-                System.err.println("[Cleanup] app.close failed: " + t);
             }
-            try {
-                if (started) {
-                    Framework.shutdown();
-                }
-            } catch (Throwable t) {
-                System.err.println("[Cleanup] shutdown failed: " + t);
-            }
+            cleanupOnce();
             System.out.println("[Cleanup] Done.");
         }
-    }
 
-    // ------------------------------------------------------------------
-    // Demonstration routines
-    // ------------------------------------------------------------------
+        if (exitCode != 0) {
+            System.exit(exitCode);
+        }
+    }
 
     private static void demonstrateEchoViaRemoteCall() {
         try (DataHandle request = new DataHandle("echo")) {
@@ -260,7 +181,6 @@ public final class EchoDemo {
                     System.out.println("  echo: no response (timeout)");
                     return;
                 }
-
                 String echoed = LfIo.readJson(response, String.class);
                 System.out.println("  echo -> " + echoed);
             }
@@ -279,7 +199,6 @@ public final class EchoDemo {
                     System.out.println("  add: no response (timeout)");
                     return;
                 }
-
                 int result = response.readInt32();
                 System.out.println("  add(5, 7) -> " + result);
             }

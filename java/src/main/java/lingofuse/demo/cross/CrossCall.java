@@ -9,51 +9,19 @@ import lingofuse.errors.LingoFuseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Concurrent client / load tester for the {@code ipc:cross} endpoint.
  *
- * <p>Connects as a pure consumer (no application attached) and spawns
- * several worker threads. Each thread repeatedly invokes one of two
- * remote APIs on the {@code demo} application at random:
- *
- * <pre>
- *   add       (int32 a, int32 b)                       -> int32
- *   inv_seri  (uint8, uint16, uint32, uint64,
- *              string, float)                          -> reversed types
- * </pre>
- *
- * <h2>Pause between calls</h2>
- *
- * <p>The per-call pause is read at runtime from the system property
- * {@code lingofuse.crosscall.pause} (milliseconds, default 0). It is
- * NOT a compile-time constant, so the compiler cannot elide the
- * pause branch.
- *
- * <pre>
- * # Maximum throughput (default):
- * java -cp target\classes lingofuse.demo.cross.CrossCall
- *
- * # Add a 1 ms pause between calls:
- * java -Dlingofuse.crosscall.pause=1 \
- *      -cp target\classes lingofuse.demo.cross.CrossCall
- * </pre>
- *
- * <h2>Running</h2>
- *
- * <pre>
- * java --enable-native-access=ALL-UNNAMED \
- *      -cp target\classes lingofuse.demo.cross.CrossCall
- * </pre>
+ * <p>Installs a JVM shutdown hook so cleanup runs exactly once on
+ * every exit path.
  */
 public final class CrossCall {
-
-    // ------------------------------------------------------------------
-    // Configuration
-    // ------------------------------------------------------------------
 
     private static final String TARGET_APP = "demo";
     private static final String ENDPOINT = CrossService.ENDPOINT;
@@ -62,15 +30,6 @@ public final class CrossCall {
     private static final int TEST_SECONDS = 10;
     private static final long CALL_TIMEOUT_MS = 1000L;
 
-    /**
-     * Pause between calls in each worker thread, in milliseconds.
-     *
-     * <p>Read once at class initialisation from the system property
-     * {@code lingofuse.crosscall.pause}. Because the value is not a
-     * compile-time constant, the {@code if (PAUSE_MS > 0)} branch
-     * below remains reachable at runtime regardless of the default
-     * value.
-     */
     private static final int PAUSE_MS =
             Integer.getInteger("lingofuse.crosscall.pause", 0);
 
@@ -79,8 +38,6 @@ public final class CrossCall {
     private static final int NUMBER_MIN = 1;
     private static final int NUMBER_MAX = 1000;
 
-    // Constants for the inv_seri payload. These match the C++, C#,
-    // Pascal, and Python counterparts exactly.
     private static final int INV_B = 200;
     private static final int INV_W = 0x10;
     private static final long INV_C = 0x2FL;
@@ -88,12 +45,11 @@ public final class CrossCall {
     private static final String INV_S = "hello world";
     private static final float INV_F = 3.14f;
 
-    // ------------------------------------------------------------------
-    // Logging infrastructure
-    // ------------------------------------------------------------------
-
     private static final BlockingQueue<String> LOG_QUEUE =
             new LinkedBlockingQueue<>();
+
+    private static final AtomicBoolean CLEANED_UP = new AtomicBoolean(false);
+    private static volatile boolean frameworkStarted = false;
 
     static {
         Thread t = new Thread(() -> {
@@ -110,6 +66,10 @@ public final class CrossCall {
         }, "CrossCall-log");
         t.setDaemon(true);
         t.start();
+
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(CrossCall::cleanupOnce,
+                        "CrossCall-shutdown-hook"));
     }
 
     private static void log(String line) {
@@ -130,19 +90,36 @@ public final class CrossCall {
     private static final Stats STATS_DATA = new Stats();
 
     private CrossCall() {
-        // Entry point; no instances.
     }
 
-    // ------------------------------------------------------------------
-    // main
-    // ------------------------------------------------------------------
+    private static void cleanupOnce() {
+        if (!CLEANED_UP.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            NetworkEvents.clear();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.exitMainThread();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (frameworkStarted) {
+                Framework.shutdown();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("=== Cross Call (Client) ===");
         System.out.println("[Call] Per-call pause: " + PAUSE_MS + " ms");
         System.out.println();
 
-        boolean started = false;
+        int exitCode = 0;
 
         try {
             Framework.setOption("Wait_Connection_ReadyOk", "True");
@@ -151,8 +128,7 @@ public final class CrossCall {
 
             Framework.resetPrepare();
 
-            int clientTag = Framework.prepareClient(ENDPOINT, null);
-            if (clientTag == -1) {
+            if (Framework.prepareClient(ENDPOINT, null) == -1) {
                 throw new IllegalStateException(
                         "prepareClient returned -1 for " + ENDPOINT);
             }
@@ -164,7 +140,7 @@ public final class CrossCall {
                                 + " and the main thread is not running.");
             }
 
-            started = true;
+            frameworkStarted = true;
 
             System.out.println("[Call] Connected to " + ENDPOINT
                     + ". Starting " + TEST_SECONDS
@@ -210,19 +186,19 @@ public final class CrossCall {
             printSummary(elapsedSec, total, success, failed, add, invSeri);
 
             System.out.println("[Call] Press Enter to exit...");
-            System.in.read();
+            try (Scanner scanner = new Scanner(System.in)) {
+                if (scanner.hasNextLine()) {
+                    scanner.nextLine();
+                }
+            }
 
         } catch (Throwable t) {
             System.err.println("[FATAL] "
                     + t.getClass().getSimpleName() + ": " + t.getMessage());
             t.printStackTrace(System.err);
-            System.exit(1);
+            exitCode = 1;
         } finally {
-            if (started) {
-                try { NetworkEvents.clear(); } catch (Throwable ignored) {}
-                try { Framework.exitMainThread(); } catch (Throwable ignored) {}
-                try { Framework.shutdown(); } catch (Throwable ignored) {}
-            }
+            cleanupOnce();
         }
 
         try {
@@ -232,11 +208,10 @@ public final class CrossCall {
         }
 
         System.out.println("[Call] Bye.");
+        if (exitCode != 0) {
+            System.exit(exitCode);
+        }
     }
-
-    // ------------------------------------------------------------------
-    // Summary printer
-    // ------------------------------------------------------------------
 
     private static void printSummary(
             double elapsedSec,
@@ -268,10 +243,6 @@ public final class CrossCall {
                 successThroughput);
         System.out.println();
     }
-
-    // ------------------------------------------------------------------
-    // Worker loop
-    // ------------------------------------------------------------------
 
     private static void workerBody(int index, CountDownLatch doneLatch) {
         try {
@@ -346,10 +317,6 @@ public final class CrossCall {
             doneLatch.countDown();
         }
     }
-
-    // ------------------------------------------------------------------
-    // Remote call wrappers - raw ABI
-    // ------------------------------------------------------------------
 
     private static final class AddResult {
         final boolean ok;

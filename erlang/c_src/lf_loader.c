@@ -13,7 +13,7 @@
  *      library sits next to the BEAM executable or in the project
  *      root.
  *
- * On success, the loader resolves all 37 exported symbols into the
+ * On success, the loader resolves all 59 exported symbols into the
  * process-wide LF_Bindings table. If any symbol is missing, the load
  * is aborted and the partially-resolved table is discarded; a mixed
  * state is never exposed to callers.
@@ -148,60 +148,95 @@ static const char* platform_library_name(void) {
 static int resolve_all_symbols(void) {
     memset(&g_bindings, 0, sizeof(g_bindings));
 
-    /* --- Data handle operations (10) --- */
-    LF_RESOLVE(LF_CreateData,           "LF_CreateData");
-    LF_RESOLVE(LF_CreateData_Permanent, "LF_CreateData_Permanent");
-    LF_RESOLVE(LF_FreeData,             "LF_FreeData");
-    LF_RESOLVE(LF_GetBuffer,            "LF_GetBuffer");
-    LF_RESOLVE(LF_WriteBuffer,          "LF_WriteBuffer");
-    LF_RESOLVE(LF_ReadBuffer,           "LF_ReadBuffer");
-    LF_RESOLVE(LF_GetPos,               "LF_GetPos");
-    LF_RESOLVE(LF_SetPos,               "LF_SetPos");
-    LF_RESOLVE(LF_GetSize,              "LF_GetSize");
-    LF_RESOLVE(LF_SetSize,              "LF_SetSize");
+    /* --- Data handle operations (12) --- */
+    LF_RESOLVE(LF_CreateData,             "LF_CreateData");
+    LF_RESOLVE(LF_CreateData_Permanent,   "LF_CreateData_Permanent");
+    LF_RESOLVE(LF_FreeData,               "LF_FreeData");
+    LF_RESOLVE(LF_GetBuffer,              "LF_GetBuffer");
+    LF_RESOLVE(LF_WriteBuffer,            "LF_WriteBuffer");
+    LF_RESOLVE(LF_ReadBuffer,             "LF_ReadBuffer");
+    LF_RESOLVE(LF_GetPos,                 "LF_GetPos");
+    LF_RESOLVE(LF_SetPos,                 "LF_SetPos");
+    LF_RESOLVE(LF_GetSize,                "LF_GetSize");
+    LF_RESOLVE(LF_SetSize,                "LF_SetSize");
+    LF_RESOLVE(LF_Get_P2P_UID,            "LF_Get_P2P_UID");
+    LF_RESOLVE(LF_Get_P2P_Name,           "LF_Get_P2P_Name");
 
     /* --- Application handle operations (5) --- */
-    LF_RESOLVE(LF_CreateApp,            "LF_CreateApp");
-    LF_RESOLVE(LF_FreeApp,              "LF_FreeApp");
-    LF_RESOLVE(LF_Generate_AppName,     "LF_Generate_AppName");
-    LF_RESOLVE(LF_Get_AppName,          "LF_Get_AppName");
-    LF_RESOLVE(LF_BindApp,              "LF_BindApp");
+    LF_RESOLVE(LF_CreateApp,              "LF_CreateApp");
+    LF_RESOLVE(LF_FreeApp,                "LF_FreeApp");
+    LF_RESOLVE(LF_Generate_AppName,       "LF_Generate_AppName");
+    LF_RESOLVE(LF_Get_AppName,            "LF_Get_AppName");
+    LF_RESOLVE(LF_BindApp,                "LF_BindApp");
 
-    /* --- API registration (3) --- */
-    LF_RESOLVE(LF_RegisterCall,         "LF_RegisterCall");
-    LF_RESOLVE(LF_RegisterNotify,       "LF_RegisterNotify");
-    LF_RESOLVE(LF_Unregister,           "LF_Unregister");
+    /* --- API registration, app-bound (3) --- */
+    LF_RESOLVE(LF_RegisterCall,           "LF_RegisterCall");
+    LF_RESOLVE(LF_RegisterNotify,         "LF_RegisterNotify");
+    LF_RESOLVE(LF_Unregister,             "LF_Unregister");
+
+    /* --- API registration, process-wide P2P (3) --- */
+    LF_RESOLVE(LF_Register_P2P_Call,      "LF_Register_P2P_Call");
+    LF_RESOLVE(LF_Register_P2P_Notify,    "LF_Register_P2P_Notify");
+    LF_RESOLVE(LF_Unregister_P2P,         "LF_Unregister_P2P");
 
     /* --- Local execution (2) --- */
-    LF_RESOLVE(LF_LocalCall,            "LF_LocalCall");
-    LF_RESOLVE(LF_LocalNotify,          "LF_LocalNotify");
+    LF_RESOLVE(LF_LocalCall,              "LF_LocalCall");
+    LF_RESOLVE(LF_LocalNotify,            "LF_LocalNotify");
 
     /* --- Network preparation (5) --- */
-    LF_RESOLVE(LF_ResetPrepare,         "LF_ResetPrepare");
-    LF_RESOLVE(LF_PrepareService,       "LF_PrepareService");
-    LF_RESOLVE(LF_PrepareClient,        "LF_PrepareClient");
-    LF_RESOLVE(LF_PrepareDone,          "LF_PrepareDone");
-    LF_RESOLVE(LF_ExitMainThread,       "LF_ExitMainThread");
+    LF_RESOLVE(LF_ResetPrepare,           "LF_ResetPrepare");
+    LF_RESOLVE(LF_PrepareService,         "LF_PrepareService");
+    LF_RESOLVE(LF_PrepareClient,          "LF_PrepareClient");
+    LF_RESOLVE(LF_PrepareDone,            "LF_PrepareDone");
+    LF_RESOLVE(LF_ExitMainThread,         "LF_ExitMainThread");
 
-    /* --- Remote invocation (3) --- */
-    LF_RESOLVE(LF_Call,                 "LF_Call");
-    LF_RESOLVE(LF_Notify,               "LF_Notify");
-    LF_RESOLVE(LF_Sequenced_Notify,     "LF_Sequenced_Notify");
+    /* --- Remote invocation, app name (5) --- */
+    LF_RESOLVE(LF_Call,                   "LF_Call");
+    LF_RESOLVE(LF_Async_Call,             "LF_Async_Call");
+    LF_RESOLVE(LF_Async_Sequenced_Call,   "LF_Async_Sequenced_Call");
+    LF_RESOLVE(LF_Notify,                 "LF_Notify");
+    LF_RESOLVE(LF_Sequenced_Notify,       "LF_Sequenced_Notify");
 
-    /* --- Options and diagnostics (7) --- */
-    LF_RESOLVE(LF_SetOption,            "LF_SetOption");
-    LF_RESOLVE(LF_GetStatusCount,       "LF_GetStatusCount");
-    LF_RESOLVE(LF_GetStatus,            "LF_GetStatus");
-    LF_RESOLVE(LF_PostStatus,           "LF_PostStatus");
-    LF_RESOLVE(LF_CheckMainThread,      "LF_CheckMainThread");
-    LF_RESOLVE(LF_CheckApp,             "LF_CheckApp");
-    LF_RESOLVE(LF_CheckApi,             "LF_CheckApi");
+    /* --- Remote invocation, UID (5) --- */
+    LF_RESOLVE(LF_UID_Call,               "LF_UID_Call");
+    LF_RESOLVE(LF_UID_Async_Call,         "LF_UID_Async_Call");
+    LF_RESOLVE(LF_UID_Async_Sequenced_Call,
+                                          "LF_UID_Async_Sequenced_Call");
+    LF_RESOLVE(LF_UID_Notify,             "LF_UID_Notify");
+    LF_RESOLVE(LF_UID_Sequenced_Notify,   "LF_UID_Sequenced_Notify");
 
-    /* --- Shutdown (1) --- */
-    LF_RESOLVE(LF_Shutdown,             "LF_Shutdown");
+    /* --- Remote invocation, P2P name (5) --- */
+    LF_RESOLVE(LF_P2PNAME_Call,           "LF_P2PNAME_Call");
+    LF_RESOLVE(LF_P2PNAME_Async_Call,     "LF_P2PNAME_Async_Call");
+    LF_RESOLVE(LF_P2PNAME_Async_Sequenced_Call,
+                                          "LF_P2PNAME_Async_Sequenced_Call");
+    LF_RESOLVE(LF_P2PNAME_Notify,         "LF_P2PNAME_Notify");
+    LF_RESOLVE(LF_P2PNAME_Sequenced_Notify,
+                                          "LF_P2PNAME_Sequenced_Notify");
+
+    /* --- Queries (7) --- */
+    LF_RESOLVE(LF_CheckMainThread,        "LF_CheckMainThread");
+    LF_RESOLVE(LF_CheckApp,               "LF_CheckApp");
+    LF_RESOLVE(LF_CheckApi,               "LF_CheckApi");
+    LF_RESOLVE(LF_Check_UID,              "LF_Check_UID");
+    LF_RESOLVE(LF_Check_UID_Api,          "LF_Check_UID_Api");
+    LF_RESOLVE(LF_Check_P2PNAME,          "LF_Check_P2PNAME");
+    LF_RESOLVE(LF_Check_P2PNAME_Api,      "LF_Check_P2PNAME_Api");
+
+    /* --- Options (2) --- */
+    LF_RESOLVE(LF_SetOption,              "LF_SetOption");
+    LF_RESOLVE(LF_GetOption,              "LF_GetOption");
+
+    /* --- Status and diagnostics (3) --- */
+    LF_RESOLVE(LF_GetStatusCount,         "LF_GetStatusCount");
+    LF_RESOLVE(LF_GetStatus,              "LF_GetStatus");
+    LF_RESOLVE(LF_PostStatus,             "LF_PostStatus");
 
     /* --- Network events (1) --- */
-    LF_RESOLVE(LF_Set_Network_Event,    "LF_Set_Network_Event");
+    LF_RESOLVE(LF_Set_Network_Event,      "LF_Set_Network_Event");
+
+    /* --- Shutdown (1) --- */
+    LF_RESOLVE(LF_Shutdown,               "LF_Shutdown");
 
     return 1;
 }

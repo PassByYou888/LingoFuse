@@ -12,53 +12,68 @@
 %%   * Call-mode dispatch through the single-process mesh loopback.
 %%   * Notify-mode dispatch (one-way).
 %%   * Sequenced notify dispatch, including FIFO order verification.
-%%   * Diagnostics: check_main_thread, check_app, check_api.
+%%   * UID addressing: probe the caller's UID via whoami, then call
+%%     it back with uid_call / uid_notify.
+%%   * P2PName addressing: set this process's group name, wait for
+%%     the mesh broadcast, then call the group back with
+%%     p2pname_call / p2pname_notify.
+%%   * Process-wide P2P registration: register_p2p_call[_sync] /
+%%     register_p2p_notify / unregister_p2p.
+%%   * Diagnostics: check_main_thread, check_app, check_api,
+%%     check_uid, check_uid_api, check_p2pname, check_p2pname_api.
 %%   * Client binding: bind_app.
 %%
-%% {!!!!!  CALL DISPATCH BEHAVIOUR  !!!!!}
-%% In this batch of the binding, a Call callback delivers the
-%% {lf_call, Api, Payload} message to the registered Erlang process.
-%% The synchronous reply variant (register_call_sync/4 + reply/2)
-%% is covered by lingofuse_sync_tests.
+%% The notify forwarder
+%% --------------------
+%% EUnit's {setup, Setup, Cleanup, Instantiator} group runs Setup in
+%% its own process and spawns each test in a fresh process. A notify
+%% callback registered with the Setup process's pid would therefore
+%% deliver its messages to a process that never reads them.
 %%
-%% {!!!!!  WHY Wait_Connection_ReadyOk IS SET TO False  !!!!!}
+%% The suite solves this by spawning a small forwarder process during
+%% setup. The `log' notify API is registered with the forwarder, and
+%% each notify test uses a Ref-tagged handshake to tell the forwarder
+%% where to route the next message. Because the handshake is
+%% synchronous, the test knows the forwarder has switched targets
+%% before it issues the notify.
+%%
+%% UID wire format
+%% ---------------
+%% The 32-byte UID is NOT valid UTF-8 in general, so it cannot be
+%% placed directly into a JSON value. The whoami handler therefore
+%% encodes it as a 64-character lowercase hex string, and the caller
+%% decodes it back with binary:decode_hex/1.
+%%
+%% Reply tolerance
+%% ---------------
+%% A sync callback can receive its reply after the C side has already
+%% timed out or the PendingSync has already been reclaimed. In that
+%% case reply/2 returns {error, unknown_ref}, which is a legal
+%% outcome. The test_server therefore does NOT treat the return value
+%% of reply/2 as a fatal error; it ignores whatever reply/2 returns.
+%%
+%% Why Wait_Connection_ReadyOk is set to False
+%% -------------------------------------------
 %% LF_PrepareDone's default behavior blocks for up to
 %% max(Wait_Connection_Timeout, 5000) + 1000 = 31000 milliseconds,
-%% waiting for every prepared client to become fully ready. That
-%% exceeds the EUnit default per-test timeout of 5 seconds, and a
-%% timeout here also cancels the remaining tests in the same
-%% generator.
-%%
-%% This suite therefore runs in deployment mode: Wait_Connection_ReadyOk
+%% waiting for every prepared client to become fully ready. Every
+%% group therefore runs in deployment mode: Wait_Connection_ReadyOk
 %% is set to False, LF_PrepareDone returns as soon as the event loop
-%% is up, and every test that depends on the App being reachable
-%% first waits for check_app/1 to observe it.
+%% is up, and every test that depends on an App being reachable
+%% first waits for check_app to observe it.
 %%
-%% {!!!!!  LOCAL-FIRST ROUTING  !!!!!}
+%% Local-first routing
+%% -------------------
 %% The C4 mesh checks for a local instance of the target App before
-%% attempting a network hop. Since this test suite registers and
-%% calls the App in the same BEAM process, all "remote" calls in
-%% this suite execute on the local mesh loopback.
-%%
-%% {!!!!!  SKIP BEHAVIOUR  !!!!!}
-%% Every test calls ensure_native_or_skip/0 first. When the LingoFuse
-%% shared library is not available, the test prints a SKIP message
-%% and returns ok. Set LINGOFUSE_REQUIRE_NATIVE=1 to turn a missing
-%% library into a hard failure (for CI).
-%%
-%% Run with:
-%%     rebar3 eunit
-%% Or, to force a hard failure when the native library is missing:
-%%     LINGOFUSE_REQUIRE_NATIVE=1 rebar3 eunit
+%% attempting a network hop. Since this suite registers and calls the
+%% App in the same BEAM process, all "remote" calls in this suite
+%% execute on the local mesh loopback.
 
 -module(lingofuse_network_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
-%% EUnit per-test timeout, in seconds. Chosen to be comfortably
-%% larger than the worst-case mesh-ready latency (a few seconds) while
-%% remaining small enough that a genuinely deadlocked test does not
-%% stall CI forever.
+%% EUnit per-test timeout, in seconds.
 -define(TEST_TIMEOUT_S, 30).
 
 %% Convenience macro that wraps a Fun in an EUnit timeout tuple.
@@ -140,6 +155,56 @@ bind_test_() ->
          ?T(?TEST_TIMEOUT_S, fun t_bind_app_success/0)}
     ].
 
+uid_addressing_test_() ->
+    {setup,
+     fun setup_uid_framework/0,
+     fun cleanup_framework/1,
+     fun(Ctx) ->
+         [
+             {"whoami returns the caller's 32-byte UID and P2P name",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_whoami_shape(Ctx) end)},
+             {"uid_call round trips to a known UID",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_uid_call(Ctx) end)},
+             {"uid_notify reaches the target without a reply",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_uid_notify(Ctx) end)},
+             {"check_uid and check_uid_api agree for a live UID",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_uid(Ctx) end)}
+         ]
+     end}.
+
+p2pname_addressing_test_() ->
+    {setup,
+     fun setup_p2pname_framework/0,
+     fun cleanup_framework/1,
+     fun(Ctx) ->
+         [
+             {"p2pname_call round trips to the group",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_call(Ctx) end)},
+             {"p2pname_notify reaches the group without a reply",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_notify(Ctx) end)},
+             {"check_p2pname and check_p2pname_api agree",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_p2pname(Ctx) end)}
+         ]
+     end}.
+
+p2p_registration_test_() ->
+    {setup,
+     fun setup_p2pname_framework/0,
+     fun cleanup_framework/1,
+     fun(Ctx) ->
+         [
+             {"register_p2p_call then unregister_p2p is idempotent",
+              ?T(?TEST_TIMEOUT_S,
+                 fun() -> t_p2p_register_call(Ctx) end)},
+             {"register_p2p_notify then unregister_p2p is idempotent",
+              ?T(?TEST_TIMEOUT_S,
+                 fun() -> t_p2p_register_notify(Ctx) end)},
+             {"register_p2p_call_sync then unregister_p2p is idempotent",
+              ?T(?TEST_TIMEOUT_S,
+                 fun() -> t_p2p_register_call_sync(Ctx) end)}
+         ]
+     end}.
+
 %% =========================================================================
 %% Helpers
 %% =========================================================================
@@ -161,8 +226,6 @@ skip_message() ->
               "(set LINGOFUSE_REQUIRE_NATIVE=1 to fail)~n", []),
     skip.
 
-%% Build an endpoint name that is unique across processes and
-%% across runs within the same process.
 unique_endpoint(Prefix) ->
     N = erlang:unique_integer([positive, monotonic]),
     iolist_to_binary(
@@ -175,49 +238,52 @@ unique_app_name(Prefix) ->
       io_lib:format("NetTestApp_~s_~s_~p",
                     [Prefix, os:getpid(), N])).
 
-%% Drain any residual callback message from the mailbox so the next
-%% test starts with a clean slate.
+unique_p2p_name() ->
+    N = erlang:unique_integer([positive, monotonic]),
+    iolist_to_binary(
+      io_lib:format("eunit_p2p_~s_~p", [os:getpid(), N])).
+
 flush_lf_messages() ->
     receive
-        {lf_call, _, _}    -> flush_lf_messages();
-        {lf_notify, _, _}  -> flush_lf_messages();
-        {lf_connect, _}    -> flush_lf_messages();
-        {lf_disconnect, _} -> flush_lf_messages()
+        {lf_call, _, _, _}      -> flush_lf_messages();
+        {lf_call, _, _}         -> flush_lf_messages();
+        {lf_notify, _, _}       -> flush_lf_messages();
+        {lf_notify, _}          -> flush_lf_messages();
+        {lf_p2p_call, _, _}     -> flush_lf_messages();
+        {lf_p2p_call, _, _, _}  -> flush_lf_messages();
+        {lf_p2p_notify, _, _}   -> flush_lf_messages();
+        {lf_p2p_notify, _}      -> flush_lf_messages();
+        {lf_async_result, _, _} -> flush_lf_messages();
+        {lf_connect, _}         -> flush_lf_messages();
+        {lf_disconnect, _}      -> flush_lf_messages()
     after 0 -> ok
     end.
 
-%% Register the three test APIs on App A. All callbacks deliver to
-%% self(), which is the test process.
+try_silent(Fun) ->
+    try Fun() catch _:_ -> ok end.
+
 register_test_apis(A) ->
     ok = lingofuse:register_call  (A, <<"add">>,    <<"eunit call">>,   self()),
     ok = lingofuse:register_notify(A, <<"log">>,    <<"eunit notify">>, self()),
     ok = lingofuse:register_notify(A, <<"stream">>, <<"eunit stream">>, self()),
     ok.
 
-%% Run Fun() and ignore any exception. Convenience for teardown.
-try_silent(Fun) ->
-    try Fun() catch _:_ -> ok end.
-
-%% Start a fresh framework session, run Fun(A, Endpoint, AppName),
-%% then tear everything down in an `after` block.
-%%
-%% {!!!!!  DEPLOYMENT MODE  !!!!!}
-%% Wait_Connection_ReadyOk is set to False before the framework is
-%% started, so LF_PrepareDone returns as soon as the event loop is
-%% running instead of blocking for up to 31 seconds waiting for
-%% every client to become fully ready. After prepare_done returns,
-%% with_framework waits until check_app/1 observes the registered
-%% App on the mesh, which absorbs the ~3 second broadcast delay.
 with_framework(Fun) ->
     case ensure_native_or_skip() of
         skip -> ok;
         ok ->
             flush_lf_messages(),
-            %% Deployment mode: do not block LF_PrepareDone.
             ?assertEqual(
                ok,
                lingofuse:set_option(
                  <<"Wait_Connection_ReadyOk">>, <<"False">>)),
+            ?assertEqual(
+               ok,
+               lingofuse:set_option(
+                 <<"Overlap_Connection">>, <<"True">>)),
+            ?assertEqual(
+               ok,
+               lingofuse:set_option(<<"Quiet">>, <<"True">>)),
             Endpoint = unique_endpoint(<<"t">>),
             AppName  = unique_app_name(<<"t">>),
             {ok, A} = lingofuse:create_app(AppName, <<"network test">>),
@@ -229,9 +295,6 @@ with_framework(Fun) ->
                 {ok, CliTag} = lingofuse:prepare_client(Endpoint, A),
                 ?assert(CliTag >= 0),
                 {ok, 1} = lingofuse:prepare_done(),
-                %% Wait until the App is visible on the mesh. In
-                %% deployment mode prepare_done returns before the
-                %% broadcast has necessarily completed.
                 true = wait_until(
                          fun() ->
                              case lingofuse:check_app(AppName) of
@@ -244,17 +307,12 @@ with_framework(Fun) ->
                 try_silent(fun() -> lingofuse:exit_main_thread() end),
                 try_silent(fun() -> lingofuse:free_app(A) end),
                 try_silent(fun() -> lingofuse:shutdown() end),
-                %% Give the mesh a moment to release sockets and
-                %% worker threads before the next test begins.
                 timer:sleep(100),
                 flush_lf_messages()
             end,
             ok
     end.
 
-%% Poll a predicate up to TimeoutMs, every 50 ms, and return the
-%% final result. Used to absorb the ~3 second broadcast delay of the
-%% LingoFuse mesh after a fresh registration.
 wait_until(Fun, TimeoutMs) ->
     wait_until_loop(Fun, TimeoutMs, 50).
 
@@ -269,12 +327,206 @@ wait_until_loop(Fun, TimeoutMs, Interval) ->
     end.
 
 %% =========================================================================
+%% Notify forwarder
+%% =========================================================================
+%%
+%% A tiny relay process that the notify tests can point at themselves
+%% for the duration of one test. The forwarder starts with no target
+%% and drops every notify it receives until a target is set.
+%%
+%% The handshake is Ref-tagged so that a test can be certain the
+%% forwarder has switched targets before it issues the notify.
+
+notify_forwarder() ->
+    notify_forwarder_loop(undefined).
+
+notify_forwarder_loop(Current) ->
+    receive
+        {set_listener, From, Ref} ->
+            From ! {listener_set, Ref},
+            notify_forwarder_loop(From);
+        {lf_notify, _, _} = Msg ->
+            case Current of
+                undefined -> ok;
+                Pid when is_pid(Pid) -> Pid ! Msg
+            end,
+            notify_forwarder_loop(Current);
+        {lf_p2p_notify, _, _} = Msg ->
+            case Current of
+                undefined -> ok;
+                Pid when is_pid(Pid) -> Pid ! Msg
+            end,
+            notify_forwarder_loop(Current);
+        _Other ->
+            notify_forwarder_loop(Current)
+    end.
+
+%% Point the forwarder at the calling process, and wait for the
+%% handshake to complete.
+set_forwarder_target(ForwarderPid) ->
+    Ref = make_ref(),
+    ForwarderPid ! {set_listener, self(), Ref},
+    receive
+        {listener_set, Ref} -> ok
+    after 1000 ->
+        error({forwarder_handshake_timeout, ForwarderPid})
+    end.
+
+%% =========================================================================
+%% Sync test server used by the UID and P2PName groups
+%% =========================================================================
+
+test_server() ->
+    receive
+        {lf_call, Ref, <<"echo">>, Payload} ->
+            _ = lingofuse:reply(Ref, Payload),
+            test_server();
+        {lf_call, Ref, <<"whoami">>, _, Identity} ->
+            UID  = maps:get(uid, Identity),
+            Name = maps:get(p2p_name, Identity),
+            Reply = lingofuse_json:dumps(#{
+                <<"uid_hex">>  => binary:encode_hex(UID),
+                <<"p2p_name">> => Name
+            }),
+            _ = lingofuse:reply(Ref, Reply),
+            test_server();
+        {lf_call, Ref, <<"ping">>, _Payload} ->
+            Reply = lingofuse_json:dumps(<<"pong">>),
+            _ = lingofuse:reply(Ref, Reply),
+            test_server();
+        _Other ->
+            test_server()
+    end.
+
+%% =========================================================================
+%% Framework setup / cleanup shared by the UID and P2PName groups
+%% =========================================================================
+
+setup_uid_framework() ->
+    common_framework_setup(<<"uid">>, undefined).
+
+setup_p2pname_framework() ->
+    Group = unique_p2p_name(),
+    common_framework_setup(<<"p2p">>, Group).
+
+common_framework_setup(Tag, P2PNameOpt) ->
+    case ensure_native_or_skip() of
+        skip -> skip;
+        ok ->
+            flush_lf_messages(),
+
+            ok = lingofuse:set_option(<<"Wait_Connection_ReadyOk">>,
+                                      <<"False">>),
+            ok = lingofuse:set_option(<<"Overlap_Connection">>,
+                                      <<"True">>),
+            ok = lingofuse:set_option(<<"Quiet">>, <<"True">>),
+
+            case P2PNameOpt of
+                undefined -> ok;
+                Group     -> ok = lingofuse:set_opt_p2p_name(Group)
+            end,
+
+            Endpoint = unique_endpoint(Tag),
+            AppName  = unique_app_name(Tag),
+            {ok, A}  = lingofuse:create_app(AppName, <<"net group test">>),
+
+            Server    = spawn(fun test_server/0),
+            Forwarder = spawn(fun notify_forwarder/0),
+
+            ok = lingofuse:register_call_sync(
+                   A, <<"echo">>,   <<"echo">>,   Server),
+            ok = lingofuse:register_call_sync(
+                   A, <<"whoami">>, <<"whoami">>, Server,
+                   #{with_identity => true}),
+            ok = lingofuse:register_call_sync(
+                   A, <<"ping">>,   <<"ping">>,   Server),
+
+            %% The notify API is registered with the forwarder, not
+            %% with the setup process, so that each test can take
+            %% ownership of the delivery stream for its own duration.
+            ok = lingofuse:register_notify(
+                   A, <<"log">>, <<"eunit log">>, Forwarder),
+
+            ok = lingofuse:reset_prepare(),
+            {ok, _} = lingofuse:prepare_service(Endpoint, Endpoint),
+            {ok, _} = lingofuse:prepare_client(Endpoint, A),
+            {ok, 1} = lingofuse:prepare_done(),
+
+            true = wait_until(
+                     fun() ->
+                         case lingofuse:check_app(AppName) of
+                             {ok, true} -> true;
+                             _          -> false
+                         end
+                     end, 5000),
+
+            UID = probe_uid(AppName),
+
+            case P2PNameOpt of
+                undefined -> ok;
+                _         -> timer:sleep(3500)
+            end,
+
+            #{app       => A,
+              app_name  => AppName,
+              server    => Server,
+              forwarder => Forwarder,
+              uid       => UID,
+              group     => P2PNameOpt}
+    end.
+
+cleanup_framework(skip) -> ok;
+cleanup_framework(Ctx) when is_map(Ctx) ->
+    Server    = maps:get(server, Ctx, undefined),
+    Forwarder = maps:get(forwarder, Ctx, undefined),
+    App       = maps:get(app, Ctx, undefined),
+    case Server of
+        Pid when is_pid(Pid) -> try_silent(fun() -> exit(Pid, kill) end);
+        _                    -> ok
+    end,
+    case Forwarder of
+        Pid2 when is_pid(Pid2) -> try_silent(fun() -> exit(Pid2, kill) end);
+        _                      -> ok
+    end,
+    try_silent(fun() -> lingofuse:exit_main_thread() end),
+    case App of
+        A when is_reference(A) -> try_silent(fun() -> lingofuse:free_app(A) end);
+        _                      -> ok
+    end,
+    try_silent(fun() -> lingofuse:shutdown() end),
+    timer:sleep(100),
+    flush_lf_messages(),
+    ok;
+cleanup_framework(_) -> ok.
+
+probe_uid(AppName) ->
+    {ok, Req} = lingofuse:create_data(<<"whoami">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        {ok, Res} = lingofuse:call(AppName, Req, 5000),
+        try
+            ok = lingofuse:set_pos(Res, 0),
+            Reply = lingofuse_json:read_json(Res),
+            ?assert(is_map(Reply)),
+            UIDHex = maps:get(<<"uid_hex">>, Reply),
+            ?assert(is_binary(UIDHex)),
+            ?assertEqual(64, byte_size(UIDHex)),
+            UID = binary:decode_hex(UIDHex),
+            ?assertEqual(32, byte_size(UID)),
+            UID
+        after
+            lingofuse:free_data(Res)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+%% =========================================================================
 %% Framework lifecycle tests
 %% =========================================================================
 
 t_prepare_done_first() ->
     with_framework(fun(_A, _E, _N) ->
-        %% The helper already asserted prepare_done returned 1.
         ?assertEqual({ok, true}, lingofuse:check_main_thread())
     end).
 
@@ -322,9 +574,6 @@ t_prepare_service_dup() ->
                 ok = lingofuse:reset_prepare(),
                 {ok, T1} = lingofuse:prepare_service(Endpoint, Endpoint),
                 ?assert(T1 >= 0),
-                %% A second prepare_service with the same endpoint
-                %% must be rejected with -1. This is documented
-                %% behavior of the C4 layer.
                 {ok, T2} = lingofuse:prepare_service(Endpoint, Endpoint),
                 ?assertEqual(-1, T2)
             after
@@ -334,9 +583,6 @@ t_prepare_service_dup() ->
     end.
 
 t_reset_prepare_restart() ->
-    %% Two consecutive sessions back-to-back. The second
-    %% prepare_done must succeed, proving that shutdown + reset
-    %% leaves the framework in a restartable state.
     ok = with_framework(fun(_A, _E, _N) -> ok end),
     ok = with_framework(fun(_A, _E, _N) -> ok end),
     ok.
@@ -345,8 +591,6 @@ t_exit_main_thread_idempotent() ->
     case ensure_native_or_skip() of
         skip -> ok;
         ok ->
-            %% exit_main_thread on a framework that was never started
-            %% must not crash, and calling it twice must be safe.
             ?assertEqual(ok, lingofuse:exit_main_thread()),
             ?assertEqual(ok, lingofuse:exit_main_thread())
     end.
@@ -438,9 +682,6 @@ t_call_loopback() ->
             {ok, _} = lingofuse:write_buffer(P, <<"payload">>),
             {ok, R} = lingofuse:call(AppName, P, 3000),
             try
-                %% Call-mode dispatch in this batch delivers the
-                %% message to the registered process. What matters
-                %% is that the caller's message reached it.
                 receive
                     {lf_call, Api, Payload} ->
                         ?assertEqual(<<"add">>, Api),
@@ -499,8 +740,6 @@ t_notify_unknown() ->
         {ok, P} = lingofuse:create_data(<<"log">>),
         try
             {ok, _} = lingofuse:write_buffer(P, <<"x">>),
-            %% A notify to an absent target is best-effort; it must
-            %% not crash and must return ok.
             ?assertEqual(ok,
                          lingofuse:notify(<<"__absent__">>, P))
         after
@@ -546,9 +785,6 @@ t_sequenced_notify_fifo() ->
                     after 5000 ->
                         ?assert(false)
                     end || _ <- Payloads],
-        %% The whole point of sequenced notify is FIFO order per
-        %% (app, api). If this assertion fails, the sequenced
-        %% dispatch path is not preserving order.
         ?assertEqual(Payloads, Received)
     end).
 
@@ -610,8 +846,6 @@ t_set_option_during_network() ->
 %% =========================================================================
 
 t_bind_app_no_free_client() ->
-    %% When the only prepared client already has an App attached,
-    %% bind_app has no free client to attach to and must return 0.
     with_framework(fun(A, _E, _N) ->
         {ok, N} = lingofuse:bind_app(A),
         ?assertEqual(0, N)
@@ -633,12 +867,9 @@ t_bind_app_success() ->
             try
                 ok = lingofuse:reset_prepare(),
                 {ok, _} = lingofuse:prepare_service(Endpoint, Endpoint),
-                %% Prepare a client with no attached app.
                 {ok, _} = lingofuse:prepare_client(Endpoint, undefined),
                 {ok, 1} = lingofuse:prepare_done(),
-                %% Wait for the (still App-less) client to be ready.
                 timer:sleep(500),
-                %% Now bind the newly created app to the free client.
                 {ok, Bound} = lingofuse:bind_app(A),
                 ?assertEqual(1, Bound)
             after
@@ -650,3 +881,176 @@ t_bind_app_success() ->
             end,
             ok
     end.
+
+%% =========================================================================
+%% UID addressing group tests
+%% =========================================================================
+
+t_whoami_shape(Ctx) ->
+    AppName = maps:get(app_name, Ctx),
+    {ok, Req} = lingofuse:create_data(<<"whoami">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        {ok, Res} = lingofuse:call(AppName, Req, 5000),
+        try
+            ok = lingofuse:set_pos(Res, 0),
+            Reply = lingofuse_json:read_json(Res),
+            ?assert(is_map(Reply)),
+
+            UIDHex = maps:get(<<"uid_hex">>, Reply),
+            ?assert(is_binary(UIDHex)),
+            ?assertEqual(64, byte_size(UIDHex)),
+
+            UID = binary:decode_hex(UIDHex),
+            ?assertEqual(32, byte_size(UID)),
+
+            ?assert(maps:is_key(<<"p2p_name">>, Reply))
+        after
+            lingofuse:free_data(Res)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_uid_call(Ctx) ->
+    UID = maps:get(uid, Ctx),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        {ok, Res} = lingofuse:uid_call(UID, Req, 5000),
+        try
+            ok = lingofuse:set_pos(Res, 0),
+            Reply = lingofuse_json:read_json(Res),
+            ?assertEqual(<<"pong">>, Reply)
+        after
+            lingofuse:free_data(Res)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+%% uid_notify sends a one-way notification by UID. The `log' Notify
+%% API is registered with the forwarder; the test points the forwarder
+%% at itself before issuing the notify.
+t_uid_notify(Ctx) ->
+    UID       = maps:get(uid, Ctx),
+    Forwarder = maps:get(forwarder, Ctx),
+    flush_lf_messages(),
+    ok = set_forwarder_target(Forwarder),
+    {ok, Req} = lingofuse:create_data(<<"log">>),
+    try
+        ok = lingofuse_json:write_json(
+               Req, #{<<"event">> => <<"uid_notify">>}),
+        ?assertEqual(ok, lingofuse:uid_notify(UID, Req)),
+        receive
+            {lf_notify, <<"log">>, _Payload} -> ok
+        after 3000 ->
+            ?assert(false)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_check_uid(Ctx) ->
+    UID = maps:get(uid, Ctx),
+    Result1 = wait_until(
+                fun() ->
+                    case lingofuse:check_uid(UID) of
+                        {ok, true} -> true;
+                        _          -> false
+                    end
+                end, 5000),
+    ?assert(Result1),
+    Result2 = wait_until(
+                fun() ->
+                    case lingofuse:check_uid_api(UID, <<"ping">>) of
+                        {ok, true} -> true;
+                        _          -> false
+                    end
+                end, 5000),
+    ?assert(Result2).
+
+%% =========================================================================
+%% P2PName addressing group tests
+%% =========================================================================
+
+t_p2pname_call(Ctx) ->
+    Group = maps:get(group, Ctx),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        {ok, Res} = lingofuse:p2pname_call(Group, Req, 5000),
+        try
+            ok = lingofuse:set_pos(Res, 0),
+            Reply = lingofuse_json:read_json(Res),
+            ?assertEqual(<<"pong">>, Reply)
+        after
+            lingofuse:free_data(Res)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_p2pname_notify(Ctx) ->
+    Group     = maps:get(group, Ctx),
+    Forwarder = maps:get(forwarder, Ctx),
+    flush_lf_messages(),
+    ok = set_forwarder_target(Forwarder),
+    {ok, Req} = lingofuse:create_data(<<"log">>),
+    try
+        ok = lingofuse_json:write_json(
+               Req, #{<<"event">> => <<"p2pname_notify">>}),
+        ?assertEqual(ok, lingofuse:p2pname_notify(Group, Req)),
+        receive
+            {lf_notify, <<"log">>, _Payload} -> ok
+        after 3000 ->
+            ?assert(false)
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_check_p2pname(Ctx) ->
+    Group = maps:get(group, Ctx),
+    Result1 = wait_until(
+                fun() ->
+                    case lingofuse:check_p2pname(Group) of
+                        {ok, true} -> true;
+                        _          -> false
+                    end
+                end, 5000),
+    ?assert(Result1),
+    Result2 = wait_until(
+                fun() ->
+                    case lingofuse:check_p2pname_api(Group, <<"ping">>) of
+                        {ok, true} -> true;
+                        _          -> false
+                    end
+                end, 5000),
+    ?assert(Result2).
+
+%% =========================================================================
+%% Process-wide P2P registration group tests
+%% =========================================================================
+
+t_p2p_register_call(Ctx) ->
+    _ = Ctx,
+    Api = <<"eunit_p2p_call_api">>,
+    ok = lingofuse:register_p2p_call(Api, <<"eunit p2p call">>, self()),
+    ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
+    ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).
+
+t_p2p_register_notify(Ctx) ->
+    _ = Ctx,
+    Api = <<"eunit_p2p_notify_api">>,
+    ok = lingofuse:register_p2p_notify(Api, <<"eunit p2p notify">>, self()),
+    ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
+    ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).
+
+t_p2p_register_call_sync(Ctx) ->
+    _ = Ctx,
+    Api = <<"eunit_p2p_call_sync_api">>,
+    ok = lingofuse:register_p2p_call_sync(Api, <<"eunit p2p call sync">>,
+                                          self()),
+    ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
+    ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).

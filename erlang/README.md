@@ -6,9 +6,13 @@
 
 ## 核心特性
 
-- **完整 C ABI 覆盖。** 全部 37 个 LingoFuse 导出函数均可用，用 RAII 风格的 resource 类型封装。
+- **完整 C ABI 覆盖。** 全部 **59 个** LingoFuse 导出函数均可用，用 RAII 风格的 resource 类型封装。
+- **三套寻址。** App 名、UID（32 字节会话标识）、P2PName（组名负载均衡），各自提供同步调用、异步调用、通知、顺序通知四种形态。
+- **进程级 P2P 注册。** 不依赖任何 App 的全局 API 命名空间，通过 `register_p2p_call[_sync]` / `register_p2p_notify` 注册，可被任意 UID 或 P2PName 调用。
+- **无断裂感的异步调用。** `lingofuse:async_call(App, Api, Payload, fun(Result) -> ... end)` —— 一行写完调用与业务回调，无需管理 pid、Ref、monitor、清理。
+- **侧数据（Side Data）识别。** 通过 `#{with_identity => true}` 注册的回调，自动从 Input 句柄提取发送方 UID 和 P2PName，作为消息的附加元素投递。
+- **16 对类型化选项。** `set_opt_quiet/1` / `get_opt_quiet/0` 等 typed 版本，参数类型安全，选项键不可拼错。
 - **统一 JSON I/O。** 只有一个模块（`lingofuse_json`）被允许做 JSON 编解码，强制实施跨语言线格式契约：紧凑 UTF-8、字面非 ASCII 字符、NUL 结尾的载荷。
-- **两种 Call 回调模式。** `register_call/4` 异步投递请求；`register_call_sync/4` 阻塞原生调用方，直到 Erlang 侧调用 `reply/2`。
 - **可移植的 NIF 构建。** `c_src/build.escript` 在 Windows、Linux、macOS、BSD 上都能构建 NIF，自动使用主机上可用的 C 编译器（gcc、clang、cc 或 MSVC `cl`）。
 - **零运行时依赖。** 基于 OTP 27+ 内置的 `json` 模块；运行时不需要任何第三方 Hex 包。
 
@@ -26,8 +30,9 @@
 8. [将 LingoFuse 合并到现有项目](#8-将-lingofuse-合并到现有项目)
 9. [编译 NIF（c_src）](#9-编译-nifc_src)
 10. [跨语言线格式](#10-跨语言线格式)
-11. [已知限制](#11-已知限制)
-12. [许可证](#12-许可证)
+11. [API 速查](#11-api-速查)
+12. [已知限制](#12-已知限制)
+13. [许可证](#13-许可证)
 
 ---
 
@@ -138,6 +143,12 @@ cd D:\CoreLibrary\LingoFuse\erlang
 .\build.ps1 -SkipNif
 ```
 
+也可以随时运行环境诊断脚本，输出完整的依赖快照：
+
+```powershell
+.\check_env.ps1
+```
+
 ---
 
 ## 3. 构建
@@ -152,6 +163,7 @@ cd D:\CoreLibrary\LingoFuse\erlang
 | `check.ps1` | 静态分析：语法、风格、xref、死代码、escript、dialyzer |
 | `test.ps1` | 运行 EUnit 测试套件 |
 | `clean.ps1` | 清理构建产物（三个累积级别） |
+| `check_env.ps1` | 输出环境诊断报告 |
 
 ```powershell
 # 完整构建（NIF + Erlang）
@@ -244,19 +256,22 @@ LINGOFUSE_SKIP_NIF=1 ./rebar3 compile
 .\test.ps1
 ```
 
-它会调用 `rebar3 eunit`，运行全部四个套件：
+它会调用 `rebar3 eunit`，运行全部六个套件：
 
 | 模块 | 覆盖范围 |
 |------|----------|
 | `lingofuse_abi_tests` | 数据句柄生命周期、缓冲区 I/O、位置/大小、应用生命周期、API 注册、回调桥、运行时选项 |
 | `lingofuse_json_tests` | JSON 编解码、线格式、NUL 框架、容错读取 |
-| `lingofuse_network_tests` | 框架生命周期、本地与回环派发、诊断、客户端绑定 |
+| `lingofuse_network_tests` | 框架生命周期、本地与回环派发、UID / P2PName 寻址、P2P 注册、诊断、客户端绑定 |
 | `lingofuse_sync_tests` | 同步 Call 桥、reply/2、超时行为、并发调用 |
+| `lingofuse_async_tests` | 异步调用族：基础往返、顺序往返、Raw 形式、并发 worker |
+| `lingofuse_identity_tests` | `with_identity` 侧数据消息格式、P2P 注册/注销 |
+| `lingofuse_options_tests` | 16 对 typed 选项、通用 set/get、掩码与占位符、布尔线格式 |
 
 ### 4.2 运行单个套件
 
 ```powershell
-.\test.ps1 -Suite lingofuse_sync_tests
+.\test.ps1 -Suite lingofuse_async_tests
 ```
 
 ### 4.3 CI 模式
@@ -278,7 +293,7 @@ LINGOFUSE_SKIP_NIF=1 ./rebar3 compile
 .\rebar3.cmd eunit
 
 # 单个套件
-.\rebar3.cmd eunit --module=lingofuse_json_tests
+.\rebar3.cmd eunit --module=lingofuse_async_tests
 
 # Linux / macOS
 ./rebar3 eunit
@@ -304,10 +319,16 @@ LINGOFUSE_SKIP_NIF=1 ./rebar3 compile
 | 框架生命周期：prepare-done、线程活跃、service tag、client tag、重复拒绝、reset-restart、exit 幂等、shutdown 幂等 | `lingofuse_network_tests` | ✅ |
 | 本地派发：`{lf_call, ...}` 与 `{lf_notify, ...}` 消息、错误参数 | `lingofuse_network_tests` | ✅ |
 | 远程派发（回环）：Call、Notify、Sequenced Notify、FIFO 顺序 | `lingofuse_network_tests` | ✅ |
+| **UID 寻址**：whoami 探测、uid_call、uid_notify、check_uid[_api] | `lingofuse_network_tests` | ✅ |
+| **P2PName 寻址**：p2pname_call、p2pname_notify、check_p2pname[_api] | `lingofuse_network_tests` | ✅ |
+| **进程级 P2P 注册**：register_p2p_call[_sync]、register_p2p_notify、unregister_p2p | `lingofuse_network_tests` | ✅ |
 | 诊断：`check_app`、`check_api`、状态计数、运行时选项 | `lingofuse_network_tests` | ✅ |
 | 客户端绑定：无空闲客户端、成功绑定 | `lingofuse_network_tests` | ✅ |
 | 同步桥：基础往返、延迟回复、未知 ref、超时、`set_sync_timeout`、错误参数、多路并发调用 | `lingofuse_sync_tests` | ✅ |
 | 异步桥（旧行为）：`{lf_call, Api, Payload}` 消息投递 | `lingofuse_sync_tests` | ✅ |
+| **异步调用**：`async_call`、`async_call_seq`、`async_call_raw`、并发 worker | `lingofuse_async_tests` | ✅ |
+| **侧数据**：`with_identity` 的 3-tuple / 4-tuple 消息差异、P2P 注册注销 | `lingofuse_identity_tests` | ✅ |
+| **类型化选项**：16 对 typed setter/getter、通用 set/get、掩码、布尔线格式 | `lingofuse_options_tests` | ✅ |
 
 ### 5.2 静态分析
 
@@ -338,9 +359,42 @@ MinGW-w64 `gcc` 构建并成功加载。
 
 ## 6. Erlang 接口重要信息
 
-### 6.1 两种 Call 回调模式
+### 6.1 三套寻址模式
 
-绑定支持两种 Call API 注册方式，选择很重要。
+LingoFuse 支持三种正交的寻址方式，各自都有同步调用、异步调用、单向通知和顺序通知四种形态。所有形态共享同一个连接和同样的序列化契约。
+
+| 寻址模式 | 参数类型 | 路由语义 | 本地优先 |
+|---------|---------|---------|:-------:|
+| **App 名** | `binary()` | 精确匹配 App 名 | ✅ |
+| **UID** | `<<_:256>>` | 定向到某会话 | ✅ |
+| **P2PName** | `binary()` | 组内负载均衡 | ❌ |
+
+**App 名寻址**：
+
+```erlang
+lingofuse:call(<<"MyApp">>, Req, 3000).
+lingofuse:notify(<<"MyApp">>, Req).
+lingofuse:sequenced_notify(<<"MyApp">>, Req).
+```
+
+**UID 寻址**：
+
+```erlang
+UID = <<...32 bytes...>>,
+lingofuse:uid_call(UID, Req, 3000).
+lingofuse:uid_notify(UID, Req).
+lingofuse:uid_sequenced_notify(UID, Req).
+```
+
+**P2PName 寻址**：
+
+```erlang
+lingofuse:p2pname_call(<<"workers">>, Req, 3000).
+lingofuse:p2pname_notify(<<"workers">>, Req).
+lingofuse:p2pname_sequenced_notify(<<"workers">>, Req).
+```
+
+### 6.2 两种 Call 回调模式
 
 **异步模式**（`register_call/4`）：
 
@@ -348,8 +402,7 @@ MinGW-w64 `gcc` 构建并成功加载。
 ok = lingofuse:register_call(App, <<"myapi">>, <<"desc">>, self()).
 ```
 
-注册进程会收到 `{lf_call, ApiName, Payload}`。原生调用方立即返回；
-LingoFuse 输出句柄为空。
+注册进程会收到 `{lf_call, ApiName, Payload}`。原生调用方立即返回；LingoFuse 输出句柄为空。
 
 **同步模式**（`register_call_sync/4`）：
 
@@ -357,39 +410,157 @@ LingoFuse 输出句柄为空。
 ok = lingofuse:register_call_sync(App, <<"myapi">>, <<"desc">>, self()).
 ```
 
-注册进程会收到 `{lf_call, Ref, ApiName, Payload}`。原生调用方阻塞，
-直到 Erlang 侧调用 `reply(Ref, ResultBin)`。该 binary 被写入 LingoFuse
-输出句柄，调用方看到的是正常的同步响应。
+注册进程会收到 `{lf_call, Ref, ApiName, Payload}`。原生调用方阻塞，直到 Erlang 侧调用 `reply(Ref, ResultBin)`。该 binary 被写入 LingoFuse 输出句柄，调用方看到的是正常的同步响应。
 
 ```erlang
 receive
     {lf_call, Ref, <<"myapi">>, Payload} ->
         Result = handle(Payload),
-        ok = lingofuse:reply(Ref, Result)
+        _ = lingofuse:reply(Ref, Result)
 end.
 ```
 
-### 6.2 同步回调契约
+### 6.3 侧数据（`with_identity`）
 
-- 同步回调**必须**由**发起调用的进程之外的另一个进程**处理。如果同一
-  进程既发起调用又处理回调，会死锁：调用方阻塞在 `local_call/2` 内部，
-  无法接收回调消息。请用独立进程执行调用。
-- 同步超时后到达的回复返回 `{error, unknown_ref}`。
-- 同步超时是进程级设置，默认 30 秒，用 `set_sync_timeout/1` 配置。低于
-  100 ms 的值会被钳制到 100 ms。
-- 回复延迟上界为轮询间隔（5 ms）。NIF API 没有提供
-  `enif_cond_timedwait`，所以同步桥用短睡眠循环轮询。
+通过 `/5` 变体的注册函数，可以请求框架在回调消息中附加**发送方身份**。身份是一个 map：
 
-### 6.3 回调线程
+```erlang
+#{uid => <<_:256>>, p2p_name => binary()}
+```
 
-- Call、Notify 和网络事件回调都运行在 LingoFuse 库自有的原生工作线程
-  上，**不是** BEAM 调度线程。
-- **不要在回调中调用阻塞型 LingoFuse 函数。** 从回调里调用
-  `call/2`、`local_call/2`、`prepare_done/0` 或 `shutdown/0` 会让整个
-  LingoFuse mesh 死锁。
+**App 级回调**（`register_call/5` 或 `register_call_sync/5`）：
+
+```erlang
+ok = lingofuse:register_call(App, <<"whoami">>, <<"desc">>, self(),
+                             #{with_identity => true}).
+
+%% 收到的消息：
+%% {lf_call, <<"whoami">>, Payload, Identity}          （异步）
+%% {lf_call, Ref, <<"whoami">>, Payload, Identity}     （同步）
+```
+
+**Notify 回调**（`register_notify/5`）：
+
+```erlang
+ok = lingofuse:register_notify(App, <<"log">>, <<"desc">>, self(),
+                               #{with_identity => true}).
+
+%% 收到的消息：
+%% {lf_notify, <<"log">>, Payload, Identity}
+```
+
+**进程级 P2P 回调**（`register_p2p_*` 系列）：消息标签变为 `lf_p2p_call` / `lf_p2p_notify`，其余格式相同。
+
+**Side Data 语义**：
+
+- **只在回调的 Input 句柄上有效**。身份来自发送方在请求载荷中自动写入的 `FromUID` / `FromP2PName` 字段。
+- **不能对自建句柄或 Output 句柄读取**。框架会返回全零 UID / 空字符串。
+- **UID 长度始终是 32 字节**，可能是任意二进制，不能直接放进 JSON。
+
+### 6.4 异步调用
+
+绑定提供两层异步 API。
+
+**高级形式（推荐）——"无断裂感"的写法**：
+
+```erlang
+ok = lingofuse:async_call(App, Api, Payload, fun(Result) ->
+    case Result of
+        {ok, Bin}  -> handle_reply(Bin);
+        {error, R} -> log_error(R)
+    end
+end).
+```
+
+- **立即返回 `ok`**，不等结果。
+- 后台自动 spawn 一个 worker 进程：构造 DataHandle → 序列化 Payload → 调用 NIF → 等待结果 → 执行回调 → 释放句柄。
+- 用户**完全不用管 pid / Ref / monitor / 清理**。
+- 默认 30 秒超时；超时后回调收到 `{error, timeout}`。传 `infinity` 可禁用超时。
+- 回调里抛出的任何异常都被捕获并吞掉，与 C 侧行为一致。
+
+对应 6 个寻址 × 2 个顺序形态：
+
+| 函数 | 说明 |
+|------|------|
+| `async_call/4,5` | App 名寻址，无顺序保证 |
+| `async_call_seq/4,5` | App 名寻址，按 (App, Api) FIFO |
+| `async_uid_call/4,5` | UID 寻址 |
+| `async_uid_call_seq/4,5` | UID 寻址，FIFO |
+| `async_p2pname_call/4,5` | P2PName 寻址 |
+| `async_p2pname_call_seq/4,5` | P2PName 寻址，FIFO |
+
+**低级形式（Raw）——自己管 pid 和消息**：
+
+```erlang
+{ok, Ref} = lingofuse:async_call_raw(App, Req, self()),
+%% 稍后收到 {lf_async_result, Ref, {ok, Bin} | {error, Reason}}
+```
+
+对应 6 个 raw 入口：`async_call_raw/3`、`async_call_seq_raw/3`、`async_uid_call_raw/3`、`async_uid_call_seq_raw/3`、`async_p2pname_call_raw/3`、`async_p2pname_call_seq_raw/3`。
+
+**注意**：Raw 形式下，调用者负责 `free_data(Req)`，且**必须等到 `lf_async_result` 到达之后再释放**，否则 C 侧可能还有内部引用。
+
+### 6.5 类型化选项
+
+除了通用的 `set_option/2` / `get_option/1`，绑定还提供 **16 对类型化快捷**。
+
+**布尔选项**：
+
+```erlang
+lingofuse:set_opt_quiet(true).
+lingofuse:set_opt_show_thread_id(false).
+lingofuse:set_opt_console_output(true).
+lingofuse:set_opt_overlap_connection(true).
+lingofuse:set_opt_wait_connection_ready_ok(false).
+
+Q = lingofuse:get_opt_quiet().        %% => true | false
+```
+
+**整数选项**：
+
+```erlang
+lingofuse:set_opt_wait_connection_timeout(30000).
+lingofuse:set_opt_ipc_serv_thread_count(4).
+lingofuse:set_opt_ipc_serv_max_queue_length(1024).
+lingofuse:set_opt_ipc_serv_max_msg_size(1048576).
+lingofuse:set_opt_fixed_sequenced_time(20000).
+lingofuse:set_opt_data_handle_idle_timeout(600000).
+lingofuse:set_opt_data_handle_pool_scan_interval(5000).
+lingofuse:set_opt_no_reponse_cmd_null_flush_threshold(5000).
+
+T = lingofuse:get_opt_wait_connection_timeout().   %% => 30000
+```
+
+**字符串选项**：
+
+```erlang
+lingofuse:set_opt_password(<<"my_secret">>).
+lingofuse:set_opt_p2p_name(<<"workers">>).
+
+P = lingofuse:get_opt_p2p_name().     %% => <<"workers">>
+```
+
+**布尔线格式**：只有 `"True"`、`"true"`、`"TRUE"` 被 C 侧识别为 true；其它一律视为 false。Erlang getter 更宽松（也接受 `"1"`、`"Yes"`、`"on"`），但那只对**手工写入**的选项值有意义。
+
+**`get_opt_password/0` 返回掩码**：native 库始终返回固定掩码 `"********"`，不暴露真实密码。
+
+**`get_opt_debug/0` 返回占位符**：debug 是只写选项。
+
+### 6.6 同步回调契约
+
+- 同步回调**必须**由**发起调用的进程之外的另一个进程**处理。如果同一进程既发起调用又处理回调，会死锁：调用方阻塞在 NIF 内部，无法接收回调消息。
+- **推荐模式**：把同步回调注册到独立的 server 进程。
+- 同步超时后到达的回复返回 `{error, unknown_ref}`；调用者应忽略或仅记日志。
+- 同步超时是**进程级**设置，默认 30 秒，用 `set_sync_timeout/1` 配置。低于 100 ms 的值会被钳制到 100 ms。
+- 回复延迟上界为轮询间隔（5 ms）。NIF API 没有提供 `enif_cond_timedwait`，所以同步桥用短睡眠循环轮询。
+
+### 6.7 回调线程
+
+- Call、Notify、异步结果和网络事件回调都运行在 LingoFuse 库自有的原生工作线程上，**不是** BEAM 调度线程。
+- **不要在回调中调用阻塞型 LingoFuse 函数。** 从回调里调用 `call/2`、`local_call/2`、`prepare_done/0` 或 `shutdown/0` 会让整个 LingoFuse mesh 死锁。
 - 耗时工作应转交给独立的 Erlang 进程。回调应尽快返回。
 
-### 6.4 网络事件
+### 6.8 网络事件
 
 ```erlang
 ok = lingofuse:set_network_event(ConnectPid, DisconnectPid).
@@ -397,34 +568,29 @@ ok = lingofuse:set_network_event(ConnectPid, DisconnectPid).
 
 - **Connect** 在客户端首次收到服务 API 信息广播时触发，**不是** TCP 握手。
 - **Disconnect** 每次物理链路断开时触发一次。
-- 两个回调都运行在后台工作线程。
+- 两个回调都运行在后台工作线程，消息格式：`{lf_connect, Addr}` / `{lf_disconnect, Addr}`。
 - 传 `undefined` 可禁用对应的回调。
 
-### 6.5 句柄生命周期
+### 6.9 句柄生命周期
 
-- `create_data/1` 创建自动回收句柄。库会在空闲 10 分钟后释放（每 5 秒
-  扫描一次）。
+- `create_data/1` 创建自动回收句柄。库会在空闲 10 分钟后释放（每 5 秒扫描一次）。
 - `create_data_permanent/1` 创建永不自动回收的句柄。必须显式释放。
 - 两种句柄都会在 `shutdown/0` 时释放。
 - `free_data/1` 是幂等的。
 
-### 6.6 应用生命周期
+### 6.10 应用生命周期
 
 - `create_app/2` 在全局池中创建应用。
-- `free_app/1` 把应用从所有客户端解绑，并停止它的顺序线程。底层对象
-  保留在全局池中直到 `shutdown/0` 运行。
+- `free_app/1` 把应用从所有客户端解绑，并停止它的顺序线程。底层对象保留在全局池中直到 `shutdown/0` 运行。
 - 调用 `free_app/1` 后句柄失效。
 
-### 6.7 每个进程只能启动一次
+### 6.11 每个进程只能启动一次
 
-`prepare_done/0` 只在第一次调用时返回 `1`。在同一进程内再次调用
-（中间没有 `shutdown/0`）会返回 `0`。这是文档化行为，不是失败。
+`prepare_done/0` 只在第一次调用时返回 `1`。在同一进程内再次调用（中间没有 `shutdown/0`）会返回 `0`。这是文档化行为，不是失败。
 
-### 6.8 地址唯一性
+### 6.12 地址唯一性
 
-默认情况下，每个物理地址只能承载**一个**客户端。对同一地址再次调用
-`prepare_client/2` 会返回 `-1`。在准备客户端之前设置
-`Overlap_Connection=True` 可以允许同一地址上有多个客户端。
+默认情况下，每个物理地址只能承载**一个**客户端。对同一地址再次调用 `prepare_client/2` 会返回 `-1`。在准备客户端之前设置 `Overlap_Connection=True` 可以允许同一地址上有多个客户端。
 
 ---
 
@@ -451,7 +617,7 @@ run() ->
 loop() ->
     receive
         {lf_call, Ref, <<"echo">>, Payload} ->
-            ok = lingofuse:reply(Ref, Payload),
+            _ = lingofuse:reply(Ref, Payload),
             loop();
         stop ->
             lingofuse:shutdown()
@@ -489,10 +655,84 @@ wait_for_app(Name, Remaining) ->
     end.
 ```
 
-### 7.3 Cross 演示
+### 7.3 异步调用（推荐用于大部分场景）
 
-`cross/` 下的三个脚本与 C++ / C# / Python / JavaScript 的 Cross 演示
-逐字节互通，可以与任意其他语言的 Cross 演示互操作：
+```erlang
+-module(async_demo).
+-export([run/1]).
+
+run(AppName) ->
+    %% 一次调用，一个回调，无 pid / Ref / 清理。
+    ok = lingofuse:async_call(
+           AppName, <<"echo">>, #{<<"msg">> => <<"hello">>},
+           fun(Result) ->
+               case Result of
+                   {ok, Bin} ->
+                       Parsed = lingofuse_json:loads(Bin),
+                       io:format("Reply: ~p~n", [Parsed]);
+                   {error, Reason} ->
+                       io:format("Failed: ~p~n", [Reason])
+               end
+           end),
+    ok.
+```
+
+`async_call/4` 立即返回 `ok`，实际业务在独立 worker 里跑。
+
+### 7.4 UID 定向寻址
+
+使用 whoami 模式探测自己的 UID，然后可以用 UID 精准调用它注册的任何 API。
+
+**服务端**：
+
+```erlang
+handle_whoami(Ref, _Payload, Identity) ->
+    UID  = maps:get(uid, Identity),
+    Name = maps:get(p2p_name, Identity),
+    Reply = lingofuse_json:dumps(#{
+        <<"uid_hex">>  => binary:encode_hex(UID),
+        <<"p2p_name">> => Name
+    }),
+    _ = lingofuse:reply(Ref, Reply).
+```
+
+**客户端**：
+
+```erlang
+{ok, Req} = lingofuse:create_data(<<"whoami">>),
+ok = lingofuse_json:write_json(Req, #{}),
+{ok, Res} = lingofuse:call(<<"SomeApp">>, Req, 5000),
+lingofuse:free_data(Req),
+Reply    = lingofuse_json:read_json(Res),
+UIDHex   = maps:get(<<"uid_hex">>, Reply),
+MyUID    = binary:decode_hex(UIDHex),
+lingofuse:free_data(Res),
+
+%% 之后可以用 UID 定向调用自己
+{ok, P2} = lingofuse:create_data(<<"ping">>),
+ok = lingofuse_json:write_json(P2, #{}),
+{ok, R2} = lingofuse:uid_call(MyUID, P2, 3000),
+lingofuse:free_data(P2),
+lingofuse:free_data(R2).
+```
+
+### 7.5 P2PName 组寻址
+
+```erlang
+%% 声明自己属于 "workers" 组
+ok = lingofuse:set_opt_p2p_name(<<"workers">>),
+%% ... prepare_done 之后 ...
+
+%% 其它客户端可以按组调用（由服务端做负载均衡）
+{ok, Req} = lingofuse:create_data(<<"process">>),
+ok = lingofuse_json:write_json(Req, #{<<"job">> => 42}),
+{ok, Res} = lingofuse:p2pname_call(<<"workers">>, Req, 5000),
+...
+```
+
+### 7.6 Cross 演示
+
+`cross/` 下的三个脚本与 C++ / C# / Python / JavaScript 的 Cross 演示逐字节互通，可以与任意其他语言的 Cross 演示互操作：
 
 ```bash
 # 终端 1：协调者（信标）
@@ -558,13 +798,11 @@ your_project/
 ]}.
 ```
 
-依赖自身的 `rebar.config` 里的 `pre_hook` 会把它的 NIF 编译到它自己的
-`priv/`，你的项目不需要做额外工作。
+依赖自身的 `rebar.config` 里的 `pre_hook` 会把它的 NIF 编译到它自己的 `priv/`，你的项目不需要做额外工作。
 
 ### 8.3 方案 C —— 只嵌入 NIF，直接调用 ABI
 
-如果你已经有完整的 OTP release 并希望完全控制，可以自行编译 NIF 并用
-`erlang:load_nif/2` 加载：
+如果你已经有完整的 OTP release 并希望完全控制，可以自行编译 NIF 并用 `erlang:load_nif/2` 加载：
 
 1. 把 `c_src/*.c` 编译成 `priv/lingofuse_nif.{dll,so}`。
 2. 把 `lingofuse_nif.beam` 加入代码路径。
@@ -584,21 +822,17 @@ your_project/
 
 生产环境启动 BEAM 之前，确认：
 
-- [ ] LingoFuse 运行时库已放到 `PATH` / `LD_LIBRARY_PATH` /
-      `DYLD_LIBRARY_PATH`。
+- [ ] LingoFuse 运行时库已放到 `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`。
 - [ ] 它的依赖（`z_ipc_*.dll`、`libz_ipc.so`、分配器）在同一搜索路径上。
 - [ ] `priv/lingofuse_nif.{dll,so}` 已存在。
 - [ ] `LINGOFUSE_SKIP_NIF` **未**被设置（除非你刻意分发预编译 NIF）。
-- [ ] 应用启动时调用 `lingofuse:ensure_loaded/0`，并在返回
-      `{error, lf_not_loaded}` 时快速失败。
+- [ ] 应用启动时调用 `lingofuse:ensure_loaded/0`，并在返回 `{error, lf_not_loaded}` 时快速失败。
 
 ---
 
 ## 9. 编译 NIF（c_src）
 
-NIF 是一个 C11 共享库，把 LingoFuse 的 C ABI 暴露给 BEAM。它由
-`c_src/build.escript` 构建，`rebar.config` 的 `pre_hooks` 会让
-`rebar3 compile` 自动调用它。
+NIF 是一个 C11 共享库，把 LingoFuse 的 59 个 C ABI 导出暴露给 BEAM。它由 `c_src/build.escript` 构建，`rebar.config` 的 `pre_hooks` 会让 `rebar3 compile` 自动调用它。
 
 ### 9.1 build.escript 做什么
 
@@ -620,8 +854,7 @@ flowchart TD
     style Z2 fill:#2ECC71,stroke:#1E8449,color:#FFFFFF
 ```
 
-脚本不硬编码任何路径。项目根目录与 erts include 目录都从
-`escript:script_name()` 和运行的 VM 推导，所以在所有平台上行为一致。
+脚本不硬编码任何路径。项目根目录与 erts include 目录都从 `escript:script_name()` 和运行的 VM 推导，所以在所有平台上行为一致。
 
 ### 9.2 编译器检测顺序
 
@@ -634,8 +867,7 @@ flowchart TD
 | 3 | `cc` | POSIX 通用别名 |
 | 4 | `cl` | MSVC，仅 Windows，作为最后兜底 |
 
-`gcc` 和 `clang` 优先，因为它们产出的 NIF 在所有 OTP 构建上都能加载，
-无需额外配置。MSVC 是备选，产出的 DLL 运行时行为等价。
+`gcc` 和 `clang` 优先，因为它们产出的 NIF 在所有 OTP 构建上都能加载，无需额外配置。MSVC 是备选，产出的 DLL 运行时行为等价。
 
 ### 9.3 平台矩阵
 
@@ -648,14 +880,9 @@ flowchart TD
 | macOS (x64 / arm64) | `clang` | `-bundle -undefined dynamic_lookup` | `priv/lingofuse_nif.so` |
 | FreeBSD / OpenBSD | `clang` 或 `cc` | `-shared` | `priv/lingofuse_nif.so` |
 
-**macOS 注意。** macOS 上的 NIF 是一个 *bundle*，不是共享库，
-`erl_*` / `enif_*` 符号由 BEAM 在加载时解析。必须使用
-`-bundle -undefined dynamic_lookup`；单纯用 `-shared` 会加载失败。
+**macOS 注意。** macOS 上的 NIF 是一个 *bundle*，不是共享库，`erl_*` / `enif_*` 符号由 BEAM 在加载时解析。必须使用 `-bundle -undefined dynamic_lookup`；单纯用 `-shared` 会加载失败。
 
-**Windows / MSVC 注意。** `cl.exe` 必须在 "x64 Native Tools Command
-Prompt for VS" 中调用。脚本还会查找
-`erts-<ver>/lib/erl_nif.lib` 并链接（若存在）；找不到则依赖运行时
-符号解析——这与 gcc/clang 路径的行为一致。
+**Windows / MSVC 注意。** `cl.exe` 必须在 "x64 Native Tools Command Prompt for VS" 中调用。脚本还会查找 `erts-<ver>/lib/erl_nif.lib` 并链接（若存在）；找不到则依赖运行时符号解析——这与 gcc/clang 路径的行为一致。
 
 ### 9.4 环境变量
 
@@ -692,8 +919,7 @@ Makefile 支持以下覆盖：
 | `CC` | `cc` | 使用的 C 编译器 |
 | `CFLAGS` | `-O2 -Wall -Wextra -fPIC -std=c11` | 编译标志 |
 
-Makefile **不**支持 MSVC 的 `nmake`。Windows 上请用 MSYS2 的
-`mingw32-make`，或改用 `build.escript`。
+Makefile **不**支持 MSVC 的 `nmake`。Windows 上请用 MSYS2 的 `mingw32-make`，或改用 `build.escript`。
 
 ### 9.6 验证构建
 
@@ -722,8 +948,7 @@ NIF 加载时会向 stderr 打印诊断。成功加载长这样：
 [lingofuse_nif] LingoFuse library loaded (platform=Windows 64-bit, file=LingoFuse64.dll)
 ```
 
-如果找不到 LingoFuse 运行时，第二行会变成多行诊断，指明期望的文件名
-和平台。
+如果找不到 LingoFuse 运行时，第二行会变成多行诊断，指明期望的文件名和平台。
 
 ### 9.7 扩展 NIF
 
@@ -743,7 +968,7 @@ static ErlNifFunc nif_funcs[] = {
 3. 在 `src/lingofuse_nif.erl` 中加同 arity 的存根。
 4. 若属于公共 API，在 `src/lingofuse.erl` 中导出包装。
 
-现有 37 个导出全部遵循这一模式，可作为模板参考。
+现有 62 个 NIF 入口全部遵循这一模式，可作为模板参考。
 
 ---
 
@@ -755,8 +980,7 @@ LingoFuse 数据句柄上的 JSON 载荷是：
 [UTF-8 JSON 文本][NUL 字节]
 ```
 
-逻辑载荷 `{"a":1}` 对应字节序列 `7B 22 61 22 3A 31 7D 00`，
-与其它所有绑定完全一致：
+逻辑载荷 `{"a":1}` 对应字节序列 `7B 22 61 22 3A 31 7D 00`，与其它所有绑定完全一致：
 
 | 绑定 | `{"a":1}` 的字节 |
 |------|------------------|
@@ -768,8 +992,7 @@ LingoFuse 数据句柄上的 JSON 载荷是：
 | JavaScript | same |
 | **Erlang** | **same** |
 
-非 ASCII 字符以字面 UTF-8 传输。任何绑定都不会对可以直接写出的字符
-发出 `\uXXXX` 转义。
+非 ASCII 字符以字面 UTF-8 传输。任何绑定都不会对可以直接写出的字符发出 `\uXXXX` 转义。
 
 所有 JSON 都经过 `lingofuse_json`：
 
@@ -790,27 +1013,197 @@ Term | Bin | undefined = lingofuse_json:read_json_or_bytes(Hnd).
 
 ---
 
-## 11. 已知限制
+## 11. API 速查
 
-- **默认每个地址只能有一个客户端。** 在 `prepare_client/2` 之前设置
-  `Overlap_Connection=True` 可以允许同一物理地址上有多个客户端。
-- **回调中不得调用阻塞型 LingoFuse 函数。** 从 Call 或 Notify 回调
-  里调用 `call/2`、`local_call/2`、`prepare_done/0` 或 `shutdown/0`
-  会让整个 mesh 死锁。
-- **NIF 崩溃会拖垮 BEAM 节点。** C 桥中的任何 bug 都会摧毁整个运行
-  时。上线前请在隔离环境测试新功能。
-- **同步 Call 延迟受轮询间隔限制。** 同步桥使用 5 ms 轮询循环
-  （NIF API 没有提供 `enif_cond_timedwait`）。回复延迟因此最多 5 ms。
-- **`set_sync_timeout/1` 是进程级的。** 所有挂起的同步调用共享一个
-  超时值。
-- **MSVC 构建需要 Native Tools 命令提示符。** `cl.exe` 不在普通 shell
-  的 `PATH` 上。请用 "x64 Native Tools Command Prompt for VS"，或用
-  `vcvarsall.bat` 配置环境。
-- **`build.escript` 不强制指定编译器。** 若需要特定编译器，把其它
-  编译器从 `PATH` 中移除，或按 §9.3 的参数手动调用。
+### 11.1 数据句柄（10）
+
+```erlang
+create_data/1
+create_data_permanent/1
+free_data/1
+write_buffer/2, read_buffer/2
+get_buffer/1
+get_pos/1, set_pos/2
+get_size/1, set_size/2
+```
+
+### 11.2 应用句柄（5）
+
+```erlang
+create_app/1, create_app/2
+free_app/1
+generate_app_name/0
+get_app_name/1
+bind_app/1
+```
+
+### 11.3 API 注册，App 级（7）
+
+```erlang
+register_call/4            %% 异步模式
+register_call/5            %% + Options (#{with_identity => true})
+register_call_sync/4       %% 同步模式
+register_call_sync/5       %% + Options
+register_notify/4
+register_notify/5
+unregister/2
+```
+
+### 11.4 API 注册，进程级 P2P（7）
+
+```erlang
+register_p2p_call/3, register_p2p_call/4
+register_p2p_call_sync/3, register_p2p_call_sync/4
+register_p2p_notify/3, register_p2p_notify/4
+unregister_p2p/1
+```
+
+### 11.5 同步回调桥（3）
+
+```erlang
+reply/2
+set_sync_timeout/1
+get_sync_timeout/0
+```
+
+### 11.6 本地执行（2）
+
+```erlang
+local_call/2, local_notify/2
+```
+
+### 11.7 网络准备（6）
+
+```erlang
+reset_prepare/0
+prepare_service/2
+prepare_client/1, prepare_client/2
+prepare_done/0
+exit_main_thread/0
+```
+
+### 11.8 远程调用，App 名（4）
+
+```erlang
+call/2, call/3
+notify/2
+sequenced_notify/2
+```
+
+### 11.9 远程调用，UID（4）
+
+```erlang
+uid_call/2, uid_call/3
+uid_notify/2
+uid_sequenced_notify/2
+```
+
+### 11.10 远程调用，P2PName（4）
+
+```erlang
+p2pname_call/2, p2pname_call/3
+p2pname_notify/2
+p2pname_sequenced_notify/2
+```
+
+### 11.11 异步调用，高级形式（12）
+
+```erlang
+async_call/4, async_call/5
+async_call_seq/4, async_call_seq/5
+async_uid_call/4, async_uid_call/5
+async_uid_call_seq/4, async_uid_call_seq/5
+async_p2pname_call/4, async_p2pname_call/5
+async_p2pname_call_seq/4, async_p2pname_call_seq/5
+```
+
+### 11.12 异步调用，Raw 形式（6）
+
+```erlang
+async_call_raw/3
+async_call_seq_raw/3
+async_uid_call_raw/3
+async_uid_call_seq_raw/3
+async_p2pname_call_raw/3
+async_p2pname_call_seq_raw/3
+```
+
+### 11.13 通用选项（2）
+
+```erlang
+set_option/2
+get_option/1
+```
+
+### 11.14 类型化选项（16 对）
+
+```erlang
+set_opt_password/1, get_opt_password/0
+set_opt_debug/1, get_opt_debug/0
+set_opt_quiet/1, get_opt_quiet/0
+set_opt_show_thread_id/1, get_opt_show_thread_id/0
+set_opt_console_output/1, get_opt_console_output/0
+set_opt_overlap_connection/1, get_opt_overlap_connection/0
+set_opt_wait_connection_ready_ok/1, get_opt_wait_connection_ready_ok/0
+set_opt_wait_connection_timeout/1, get_opt_wait_connection_timeout/0
+set_opt_ipc_serv_thread_count/1, get_opt_ipc_serv_thread_count/0
+set_opt_ipc_serv_max_queue_length/1, get_opt_ipc_serv_max_queue_length/0
+set_opt_ipc_serv_max_msg_size/1, get_opt_ipc_serv_max_msg_size/0
+set_opt_fixed_sequenced_time/1, get_opt_fixed_sequenced_time/0
+set_opt_p2p_name/1, get_opt_p2p_name/0
+set_opt_data_handle_idle_timeout/1, get_opt_data_handle_idle_timeout/0
+set_opt_data_handle_pool_scan_interval/1, get_opt_data_handle_pool_scan_interval/0
+set_opt_no_reponse_cmd_null_flush_threshold/1, get_opt_no_reponse_cmd_null_flush_threshold/0
+```
+
+### 11.15 诊断与状态（4）
+
+```erlang
+post_status/1
+get_status/0
+get_status_count/0
+check_main_thread/0
+```
+
+### 11.16 查询（7）
+
+```erlang
+check_app/1
+check_api/2
+check_uid/1
+check_uid_api/2
+check_p2pname/1
+check_p2pname_api/2
+```
+
+### 11.17 关闭与网络事件（2）
+
+```erlang
+shutdown/0
+set_network_event/2
+```
 
 ---
 
-## 12. 许可证
+## 12. 已知限制
+
+- **默认每个地址只能有一个客户端。** 在 `prepare_client/2` 之前设置 `Overlap_Connection=True` 可以允许同一物理地址上有多个客户端。
+- **回调中不得调用阻塞型 LingoFuse 函数。** 从 Call 或 Notify 回调里调用 `call/2`、`local_call/2`、`prepare_done/0` 或 `shutdown/0` 会让整个 mesh 死锁。
+- **同步回调必须由独立进程处理。** 同一进程既发起调用又处理回调会死锁。
+- **NIF 崩溃会拖垮 BEAM 节点。** C 桥中的任何 bug 都会摧毁整个运行时。上线前请在隔离环境测试新功能。
+- **同步 Call 延迟受轮询间隔限制。** 同步桥使用 5 ms 轮询循环（NIF API 没有提供 `enif_cond_timedwait`）。回复延迟因此最多 5 ms。
+- **`set_sync_timeout/1` 是进程级的。** 所有挂起的同步调用共享一个超时值。
+- **异步调用无 C 侧取消。** `async_*` 系列在 Erlang 侧的超时只是停止等待；C 侧请求仍在飞行，其后续结果会被静默丢弃。
+- **`check_uid` / `check_p2pname` 有 ~3 秒广播延迟。** 刚注册的 UID 或组名在短时间内可能返回 `false`，请配合重试。
+- **Side Data 只在回调的 Input 句柄上有效。** 对自建句柄或 Output 句柄调用 `getP2PUid` / `getP2PName` 会返回全零 / 空值。
+- **`get_opt_password/0` 返回固定掩码。** native 库不暴露真实密码。
+- **`get_opt_debug/0` 返回占位符。** debug 是只写选项。
+- **MSVC 构建需要 Native Tools 命令提示符。** `cl.exe` 不在普通 shell 的 `PATH` 上。请用 "x64 Native Tools Command Prompt for VS"，或用 `vcvarsall.bat` 配置环境。
+- **`build.escript` 不强制指定编译器。** 若需要特定编译器，把其它编译器从 `PATH` 中移除，或按 §9.3 的参数手动调用。
+- **UID 不能直接放入 JSON。** 32 字节 UID 是任意二进制，通常不是合法 UTF-8。传输时请用 `binary:encode_hex/1` 编码为 64 字符 hex 字符串。
+
+---
+
+## 13. 许可证
 
 MIT。见 `LICENSE`。

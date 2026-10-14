@@ -2,7 +2,7 @@
 ========================================================================
   LingoFuse Erlang Binding - Environment Report
 ========================================================================
-         Generated       : 2026-10-04 14:47:00
+         Generated       : 2026-10-14 22:22:59
          Script path     : D:\CoreLibrary\LingoFuse\erlang\check_env.ps1
          Script dir      : D:\CoreLibrary\LingoFuse\erlang
          Report file     : D:\CoreLibrary\LingoFuse\erlang\check_env_report.txt
@@ -66,13 +66,15 @@
 ========================================================================
   6. LingoFuse runtime library
 ========================================================================
-  [OK]   2 runtime library file(s) found on PATH
-         D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll  (2924032 bytes, 2026-10-01 14:14:02)
-         D:\CoreLibrary\LingoFuse\Binary\LingoFuse32.dll  (2278912 bytes, 2026-10-01 14:13:47)
-  [OK]   2 IPC dependency file(s) found on PATH
+  [OK]   3 runtime library file(s) found on PATH
+         C:\Ruby40-x64\bin\LingoFuse64.dll  (2924032 bytes, 2026-10-14 00:44:27)
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll  (2924032 bytes, 2026-10-14 00:44:27)
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse32.dll  (2275328 bytes, 2026-10-14 00:44:13)
+  [OK]   3 IPC dependency file(s) found on PATH
+         C:\Ruby40-x64\bin\z_ipc_64.dll  (258048 bytes, 2026-08-26 22:40:32)
          D:\CoreLibrary\LingoFuse\Binary\z_ipc_64.dll  (258048 bytes, 2026-08-26 22:40:32)
          D:\CoreLibrary\LingoFuse\Binary\z_ipc_32.dll  (235520 bytes, 2026-08-26 22:42:44)
-         2 mimalloc file(s) found on PATH (optional)
+         3 mimalloc file(s) found on PATH (optional)
 
 ========================================================================
   7. Project layout
@@ -85,8 +87,8 @@
   [OK]   test/ present
   [OK]   c_src/ present
   [OK]   cross/ present
-  [OK]   priv/ present
-  [OK]   _build/ present
+  [SKIP] priv/ not present (optional)
+  [SKIP] _build/ not present (optional)
 
 ========================================================================
   8. Source files
@@ -117,34 +119,35 @@
 ========================================================================
   9. NIF build state
 ========================================================================
-  [OK]   NIF present: D:\CoreLibrary\LingoFuse\erlang\priv\lingofuse_nif.dll  (69262 bytes, 2026-10-04 14:37:50)
-  [OK]   _build ebin present with 5 .beam file(s)
+  [WARN] No NIF binary found under priv/
+         Run ".\build.ps1" (or ".\rebar3.cmd compile") to build it.
+  [SKIP] _build ebin not present (project has not been compiled yet)
          Dialyzer PLT    : not built yet
-         dialyzer warnings file exists: D:\CoreLibrary\LingoFuse\erlang\_build\default\29.1.1.dialyzer_warnings
 
 ========================================================================
   10. Environment variables
 ========================================================================
          (no LingoFuse-specific environment variables set)
          
-         PATH entries    : 76
+         PATH entries    : 80
            [0] C:\Program Files\PowerShell\7
-           [1] c:\Users\Administrator\.vscode\extensions\vadimcn.vscode-lldb-1.12.2\bin
-           [2] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\debugCommand
-           [3] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\copilotCli
+           [1] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\debugCommand
+           [2] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\copilotCli
+           [3] c:\Users\Administrator\.vscode\extensions\vadimcn.vscode-lldb-1.12.2\bin
            [4] C:\Ruby40-x64\bin
-           ... and 71 more
+           ... and 75 more
 
 ========================================================================
   11. Summary
 ========================================================================
 
-  Checks passed   : 21
-  Warnings        : 0
+  Checks passed   : 17
+  Warnings        : 1
   Failures        : 0
-  Skipped         : 1
+  Skipped         : 4
 
-  Result: environment is ready.
+  Result: environment is usable, with warnings.
+          Review the [WARN] lines above.
 
 ========================================================================
   12. How to share this report

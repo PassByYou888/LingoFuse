@@ -28,9 +28,26 @@
  * `koffi.unregister` on it when the API is unregistered or when the
  * AppHandle is disposed.
  *
- * Failing to unregister on dispose would leave the native library
- * holding a pointer to a Koffi trampoline that may be collected at any
- * moment, resulting in a crash on the next invocation.
+ * REPLACEMENT / RELEASE ORDER (important):
+ * The native library holds a RAW FUNCTION POINTER to each installed
+ * trampoline. The Koffi registration and the native registration have
+ * separate lifetimes, and the native side must always be told to drop
+ * its reference BEFORE the Koffi registration is released:
+ *
+ *   unregister(apiName):
+ *       1. LF_Unregister(handle, apiName)   -> native drops the pointer
+ *       2. koffi.unregister(bridge)         -> release the trampoline
+ *
+ *   dispose():
+ *       1. LF_FreeApp(handle)               -> native drops every pointer
+ *       2. koffi.unregister(bridge)*        -> release the trampolines
+ *
+ * Reversing either order would leave the native library holding a
+ * pointer to a freed Koffi trampoline for the duration of the native
+ * call. Any callback arriving in that window would jump to freed
+ * memory and crash the process. Failing to release at all would leak
+ * the Koffi trampoline object and its backing libuv handle, which
+ * keeps the Node event loop alive.
  *
  * CALLBACK EXCEPTION POLICY
  * -------------------------
@@ -281,20 +298,33 @@ class AppHandle {
             koffi.pointer(LfCallFunc)
         );
 
-        const result = this.#funcs.LF_RegisterCall(
-            this.#handle,
-            apiName,
-            desc,
-            null,
-            bridge
-        );
+        let result;
+        try {
+            result = this.#funcs.LF_RegisterCall(
+                this.#handle,
+                apiName,
+                desc,
+                null,
+                bridge
+            );
+        } catch (err) {
+            // The native call threw before accepting the bridge. The
+            // bridge was never handed to the native library, so it is
+            // safe (and required) to release it here.
+            try {
+                koffi.unregister(bridge);
+            } catch (_) {
+                // Best-effort cleanup.
+            }
+            throw err;
+        }
 
         if (result === 1) {
             this.#registrations.set(key, bridge);
             return true;
         }
 
-        // Registration failed (most likely a duplicate name). The
+        // Registration rejected (most likely a duplicate name). The
         // bridge has not been handed to the native library, so we can
         // safely unregister it now.
         try {
@@ -345,13 +375,23 @@ class AppHandle {
             koffi.pointer(LfNotifyFunc)
         );
 
-        const result = this.#funcs.LF_RegisterNotify(
-            this.#handle,
-            apiName,
-            desc,
-            null,
-            bridge
-        );
+        let result;
+        try {
+            result = this.#funcs.LF_RegisterNotify(
+                this.#handle,
+                apiName,
+                desc,
+                null,
+                bridge
+            );
+        } catch (err) {
+            try {
+                koffi.unregister(bridge);
+            } catch (_) {
+                // Best-effort cleanup.
+            }
+            throw err;
+        }
 
         if (result === 1) {
             this.#registrations.set(key, bridge);
@@ -370,6 +410,15 @@ class AppHandle {
      * Unregisters a previously registered API. Local effect is
      * immediate; a network broadcast propagates within a few seconds.
      *
+     * Release order:
+     *   1. LF_Unregister(handle, apiName)  -> native drops the pointer
+     *   2. koffi.unregister(bridge)        -> release the trampoline
+     *
+     * The native call MUST complete first. Releasing the Koffi
+     * trampoline while the native library still holds a pointer to it
+     * would leave the native side with a dangling function pointer for
+     * the duration of the LF_Unregister call.
+     *
      * @param {string} apiName
      * @returns {boolean}
      *   true if the API was found and removed, false otherwise.
@@ -383,9 +432,13 @@ class AppHandle {
         this.#ensureNotDisposed();
 
         const key = apiName.toLowerCase();
+
+        // Step 1: tell the native library to drop the API. Only after
+        // this call returns is it safe to release the Koffi trampoline.
         const result = this.#funcs.LF_Unregister(this.#handle, apiName);
 
         if (result === 1) {
+            // Step 2: release the trampoline.
             const bridge = this.#registrations.get(key);
             this.#registrations.delete(key);
             if (bridge) {
@@ -478,6 +531,21 @@ class AppHandle {
      * threads are stopped. The underlying native object remains in the
      * global pool until LF_Shutdown is called.
      *
+     * Release order (see the file header for the rationale):
+     *   1. LF_FreeApp(handle)          -> native drops every pointer
+     *   2. koffi.unregister(bridge)*   -> release every trampoline
+     *
+     * The native call MUST run first. Releasing the Koffi trampolines
+     * before LF_FreeApp would leave the native library holding dangling
+     * function pointers for the duration of the FreeApp call (which
+     * detaches clients, stops sequenced threads and removes the update
+     * timer); any callback that fires in that window would jump to
+     * freed memory.
+     *
+     * Even if LF_FreeApp raises, the trampolines are still released in
+     * a finally-equivalent path so that no libuv handle is leaked and
+     * the Node event loop can drain.
+     *
      * Safe to call multiple times. After the first call, all methods
      * that require a live handle throw LingoFuseObjectDisposedError.
      */
@@ -487,23 +555,37 @@ class AppHandle {
         }
         this.#disposed = true;
 
-        // Unregister every Koffi trampoline first. This prevents the
-        // native library from calling back into user code through a
-        // pointer that may soon be collected.
+        // Capture and clear the mutable state up front. Re-entrant
+        // calls from a callback body will observe an already-disposed
+        // handle and return immediately.
+        const handle = this.#handle;
+        this.#handle = null;
+
         const bridges = Array.from(this.#registrations.values());
         this.#registrations.clear();
+
+        // Step 1: detach the application on the native side. After
+        // this call returns, the native library no longer holds any
+        // pointer to the Koffi trampolines registered through this
+        // handle.
+        if (handle !== null && handle !== undefined) {
+            try {
+                this.#funcs.LF_FreeApp(handle);
+            } catch (_) {
+                // LF_FreeApp has no documented failure mode, but a
+                // throwing native call must not prevent us from
+                // releasing the Koffi registrations below.
+            }
+        }
+
+        // Step 2: release the Koffi trampolines now that the native
+        // library no longer references them.
         for (const bridge of bridges) {
             try {
                 koffi.unregister(bridge);
             } catch (_) {
                 // Best-effort cleanup.
             }
-        }
-
-        const handle = this.#handle;
-        this.#handle = null;
-        if (handle !== null && handle !== undefined) {
-            this.#funcs.LF_FreeApp(handle);
         }
     }
 

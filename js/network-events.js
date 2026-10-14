@@ -59,17 +59,33 @@
  * unloading the binding to release the Koffi callback registrations.
  *
  * ============================================================================
- * DELEGATE LIFETIME
+ * DELEGATE LIFETIME AND REPLACEMENT ORDER
  * ============================================================================
  * Koffi callbacks must be registered with `koffi.register` to remain
  * valid for the lifetime of the native registration. This module keeps
- * the registered pointers in module-level variables, and calls
- * `koffi.unregister` on them when the handlers are replaced or
- * cleared.
+ * the registered pointers in module-level variables, and releases them
+ * with `koffi.unregister` when the handlers are replaced or cleared.
  *
- * Failing to unregister would leave the native library holding a
- * pointer to a Koffi trampoline that may be collected at any moment,
- * resulting in a crash on the next invocation.
+ * REPLACEMENT ORDER (important):
+ * The native library holds a raw function pointer to each installed
+ * trampoline. When setNetworkEvent() replaces the handlers, the new
+ * trampolines must be installed on the native side BEFORE the old ones
+ * are released. The sequence implemented here is:
+ *
+ *   1. Build the new trampolines (Koffi registration only; the native
+ *      slot is not yet touched).
+ *   2. Call LF_Set_Network_Event with the new pointers. The native
+ *      slot now points at the new trampolines.
+ *   3. Publish the new trampolines to module state.
+ *   4. Release the old trampolines via koffi.unregister.
+ *
+ * Reversing steps 2 and 4 (releasing before the native swap) would
+ * leave the native side holding a pointer to a freed trampoline for
+ * the duration of the swap window. A connect/disconnect event arriving
+ * in that window would jump to freed memory and crash the process.
+ *
+ * Failing to release at all would leak the Koffi trampoline object and
+ * its backing libuv handle, which keeps the Node event loop alive.
  *
  * ============================================================================
  * USAGE
@@ -184,12 +200,24 @@ function buildTrampoline(source, userHandler) {
  * any previously installed handlers, even those whose corresponding
  * argument is null in the new call.
  *
+ * The replacement is performed in the order described in the file
+ * header: build new, install on the native side, publish to module
+ * state, then release the old trampolines. See the DELEGATE LIFETIME
+ * AND REPLACEMENT ORDER section above.
+ *
+ * If the native install call throws, the newly built trampolines are
+ * released immediately (they were never installed) and the module
+ * state is left unchanged; the previous trampolines remain installed
+ * and registered.
+ *
  * @param {((addr: string) => void) | null} onConnect
  *   Handler invoked when a client becomes online. May be null.
  * @param {((addr: string) => void) | null} onDisconnect
  *   Handler invoked when a client goes offline. May be null.
  * @throws {TypeError}
  *   When either argument is neither a function nor null.
+ * @throws {*}
+ *   Any error raised by the native LF_Set_Network_Event call.
  */
 function setNetworkEvent(onConnect, onDisconnect) {
     if (onConnect !== null && typeof onConnect !== "function") {
@@ -203,29 +231,20 @@ function setNetworkEvent(onConnect, onDisconnect) {
         );
     }
 
-    // Unregister the previous trampolines before installing the new
-    // ones. If the native call below fails we do NOT want to leave
-    // stale Koffi registrations behind.
+    // Capture the currently installed trampolines. They stay alive
+    // (and remain registered with Koffi) until the native side has
+    // been told to use the new ones, so that a connect/disconnect
+    // event arriving during this window never reaches a freed
+    // trampoline.
     const oldConnect = _connectTrampoline;
     const oldDisconnect = _disconnectTrampoline;
-    _connectTrampoline = null;
-    _disconnectTrampoline = null;
 
-    if (oldConnect) {
-        try {
-            koffi.unregister(oldConnect);
-        } catch (_) {
-            // Best-effort cleanup.
-        }
-    }
-    if (oldDisconnect) {
-        try {
-            koffi.unregister(oldDisconnect);
-        } catch (_) {
-            // Best-effort cleanup.
-        }
-    }
-
+    // -----------------------------------------------------------------
+    // Step 1: build the new trampolines.
+    //
+    // Building does not touch the native slot; it only creates new
+    // Koffi callback registrations.
+    // -----------------------------------------------------------------
     const newConnect =
         onConnect === null
             ? null
@@ -235,14 +254,63 @@ function setNetworkEvent(onConnect, onDisconnect) {
             ? null
             : buildTrampoline("NetworkEvents.disconnect", onDisconnect);
 
-    funcs().LF_Set_Network_Event(newConnect, newDisconnect);
+    // -----------------------------------------------------------------
+    // Step 2: install the new trampolines on the native side.
+    //
+    // If this throws, the old trampolines are still installed and
+    // still registered, and the module state is unchanged. We only
+    // need to release the newly built ones, which the native side
+    // never saw.
+    // -----------------------------------------------------------------
+    try {
+        funcs().LF_Set_Network_Event(newConnect, newDisconnect);
+    } catch (err) {
+        if (newConnect !== null) {
+            try {
+                koffi.unregister(newConnect);
+            } catch (_) {
+                // Best-effort cleanup.
+            }
+        }
+        if (newDisconnect !== null) {
+            try {
+                koffi.unregister(newDisconnect);
+            } catch (_) {
+                // Best-effort cleanup.
+            }
+        }
+        throw err;
+    }
 
-    // Only publish the new trampolines after the native call succeeded.
-    // If the native call had thrown, we would have left the previous
-    // slots empty and the previous trampolines unregistered - which is
-    // the correct "the caller's request failed" state.
+    // -----------------------------------------------------------------
+    // Step 3: publish the new trampolines to module state.
+    //
+    // From this point forward, the module owns the new trampolines
+    // and no longer owns the old ones.
+    // -----------------------------------------------------------------
     _connectTrampoline = newConnect;
     _disconnectTrampoline = newDisconnect;
+
+    // -----------------------------------------------------------------
+    // Step 4: release the old trampolines.
+    //
+    // The native side no longer holds any pointer to them, so the
+    // Koffi registrations can be safely released.
+    // -----------------------------------------------------------------
+    if (oldConnect !== null) {
+        try {
+            koffi.unregister(oldConnect);
+        } catch (_) {
+            // Best-effort cleanup.
+        }
+    }
+    if (oldDisconnect !== null) {
+        try {
+            koffi.unregister(oldDisconnect);
+        } catch (_) {
+            // Best-effort cleanup.
+        }
+    }
 }
 
 /**

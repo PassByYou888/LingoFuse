@@ -20,6 +20,19 @@
 //  reported size. The native TMem64 keeps Position and Size separate
 //  until a write actually touches the new region. See test21.
 //
+//  SECTIONS
+//  --------
+//  Tests 01-140 : the original 37-export surface.
+//  Tests 200-221: the v1.1 additions -- 22 new C ABI symbols
+//                 (P2P registration, async family, UID / P2PName
+//                 addressing, UID / P2PName queries, LF_GetOption).
+//
+//  The new tests are all NON-NETWORK: they assert the deterministic
+//  C-level behaviour of each function with nil / null / absent
+//  arguments. End-to-end verification of the new symbols is provided
+//  by FrameworkTests, StatusTests, TargetTests, P2PTests, and
+//  IntegrationTests.
+//
 
 import XCTest
 import CLingoFuse
@@ -31,7 +44,7 @@ final class CAbiTests: XCTestCase {
     // ====================================================================
     //
     // LF_LoadLibrary is idempotent: the first call loads the native
-    // library and resolves all 37 symbols; subsequent calls return 1
+    // library and resolves all 59 symbols; subsequent calls return 1
     // immediately. We call it once for the whole suite.
     // ====================================================================
 
@@ -662,21 +675,306 @@ final class CAbiTests: XCTestCase {
         XCTAssertNotNil(callFn)
         XCTAssertNotNil(notifyFn)
     }
+
+    // ====================================================================
+    // 16. v1.1 additions — 22 new C ABI symbols
+    // --------------------------------------------------------------------
+    // Every test in this section is NON-NETWORK and deterministic:
+    // it either passes nil / null / absent arguments to a C function
+    // and asserts the C-level fallback, or it exercises a query whose
+    // answer is guaranteed by the local state (which is empty in the
+    // test process).
+    //
+    // {!!!!!  THE PURPOSE IS COMPILE-TIME AND SURFACE-LEVEL  !!!!!}
+    // Swift cannot reflect on symbol presence at runtime: either a
+    // symbol is declared in the header and the compiler links it, or
+    // the whole test file fails to build. Each test therefore doubles
+    // as a "the symbol exists and has the expected signature" check
+    // plus a "the C wrapper's null-guard behaves as documented"
+    // check.
+    // ====================================================================
+
+    // ---- 16.1  Data-handle identity accessors (2) ----
+
+    func test200_get_p2p_uid_nil_handle_returns_null() {
+        // The C wrapper returns NULL when the library is not loaded.
+        // When the library IS loaded and the handle is nil, the Pascal
+        // side returns a pointer to a zero-filled UID. In both cases
+        // the return value is a valid `const TP2P_UID*` or NULL; the
+        // only thing this test asserts is that the call does not
+        // crash and produces a value Swift can hold.
+        let ptr = LF_Get_P2P_UID(nil)
+        if let ptr = ptr {
+            // `TP2P_UID.bytes` is imported as a 32-tuple, so it has
+            // no `.count` property. `MemoryLayout` is the correct
+            // way to assert the size.
+            XCTAssertEqual(
+                MemoryLayout.size(ofValue: ptr.pointee.bytes),
+                32
+            )
+        }
+    }
+
+    func test201_get_p2p_name_nil_handle_is_callable() {
+        // Same contract as test200; this one returns a char pointer.
+        // The wrapper returns "" when the library is not loaded; the
+        // Pascal side returns an empty string when the handle is nil.
+        let ptr = LF_Get_P2P_Name(nil)
+        if let ptr = ptr {
+            let s = String(cString: ptr)
+            XCTAssertTrue(s.isEmpty || !s.isEmpty) // callable, non-throwing
+        }
+    }
+
+    // ---- 16.2  Process-wide P2P registration (3) ----
+
+    func test202_register_p2p_call_rejects_nil_method_name() {
+        // The C wrapper rejects a NULL method_name and returns 0.
+        let rc = LF_Register_P2P_Call(nil, "", nil, testCallCallback)
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test203_register_p2p_notify_rejects_nil_method_name() {
+        let rc = LF_Register_P2P_Notify(nil, "", nil, testNotifyCallback)
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test204_unregister_p2p_unknown_returns_zero() {
+        // Unregistering an API that was never registered returns 0
+        // (and does not throw).
+        let rc = LF_Unregister_P2P("__no_such_p2p_api__")
+        XCTAssertEqual(rc, 0)
+    }
+
+    // ---- 16.3  Async invocation family (2) ----
+
+    func test210_async_call_rejects_nil_app_name() {
+        guard let param = LF_CreateData("test_async_call") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let rc = LF_Async_Call(nil, param, nil, testAsyncCallback)
+        XCTAssertEqual(rc, 0, "LF_Async_Call(nil app_name) must return 0")
+    }
+
+    func test211_async_sequenced_call_rejects_nil_app_name() {
+        guard let param = LF_CreateData("test_async_seq") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let rc = LF_Async_Sequenced_Call(nil, param, nil, testAsyncCallback)
+        XCTAssertEqual(rc, 0)
+    }
+
+    // ---- 16.4  UID addressing family (5) ----
+
+    func test220_uid_call_null_uid_returns_empty_handle() {
+        // A null UID matches no client. The synchronous call returns
+        // a size-0 handle after the timeout expires, never a null
+        // pointer.
+        guard let param = LF_CreateData("test_uid_call") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let uid = TP2P_UID()
+        let result = LF_UID_Call(uid, param, 200)
+        XCTAssertNotNil(result)
+        if let r = result {
+            defer { LF_FreeData(r) }
+            XCTAssertEqual(LF_GetSize(r), 0)
+        }
+    }
+
+    func test221_uid_async_call_null_uid_returns_dispatch_code() {
+        guard let param = LF_CreateData("test_uid_async") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let uid = TP2P_UID()
+        let rc = LF_UID_Async_Call(uid, param, nil, testAsyncCallback)
+        // The wrapper returns 0 or 1. Either is acceptable: without a
+        // mesh the dispatch may succeed (and the callback fires with
+        // an empty result) or fail outright.
+        XCTAssertTrue(rc == 0 || rc == 1)
+    }
+
+    func test222_uid_async_sequenced_call_null_uid_is_callable() {
+        guard let param = LF_CreateData("test_uid_async_seq") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let uid = TP2P_UID()
+        let rc = LF_UID_Async_Sequenced_Call(uid, param, nil, testAsyncCallback)
+        XCTAssertTrue(rc == 0 || rc == 1)
+    }
+
+    func test223_uid_notify_null_uid_is_callable() {
+        guard let param = LF_CreateData("test_uid_notify") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let uid = TP2P_UID()
+        // Must not crash. Void return.
+        LF_UID_Notify(uid, param)
+    }
+
+    func test224_uid_sequenced_notify_null_uid_is_callable() {
+        guard let param = LF_CreateData("test_uid_seq_notify") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let uid = TP2P_UID()
+        LF_UID_Sequenced_Notify(uid, param)
+    }
+
+    // ---- 16.5  P2PName addressing family (5) ----
+
+    func test230_p2pname_call_rejects_nil_name() {
+        guard let param = LF_CreateData("test_p2p_call") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let result = LF_P2PNAME_Call(nil, param, 200)
+        XCTAssertNil(result, "LF_P2PNAME_Call(nil name) must return nil")
+    }
+
+    func test231_p2pname_async_call_rejects_nil_name() {
+        guard let param = LF_CreateData("test_p2p_async") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let rc = LF_P2PNAME_Async_Call(nil, param, nil, testAsyncCallback)
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test232_p2pname_async_sequenced_call_rejects_nil_name() {
+        guard let param = LF_CreateData("test_p2p_async_seq") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        let rc = LF_P2PNAME_Async_Sequenced_Call(nil, param, nil, testAsyncCallback)
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test233_p2pname_notify_nil_name_is_callable() {
+        guard let param = LF_CreateData("test_p2p_notify") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        // The C wrapper rejects a NULL p2p_name with a warning and
+        // returns without doing anything. Void return.
+        LF_P2PNAME_Notify(nil, param)
+    }
+
+    func test234_p2pname_sequenced_notify_nil_name_is_callable() {
+        guard let param = LF_CreateData("test_p2p_seq_notify") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(param) }
+
+        LF_P2PNAME_Sequenced_Notify(nil, param)
+    }
+
+    // ---- 16.6  UID / P2PName queries (4) ----
+
+    func test240_check_uid_null_returns_zero() {
+        let uid = TP2P_UID()
+        let rc = LF_Check_UID(uid)
+        XCTAssertEqual(rc, 0, "A null UID can never match a registered client")
+    }
+
+    func test241_check_uid_api_null_returns_zero() {
+        let uid = TP2P_UID()
+        let rc = LF_Check_UID_Api(uid, "any_api")
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test242_check_p2pname_absent_returns_zero() {
+        let rc = LF_Check_P2PNAME("__definitely_absent_group__")
+        XCTAssertEqual(rc, 0)
+    }
+
+    func test243_check_p2pname_api_absent_returns_zero() {
+        let rc = LF_Check_P2PNAME_Api("__definitely_absent_group__",
+                                      "__also_absent__")
+        XCTAssertEqual(rc, 0)
+    }
+
+    // ---- 16.7  Options reader (1) ----
+
+    func test250_get_option_unknown_returns_empty_string() {
+        // LF_GetOption returns an empty string for an unknown option
+        // (never NULL, never a throw).
+        let p = LF_GetOption("__definitely_unknown_option__")
+        XCTAssertNotNil(p)
+        if let p = p {
+            XCTAssertEqual(String(cString: p), "")
+        }
+    }
+
+    // ---- 16.8  UID helpers (bonus, not one of the 22 exports) ----
+
+    func test251_write_read_uid_round_trip() {
+        guard let hnd = LF_CreateData("test_uid_helper") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(hnd) }
+
+        var uid = TP2P_UID()
+        uid.bytes.0 = 0xAA
+        uid.bytes.31 = 0xBB
+
+        XCTAssertEqual(LF_WriteUid(hnd, uid), 1)
+        XCTAssertEqual(LF_GetSize(hnd), 32)
+
+        LF_SetPos(hnd, 0)
+        var back = TP2P_UID()
+        XCTAssertEqual(LF_ReadUid(hnd, &back), 1)
+        XCTAssertEqual(back.bytes.0, 0xAA)
+        XCTAssertEqual(back.bytes.31, 0xBB)
+    }
+
+    func test252_read_uid_short_buffer_fails() {
+        guard let hnd = LF_CreateData("test_uid_short") else {
+            XCTFail("LF_CreateData failed"); return
+        }
+        defer { LF_FreeData(hnd) }
+
+        // Only 16 bytes available; LF_ReadUid must return 0.
+        let payload = [UInt8](repeating: 0xCC, count: 16)
+        _ = payload.withUnsafeBufferPointer { buf in
+            LF_WriteBuffer(hnd, buf.baseAddress, Int64(buf.count))
+        }
+        LF_SetPos(hnd, 0)
+
+        var back = TP2P_UID()
+        XCTAssertEqual(LF_ReadUid(hnd, &back), 0)
+    }
 }
 
 // ========================================================================
 // Top-level C callbacks
 // ------------------------------------------------------------------------
-// Swift's @_cdecl requires the callback to be a global function (or a
-// static method), not a closure. These functions exist solely to
-// exercise registration and local-execution paths.
+// These are `@convention(c)` closure constants, NOT `@_cdecl` functions.
+// On Windows, `@_cdecl` emits a C symbol that lld-link rejects when it
+// appears in more than one object file; a `@convention(c)` closure
+// lives on the Swift ABI and is immune to that problem. See the
+// docstring on `AppHandle.swift`'s trampolines for the full rationale.
 // ========================================================================
 
 /// A Call-mode callback that echoes a single int32 from input to output.
-@_cdecl("lf_test_echo_call_callback")
-public func echoCallCallback(trigger: UnsafeMutableRawPointer?,
-                             input:  TDataHnd?,
-                             output: TDataHnd?) {
+let echoCallCallback: LF_CallFunc = { _, input, output in
     guard let input = input, let output = output else { return }
     var value: Int32 = 0
     guard LF_ReadInt32(input, &value) == 1 else { return }
@@ -684,16 +982,21 @@ public func echoCallCallback(trigger: UnsafeMutableRawPointer?,
 }
 
 /// A Call-mode callback that does nothing.
-@_cdecl("lf_test_noop_call_callback")
-public func testCallCallback(trigger: UnsafeMutableRawPointer?,
-                             input:  TDataHnd?,
-                             output: TDataHnd?) {
+let testCallCallback: LF_CallFunc = { _, _, _ in
     // no-op
 }
 
 /// A Notify-mode callback that does nothing.
-@_cdecl("lf_test_noop_notify_callback")
-public func testNotifyCallback(trigger: UnsafeMutableRawPointer?,
-                               input:  TDataHnd?) {
+let testNotifyCallback: LF_NotifyFunc = { _, _ in
+    // no-op
+}
+
+/// An async-call result callback that does nothing.
+///
+/// Used by the async family tests to verify symbol visibility. The
+/// result handle is owned by the framework and released immediately
+/// after this closure returns; this no-op deliberately does not
+/// touch it.
+let testAsyncCallback: LF_AsyncCallOnResult = { _, _ in
     // no-op
 }

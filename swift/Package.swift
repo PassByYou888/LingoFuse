@@ -54,11 +54,43 @@ let package = Package(
 
         // -----------------------------------------------------------------
         // Swift target: RAII wrappers, JSON I/O, process-wide facade.
+        //
+        // {!!!!!  WINDOWS-SPECIFIC FRONTEND FLAG  !!!!!}
+        // The frontend emits C symbols for `@_cdecl` functions (e.g.
+        // `lf_swift_call_trampoline`) into the module IR, but those C
+        // symbols are NEVER listed in the module's TBD file -- the TBD
+        // only lists Swift ABI symbols.
+        //
+        // On Windows, the frontend validates that every IR symbol
+        // appears in the TBD, so the moment a `@_cdecl` function is
+        // referenced from another file in the same module (as
+        // `P2P.swift` references the two trampolines in
+        // `AppHandle.swift`), the build fails with:
+        //
+        //     error: symbol 'lf_swift_xxx' is in generated IR file,
+        //            but not in TBD file
+        //
+        // The Swift compiler team acknowledges this is a false
+        // positive and recommends disabling the check (the frontend
+        // prints this exact suggestion in its error output).
+        //
+        // The flag has no effect on Linux or macOS builds, so it is
+        // applied unconditionally to keep the manifest free of
+        // platform conditionals.
+        //
+        // {!!!!!  DO NOT REMOVE WITHOUT READING  !!!!!}
+        // Removing this flag re-breaks every cross-file reference to a
+        // `@_cdecl` function on Windows. If a future Swift release
+        // fixes the underlying issue, the flag becomes a no-op and can
+        // be dropped safely.
         // -----------------------------------------------------------------
         .target(
             name: "LingoFuse",
             dependencies: ["CLingoFuse"],
-            path: "Sources/LingoFuse"
+            path: "Sources/LingoFuse",
+            swiftSettings: [
+                .unsafeFlags(["-Xfrontend", "-validate-tbd-against-ir=none"])
+            ]
         ),
 
         // -----------------------------------------------------------------

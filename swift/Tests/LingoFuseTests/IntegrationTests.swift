@@ -6,9 +6,16 @@
 //  PrepareService + PrepareClient + PrepareDone, exercising the full
 //  call path end-to-end.
 //
-//  These tests are marked to skip on failure of the framework startup
-//  sequence, so they never break the suite if the runtime environment
-//  cannot bring up an IPC endpoint.
+//  SECTIONS
+//  --------
+//  Tests 01-04 : original sync surface (JSON call, long string,
+//                ABI channel, Notify).
+//  Test  05    : v1.1 addition -- async/await round-trip on a live
+//                local session.
+//
+//  The async test is a SMOKE test: it races the call against a short
+//  deadline and accepts any outcome (success, error, or test-timeout)
+//  as long as the test process does not hang.
 //
 
 import XCTest
@@ -26,8 +33,8 @@ final class IntegrationTests: XCTestCase {
     // ==================================================================
 
     /// Opens a self-connected session on a unique IPC endpoint.
-    /// Returns (app, endpoint) on success, or nil when the framework
-    /// could not be started in the current environment.
+    /// Returns (app, endpoint) on success, or skips the test when the
+    /// framework could not be started in the current environment.
     private func openSession(
         _ label: String
     ) throws -> (AppHandle, String) {
@@ -204,6 +211,67 @@ final class IntegrationTests: XCTestCase {
 
         try app.localNotify(param)
         XCTAssertEqual(box.value, 1)
+    }
+
+    // ==================================================================
+    // v1.1 addition: async/await round-trip on a live local session
+    // ==================================================================
+
+    func test05_async_call_does_not_hang_on_live_session() async throws {
+        let (app, _) = try openSession("async")
+        defer { closeSession(app) }
+
+        _ = try app.registerCall("echo", "Async echo") { input, output in
+            guard let s: String = LfIo.tryReadJson(input) else { return }
+            try? LfIo.writeJson(output, s)
+        }
+
+        guard waitForApi(app.name, "echo") else {
+            throw XCTSkip("App did not become visible on the mesh in time")
+        }
+
+        let param = try DataHandle(apiName: "echo")
+        defer { param.dispose() }
+        try LfIo.writeJson(param, "async-hello")
+        param.position = 0
+
+        // Race the async call against a bounded deadline. The C ABI's
+        // async family has no timeout by design, so we cannot rely on
+        // the call returning; we can only rely on the test not
+        // hanging. Any of the three outcomes is acceptable:
+        //
+        //   .success -> the async path works end-to-end
+        //   .failure -> the async path reported a routing error
+        //   .timeout -> the underlying request is still in flight
+        //               (test process moved on cleanly)
+        enum Outcome { case success, failure, timeout }
+
+        let outcome: Outcome = await withTaskGroup(of: Outcome.self) { group in
+            group.addTask {
+                do {
+                    let response = try await AppTarget(app.name)
+                        .callAsync("echo", param)
+                    response.dispose()
+                    return .success
+                } catch {
+                    return .failure
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                return .timeout
+            }
+            let first = await group.next() ?? .timeout
+            group.cancelAll()
+            return first
+        }
+
+        switch outcome {
+        case .success, .failure, .timeout:
+            // Reaching this line proves the async call did not block
+            // the test process.
+            break
+        }
     }
 
     // ==================================================================

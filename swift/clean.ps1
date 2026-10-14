@@ -4,27 +4,44 @@
 #  Remove all build artifacts produced by `swift build` and `swift test`.
 #
 #  Steps:
-#    1. Run `swift package clean` to drop the SwiftPM index and caches.
-#    2. Remove the .build directory (which also removes any native
-#       library copied by `build.ps1 -CopyNative`).
+#    1. Optionally set the console output encoding to UTF-8.
+#    2. Run `swift package clean`.
+#    3. Remove the .build directory.
+#
+#  The .build/index-build/ directory is normally held open by the VSCode
+#  SourceKit-LSP extension. If a direct Remove-Item fails, the script
+#  retries a few times and then falls back to `cmd /c rmdir /s /q`.
 #
 #  Usage:
 #      .\clean.ps1
 #      .\clean.ps1 -DryRun
 #      .\clean.ps1 -Quiet
+#      .\clean.ps1 -NoEncoding
 #
 #  Exit codes:
 #      0  cleanup succeeded (or nothing to clean)
-#      1  cleanup failed
+#      1  cleanup failed (some files could not be removed)
 #      2  startup error (Package.swift missing)
 # =============================================================================
 
 param(
     [switch] $DryRun,
-    [switch] $Quiet
+    [switch] $Quiet,
+    [switch] $NoEncoding
 )
 
 $ErrorActionPreference = "Stop"
+
+# -----------------------------------------------------------------------------
+#  Console output encoding (see the same block in build.ps1).
+# -----------------------------------------------------------------------------
+
+if (-not $NoEncoding) {
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding           = [System.Text.Encoding]::UTF8
+    } catch { }
+}
 
 # -----------------------------------------------------------------------------
 #  Helpers
@@ -49,6 +66,49 @@ function Write-Ok([string]$msg) {
 
 function Write-Warn([string]$msg) {
     Write-Host "  [WARN] $msg" -ForegroundColor Yellow
+}
+
+function Write-Err([string]$msg) {
+    Write-Host "  [ERR]  $msg" -ForegroundColor Red
+}
+
+function Remove-Directory-WithRetry {
+    param(
+        [string] $Path,
+        [int]    $MaxAttempts = 3,
+        [int]    $DelayMs     = 500
+    )
+
+    if (-not (Test-Path $Path)) {
+        return $true
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Remove-Item -Recurse -Force -Path $Path -ErrorAction Stop
+            return $true
+        } catch {
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds $DelayMs
+                continue
+            }
+            Write-Warn "Remove-Item failed on attempt $attempt : $_"
+        }
+
+        try {
+            $null = cmd /c "rmdir /s /q `"$Path`" 2>&1"
+            if (-not (Test-Path $Path)) {
+                return $true
+            }
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds $DelayMs
+            }
+        } catch {
+            Write-Warn "cmd rmdir failed on attempt $attempt : $_"
+        }
+    }
+
+    return (-not (Test-Path $Path))
 }
 
 # -----------------------------------------------------------------------------
@@ -82,15 +142,11 @@ Write-Section "swift package clean"
 if ($DryRun) {
     Write-Info "[DRY RUN] swift package clean"
 } else {
-    try {
-        & swift package clean
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warn "swift package clean returned exit code $LASTEXITCODE"
-        } else {
-            Write-Ok "swift package clean completed."
-        }
-    } catch {
-        Write-Warn "swift package clean threw: $_"
+    & swift package clean
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "swift package clean returned exit code $LASTEXITCODE"
+    } else {
+        Write-Ok "swift package clean completed."
     }
 }
 
@@ -108,11 +164,18 @@ if (-not (Test-Path $buildDir)) {
     if ($DryRun) {
         Write-Info "[DRY RUN] Remove-Item -Recurse -Force $buildDir"
     } else {
-        try {
-            Remove-Item -Recurse -Force $buildDir
+        $removed = Remove-Directory-WithRetry -Path $buildDir
+        if ($removed) {
             Write-Ok "Removed $buildDir"
-        } catch {
-            Write-Warn "Failed to remove $buildDir : $_"
+        } else {
+            Write-Err "Could not remove $buildDir"
+            Write-Info "Likely cause: VSCode's SourceKit-LSP is holding the"
+            Write-Info "index database open under .build/index-build/."
+            Write-Info "Try these in order:"
+            Write-Info "  1. In VSCode, run 'Swift: Restart Language Server'"
+            Write-Info "  2. Or run 'Developer: Reload Window'"
+            Write-Info "  3. Or close VSCode and rerun this script"
+            exit 1
         }
     }
 }

@@ -4,6 +4,14 @@
 //
 //  Step 2B verification: the process-wide Framework facade.
 //
+//  SECTIONS
+//  --------
+//  Tests 01-53 : original surface (options, health checks, network
+//                preparation, shutdown, generateAppName, and the
+//                App-name-addressed invocation family).
+//  Tests 60-69 : v1.1 additions (Framework.getOption, and the
+//                UID- / P2PName-addressed invocation family).
+//
 
 import XCTest
 import LingoFuse
@@ -149,5 +157,117 @@ final class FrameworkTests: XCTestCase {
         let param = try DataHandle(apiName: "any_api")
         defer { param.dispose() }
         Framework.sequencedNotify("__absent_app_for_seq_notify_test__", param)
+    }
+
+    // ==================================================================
+    // 60+ v1.1 additions
+    // ------------------------------------------------------------------
+    // String-valued option reader and the UID- / P2PName-addressed
+    // invocation family. All tests are non-network: they exercise the
+    // C wrapper's null-guard and the deterministic C-level fallback
+    // (size-0 handle for the sync Call, nil for tryCall).
+    // ==================================================================
+
+    // ---- Framework.getOption ----
+
+    func test60_get_option_roundtrip_against_typed_api() {
+        let original = Options.getQuiet()
+        defer { Options.setQuiet(original) }
+
+        Options.setQuiet(true)
+        XCTAssertEqual(Framework.getOption("Quiet"), "True")
+
+        Options.setQuiet(false)
+        XCTAssertEqual(Framework.getOption("Quiet"), "False")
+    }
+
+    func test61_get_option_unknown_returns_empty() {
+        XCTAssertEqual(Framework.getOption("__no_such_option__"), "")
+    }
+
+    func test62_get_option_is_case_insensitive() {
+        let original = Options.getQuiet()
+        defer { Options.setQuiet(original) }
+
+        Options.setQuiet(true)
+        // The native side matches option names case-insensitively.
+        XCTAssertEqual(Framework.getOption("quiet"), "True")
+        XCTAssertEqual(Framework.getOption("QUIET"), "True")
+    }
+
+    // ---- UID addressing ----
+
+    func test63_call_by_uid_to_null_uid_returns_empty_handle() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        let result = try Framework.callByUid(
+            .null,
+            param,
+            timeoutMs: 200
+        )
+        defer { result.dispose() }
+        XCTAssertEqual(result.size, 0)
+    }
+
+    func test64_try_call_by_uid_to_null_uid_returns_nil() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        let result = try Framework.tryCallByUid(
+            .null,
+            param,
+            timeoutMs: 200
+        )
+        XCTAssertNil(result)
+    }
+
+    func test65_notify_by_uid_does_not_throw() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        Framework.notifyByUid(.null, param)
+    }
+
+    func test66_sequenced_notify_by_uid_does_not_throw() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        Framework.sequencedNotifyByUid(.null, param)
+    }
+
+    // ---- P2PName addressing ----
+
+    func test67_call_by_p2p_name_to_absent_group_returns_empty_handle() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        let result = try Framework.callByP2PName(
+            "__absent_group__",
+            param,
+            timeoutMs: 200
+        )
+        defer { result.dispose() }
+        XCTAssertEqual(result.size, 0)
+    }
+
+    func test68_try_call_by_p2p_name_to_absent_group_returns_nil() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        let result = try Framework.tryCallByP2PName(
+            "__absent_group__",
+            param,
+            timeoutMs: 200
+        )
+        XCTAssertNil(result)
+    }
+
+    func test69_notify_and_sequenced_notify_by_p2p_name_do_not_throw() throws {
+        let param = try DataHandle(apiName: "any_api")
+        defer { param.dispose() }
+
+        Framework.notifyByP2PName("__absent_group__", param)
+        Framework.sequencedNotifyByP2PName("__absent_group__", param)
     }
 }

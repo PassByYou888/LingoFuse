@@ -4,10 +4,27 @@
 //
 //  RAII wrapper around a native LingoFuse application handle (TAppHnd).
 //
-//  See the top of the delivered code for the full contract. This file
-//  is the corrected version: the callback contexts are internal (not
-//  private nested types) so that the top-level @_cdecl trampolines can
-//  dispatch to them without protocol glue.
+//  CALLBACK BRIDGING
+//  -----------------
+//  A user-supplied `(DataHandle, DataHandle) -> Void` closure cannot
+//  be handed directly to the C ABI, which requires a plain
+//  `LF_CallFunc` function pointer. This file bridges the two layers:
+//
+//    1. The closure is boxed in an `LfCallContext` instance.
+//    2. The context is passed to the C ABI as the opaque `trigger`
+//       pointer, `Unmanaged.passUnretained`.
+//    3. A single `@convention(c)` trampoline (defined below) receives
+//       the trigger, reconstitutes the context, and invokes the boxed
+//       closure.
+//    4. The AppHandle keeps a strong reference to the context for as
+//       long as the API is registered, and releases it on unregister
+//       or on dispose.
+//
+//  {!!!!!  TRAMPOLINES ARE `@convention(c)`, NOT `@_cdecl`  !!!!!}
+//  See the docstring on `swiftCallTrampoline` for the full rationale:
+//  on Windows, `@_cdecl` duplicates the C symbol in every .o file
+//  that references it, and lld-link rejects the duplicate. A
+//  `@convention(c)` closure has no such problem.
 //
 
 import Foundation
@@ -19,12 +36,13 @@ import CLingoFuse
 
 /// Boxed Call-mode handler. The instance is stored in AppHandle's
 /// internal dictionary and passed to the native layer through the
-/// `trigger` pointer as an Unmanaged reference.
+/// `trigger` pointer as an `Unmanaged` reference.
 internal final class LfCallContext {
     let apiName: String
     let handler: (DataHandle, DataHandle) -> Void
 
-    init(apiName: String, handler: @escaping (DataHandle, DataHandle) -> Void) {
+    init(apiName: String,
+         handler: @escaping (DataHandle, DataHandle) -> Void) {
         self.apiName = apiName
         self.handler = handler
     }
@@ -56,14 +74,45 @@ internal final class LfNotifyContext {
 
 // ========================================================================
 // C callback trampolines
+// ------------------------------------------------------------------------
+// These are `@convention(c)` closure constants, NOT `@_cdecl` functions.
+//
+// {!!!!!  WHY NOT `@_cdecl`  !!!!!}
+// On Windows, `@_cdecl` functions emit a C-ABI symbol that Swift IRGen
+// writes into EVERY object file that references the function. The
+// Windows linker (lld-link) treats the resulting duplicate definitions
+// as a hard error, unlike the Darwin and Linux linkers, which merge
+// them silently.
+//
+// `AppHandle.swift` and `P2P.swift` both register callbacks, so both
+// reference these trampolines, so a `@_cdecl` version would fail at
+// link time with:
+//
+//     lld-link: error: duplicate symbol: lf_swift_call_trampoline
+//         >>> defined at ...apphandle.o
+//         >>> defined at ...p2p.o
+//
+// A `@convention(c)` closure is bound to the Swift ABI: it is a value
+// of type `LF_CallFunc` / `LF_NotifyFunc` that is passed to the native
+// layer at registration time. It generates no C symbol of its own, so
+// cross-file references are ordinary Swift references and cannot
+// duplicate.
+//
+// {!!!!!  NO LOCAL CAPTURES  !!!!!}
+// A `@convention(c)` closure MUST NOT capture any local state. The two
+// closures below are pure functions of their arguments -- they refer
+// only to the `LfCallContext` / `LfNotifyContext` TYPES, which are
+// type references rather than value captures, so they are legal
+// `@convention(c)` closures.
 // ========================================================================
 
-@_cdecl("lf_swift_call_trampoline")
-internal func swiftCallTrampoline(
-    trigger: UnsafeMutableRawPointer?,
-    input: TDataHnd?,
-    output: TDataHnd?
-) {
+/// The single C-ABI callback used for every registered Call API.
+///
+/// Lives on the Swift ABI as a value of type `LF_CallFunc`. It is
+/// passed to `LF_RegisterCall` (and `LF_Register_P2P_Call`) at
+/// registration time; the native layer receives a plain function
+/// pointer, exactly as it would from a `@_cdecl` function.
+internal let swiftCallTrampoline: LF_CallFunc = { trigger, input, output in
     guard let trigger = trigger else { return }
     let ctx = Unmanaged<LfCallContext>
         .fromOpaque(trigger)
@@ -71,11 +120,8 @@ internal func swiftCallTrampoline(
     ctx.invoke(input: input, output: output)
 }
 
-@_cdecl("lf_swift_notify_trampoline")
-internal func swiftNotifyTrampoline(
-    trigger: UnsafeMutableRawPointer?,
-    input: TDataHnd?
-) {
+/// The single C-ABI callback used for every registered Notify API.
+internal let swiftNotifyTrampoline: LF_NotifyFunc = { trigger, input in
     guard let trigger = trigger else { return }
     let ctx = Unmanaged<LfNotifyContext>
         .fromOpaque(trigger)

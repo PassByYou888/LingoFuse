@@ -1,6 +1,6 @@
 {
   "name": "lingofuse-ts",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "TypeScript binding for the LingoFuse distributed RPC framework. Runs on Node.js, Deno (2.x), and Bun.",
   "type": "commonjs",
   "keywords": [
@@ -17,24 +17,36 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./package.json": "./package.json"
-  },
   "files": [
     "dist",
     "src",
-    "README.md"
+    "README.md",
+    "PORTABILITY.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "build:watch": "tsc -p tsconfig.build.json --watch",
-    "typecheck": "tsc -p tsconfig.json"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+
+    "test": "tsx test/test.ts",
+    "test:v2": "tsx test/test-v2.ts",
+    "test:all": "tsx test/test.ts && tsx test/test-v2.ts",
+
+    "demo": "tsx examples/hello-world.ts",
+
+    "cross:service": "tsx cross/cross-service.ts",
+    "cross:node": "tsx cross/cross-node.ts",
+    "cross:call": "tsx cross/cross-call.ts",
+
+    "test:bun": "bun run test/test.ts",
+    "test:v2:bun": "bun run test/test-v2.ts",
+    "test:all:bun": "bun run test/test.ts && bun run test/test-v2.ts",
+    "demo:bun": "bun run examples/hello-world.ts",
+
+    "test:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/test.ts",
+    "test:v2:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys --allow-run test/test-v2.ts",
+    "test:all:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/test.ts && deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys --allow-run test/test-v2.ts",
+    "demo:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys examples/hello-world.ts"
   },
   "engines": {
     "node": ">=18"
@@ -43,8 +55,8 @@
     "koffi": "^3.3.2"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "tsx": "^4.7.0",
-    "typescript": "^5.4.0"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0"
   }
 }

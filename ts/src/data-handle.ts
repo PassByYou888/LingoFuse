@@ -4,10 +4,12 @@
 //  RAII wrapper around a native TDataHnd.
 //
 //  Owns a native data handle and releases it deterministically on
-//  dispose(). Provides byte-level, atomic-type, and NUL-framed string
-//  I/O on top of the underlying buffer.
+//  dispose(). Provides byte-level, atomic-type, NUL-framed string I/O,
+//  and P2P identity accessors on top of the underlying buffer.
 //
-//  Two kinds of handles:
+//  TWO KINDS OF HANDLES
+//  --------------------
+//  The native library provides two flavours of data handle:
 //
 //      AUTO-RECYCLED  created by the public constructor
 //          - Backed by LF_CreateData.
@@ -33,7 +35,10 @@
 //  terminates, and both kinds must be explicitly disposed to avoid
 //  leaks.
 //
-//  Ownership:
+//  OWNERSHIP
+//  ---------
+//  A DataHandle is either "owning" or "borrowing":
+//
 //      owning     created by the public constructor or by
 //                 createPermanent(); dispose() calls LF_FreeData on
 //                 the native handle.
@@ -41,18 +46,125 @@
 //                 no-op; the native layer owns the underlying
 //                 resource and releases it when the callback returns.
 //
-//  String contract:
-//      writeString always appends a single trailing NUL byte.
-//      readString is fault-tolerant: it reads until the first NUL, or
-//      all remaining bytes when no NUL is present. The cursor advances
-//      past the NUL, or to (size + 1) when none was found.
+//  Borrowing is used for the input/output handles passed into a
+//  callback. Freeing them from TypeScript would be a double-free.
 //
-//  Numeric contract:
-//      The 64-bit writers accept both `number` and `bigint`. A `number`
-//      argument must be a finite integer; any other numeric value
-//      raises a RangeError whose message names the failing setter or
-//      writer, so that a stack trace with several nested calls still
-//      pinpoints the actual source.
+//  BORROWED HANDLE DISPOSE IS A NO-OP
+//  ----------------------------------
+//  For a borrowed handle, dispose() deliberately does NOT change the
+//  wrapper state. A callback body that accidentally calls dispose() on
+//  its input or output handle must not corrupt the wrapper state for
+//  the rest of the callback body. The wrapper's `#disposed` flag stays
+//  false, so isValid, raw, and all read methods remain usable until
+//  the callback returns.
+//
+//  STRING CONTRACT
+//  ---------------
+//  LingoFuse frames strings with a single trailing NUL (0x00) byte on
+//  the wire. writeString always appends the terminator. readString is
+//  fault-tolerant: it reads until the first NUL, or all remaining
+//  bytes if no NUL is present. This matches the behaviour of every
+//  other LingoFuse binding and keeps interop with non-Pascal producers
+//  (HTTP bridges, browsers) working.
+//
+//  Invalid UTF-8 byte sequences encountered during a read are decoded
+//  with the default replacement character U+FFFD. This keeps the
+//  reader binary-safe. Callers that need to detect invalid UTF-8 must
+//  read the raw bytes via readBytesExact / readAllBytes and inspect
+//  them directly.
+//
+//  P2P IDENTITY ("SIDE DATA", NOT A HANDLE PROPERTY)
+//  -------------------------------------------------
+//  getP2PUid() and getP2PName() do NOT read a property of the handle
+//  itself. They read two "side data" fields that the SENDER's
+//  transport layer injects into the request payload before
+//  transmission (Pascal side:
+//  TC40_LF_Client.Send_* -> TMemory_Param_Tool.Rebuild_UID_and_P2PName).
+//
+//  Because the fields are side data, the two accessors are valid ONLY
+//  on an INPUT handle -- i.e. the handle passed to a registered Call
+//  or Notify callback. Calling them on:
+//
+//      - an OUTPUT handle (the `output` argument of a Call callback),
+//      - a handle the caller created itself (new DataHandle(...)),
+//
+//  returns the default value (32 zero bytes / empty string) and the
+//  native side logs a warning. The methods do NOT throw.
+//
+//  LF_Get_P2P_UID RETURNS A POINTER
+//  --------------------------------
+//  The native LF_Get_P2P_UID does NOT return a 32-byte UID by value.
+//  It returns a POINTER to a 32-byte UID, allocated by the native side
+//  and scheduled for automatic release about 5 seconds after the call.
+//
+//  getP2PUid() therefore:
+//      1. Copies the 32 bytes immediately with koffi.decode().
+//      2. Does NOT call any deallocation function on the pointer.
+//      3. Does NOT retain the pointer beyond the method call.
+//
+//  Callers never see the transient pointer.
+//
+//  UID I/O VS. P2P IDENTITY
+//  ------------------------
+//  writeUid() / readUid() are ordinary binary I/O helpers that write
+//  or read a fixed 32-byte field at the current cursor. They have
+//  NOTHING to do with the P2P identity accessors. Use them when your
+//  application-level protocol carries a UID as a fixed 32-byte field
+//  (no NUL framing).
+//
+//  I/O FAILURE SEMANTICS
+//  ---------------------
+//  Two symmetric families of read operations are offered so that
+//  callers can choose their failure semantics explicitly:
+//
+//      Partial   readBytes(n)
+//                Returns up to n bytes. Never throws for a short read.
+//
+//      Exact     readBytesExact(n)  /  readInt8() .. readDouble()
+//                Requires exactly n bytes. Throws LingoFuseIoError on
+//                a short read.
+//
+//  The atomic-type readers are exact by default, because a partially
+//  read integer is never useful. Each exact reader has a try*
+//  counterpart that returns { ok: false } instead of throwing.
+//
+//  WRITE FAILURE SEMANTICS
+//  -----------------------
+//  writeBytes requires the native layer to accept every byte. A short
+//  write means the handle is corrupt or the process is out of memory;
+//  there is no useful recovery path, and silently continuing would
+//  produce a truncated payload on the wire. writeBytes therefore
+//  throws LingoFuseIoError on a short write, symmetrically with
+//  readBytesExact.
+//
+//  INTERNAL CONSTRUCTION PATH
+//  --------------------------
+//  The public constructor takes only an API name. The static factories
+//  fromRaw(raw, owned) and createPermanent(apiName) need to build an
+//  instance without going through the "public" allocation branch.
+//
+//  Because TypeScript private fields (#field) are only initialised by
+//  a real construction path (Object.create(proto) produces an object
+//  that has no private-field slots, and assigning to them throws
+//  TypeError), the constructor accepts an undocumented second argument
+//  that carries the pre-existing handle and ownership flag. That
+//  argument is an implementation detail of this file and MUST NOT be
+//  passed by user code.
+//
+//  THREAD SAFETY
+//  -------------
+//  The native library is thread-safe, but a single data handle cannot
+//  be written concurrently. Read access is safe while another thread
+//  reads. Callers that share a handle across threads must serialise
+//  writes themselves.
+//
+//  NUMERIC CONTRACT
+//  ----------------
+//  The 64-bit writers accept both `number` and `bigint`. A `number`
+//  argument must be a finite integer; any other numeric value raises a
+//  RangeError whose message names the failing setter or writer, so
+//  that a stack trace with several nested calls still pinpoints the
+//  actual source.
 // =============================================================================
 
 import type { TDataHnd } from "./types";
@@ -102,6 +214,14 @@ function toBigInt(v: number | bigint, context: string): bigint {
 const NULL_BYTE = Uint8Array.of(0);
 const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: false });
+
+/**
+ * The fixed length, in bytes, of a TP2P_UID field.
+ *
+ * Used by writeUid() / readUid() and by getP2PUid(). Exposed here as a
+ * private module-level constant to keep the three call sites in sync.
+ */
+const UID_BYTE_LENGTH = 32;
 
 export class DataHandle {
     #binding: Binding;
@@ -541,6 +661,124 @@ export class DataHandle {
         const total = this.size;
         if (start >= total) return { ok: false };
         return { ok: true, value: this.readString() };
+    }
+
+    // ====================================================================
+    //  P2P identity (auto-injected sender side data)
+    // ====================================================================
+    //
+    //  getP2PUid() / getP2PName() read the FromUID / FromP2PName fields
+    //  that the SENDER's transport layer injects into the request
+    //  payload before transmission. They are valid ONLY on an INPUT
+    //  handle (the handle passed to a registered Call / Notify
+    //  callback), NOT on an output handle and NOT on a handle the
+    //  caller created itself.
+    //
+    //  Calling on an invalid position returns the default value
+    //  (32 zero bytes / empty string) and logs a warning; the methods
+    //  do NOT throw.
+    // ====================================================================
+
+    /**
+     * Return the 32-byte sender session UID.
+     *
+     * SIDE DATA, NOT A HANDLE PROPERTY
+     * --------------------------------
+     * This accessor is valid ONLY on an INPUT handle. Calling it on an
+     * OUTPUT handle or on a handle the caller created itself returns
+     * 32 zero bytes.
+     *
+     * NATIVE FUNCTION RETURNS A POINTER
+     * ---------------------------------
+     * LF_Get_P2P_UID returns a POINTER to a 32-byte UID. The pointer is
+     * allocated by the native side and scheduled for automatic release
+     * about 5 seconds after the call. This method:
+     *
+     *   1. Copies the 32 bytes immediately with koffi.decode().
+     *   2. Does NOT call any deallocation function on the pointer.
+     *   3. Does NOT retain the pointer beyond this method.
+     *
+     * Callers never see the transient pointer.
+     *
+     * @returns {Uint8Array} A fresh 32-byte Uint8Array.
+     */
+    public getP2PUid(): Uint8Array {
+        this.#ensureNotDisposed();
+        const ptr = this.#binding.funcs.LF_Get_P2P_UID(this.#handle);
+        if (ptr === null || ptr === undefined) {
+            return new Uint8Array(UID_BYTE_LENGTH);
+        }
+        // Copy 32 bytes immediately. Do NOT retain the pointer.
+        const decoded = this.#binding.koffi.decode(
+            ptr,
+            this.#binding.koffi.array("uint8", UID_BYTE_LENGTH, "Typed"),
+        ) as Uint8Array | number[];
+        return Uint8Array.from(decoded);
+    }
+
+    /**
+     * Return the sender's P2P group name as a string.
+     *
+     * Same side-data semantics as getP2PUid(): valid ONLY on an INPUT
+     * handle. Returns "" when the sender did not set a name (a
+     * legitimate configuration; the default P2P name is empty).
+     *
+     * The underlying native function returns a transient buffer
+     * released ~5 seconds after the call. Koffi's `str` return type
+     * decodes the pointer into a fresh JavaScript string on the call
+     * boundary, so the returned value is fully detached and safe to
+     * retain.
+     *
+     * @returns {string}
+     */
+    public getP2PName(): string {
+        this.#ensureNotDisposed();
+        const name = this.#binding.funcs.LF_Get_P2P_Name(this.#handle);
+        return typeof name === "string" ? name : "";
+    }
+
+    // ====================================================================
+    //  Raw UID I/O (binary, fixed 32 bytes, no NUL framing)
+    // ====================================================================
+    //
+    //  These helpers write and read a 32-byte UID field as ordinary
+    //  binary data at the current cursor. They have NOTHING to do with
+    //  the P2P identity accessors above. Use them when your
+    //  application-level protocol carries a UID as a fixed 32-byte
+    //  field.
+    // ====================================================================
+
+    /**
+     * Append a 32-byte UID at the current cursor. No terminator is
+     * appended: this is a fixed 32-byte write, matching the Pascal-side
+     * `m64.WritePtr(@UID, SizeOf(TP2P_UID___))`.
+     *
+     * @param uidBytes  Exactly 32 bytes.
+     * @throws {TypeError}  When uidBytes is not a Uint8Array.
+     * @throws {RangeError} When uidBytes.length is not 32.
+     */
+    public writeUid(uidBytes: Uint8Array): void {
+        if (!(uidBytes instanceof Uint8Array)) {
+            throw new TypeError(
+                "DataHandle.writeUid: uidBytes must be a Uint8Array.");
+        }
+        if (uidBytes.length !== UID_BYTE_LENGTH) {
+            throw new RangeError(
+                `DataHandle.writeUid: uidBytes must be exactly ` +
+                `${UID_BYTE_LENGTH} bytes, got ${uidBytes.length}.`);
+        }
+        this.writeBytes(uidBytes);
+    }
+
+    /**
+     * Read exactly 32 bytes from the current cursor as a UID. No
+     * terminator is consumed. Throws on a short read.
+     *
+     * @returns {Uint8Array}
+     * @throws {LingoFuseIoError} When fewer than 32 bytes are available.
+     */
+    public readUid(): Uint8Array {
+        return this.readBytesExact(UID_BYTE_LENGTH);
     }
 
     // ---- Internal ----

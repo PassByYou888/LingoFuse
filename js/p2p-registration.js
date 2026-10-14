@@ -28,9 +28,23 @@
  * The native library holds a raw function pointer to each installed
  * callback. If the corresponding Koffi callback object is garbage
  * collected while the pointer is still live, the next invocation will
- * crash. This module keeps a strong reference to every registered
- * callback in a module-level array, mirroring the contract of
- * AppHandle.#registrations for app-bound registration.
+ * crash. This module keeps a strong reference to every SUCCESSFULLY
+ * REGISTERED callback in a module-level array, mirroring the contract
+ * of AppHandle.#registrations for app-bound registration.
+ *
+ * The keepalive list is intentionally never pruned:
+ *
+ *   - On a REJECTED registration (the native call returned a value
+ *     other than 1), the Koffi bridge was never handed to the native
+ *     library, so it is safe to release immediately. This module does
+ *     exactly that and does NOT add the bridge to the keepalive list.
+ *
+ *   - On a successful registration followed by LF_Unregister_P2P, the
+ *     native library may still be holding a pointer to the bridge
+ *     while an in-flight request completes. The library does not
+ *     expose a way to release the callback object itself; keeping the
+ *     reference is harmless (a few dozen bytes) and removing it would
+ *     risk a use-after-free on the native side.
  *
  * ============================================================================
  * THREADING
@@ -68,11 +82,21 @@ function funcs() {
 }
 
 /**
- * Strong references to every Koffi callback registered through the
- * process-wide P2P API. The list is intentionally never cleared: the
- * process-wide P2P namespace is by definition tied to the process
- * lifetime, and the underlying native library does not provide a way
- * to unregister the callback object itself (only its name).
+ * Strong references to every Koffi callback successfully registered
+ * through the process-wide P2P API.
+ *
+ * Only bridges accepted by the native layer are appended. A bridge
+ * whose registration was rejected is released immediately and never
+ * enters this list.
+ *
+ * The list is intentionally never cleared at runtime:
+ *
+ *   - The process-wide P2P namespace is tied to the process lifetime.
+ *   - The native library does not expose a way to release the callback
+ *     object itself on unregistration (only its name).
+ *   - Keeping the reference is harmless; releasing it could leave the
+ *     native side with a dangling pointer if an in-flight request is
+ *     still being serviced when LF_Unregister_P2P returns.
  *
  * @type {Array<object>}
  */
@@ -90,7 +114,7 @@ function _reportCallbackError(source, err) {
                 ? err.stack ?? err.message
                 : String(err);
         process.stderr.write(
-            `[LingoFuse] Callback error in ${source}: ${detail}`
+            `[LingoFuse] Callback error in ${source}: ${detail}\n`
         );
     } catch (_e) {
         // Even stderr may be unavailable in some embeddings. Ignore.
@@ -144,20 +168,31 @@ function registerP2PCall(apiName, handler, description = "") {
         koffi.pointer(LfCallFunc)
     );
 
-    // Keep a strong reference BEFORE the native call, so that if the
-    // native call raises, the wrapper still survives for the process
-    // lifetime.
-    _p2pCallbacks.push(bridge);
-
     const ret = funcs().LF_Register_P2P_Call(
         apiName,
         desc,
         null,
         bridge
     );
+
     if (ret !== 1) {
+        // The native call did NOT accept the callback pointer. The
+        // bridge has never been seen by the native library, so it is
+        // safe (and required) to release it immediately. Pushing it
+        // into the keepalive list before this check would leak one
+        // Koffi thread-safe function per rejected registration.
+        try {
+            koffi.unregister(bridge);
+        } catch (_e) {
+            // Best-effort cleanup.
+        }
         throw new LingoFuseRegistrationError(apiName);
     }
+
+    // Registration succeeded: the native library now holds a raw
+    // pointer to this bridge. Keep the strong reference for the
+    // lifetime of the process.
+    _p2pCallbacks.push(bridge);
 }
 
 /**
@@ -168,6 +203,7 @@ function registerP2PCall(apiName, handler, description = "") {
  * @param {string} [description=""]
  * @throws {TypeError} On a malformed argument.
  * @throws {import('./errors').LingoFuseRegistrationError}
+ *   When the underlying native call is rejected.
  */
 function registerP2PNotify(apiName, handler, description = "") {
     if (typeof apiName !== "string") {
@@ -197,17 +233,25 @@ function registerP2PNotify(apiName, handler, description = "") {
         koffi.pointer(LfNotifyFunc)
     );
 
-    _p2pCallbacks.push(bridge);
-
     const ret = funcs().LF_Register_P2P_Notify(
         apiName,
         desc,
         null,
         bridge
     );
+
     if (ret !== 1) {
+        // Same reasoning as registerP2PCall above: the bridge was
+        // never handed to the native library and is safe to release.
+        try {
+            koffi.unregister(bridge);
+        } catch (_e) {
+            // Best-effort cleanup.
+        }
         throw new LingoFuseRegistrationError(apiName);
     }
+
+    _p2pCallbacks.push(bridge);
 }
 
 /**
@@ -217,13 +261,24 @@ function registerP2PNotify(apiName, handler, description = "") {
  * for up to ~3 seconds until the network broadcast propagates.
  *
  * The corresponding Koffi callback wrapper stays in the keepalive list
- * even after unregistration: the native library does not expose a way
- * to release the callback object itself, and keeping the reference is
- * harmless (a few dozen bytes) while removing it would risk a use-after-
- * free if the library still holds the pointer.
+ * even after unregistration. This is deliberate:
+ *
+ *   - The native library does not expose a way to release the callback
+ *     object itself (only its name).
+ *   - An in-flight request that was already dispatched when the
+ *     unregistration command is processed may still invoke the bridge.
+ *   - Keeping the reference is harmless (a few dozen bytes per
+ *     registration) and removing it would risk a use-after-free.
+ *
+ * Callers who repeatedly register and unregister the same name should
+ * be aware that each successful register/keep cycle leaves one bridge
+ * in the keepalive list for the lifetime of the process. This is the
+ * safest behaviour the native ABI permits; the alternative is a
+ * potential crash on a late callback.
  *
  * @param {string} apiName
  * @returns {boolean}
+ *   true when the native call reported a removal, false otherwise.
  */
 function unregisterP2P(apiName) {
     if (typeof apiName !== "string") {

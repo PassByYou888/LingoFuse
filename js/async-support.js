@@ -71,8 +71,11 @@
  *                  than freed memory.
  *
  * On shutdown(), every still-tracked op has its callback released
- * unconditionally. Without that, a caller who never awaits an async
- * call would keep the process alive.
+ * unconditionally, AND every pending grace-period timer is flushed
+ * immediately. Without that, a caller who never awaits an async call
+ * would keep the process alive, and a caller who shuts the bridge down
+ * while a grace timer is armed would leave an orphan setTimeout
+ * running against a torn-down Koffi registration table.
  *
  * ============================================================================
  * THREADING MODEL
@@ -137,6 +140,10 @@ const _DEFAULT_PERIOD_SECONDS = _envFloat(
  * already in flight when the JS-side timeout fired a chance to reach a
  * still-valid trampoline. The trampoline itself is a no-op because the
  * op state is ABANDONED.
+ *
+ * The pending timer is tracked on the AsyncBridge instance (see
+ * _pendingUnregisters) so that shutdown() can flush it immediately if
+ * the bridge is torn down before the grace period elapses.
  */
 const _ABANDONED_RELEASE_DELAY_MS = 5000;
 
@@ -317,6 +324,22 @@ class AsyncBridge {
         this._releaseCount = 0;
         this._timeoutQueue = [];   // [{ deadline: number, op: AsyncOp }]
         this._releaseQueue = [];   // [{ deadline: number, op: AsyncOp }]
+
+        /**
+         * Grace-period timers that defer the release of an ABANDONED
+         * op's Koffi callback. Map<TimeoutHandle, KoffiCallbackObject>.
+         *
+         * Tracking these on the instance lets shutdown() flush them
+         * immediately, instead of leaving an orphan setTimeout running
+         * against a torn-down Koffi registration table. Without this
+         * tracking, calling shutdownInstance() and then creating a new
+         * AsyncBridge would leave the old bridge's timers racing the
+         * new bridge's unregister calls on Koffi's global registry.
+         *
+         * @type {Map<*, object>}
+         */
+        this._pendingUnregisters = new Map();
+
         this._shutdown = false;
 
         // Exposed as attributes so tests can override them per-instance.
@@ -426,6 +449,19 @@ class AsyncBridge {
         this._scheduleReleaseAfterGrace(op);
     }
 
+    /**
+     * Release the Koffi callback for an op whose state machine permits
+     * it. Called from _reclaim() once the release deadline has passed.
+     *
+     * For FIRED / NOT_QUEUED ops the release is immediate.
+     *
+     * For ABANDONED ops the release is deferred by
+     * _ABANDONED_RELEASE_DELAY_MS so that a straggling native callback
+     * reaches a still-valid trampoline. The deferring timer is
+     * recorded on the instance so shutdown() can flush it.
+     *
+     * @param {AsyncOp} op
+     */
     _releaseOp(op) {
         if (op._key === null) return;
         if (!this._handles.has(op._key)) return;
@@ -435,38 +471,42 @@ class AsyncBridge {
         this._handles.delete(op._key);
         this._releaseCount += 1;
 
-        // Release the Koffi callback object. Every koffi.register call
-        // creates a native N-API thread-safe function backed by a
-        // libuv handle that is, by default, ref'ed. Without an
-        // explicit koffi.unregister, each async call leaks one such
-        // handle, and the Node event loop never becomes idle — the
-        // process refuses to exit.
-        //
-        // Safety by state:
-        //   FIRED      -- the callback already returned; releasing now
-        //                 is safe.
-        //   NOT_QUEUED -- the native dispatch never accepted the
-        //                 request; no callback was ever installed.
-        //   ABANDONED  -- the JS-side timeout fired and grace has
-        //                 elapsed. A straggling native call is very
-        //                 unlikely this late, but we still delay the
-        //                 release by an extra window to be safe.
         const callback = op.cCallback;
+
         if (wasAbandoned) {
-            setTimeout(() => {
-                try {
-                    koffi.unregister(callback);
-                } catch (_e) {
-                    // Best-effort: a failed unregister must never
-                    // abort the release path.
-                }
-            }, _ABANDONED_RELEASE_DELAY_MS).unref();
-        } else {
-            try {
-                koffi.unregister(callback);
-            } catch (_e) {
-                // Best-effort.
+            // Defer the release by the grace window. The timer handle
+            // is kept in _pendingUnregisters so that shutdown() can
+            // flush it if the bridge is torn down before the timer
+            // fires.
+            let timer;
+            timer = setTimeout(() => {
+                this._pendingUnregisters.delete(timer);
+                this._unregisterCallback(callback);
+            }, _ABANDONED_RELEASE_DELAY_MS);
+
+            // Do not block process exit on this timer.
+            if (timer && typeof timer.unref === "function") {
+                timer.unref();
             }
+
+            this._pendingUnregisters.set(timer, callback);
+        } else {
+            this._unregisterCallback(callback);
+        }
+    }
+
+    /**
+     * Best-effort release of a single Koffi callback object.
+     *
+     * Never throws: a failure here must not abort the release path.
+     *
+     * @param {object} callback
+     */
+    _unregisterCallback(callback) {
+        try {
+            koffi.unregister(callback);
+        } catch (_e) {
+            // Best-effort.
         }
     }
 
@@ -497,21 +537,43 @@ class AsyncBridge {
     shutdown() {
         if (this._shutdown) return;
         this._shutdown = true;
+
+        // Stop the reclamation loop.
         if (this._timer) {
             clearInterval(this._timer);
             this._timer = null;
         }
 
-        // Release every outstanding Koffi callback. Without this,
-        // each still-pending op leaves behind a native thread-safe
-        // function handle that keeps the Node event loop alive and
-        // prevents a clean process exit.
-        for (const op of this._handles.values()) {
-            try {
-                koffi.unregister(op.cCallback);
-            } catch (_e) {
-                // Best-effort.
+        // Flush every pending grace-period release immediately.
+        //
+        // Clearing the timers alone would be wrong: the Koffi callback
+        // objects those timers were supposed to release would then
+        // leak, and their libuv handles would keep the event loop
+        // alive. Release the callbacks first, then drop the timers.
+        //
+        // We iterate a snapshot because _unregisterCallback does not
+        // touch the map, but this keeps the code robust against future
+        // changes that might.
+        if (this._pendingUnregisters.size > 0) {
+            const pending = Array.from(this._pendingUnregisters.entries());
+            this._pendingUnregisters.clear();
+            for (const [timer, callback] of pending) {
+                try {
+                    clearTimeout(timer);
+                } catch (_e) {
+                    // Best-effort.
+                }
+                this._unregisterCallback(callback);
             }
+        }
+
+        // Release every outstanding op's Koffi callback.
+        //
+        // Without this, each still-pending op leaves behind a native
+        // thread-safe function handle that keeps the Node event loop
+        // alive and prevents a clean process exit.
+        for (const op of this._handles.values()) {
+            this._unregisterCallback(op.cCallback);
         }
 
         this._handles.clear();

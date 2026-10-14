@@ -11,50 +11,17 @@
  *     base class            LingoFuseError
  *     library load          LingoFuseLibraryLoadError
  *     remote call           LingoFuseCallError
+ *     remote call timeout   LingoFuseTimeoutError
  *     I/O on a handle       LingoFuseIoError
  *     use after dispose     LingoFuseObjectDisposedError
  *     callback body failure LingoFuseCallbackError
+ *     API registration      LingoFuseRegistrationError
  *
- * Only these six types exist. Custom exception types for registration
- * errors, state errors, or any other condition that cannot actually be
- * raised by the current implementation are deliberately absent. If a
- * new failure mode is introduced, its exception type is added here,
- * not invented at the call site.
+ * Only these eight types exist. Custom exception types for state
+ * errors or any other condition that cannot actually be raised by the
+ * current implementation are deliberately absent.
  *
- * ============================================================================
- * DESIGN NOTES
- * ============================================================================
- * Unlike C#, JavaScript has no checked exceptions, but it does have a
- * usable `Error` base class with prototype-based subclassing. Each
- * subclass here:
- *
- *   - sets `name` to the class name (for diagnostics and `util.inspect`),
- *   - preserves the stack trace via `Error.captureStackTrace` when
- *     available (V8 / Node.js / Deno / Bun),
- *   - carries a small set of structured fields that callers can use for
- *     programmatic dispatch.
- *
- * The classes work identically on Node.js, Deno, and Bun. They only
- * depend on `Error`, which is part of the ECMAScript standard.
- *
- * ============================================================================
- * USAGE
- * ============================================================================
- * @code
- * const { LingoFuseError, LingoFuseCallError } = require("./errors");
- *
- * try {
- *     // ... LingoFuse operation ...
- * } catch (err) {
- *     if (err instanceof LingoFuseCallError) {
- *         console.error("Call failed:", err.targetApp, err.message);
- *     } else if (err instanceof LingoFuseError) {
- *         console.error("LingoFuse failure:", err.message);
- *     } else {
- *         throw err;  // Not ours; re-throw.
- *     }
- * }
- * @endcode
+ * All comments and docstrings are in English.
  */
 
 "use strict";
@@ -71,19 +38,13 @@
 class LingoFuseError extends Error {
   /**
    * @param {string} [message="A LingoFuse operation failed."]
-   *   Human-readable description of the failure.
    * @param {object} [options]
    * @param {Error} [options.cause]
-   *   Underlying error that triggered this one, if any. Preserved so
-   *   that callers can walk the cause chain.
    */
   constructor(message = "A LingoFuse operation failed.", options = undefined) {
     super(message, options);
     this.name = "LingoFuseError";
 
-    // Preserve a clean stack trace that starts at the throw site
-    // rather than at this constructor. V8 / Node / Deno / Bun all
-    // support this; on engines that do not, the call is a no-op.
     if (typeof Error.captureStackTrace === "function") {
       Error.captureStackTrace(this, this.constructor);
     }
@@ -95,25 +56,14 @@ class LingoFuseError extends Error {
 // ============================================================================
 
 /**
- * Raised when the native LingoFuse library cannot be located or loaded
- * by the platform resolver.
- *
- * Typical causes:
- *   - the DLL / .so / .dylib is not next to the executable and is not
- *     on the loader search path;
- *   - it has an architecture mismatch (a 64-bit host trying to load a
- *     32-bit library, or vice versa);
- *   - a dependent native library is missing.
+ * Raised when the native LingoFuse library cannot be located or loaded.
  *
  * @extends LingoFuseError
  */
 class LingoFuseLibraryLoadError extends LingoFuseError {
   /**
    * @param {string} libraryName
-   *   The logical or platform-specific library name that failed to load.
    * @param {string} [message]
-   *   Optional custom message. When omitted, a default is constructed
-   *   from the library name.
    * @param {object} [options]
    * @param {Error} [options.cause]
    */
@@ -125,10 +75,7 @@ class LingoFuseLibraryLoadError extends LingoFuseError {
     );
     this.name = "LingoFuseLibraryLoadError";
 
-    /**
-     * The library name that could not be loaded.
-     * @type {string}
-     */
+    /** @type {string} */
     this.libraryName = libraryName;
   }
 }
@@ -139,12 +86,11 @@ class LingoFuseLibraryLoadError extends LingoFuseError {
 
 /**
  * Raised when a remote Call fails: null handle from the native layer,
- * timeout, or an unreachable target application.
+ * or an unreachable target application.
  *
  * The C ABI reports a failed Call as an empty handle (size 0), never
- * as a NULL pointer. This exception is the JavaScript representation of
- * that failure, and it is also raised when the native layer itself
- * returns a NULL handle (a more fundamental transport problem).
+ * as a NULL pointer. This exception is the JavaScript representation
+ * of that failure.
  *
  * @extends LingoFuseError
  */
@@ -153,26 +99,67 @@ class LingoFuseCallError extends LingoFuseError {
    * @param {string} [message]
    * @param {object} [options]
    * @param {string} [options.targetApp]
-   *   Name of the target application, when known.
    * @param {string} [options.targetApi]
-   *   Name of the target API, when known.
    * @param {Error} [options.cause]
    */
   constructor(message = "LingoFuse call failed.", options = undefined) {
     super(message, options);
     this.name = "LingoFuseCallError";
 
-    /**
-     * Name of the target application, or `undefined` when unknown.
-     * @type {string|undefined}
-     */
+    /** @type {string|undefined} */
     this.targetApp = options?.targetApp;
 
-    /**
-     * Name of the target API, or `undefined` when unknown.
-     * @type {string|undefined}
-     */
+    /** @type {string|undefined} */
     this.targetApi = options?.targetApi;
+  }
+}
+
+// ============================================================================
+// Remote call timeout
+// ============================================================================
+
+/**
+ * Raised when an asynchronous Call times out on the JS-side deadline,
+ * before the native callback could deliver a result.
+ *
+ * This is a distinct type from LingoFuseCallError, because the two
+ * failures have different causes and different recovery paths:
+ *
+ *   LingoFuseCallError    -- the native layer returned a null handle
+ *                            or an empty (size-0) result.
+ *
+ *   LingoFuseTimeoutError -- the JS-side timeout expired while the C
+ *                            request was still in flight. The C
+ *                            request is NOT cancelled; the framework
+ *                            keeps the callback alive for a grace
+ *                            period, and any late result is discarded.
+ *
+ * @extends LingoFuseError
+ */
+class LingoFuseTimeoutError extends LingoFuseError {
+  /**
+   * @param {string} [message="LingoFuse asynchronous call timed out."]
+   * @param {object} [options]
+   * @param {string} [options.targetApp]
+   * @param {string} [options.targetApi]
+   * @param {number} [options.timeoutMs]
+   * @param {Error}  [options.cause]
+   */
+  constructor(
+    message = "LingoFuse asynchronous call timed out.",
+    options = undefined
+  ) {
+    super(message, options);
+    this.name = "LingoFuseTimeoutError";
+
+    /** @type {string|undefined} */
+    this.targetApp = options?.targetApp;
+
+    /** @type {string|undefined} */
+    this.targetApi = options?.targetApi;
+
+    /** @type {number|undefined} */
+    this.timeoutMs = options?.timeoutMs;
   }
 }
 
@@ -181,17 +168,10 @@ class LingoFuseCallError extends LingoFuseError {
 // ============================================================================
 
 /**
- * Raised when a low-level I/O operation on a data handle fails: a short
- * read when the caller asked for a fixed number of bytes, or a short
- * write when the native layer accepted fewer bytes than requested.
- *
- * This exception is reserved for the byte-level contract of a data
- * handle. Argument validation errors use the standard `TypeError` /
- * `RangeError` classes.
- *
- * The `operation` property names the failing operation (for example
- * "ReadBytesExact") so a diagnostic handler can produce a precise
- * message without parsing the exception text.
+ * Raised when a low-level I/O operation on a data handle fails: a
+ * short read when the caller asked for a fixed number of bytes, or a
+ * short write when the native layer accepted fewer bytes than
+ * requested.
  *
  * @extends LingoFuseError
  */
@@ -200,17 +180,13 @@ class LingoFuseIoError extends LingoFuseError {
    * @param {string} [message]
    * @param {object} [options]
    * @param {string} [options.operation]
-   *   Name of the failing I/O operation, when known.
    * @param {Error} [options.cause]
    */
   constructor(message = "LingoFuse I/O operation failed.", options = undefined) {
     super(message, options);
     this.name = "LingoFuseIoError";
 
-    /**
-     * Name of the failing I/O operation, or `undefined` when unknown.
-     * @type {string|undefined}
-     */
+    /** @type {string|undefined} */
     this.operation = options?.operation;
   }
 }
@@ -228,7 +204,6 @@ class LingoFuseIoError extends LingoFuseError {
 class LingoFuseObjectDisposedError extends LingoFuseError {
   /**
    * @param {string} objectName
-   *   Name of the disposed object, for diagnostics.
    * @param {object} [options]
    * @param {Error} [options.cause]
    */
@@ -236,10 +211,7 @@ class LingoFuseObjectDisposedError extends LingoFuseError {
     super(`The ${objectName} has already been disposed.`, options);
     this.name = "LingoFuseObjectDisposedError";
 
-    /**
-     * Name of the disposed object.
-     * @type {string}
-     */
+    /** @type {string} */
     this.objectName = objectName;
   }
 }
@@ -253,43 +225,61 @@ class LingoFuseObjectDisposedError extends LingoFuseError {
  * while running on a native worker thread.
  *
  * This error is never thrown into user code directly; it is passed to
- * the process-level callback error reporter (see framework.js). It
- * exists so that the reporter receives a structured object with a
- * stable type, rather than a raw value the callback happened to throw.
- *
- * The `source` property names the callback site (for example
- * "AppHandle.registerCall[add]"). The `cause` property holds the
- * original value thrown by the callback body, which may be an `Error`
- * or any other JavaScript value.
+ * the process-level callback error reporter (see framework.js).
  *
  * @extends LingoFuseError
  */
 class LingoFuseCallbackError extends LingoFuseError {
   /**
    * @param {string} source
-   *   Identifier of the callback site that raised.
    * @param {*} cause
-   *   The value the user callback threw. Not necessarily an `Error`.
    */
   constructor(source, cause) {
-    // The message includes the cause's `toString()` form when possible.
-    // A callback that throws a non-Error value (a string, a number, a
-    // plain object) still gets a useful diagnostic.
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(`Callback '${source}' raised: ${detail}`);
     this.name = "LingoFuseCallbackError";
 
-    /**
-     * Identifier of the callback site that raised.
-     * @type {string}
-     */
+    /** @type {string} */
     this.source = source;
 
-    /**
-     * The original value thrown by the callback body.
-     * @type {*}
-     */
+    /** @type {*} */
     this.originalCause = cause;
+  }
+}
+
+// ============================================================================
+// API registration failure
+// ============================================================================
+
+/**
+ * Raised when a registration call is rejected by the native layer.
+ *
+ * App-bound registration (AppHandle.registerCall / registerNotify) uses
+ * a boolean return convention instead of throwing: it returns false for
+ * a duplicate name and does not raise. This exception is therefore used
+ * by the process-wide P2P registration helpers (registerP2PCall /
+ * registerP2PNotify).
+ *
+ * @extends LingoFuseError
+ */
+class LingoFuseRegistrationError extends LingoFuseError {
+  /**
+   * @param {string} apiName
+   * @param {string} [message]
+   * @param {object} [options]
+   * @param {Error} [options.cause]
+   */
+  constructor(apiName, message = undefined, options = undefined) {
+    super(
+      message ??
+        `Failed to register API '${apiName}' in the process-wide P2P ` +
+        `namespace.`,
+      options
+    );
+    this.name = "LingoFuseRegistrationError";
+
+    /** @type {string} */
+    this.apiName = apiName;
   }
 }
 
@@ -301,7 +291,9 @@ module.exports = {
   LingoFuseError,
   LingoFuseLibraryLoadError,
   LingoFuseCallError,
+  LingoFuseTimeoutError,
   LingoFuseIoError,
   LingoFuseObjectDisposedError,
   LingoFuseCallbackError,
+  LingoFuseRegistrationError,
 };

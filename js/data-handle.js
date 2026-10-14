@@ -989,6 +989,111 @@ class DataHandle {
     }
 
     // ====================================================================
+    // P2P identity (auto-injected sender side data)
+    // ====================================================================
+
+    /**
+     * Returns the 32-byte sender session UID.
+     *
+     * {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+     * This accessor reads the FromUID field that the SENDER'S transport
+     * layer injects automatically before transmission (Pascal side:
+     * TC40_LF_Client.Send_* -> TMemory_Param_Tool.Rebuild_UID_and_P2PName).
+     *
+     * Because this is side data, the accessor is valid ONLY on an INPUT
+     * handle (i.e. the handle passed to a registered Call or Notify
+     * callback). Calling it on an OUTPUT handle or on a handle the
+     * caller created itself returns 32 zero bytes.
+     *
+     * {!!!!!  NATIVE FUNCTION RETURNS A POINTER  !!!!!}
+     * LF_Get_P2P_UID does NOT return a 32-byte UID by value. It returns
+     * a POINTER to a 32-byte UID. The pointer is allocated by the native
+     * side and scheduled for automatic release about 5 seconds after the
+     * call. This method:
+     *
+     *   1. Copies the 32 bytes immediately with koffi.decode().
+     *   2. Does NOT call any deallocation function on the pointer.
+     *   3. Does NOT retain the pointer beyond this method.
+     *
+     * Callers never see the transient pointer.
+     *
+     * @returns {Uint8Array} A fresh 32-byte Uint8Array.
+     */
+    getP2PUid() {
+        this.#ensureNotDisposed();
+        const ptr = this.#funcs.LF_Get_P2P_UID(this.#handle);
+        if (ptr === null || ptr === undefined) {
+            return new Uint8Array(32);
+        }
+        // Copy 32 bytes immediately. Do NOT retain the pointer.
+        const decoded = this.#binding.koffi.decode(
+            ptr,
+            this.#binding.koffi.array("uint8", 32, "Typed")
+        );
+        return Uint8Array.from(decoded);
+    }
+
+    /**
+     * Returns the sender's P2P group name as a JavaScript string.
+     *
+     * Same side-data semantics as getP2PUid: valid ONLY on INPUT handles.
+     * Returns '' when the sender did not set a name (a legitimate
+     * configuration; the default P2P name is empty).
+     *
+     * The underlying native function returns a transient buffer released
+     * ~5 seconds after the call. Koffi's `str` return type decodes the
+     * pointer into a fresh JavaScript string on the call boundary, so the
+     * returned value is fully detached and safe to retain.
+     *
+     * @returns {string}
+     */
+    getP2PName() {
+        this.#ensureNotDisposed();
+        const name = this.#funcs.LF_Get_P2P_Name(this.#handle);
+        return typeof name === "string" ? name : "";
+    }
+
+    // ====================================================================
+    // Raw UID I/O (binary, fixed 32 bytes, no NUL framing)
+    // ====================================================================
+
+    /**
+     * Appends a 32-byte UID at the current cursor. No terminator is
+     * appended: this is a fixed 32-byte write, matching Pascal's
+     * `m64.WritePtr(@UID, SizeOf(TP2P_UID___))`.
+     *
+     * @param {Uint8Array} uidBytes   Exactly 32 bytes.
+     * @throws {TypeError}  When uidBytes is not a Uint8Array.
+     * @throws {RangeError} When uidBytes.length is not 32.
+     */
+    writeUid(uidBytes) {
+        if (!(uidBytes instanceof Uint8Array)) {
+            throw new TypeError(
+                "DataHandle.writeUid: uidBytes must be a Uint8Array."
+            );
+        }
+        if (uidBytes.length !== 32) {
+            throw new RangeError(
+                `DataHandle.writeUid: uidBytes must be exactly 32 bytes, ` +
+                `got ${uidBytes.length}.`
+            );
+        }
+        this.writeBytes(uidBytes);
+    }
+
+    /**
+     * Reads exactly 32 bytes from the current cursor as a UID. No
+     * terminator is consumed. Throws on a short read.
+     *
+     * @returns {Uint8Array}
+     * @throws {import('./errors').LingoFuseIoError}
+     *   When fewer than 32 bytes are available.
+     */
+    readUid() {
+        return this.readBytesExact(32);
+    }
+
+    // ====================================================================
     // Internal helpers
     // ====================================================================
 

@@ -87,14 +87,23 @@ const BINDING_DIR = __dirname;
  * @type {string[]}
  */
 const BINDING_MODULES = [
+    // v1.0 core (in dependency order)
     path.join(BINDING_DIR, "errors.js"),
     path.join(BINDING_DIR, "binding.js"),
     path.join(BINDING_DIR, "data-handle.js"),
     path.join(BINDING_DIR, "app-handle.js"),
     path.join(BINDING_DIR, "lf-io.js"),
-    path.join(BINDING_DIR, "framework.js"),
     path.join(BINDING_DIR, "network-events.js"),
+
+    // v2.0 additions
+    path.join(BINDING_DIR, "async-support.js"),
+    path.join(BINDING_DIR, "address.js"),
+    path.join(BINDING_DIR, "options.js"),
+    path.join(BINDING_DIR, "p2p-registration.js"),
+    path.join(BINDING_DIR, "framework.js"),
     path.join(BINDING_DIR, "status.js"),
+
+    // entry point (must be last: it re-exports everything)
     path.join(BINDING_DIR, "index.js"),
 ];
 

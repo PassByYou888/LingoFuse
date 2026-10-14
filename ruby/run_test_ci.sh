@@ -13,9 +13,19 @@
 #
 #     bash run_test_ci.sh
 #
-# Required environment:
+# Native library discovery:
 #
-#     export LINGOFUSE_LIB_PATH=/path/to/lingofuse/binary
+#     The runtime binding resolves the LingoFuse native library
+#     through the operating system's library search path ONLY:
+#
+#         Linux / BSD       LD_LIBRARY_PATH
+#         macOS             DYLD_LIBRARY_PATH + DYLD_FALLBACK_LIBRARY_PATH
+#
+#     There is no binding-specific environment variable. Ensure the
+#     directory that contains the native library is on the search path
+#     before invoking this script. Example:
+#
+#         export LD_LIBRARY_PATH=/opt/lingofuse/lib:$LD_LIBRARY_PATH
 #
 # ============================================================================
 
@@ -46,6 +56,12 @@ fi
 #   4. Tests that specifically exercise the C extension (run last).
 #
 # This makes a failure point at the layer where it actually occurred.
+#
+# The v2.0 additions (test_options, test_address, test_async_support,
+# test_p2p_registration) are placed AFTER test_network but BEFORE
+# test_native_bridge_self_test. Two of them exercise the C extension's
+# callback-marshaling dispatcher; placing them just before the
+# self-test keeps that cluster together.
 
 tests=(
     "test/test_errors.rb"
@@ -61,6 +77,10 @@ tests=(
     "test/test_network_events.rb"
     "test/test_framework.rb"
     "test/test_network.rb"
+    "test/test_options.rb"
+    "test/test_address.rb"
+    "test/test_async_support.rb"
+    "test/test_p2p_registration.rb"
     "test/test_native_bridge_self_test.rb"
 )
 

@@ -6,6 +6,39 @@
 //  Mirrors the C++ ErrorCode / Error hierarchy in LingoFuse.hpp. Every
 //  failure raised by this binding is a subclass of LingoFuseError, so
 //  application code can catch the base type for a single handler.
+//
+//  THE EIGHT CLASSES
+//  -----------------
+//      LingoFuseError                  base
+//      LingoFuseLibraryLoadError       native library load failure
+//      LingoFuseCallError              remote call failed / null handle
+//      LingoFuseTimeoutError           remote call timeout (JS-side)
+//      LingoFuseIoError                byte-level I/O on a data handle
+//      LingoFuseObjectDisposedError    use after dispose
+//      LingoFuseCallbackError          user callback raised
+//      LingoFuseRegistrationError      API registration rejected
+//
+//  Only these eight classes exist. Adding a new one requires a matching
+//  ErrorCode enumerator so that a numeric category is always available.
+//
+//  DISTINCTION: LingoFuseCallError vs LingoFuseTimeoutError
+//  --------------------------------------------------------
+//  The two are deliberately distinct because they represent different
+//  causes and require different recovery paths:
+//
+//      LingoFuseCallError    -- the native layer returned a null handle
+//                               or a non-null handle whose size is 0.
+//                               The cause is a transport or routing
+//                               failure, or an empty response.
+//
+//      LingoFuseTimeoutError -- the JS-side deadline expired while the
+//                               native request was still in flight. The
+//                               native request is NOT cancelled; the
+//                               framework keeps its callback alive for
+//                               a grace period, and any late result is
+//                               silently discarded.
+//
+//  All code and documentation are in English.
 // =============================================================================
 
 /** Numeric error category, mirroring the C++ ErrorCode enum. */
@@ -74,6 +107,37 @@ export class LingoFuseCallError extends LingoFuseError {
     }
 }
 
+/**
+ * Raised when an asynchronous Call times out on the JS-side deadline,
+ * before the native callback could deliver a result.
+ *
+ * See the file header for the distinction between this class and
+ * LingoFuseCallError.
+ */
+export class LingoFuseTimeoutError extends LingoFuseError {
+    public readonly targetApp: string | undefined;
+    public readonly targetApi: string | undefined;
+    public readonly timeoutMs: number | undefined;
+
+    public constructor(
+        message: string = "LingoFuse asynchronous call timed out.",
+        options?: {
+            targetApp?: string;
+            targetApi?: string;
+            timeoutMs?: number;
+            cause?: unknown;
+        },
+    ) {
+        super(message, ErrorCode.Timeout, options?.cause !== undefined
+            ? { cause: options.cause }
+            : undefined);
+        this.name = "LingoFuseTimeoutError";
+        this.targetApp = options?.targetApp;
+        this.targetApi = options?.targetApi;
+        this.timeoutMs = options?.timeoutMs;
+    }
+}
+
 /** Raised when a byte-level I/O operation on a data handle fails. */
 export class LingoFuseIoError extends LingoFuseError {
     public readonly operation: string | undefined;
@@ -116,5 +180,38 @@ export class LingoFuseCallbackError extends LingoFuseError {
         this.name = "LingoFuseCallbackError";
         this.source = source;
         this.originalCause = cause;
+    }
+}
+
+/**
+ * Raised when an API registration call is rejected by the native layer.
+ *
+ * App-bound registration (AppHandle.registerCall / registerNotify) uses
+ * a boolean return convention instead of throwing: it returns false for
+ * a duplicate name and does not raise.
+ *
+ * The process-wide P2P registration helpers (registerP2PCall /
+ * registerP2PNotify) prefer throwing, because the three possible
+ * rejection reasons -- duplicate name, invalid handle, native OOM --
+ * cannot be distinguished from a boolean alone, and silently returning
+ * false would hide a real failure in a one-shot registration call.
+ */
+export class LingoFuseRegistrationError extends LingoFuseError {
+    public readonly apiName: string;
+
+    public constructor(
+        apiName: string,
+        message?: string,
+        options?: { cause?: unknown },
+    ) {
+        super(
+            message ??
+                `Failed to register API '${apiName}' in the process-wide ` +
+                `P2P namespace.`,
+            ErrorCode.RegistrationFailed,
+            options,
+        );
+        this.name = "LingoFuseRegistrationError";
+        this.apiName = apiName;
     }
 }

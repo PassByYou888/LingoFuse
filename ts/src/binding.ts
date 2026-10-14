@@ -3,35 +3,74 @@
 // -----------------------------------------------------------------------------
 //  Low-level native binding for the LingoFuse C ABI using Koffi.
 //
-//  Callback types:
-//      Koffi distinguishes between "an opaque pointer" (koffi.pointer("void"))
-//      and "a pointer to a callback with a specific signature". The latter
-//      must be built with koffi.proto() first, then wrapped with
-//      koffi.pointer(). Passing a plain void pointer where a callback
-//      pointer is expected raises:
-//          TypeError: Unexpected void * type, expected <callback> * type
+//  This module is the ONLY place in the TypeScript binding where native
+//  code is invoked. Every higher-level wrapper goes through the
+//  functions declared here.
 //
-//      The three callback prototypes below (LfCallFunc, LfNotifyFunc,
-//      LfNetworkEventFunc) mirror the definitions in LingoFuse.h and
-//      lingofuse_import.pas.
+//  RESPONSIBILITY
+//  --------------
+//    1. Locate and load the platform-specific LingoFuse shared library.
+//    2. Declare all 59 exported C functions with correct signatures.
+//    3. Provide opaque handle types (DataHnd, AppHnd) and the 32-byte
+//       TP2P_UID struct type.
+//    4. Declare callback prototypes for Call, Notify, Network events,
+//       and asynchronous Call (LfAsyncCallOnResult).
+//    5. Expose a clean, synchronous API surface for the RAII layer.
 //
-//  Type strategy:
-//      The NativeFunctions interface declares every FFI-boundary
-//      parameter as `any` so that call sites do not need casts. Real
-//      type checking is enforced by the higher-level wrappers
-//      (DataHandle / AppHandle / framework).
+//  UID TYPE - TWO DIFFERENT ROLES
+//  ------------------------------
+//  The Pascal-side type `TP2P_UID___` is `array[0..31] of Byte`. It
+//  plays TWO different roles on the C ABI, and each role requires a
+//  DIFFERENT Koffi-level representation:
 //
-//  Export count:
-//      37 functions, matching the C ABI export table:
-//        - 10 data handle
-//        - 5  application handle
-//        - 3  API registration
-//        - 2  local execution
-//        - 5  network preparation
-//        - 3  remote invocation
-//        - 7  options and diagnostics
-//        - 1  shutdown
-//        - 1  network events
+//    ROLE 1 - ARGUMENT (input position):
+//        The Koffi type is `TP2P_UID` (a `uint8[32]` array wrapped in
+//        a struct). Used by all LF_UID_* and LF_Check_UID* functions,
+//        and by LF_UID_*_Sequenced_*.
+//
+//    ROLE 2 - RETURN VALUE (only LF_Get_P2P_UID):
+//        The Koffi type is `koffi.pointer("uint8")`. The pointer is
+//        allocated by the native side and released ~5 seconds later.
+//
+//  DO NOT unify these two roles.
+//
+//  CALLBACK TYPES
+//  --------------
+//  Koffi distinguishes between "an opaque pointer" (koffi.pointer("void"))
+//  and "a pointer to a callback with a specific signature". The latter
+//  must be built with koffi.proto() first, then wrapped with
+//  koffi.pointer(). Passing a plain void pointer where a callback
+//  pointer is expected raises:
+//      TypeError: Unexpected void * type, expected <callback> * type
+//
+//  The four callback prototypes below (LfCallFunc, LfNotifyFunc,
+//  LfNetworkEventFunc, LfAsyncCallOnResult) mirror the definitions in
+//  LingoFuse.h and lingofuse_import.pas.
+//
+//  TYPE STRATEGY
+//  -------------
+//  The NativeFunctions interface declares every FFI-boundary parameter
+//  as `any` so that call sites do not need casts. Real type checking is
+//  enforced by the higher-level wrappers (DataHandle / AppHandle /
+//  framework / address).
+//
+//  EXPORT COUNT
+//  ------------
+//  59 functions, matching the C ABI export table:
+//      - 12  data handle
+//      - 5   application handle
+//      - 3   app-bound API registration
+//      - 3   process-wide P2P API registration
+//      - 2   local execution
+//      - 5   network preparation
+//      - 5   App-name remote invocation
+//      - 5   UID remote invocation
+//      - 5   P2PName remote invocation
+//      - 7   health checks
+//      - 2   options
+//      - 3   status
+//      - 1   network events
+//      - 1   shutdown
 // =============================================================================
 
 import koffi = require("koffi");
@@ -109,6 +148,31 @@ export function buildSearchPaths(): readonly string[] {
 const DataHnd = koffi.pointer("DataHnd", koffi.opaque());
 const AppHnd = koffi.pointer("AppHnd", koffi.opaque());
 
+/**
+ * Argument-role type: a 32-byte UID, passed by value in cdecl.
+ *
+ * WHY A STRUCT, NOT A BARE ARRAY
+ * ------------------------------
+ * Koffi rejects `koffi.array("uint8", 32)` when it appears as a
+ * function parameter type ("Type uint8_t[32] cannot be used as a
+ * parameter"). The ABI-correct representation is a struct wrapping
+ * the 32-byte array, exactly matching the C header:
+ *
+ *     typedef struct TP2P_UID_s {
+ *         uint8_t bytes[32];
+ *     } TP2P_UID;
+ *
+ * On x86-64 (SysV and Windows x64), a >16-byte aggregate is classified
+ * MEMORY by the psABI and is passed on the stack. A Koffi struct with
+ * a single fixed-size array member reproduces that layout exactly.
+ *
+ * Used as an ARGTYPES entry ONLY. Do NOT use this as the return type of
+ * LF_Get_P2P_UID; that function returns a POINTER.
+ */
+export const TP2P_UID = koffi.struct("TP2P_UID", {
+    bytes: koffi.array("uint8", 32, "Typed"),
+});
+
 // -----------------------------------------------------------------------------
 //  Callback prototypes
 // -----------------------------------------------------------------------------
@@ -139,23 +203,54 @@ export const LfNetworkEventFuncProto = koffi.proto(
     ["str"],
 );
 
+/**
+ * Callback prototype for the asynchronous remote invocation family
+ * (LF_Async_Call and its UID_* / P2PNAME_* variants).
+ *
+ * Parameters:
+ *   - data   : the opaque pointer the caller passed at the call site
+ *              (the `Data` argument of LF_Async_Call etc.).
+ *   - result : a DataHnd OWNED BY THE FRAMEWORK.
+ *
+ * {!!!!!  LIFETIME  !!!!!}
+ * The `result` handle is released IMMEDIATELY after this callback
+ * returns. Do NOT call LF_FreeData on it. Do NOT retain the pointer
+ * past its own return. Any handle from an asynchronous callback must
+ * be read fully (and its bytes copied out) BEFORE the callback
+ * returns.
+ *
+ * This prototype is deliberately declared SEPARATELY from
+ * LfNotifyFuncProto even though their parameter lists happen to be
+ * identical. The two serve different roles: LfNotifyFuncProto is
+ * registered on the native side as a persistent API handler, while
+ * LfAsyncCallOnResultProto is a one-shot completion callback. Koffi
+ * treats distinct proto() names as distinct types, which is what we
+ * want here.
+ */
+export const LfAsyncCallOnResultProto = koffi.proto(
+    "LfAsyncCallOnResult",
+    "void",
+    [koffi.pointer("void"), DataHnd],
+);
+
 /** Pointer types derived from the callback prototypes. */
 export const LfCallFuncPtr = koffi.pointer(LfCallFuncProto);
 export const LfNotifyFuncPtr = koffi.pointer(LfNotifyFuncProto);
 export const LfNetworkEventFuncPtr = koffi.pointer(LfNetworkEventFuncProto);
+export const LfAsyncCallOnResultPtr = koffi.pointer(LfAsyncCallOnResultProto);
 
 // -----------------------------------------------------------------------------
 //  Native function table
 // -----------------------------------------------------------------------------
 
 /**
- * Function table for the 37 exported LingoFuse functions.
+ * Function table for the 59 exported LingoFuse functions.
  *
  * FFI-boundary parameters are typed as `any`; the interface exists to
  * name the functions and to pin their return types.
  */
 export interface NativeFunctions {
-    // ---- Data handles (10) ----
+    // ---- Data handles (12) ----
     LF_CreateData(methodName: string): any;
     LF_CreateData_Permanent(methodName: string): any;
     LF_FreeData(hnd: any): void;
@@ -166,6 +261,21 @@ export interface NativeFunctions {
     LF_SetPos(hnd: any, pos: any): void;
     LF_GetSize(hnd: any): any;
     LF_SetSize(hnd: any, size: any): void;
+    /**
+     * Reads the auto-injected sender UID ("side data") from an INPUT
+     * data handle. Returns a POINTER to a 32-byte UID. The pointer is
+     * owned by the native side and released ~5 seconds after the call.
+     * Callers must copy the 32 bytes immediately and never retain the
+     * pointer.
+     */
+    LF_Get_P2P_UID(hnd: any): any;
+    /**
+     * Reads the auto-injected sender P2P group name ("side data") from
+     * an INPUT data handle. Returns a NUL-terminated UTF-8 string. The
+     * buffer is released ~5 seconds after the call; Koffi's `str`
+     * return type copies it immediately.
+     */
+    LF_Get_P2P_Name(hnd: any): string;
 
     // ---- Application handles (5) ----
     LF_CreateApp(appName: string, desc: string): any;
@@ -174,7 +284,7 @@ export interface NativeFunctions {
     LF_Get_AppName(appHnd: any): string;
     LF_BindApp(appHnd: any): number;
 
-    // ---- API registration (3) ----
+    // ---- App-bound API registration (3) ----
     LF_RegisterCall(
         appHnd: any,
         methodName: string,
@@ -191,6 +301,25 @@ export interface NativeFunctions {
     ): number;
     LF_Unregister(appHnd: any, methodName: string): number;
 
+    // ---- Process-wide P2P API registration (3) ----
+    //
+    // The process-wide P2P namespace is independent of any App. APIs
+    // registered here are reachable via UID addressing and P2PName
+    // addressing ONLY; they are NOT reachable via App-name addressing.
+    LF_Register_P2P_Call(
+        methodName: string,
+        desc: string,
+        trigger: any,
+        onCall: any,
+    ): number;
+    LF_Register_P2P_Notify(
+        methodName: string,
+        desc: string,
+        trigger: any,
+        onNotify: any,
+    ): number;
+    LF_Unregister_P2P(methodName: string): number;
+
     // ---- Local execution (2) ----
     LF_LocalCall(appHnd: any, param: any): any;
     LF_LocalNotify(appHnd: any, param: any): void;
@@ -202,25 +331,90 @@ export interface NativeFunctions {
     LF_PrepareDone(): number;
     LF_ExitMainThread(): void;
 
-    // ---- Remote invocation (3) ----
+    // ---- App-name remote invocation (5) ----
     LF_Call(appName: string, param: any, timeoutMs: any): any;
+    LF_Async_Call(
+        appName: string,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
+    LF_Async_Sequenced_Call(
+        appName: string,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
     LF_Notify(appName: string, param: any): void;
     LF_Sequenced_Notify(appName: string, param: any): void;
 
-    // ---- Options and diagnostics (7) ----
-    LF_SetOption(option: string, value: string): void;
-    LF_GetStatusCount(): number;
-    LF_GetStatus(): string;
-    LF_PostStatus(status: string): void;
+    // ---- UID remote invocation (5) ----
+    LF_UID_Call(uid: any, param: any, timeoutMs: any): any;
+    LF_UID_Async_Call(
+        uid: any,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
+    LF_UID_Async_Sequenced_Call(
+        uid: any,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
+    LF_UID_Notify(uid: any, param: any): void;
+    LF_UID_Sequenced_Notify(uid: any, param: any): void;
+
+    // ---- P2PName remote invocation (5) ----
+    LF_P2PNAME_Call(
+        p2pName: string,
+        param: any,
+        timeoutMs: any,
+    ): any;
+    LF_P2PNAME_Async_Call(
+        p2pName: string,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
+    LF_P2PNAME_Async_Sequenced_Call(
+        p2pName: string,
+        param: any,
+        data: any,
+        onResult: any,
+    ): number;
+    LF_P2PNAME_Notify(p2pName: string, param: any): void;
+    LF_P2PNAME_Sequenced_Notify(p2pName: string, param: any): void;
+
+    // ---- Health checks (7) ----
     LF_CheckMainThread(): number;
     LF_CheckApp(appName: string): number;
     LF_CheckApi(appName: string, apiName: string): number;
+    LF_Check_UID(uid: any): number;
+    LF_Check_UID_Api(uid: any, apiName: string): number;
+    LF_Check_P2PNAME(p2pName: string): number;
+    LF_Check_P2PNAME_Api(p2pName: string, apiName: string): number;
 
-    // ---- Shutdown (1) ----
-    LF_Shutdown(): void;
+    // ---- Options (2) ----
+    LF_SetOption(option: string, value: string): void;
+    /**
+     * Reads a runtime option. Returns a UTF-8 string. Unknown option
+     * names yield an empty string. The underlying buffer is released
+     * ~5 seconds after the call; Koffi's `str` return type copies it
+     * immediately, so the returned value is safe to retain.
+     */
+    LF_GetOption(option: string): string;
+
+    // ---- Status (3) ----
+    LF_GetStatusCount(): number;
+    LF_GetStatus(): string;
+    LF_PostStatus(status: string): void;
 
     // ---- Network events (1) ----
     LF_Set_Network_Event(onConnect: any, onDisconnect: any): void;
+
+    // ---- Shutdown (1) ----
+    LF_Shutdown(): void;
 }
 
 /** Binding singleton contents. */
@@ -250,7 +444,11 @@ function loadLibrary(): KoffiLib {
                 return _lib;
             }
         } catch (err) {
-            errors.push(`${candidate}: ${err instanceof Error ? err.message : String(err)}`);
+            errors.push(
+                `${candidate}: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
+            );
         }
     }
 
@@ -259,7 +457,11 @@ function loadLibrary(): KoffiLib {
         _lib = koffi.load(bareName);
         return _lib;
     } catch (err) {
-        errors.push(`${bareName}: ${err instanceof Error ? err.message : String(err)}`);
+        errors.push(
+            `${bareName}: ${
+                err instanceof Error ? err.message : String(err)
+            }`,
+        );
     }
 
     throw new Error(
@@ -279,7 +481,7 @@ function loadLibrary(): KoffiLib {
 function declareFunctions(lib: KoffiLib): NativeFunctions {
     const f = {} as NativeFunctions;
 
-    // ---- Data handles (10) ----
+    // ---- Data handles (12) ----
     f.LF_CreateData = lib.func(
         "LF_CreateData", DataHnd, ["str"],
     ) as NativeFunctions["LF_CreateData"];
@@ -322,6 +524,23 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
         "LF_SetSize", "void", [DataHnd, "int64"],
     ) as NativeFunctions["LF_SetSize"];
 
+    // LF_Get_P2P_UID returns a POINTER to a 32-byte UID. The pointer
+    // is owned by the native side and released ~5 seconds after the
+    // call. Callers must copy the 32 bytes immediately and never
+    // retain the pointer. See DataHandle.getP2PUid in data-handle.ts
+    // for the sanctioned wrapper.
+    f.LF_Get_P2P_UID = lib.func(
+        "LF_Get_P2P_UID",
+        koffi.pointer("uint8"),
+        [DataHnd],
+    ) as NativeFunctions["LF_Get_P2P_UID"];
+
+    // LF_Get_P2P_Name returns a NUL-terminated UTF-8 string. Koffi's
+    // `str` return type copies it immediately.
+    f.LF_Get_P2P_Name = lib.func(
+        "LF_Get_P2P_Name", "str", [DataHnd],
+    ) as NativeFunctions["LF_Get_P2P_Name"];
+
     // ---- Application handles (5) ----
     f.LF_CreateApp = lib.func(
         "LF_CreateApp", AppHnd, ["str", "str"],
@@ -343,7 +562,7 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
         "LF_BindApp", "int", [AppHnd],
     ) as NativeFunctions["LF_BindApp"];
 
-    // ---- API registration (3) ----
+    // ---- App-bound API registration (3) ----
     f.LF_RegisterCall = lib.func("LF_RegisterCall", "int", [
         AppHnd, "str", "str", koffi.pointer("void"), LfCallFuncPtr,
     ]) as NativeFunctions["LF_RegisterCall"];
@@ -355,6 +574,24 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
     f.LF_Unregister = lib.func(
         "LF_Unregister", "int", [AppHnd, "str"],
     ) as NativeFunctions["LF_Unregister"];
+
+    // ---- Process-wide P2P API registration (3) ----
+    //
+    // These register into the process-wide LF_P2P_APP namespace.
+    // Reachable via UID and P2PName addressing only; NOT via App-name
+    // addressing. They take no AppHnd.
+    f.LF_Register_P2P_Call = lib.func("LF_Register_P2P_Call", "int", [
+        "str", "str", koffi.pointer("void"), LfCallFuncPtr,
+    ]) as NativeFunctions["LF_Register_P2P_Call"];
+
+    f.LF_Register_P2P_Notify = lib.func(
+        "LF_Register_P2P_Notify", "int",
+        ["str", "str", koffi.pointer("void"), LfNotifyFuncPtr],
+    ) as NativeFunctions["LF_Register_P2P_Notify"];
+
+    f.LF_Unregister_P2P = lib.func(
+        "LF_Unregister_P2P", "int", ["str"],
+    ) as NativeFunctions["LF_Unregister_P2P"];
 
     // ---- Local execution (2) ----
     f.LF_LocalCall = lib.func(
@@ -386,10 +623,19 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
         "LF_ExitMainThread", "void", [],
     ) as NativeFunctions["LF_ExitMainThread"];
 
-    // ---- Remote invocation (3) ----
+    // ---- App-name remote invocation (5) ----
     f.LF_Call = lib.func(
         "LF_Call", DataHnd, ["str", DataHnd, "uint64"],
     ) as NativeFunctions["LF_Call"];
+
+    f.LF_Async_Call = lib.func("LF_Async_Call", "int", [
+        "str", DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr,
+    ]) as NativeFunctions["LF_Async_Call"];
+
+    f.LF_Async_Sequenced_Call = lib.func(
+        "LF_Async_Sequenced_Call", "int",
+        ["str", DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr],
+    ) as NativeFunctions["LF_Async_Sequenced_Call"];
 
     f.LF_Notify = lib.func(
         "LF_Notify", "void", ["str", DataHnd],
@@ -399,23 +645,57 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
         "LF_Sequenced_Notify", "void", ["str", DataHnd],
     ) as NativeFunctions["LF_Sequenced_Notify"];
 
-    // ---- Options and diagnostics (7) ----
-    f.LF_SetOption = lib.func(
-        "LF_SetOption", "void", ["str", "str"],
-    ) as NativeFunctions["LF_SetOption"];
+    // ---- UID remote invocation (5) ----
+    //
+    // The UID argument is passed by value in cdecl, wrapped in the
+    // TP2P_UID struct (see the note at the top of this file). Callers
+    // must pass { bytes: Uint8Array(32) } at the call site; the
+    // _toTp2pUid helper in address.ts does this.
+    f.LF_UID_Call = lib.func(
+        "LF_UID_Call", DataHnd, [TP2P_UID, DataHnd, "uint64"],
+    ) as NativeFunctions["LF_UID_Call"];
 
-    f.LF_GetStatusCount = lib.func(
-        "LF_GetStatusCount", "int", [],
-    ) as NativeFunctions["LF_GetStatusCount"];
+    f.LF_UID_Async_Call = lib.func("LF_UID_Async_Call", "int", [
+        TP2P_UID, DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr,
+    ]) as NativeFunctions["LF_UID_Async_Call"];
 
-    f.LF_GetStatus = lib.func(
-        "LF_GetStatus", "str", [],
-    ) as NativeFunctions["LF_GetStatus"];
+    f.LF_UID_Async_Sequenced_Call = lib.func(
+        "LF_UID_Async_Sequenced_Call", "int",
+        [TP2P_UID, DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr],
+    ) as NativeFunctions["LF_UID_Async_Sequenced_Call"];
 
-    f.LF_PostStatus = lib.func(
-        "LF_PostStatus", "void", ["str"],
-    ) as NativeFunctions["LF_PostStatus"];
+    f.LF_UID_Notify = lib.func(
+        "LF_UID_Notify", "void", [TP2P_UID, DataHnd],
+    ) as NativeFunctions["LF_UID_Notify"];
 
+    f.LF_UID_Sequenced_Notify = lib.func(
+        "LF_UID_Sequenced_Notify", "void", [TP2P_UID, DataHnd],
+    ) as NativeFunctions["LF_UID_Sequenced_Notify"];
+
+    // ---- P2PName remote invocation (5) ----
+    f.LF_P2PNAME_Call = lib.func(
+        "LF_P2PNAME_Call", DataHnd, ["str", DataHnd, "uint64"],
+    ) as NativeFunctions["LF_P2PNAME_Call"];
+
+    f.LF_P2PNAME_Async_Call = lib.func(
+        "LF_P2PNAME_Async_Call", "int",
+        ["str", DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr],
+    ) as NativeFunctions["LF_P2PNAME_Async_Call"];
+
+    f.LF_P2PNAME_Async_Sequenced_Call = lib.func(
+        "LF_P2PNAME_Async_Sequenced_Call", "int",
+        ["str", DataHnd, koffi.pointer("void"), LfAsyncCallOnResultPtr],
+    ) as NativeFunctions["LF_P2PNAME_Async_Sequenced_Call"];
+
+    f.LF_P2PNAME_Notify = lib.func(
+        "LF_P2PNAME_Notify", "void", ["str", DataHnd],
+    ) as NativeFunctions["LF_P2PNAME_Notify"];
+
+    f.LF_P2PNAME_Sequenced_Notify = lib.func(
+        "LF_P2PNAME_Sequenced_Notify", "void", ["str", DataHnd],
+    ) as NativeFunctions["LF_P2PNAME_Sequenced_Notify"];
+
+    // ---- Health checks (7) ----
     f.LF_CheckMainThread = lib.func(
         "LF_CheckMainThread", "int", [],
     ) as NativeFunctions["LF_CheckMainThread"];
@@ -428,15 +708,56 @@ function declareFunctions(lib: KoffiLib): NativeFunctions {
         "LF_CheckApi", "int", ["str", "str"],
     ) as NativeFunctions["LF_CheckApi"];
 
-    // ---- Shutdown (1) ----
-    f.LF_Shutdown = lib.func(
-        "LF_Shutdown", "void", [],
-    ) as NativeFunctions["LF_Shutdown"];
+    f.LF_Check_UID = lib.func(
+        "LF_Check_UID", "int", [TP2P_UID],
+    ) as NativeFunctions["LF_Check_UID"];
+
+    f.LF_Check_UID_Api = lib.func(
+        "LF_Check_UID_Api", "int", [TP2P_UID, "str"],
+    ) as NativeFunctions["LF_Check_UID_Api"];
+
+    f.LF_Check_P2PNAME = lib.func(
+        "LF_Check_P2PNAME", "int", ["str"],
+    ) as NativeFunctions["LF_Check_P2PNAME"];
+
+    f.LF_Check_P2PNAME_Api = lib.func(
+        "LF_Check_P2PNAME_Api", "int", ["str", "str"],
+    ) as NativeFunctions["LF_Check_P2PNAME_Api"];
+
+    // ---- Options (2) ----
+    f.LF_SetOption = lib.func(
+        "LF_SetOption", "void", ["str", "str"],
+    ) as NativeFunctions["LF_SetOption"];
+
+    // LF_GetOption returns a transient UTF-8 buffer, released ~5
+    // seconds after the call. Koffi's `str` return type copies it on
+    // the call boundary, so the returned string is fully detached.
+    f.LF_GetOption = lib.func(
+        "LF_GetOption", "str", ["str"],
+    ) as NativeFunctions["LF_GetOption"];
+
+    // ---- Status (3) ----
+    f.LF_GetStatusCount = lib.func(
+        "LF_GetStatusCount", "int", [],
+    ) as NativeFunctions["LF_GetStatusCount"];
+
+    f.LF_GetStatus = lib.func(
+        "LF_GetStatus", "str", [],
+    ) as NativeFunctions["LF_GetStatus"];
+
+    f.LF_PostStatus = lib.func(
+        "LF_PostStatus", "void", ["str"],
+    ) as NativeFunctions["LF_PostStatus"];
 
     // ---- Network events (1) ----
     f.LF_Set_Network_Event = lib.func("LF_Set_Network_Event", "void", [
         LfNetworkEventFuncPtr, LfNetworkEventFuncPtr,
     ]) as NativeFunctions["LF_Set_Network_Event"];
+
+    // ---- Shutdown (1) ----
+    f.LF_Shutdown = lib.func(
+        "LF_Shutdown", "void", [],
+    ) as NativeFunctions["LF_Shutdown"];
 
     return f;
 }
@@ -449,7 +770,7 @@ let _instance: Binding | null = null;
 
 /**
  * Return the binding singleton, loading the native library and
- * declaring all 37 functions on first call.
+ * declaring all 59 functions on first call.
  */
 export function getBinding(): Binding {
     if (_instance !== null) {

@@ -33,6 +33,16 @@ import java.util.Objects;
  * Mutating the caller's array after construction has no effect on
  * this target.
  *
+ * <h2>Handle access</h2>
+ *
+ * <p>Every hook accesses the request handle through
+ * {@link DataHandle#withHandle(java.util.function.Function)} rather
+ * than {@link DataHandle#raw()}. This class does not delegate to
+ * {@code Framework} (the {@code LF_UID_*} family has no
+ * {@code Framework} wrapper for the notify/sequenced-notify
+ * variants), so the {@code withHandle} contract is upheld directly in
+ * each hook.
+ *
  * <h2>UID lifecycle</h2>
  *
  * <p>A UID is regenerated on every TunnelLink. Caching a UID across
@@ -97,11 +107,9 @@ public final class UIDTarget extends Target {
     protected DataHandle rawCall(DataHandle param, long timeoutMs) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena);
-            MemorySegment raw = NativeCall.callSeg(
+            MemorySegment raw = param.withHandle(h -> NativeCall.callSeg(
                     NativeMethods.LF_UID_Call,
-                    uidSeg,
-                    param.raw(),
-                    timeoutMs);
+                    uidSeg, h, timeoutMs));
             if (raw == null || raw.address() == 0L) {
                 throw new LingoFuseException(
                         "LF_UID_Call returned a null handle for uid="
@@ -115,12 +123,9 @@ public final class UIDTarget extends Target {
     protected int rawAsyncCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_UID_Async_Call,
-                    uidSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    uidSeg, h, MemorySegment.NULL, stub));
         }
     }
 
@@ -128,12 +133,9 @@ public final class UIDTarget extends Target {
     protected int rawAsyncSequencedCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_UID_Async_Sequenced_Call,
-                    uidSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    uidSeg, h, MemorySegment.NULL, stub));
         }
     }
 
@@ -141,10 +143,11 @@ public final class UIDTarget extends Target {
     protected void rawNotify(DataHandle param) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena);
-            NativeCall.callVoid(
-                    NativeMethods.LF_UID_Notify,
-                    uidSeg,
-                    param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_UID_Notify, uidSeg, h);
+                return null;
+            });
         }
     }
 
@@ -152,10 +155,11 @@ public final class UIDTarget extends Target {
     protected void rawSequencedNotify(DataHandle param) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena);
-            NativeCall.callVoid(
-                    NativeMethods.LF_UID_Sequenced_Notify,
-                    uidSeg,
-                    param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_UID_Sequenced_Notify, uidSeg, h);
+                return null;
+            });
         }
     }
 

@@ -16,17 +16,41 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link #shutdownInstance()} to release it (intended for tests and
  * process teardown).
  *
- * <p>Notes on lifetime:
+ * <h2>Release path</h2>
+ *
+ * <p>An op leaves the active registry through one of three paths:
+ *
+ * <ol>
+ *   <li>{@link AsyncOp#markNotQueued()} — the native dispatch was
+ *       rejected before the request was queued. The release is
+ *       scheduled immediately.</li>
+ *   <li>{@link AsyncOp#invokeFromC(MemorySegment, Throwable)} — the
+ *       C-side callback arrived. The release is scheduled
+ *       immediately.</li>
+ *   <li>{@link #handleTimeout} — the JS-side timeout fired before
+ *       the callback arrived. The release is deferred by the
+ *       configured grace period, so a straggling callback can still
+ *       land on a valid trampoline.</li>
+ * </ol>
+ *
+ * <p>In every case, the release path removes the op from the
+ * registry by its assigned key (O(1)) and closes the stub arena. See
+ * {@link AsyncOp#releaseResources()} for the arena-closing contract.
+ *
+ * <h2>Shutdown</h2>
+ *
+ * <p>{@link #shutdown()} releases every tracked op's resources
+ * unconditionally, including any op currently in the ABANDONED
+ * state. This is a deliberate departure from the grace-period logic:
+ * once the bridge is being torn down, waiting for a callback that may
+ * never arrive would just delay process exit.
+ *
+ * <h2>Notes on lifetime</h2>
  * <ul>
  *   <li>{@code scheduleTimeout(op, 0)} is a no-op (no timeout is
  *       armed).</li>
  *   <li>{@code scheduleTimeout(op, negative)} throws
  *       {@link IllegalArgumentException}.</li>
- *   <li>{@link #shutdown()} releases all tracked op resources before
- *       stopping the scheduler. Any callback that arrives after
- *       shutdown notifies its owner bridge through
- *       {@link AsyncOp#ownerBridge()}; the release falls back to the
- *       synchronous path.</li>
  * </ul>
  */
 public final class AsyncBridge {
@@ -76,11 +100,26 @@ public final class AsyncBridge {
         this.scheduler = Executors.newSingleThreadScheduledExecutor(tf);
     }
 
+    /**
+     * Registers an op and assigns it a stable registry key. Must be
+     * called BEFORE the op's upcall stub is handed to the native
+     * library.
+     */
     public void register(AsyncOp op) {
         long id = nextId.incrementAndGet();
+        op.setKey(id);
         ops.put(id, op);
     }
 
+    /**
+     * Arms a JS-side timeout on the given op.
+     *
+     * @param op        the op
+     * @param timeoutMs the timeout in milliseconds; zero disables the
+     *                  timeout
+     * @throws IllegalArgumentException when {@code timeoutMs} is
+     *         negative
+     */
     public void scheduleTimeout(AsyncOp op, long timeoutMs) {
         if (timeoutMs < 0) {
             throw new IllegalArgumentException(
@@ -157,15 +196,27 @@ public final class AsyncBridge {
         scheduleReleaseAfterGrace(op);
     }
 
+    /**
+     * Removes an op from the registry and releases its resources.
+     *
+     * <p>O(1): the op carries the registry key assigned at
+     * registration time, so the removal is a direct map lookup
+     * rather than a linear scan.
+     *
+     * <p>Idempotent: a second call for the same op is a no-op
+     * because the key is no longer present in the registry.
+     */
     private void releaseOp(AsyncOp op) {
-        for (Map.Entry<Long, AsyncOp> entry : ops.entrySet()) {
-            if (entry.getValue() == op) {
-                if (ops.remove(entry.getKey(), op)) {
-                    op.releaseResources();
-                    releaseCount.incrementAndGet();
-                }
-                return;
-            }
+        long key = op.key();
+        if (key == 0L) {
+            // The op was never registered (for example, a
+            // mis-constructed op that has not gone through
+            // register()). Nothing to release.
+            return;
+        }
+        if (ops.remove(key, op)) {
+            op.releaseResources();
+            releaseCount.incrementAndGet();
         }
     }
 
@@ -210,9 +261,16 @@ public final class AsyncBridge {
             shutdown = true;
         }
 
-        // Release resources for every tracked op before stopping the
-        // scheduler. Ops in the ABANDONED state keep their arena open
-        // (see AsyncOp.releaseResources).
+        // Release every tracked op's resources before stopping the
+        // scheduler.
+        //
+        // The release is UNCONDITIONAL, including for ops currently
+        // in the ABANDONED state. During normal operation the
+        // ABANDONED state defers the arena close by graceSeconds to
+        // give a straggling callback a chance to land on a valid
+        // trampoline; during shutdown there is nothing left to wait
+        // for, and delaying process exit for a callback that may
+        // never arrive is strictly worse than dropping it.
         java.util.List<AsyncOp> snapshot =
                 new java.util.ArrayList<>(ops.values());
         for (AsyncOp op : snapshot) {

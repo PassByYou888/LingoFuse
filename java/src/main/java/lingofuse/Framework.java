@@ -19,6 +19,18 @@ import lingofuse.async.TypedAsyncResultHandler;
 /**
  * Public facade over the process-wide LingoFuse native functions.
  *
+ * <p>Every method that forwards a {@link DataHandle} to a native call
+ * does so through {@link DataHandle#withHandle(java.util.function.Function)}.
+ * That wrapper holds the handle's internal write lock for the entire
+ * duration of the native call, which closes the use-after-free window
+ * that would otherwise exist between reading the raw pointer and
+ * passing it to the native function: without the lock, a concurrent
+ * {@link DataHandle#close()} could free the handle in that window and
+ * the native side would operate on freed memory.
+ *
+ * <p>Callers never need to think about this. It is an internal
+ * invariant of this class.
+ *
  * <p>Change log for the current revision:
  * <ul>
  *   <li>{@code reportCallbackError} writes to stderr only when
@@ -35,6 +47,10 @@ import lingofuse.async.TypedAsyncResultHandler;
  *       call.</li>
  *   <li>All {@code reinterpret(Long.MAX_VALUE)} occurrences have been
  *       replaced by a bounded {@code MAX_C_STRING_LENGTH}.</li>
+ *   <li>All {@code param.raw()} call sites have been replaced by
+ *       {@code param.withHandle(...)} so that a concurrent
+ *       {@code DataHandle.close()} cannot free the handle between the
+ *       {@code raw()} read and the native call.</li>
  * </ul>
  */
 public final class Framework {
@@ -226,9 +242,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            MemorySegment raw = NativeCall.callSeg(
+            MemorySegment raw = param.withHandle(h -> NativeCall.callSeg(
                     NativeMethods.LF_Call,
-                    nameSeg, param.raw(), timeoutMs);
+                    nameSeg, h, timeoutMs));
             if (isNull(raw)) {
                 throw new LingoFuseException(
                         "LF_Call returned a null handle for app '"
@@ -254,8 +270,11 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            NativeCall.callVoid(
-                    NativeMethods.LF_Notify, nameSeg, param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_Notify, nameSeg, h);
+                return null;
+            });
         }
     }
 
@@ -265,9 +284,12 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            NativeCall.callVoid(
-                    NativeMethods.LF_Sequenced_Notify,
-                    nameSeg, param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_Sequenced_Notify,
+                        nameSeg, h);
+                return null;
+            });
         }
     }
 
@@ -283,9 +305,9 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                MemorySegment raw = NativeCall.callSeg(
+                MemorySegment raw = param.withHandle(h -> NativeCall.callSeg(
                         NativeMethods.LF_UID_Call,
-                        uidSeg, param.raw(), timeoutMs);
+                        uidSeg, h, timeoutMs));
                 if (isNull(raw)) {
                     throw new LingoFuseException(
                             "LF_UID_Call returned a null handle for uid="
@@ -315,8 +337,11 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                NativeCall.callVoid(
-                        NativeMethods.LF_UID_Notify, uidSeg, param.raw());
+                param.withHandle(h -> {
+                    NativeCall.callVoid(
+                            NativeMethods.LF_UID_Notify, uidSeg, h);
+                    return null;
+                });
             } finally {
                 uidSeg.fill((byte) 0);
             }
@@ -330,9 +355,12 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                NativeCall.callVoid(
-                        NativeMethods.LF_UID_Sequenced_Notify,
-                        uidSeg, param.raw());
+                param.withHandle(h -> {
+                    NativeCall.callVoid(
+                            NativeMethods.LF_UID_Sequenced_Notify,
+                            uidSeg, h);
+                    return null;
+                });
             } finally {
                 uidSeg.fill((byte) 0);
             }
@@ -350,9 +378,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            MemorySegment raw = NativeCall.callSeg(
+            MemorySegment raw = param.withHandle(h -> NativeCall.callSeg(
                     NativeMethods.LF_P2PNAME_Call,
-                    groupSeg, param.raw(), timeoutMs);
+                    groupSeg, h, timeoutMs));
             if (isNull(raw)) {
                 throw new LingoFuseException(
                         "LF_P2PNAME_Call returned a null handle for group='"
@@ -378,9 +406,12 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            NativeCall.callVoid(
-                    NativeMethods.LF_P2PNAME_Notify,
-                    groupSeg, param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_P2PNAME_Notify,
+                        groupSeg, h);
+                return null;
+            });
         }
     }
 
@@ -390,9 +421,12 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            NativeCall.callVoid(
-                    NativeMethods.LF_P2PNAME_Sequenced_Notify,
-                    groupSeg, param.raw());
+            param.withHandle(h -> {
+                NativeCall.callVoid(
+                        NativeMethods.LF_P2PNAME_Sequenced_Notify,
+                        groupSeg, h);
+                return null;
+            });
         }
     }
 
@@ -411,9 +445,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Call,
-                    nameSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    nameSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -437,9 +471,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Call,
-                    nameSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    nameSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -459,9 +493,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Sequenced_Call,
-                    nameSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    nameSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -485,9 +519,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Sequenced_Call,
-                    nameSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    nameSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -512,9 +546,9 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                int ret = NativeCall.callInt(
+                int ret = param.withHandle(h -> NativeCall.callInt(
                         NativeMethods.LF_UID_Async_Call,
-                        uidSeg, param.raw(), MemorySegment.NULL, op.stub());
+                        uidSeg, h, MemorySegment.NULL, op.stub()));
                 if (ret != 1) {
                     op.markNotQueued();
                     return false;
@@ -542,9 +576,9 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                int ret = NativeCall.callInt(
+                int ret = param.withHandle(h -> NativeCall.callInt(
                         NativeMethods.LF_UID_Async_Call,
-                        uidSeg, param.raw(), MemorySegment.NULL, op.stub());
+                        uidSeg, h, MemorySegment.NULL, op.stub()));
                 if (ret != 1) {
                     op.markNotQueued();
                     return false;
@@ -568,9 +602,9 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                int ret = NativeCall.callInt(
+                int ret = param.withHandle(h -> NativeCall.callInt(
                         NativeMethods.LF_UID_Async_Sequenced_Call,
-                        uidSeg, param.raw(), MemorySegment.NULL, op.stub());
+                        uidSeg, h, MemorySegment.NULL, op.stub()));
                 if (ret != 1) {
                     op.markNotQueued();
                     return false;
@@ -598,9 +632,9 @@ public final class Framework {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment uidSeg = allocateUid(arena, uid);
             try {
-                int ret = NativeCall.callInt(
+                int ret = param.withHandle(h -> NativeCall.callInt(
                         NativeMethods.LF_UID_Async_Sequenced_Call,
-                        uidSeg, param.raw(), MemorySegment.NULL, op.stub());
+                        uidSeg, h, MemorySegment.NULL, op.stub()));
                 if (ret != 1) {
                     op.markNotQueued();
                     return false;
@@ -627,9 +661,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Call,
-                    groupSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    groupSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -653,9 +687,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Call,
-                    groupSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    groupSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -675,9 +709,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Sequenced_Call,
-                    groupSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    groupSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;
@@ -701,9 +735,9 @@ public final class Framework {
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(group);
-            int ret = NativeCall.callInt(
+            int ret = param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Sequenced_Call,
-                    groupSeg, param.raw(), MemorySegment.NULL, op.stub());
+                    groupSeg, h, MemorySegment.NULL, op.stub()));
             if (ret != 1) {
                 op.markNotQueued();
                 return false;

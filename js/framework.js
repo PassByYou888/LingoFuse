@@ -86,6 +86,14 @@ const {
     LingoFuseObjectDisposedError,
 } = require("./errors");
 
+// Async subsystem and payload I/O helpers. These are used by the
+// callAsync / callPromise / uidCall* / p2pnameCall* functions below.
+const {
+    runAsyncWithPromise,
+    runLegacyOp,
+} = require("./async-support");
+const { readJson, writeJson } = require("./lf-io");
+
 // ============================================================================
 // Module-level state
 // ============================================================================
@@ -342,6 +350,30 @@ function setOption(option, value) {
     funcs().LF_SetOption(option, value);
 }
 
+/**
+ * Reads the current value of a runtime option.
+ *
+ * Returns a UTF-8 string. Unknown option names yield an empty string.
+ * The underlying native function returns a pointer to a transient
+ * buffer released ~5 seconds after the call; Koffi decodes it into a
+ * JavaScript string on the return boundary, so the returned value is
+ * already detached and safe to retain.
+ *
+ * For typed access with canonical option keys, use the helpers in
+ * `lingofuse-js/options` (also available as `lf.options.*`).
+ *
+ * @param {string} option
+ * @returns {string}
+ * @throws {TypeError} When option is not a string.
+ */
+function getOption(option) {
+    if (typeof option !== "string") {
+        throw new TypeError("getOption: option must be a string.");
+    }
+    const v = funcs().LF_GetOption(option);
+    return typeof v === "string" ? v : "";
+}
+
 // ============================================================================
 // Application name generation and query
 // ============================================================================
@@ -538,6 +570,311 @@ function sequencedNotify(appName, param) {
 }
 
 // ============================================================================
+// Asynchronous remote invocation
+// ============================================================================
+//
+// These functions give the process-wide framework facade the same
+// async capabilities that the Target abstractions in address.js offer,
+// but at a lower level: the caller supplies a pre-populated DataHandle
+// rather than a payload object.
+//
+// Three styles are provided for each addressing mode:
+//
+//   callAsync(...)      -- inline callback, event-oriented code
+//   callPromise(...)    -- Promise, await-style business code
+//   call(...) / callSync -- synchronous (already provided for App name)
+//
+// The result delivered to a callback or a Promise is a deserialized
+// JSON value. For raw-byte access, use the low-level makeLegacyOp and
+// LF_Async_* primitives directly.
+
+/**
+ * Build a deserializer that reads the JSON payload from a result
+ * handle delivered on the JS thread inside the native callback window.
+ */
+function _makeJsonDeserializer() {
+    return function (rawResult) {
+        if (!rawResult) return null;
+        const h = DataHandle.fromRaw(rawResult, false);
+        h.position = 0;
+        return readJson(h);
+    };
+}
+
+/**
+ * Normalize a UID argument into the shape the Koffi binding expects.
+ * The TP2P_UID type is a Koffi struct ({ bytes: uint8[32] }).
+ *
+ * @param {Uint8Array|Buffer|string|{bytes: Uint8Array}} uid
+ * @returns {{ bytes: Uint8Array }}
+ */
+function _wrapUid(uid) {
+    if (
+        uid !== null &&
+        typeof uid === "object" &&
+        uid.bytes instanceof Uint8Array
+    ) {
+        if (uid.bytes.length !== 32) {
+            throw new RangeError(
+                `UID must be exactly 32 bytes, got ${uid.bytes.length}.`
+            );
+        }
+        return uid;
+    }
+    if (uid instanceof Uint8Array) {
+        if (uid.length !== 32) {
+            throw new RangeError(
+                `UID must be exactly 32 bytes, got ${uid.length}.`
+            );
+        }
+        return { bytes: new Uint8Array(uid) };
+    }
+    if (typeof uid === "string") {
+        const hex = uid.trim();
+        if (hex.length !== 64) {
+            throw new RangeError(
+                `UID hex string must be exactly 64 characters, ` +
+                `got ${hex.length}.`
+            );
+        }
+        if (!/^[0-9a-fA-F]+$/.test(hex)) {
+            throw new RangeError(
+                "UID hex string contains non-hex characters."
+            );
+        }
+        const bytes = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) {
+            bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+        }
+        return { bytes };
+    }
+    throw new TypeError(
+        "UID must be a Uint8Array(32), a 64-char hex string, " +
+        "or a { bytes: Uint8Array(32) } object."
+    );
+}
+
+// ----------------------------------------------------------------------------
+// App-name addressing (async)
+// ----------------------------------------------------------------------------
+
+/**
+ * Non-blocking Call with an inline callback. The callback fires on the
+ * JS event loop and receives (result, error, userData):
+ *
+ *   - result   : the deserialized JSON value, or null on error.
+ *   - error    : a LingoFuseError / LingoFuseTimeoutError, or null.
+ *   - userData : the value passed at call time, or undefined.
+ *
+ * The callback MUST NOT block. Exceptions raised inside it are caught
+ * and logged; they never escape into the native stack.
+ *
+ * @param {string} appName
+ * @param {DataHandle} param  A pre-populated DataHandle. Not consumed.
+ * @param {(result: *, error: Error|null, userData: *) => void} onResult
+ * @param {*} [userData]
+ * @returns {number} 1 on successful dispatch, 0 otherwise.
+ */
+function callAsync(appName, param, onResult, userData = undefined) {
+    if (typeof appName !== "string") {
+        throw new TypeError("callAsync: appName must be a string.");
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("callAsync: param must be a DataHandle.");
+    }
+    if (typeof onResult !== "function") {
+        throw new TypeError("callAsync: onResult must be a function.");
+    }
+    return runLegacyOp(
+        (cb) => funcs().LF_Async_Call(appName, param.raw, null, cb),
+        onResult,
+        userData,
+        _makeJsonDeserializer()
+    );
+}
+
+/**
+ * Non-blocking Call returning a CallPromise.
+ *
+ * @param {string} appName
+ * @param {DataHandle} param
+ * @param {number|bigint} [timeoutMs=5000]
+ * @returns {import("./async-support").CallPromise}
+ */
+function callPromise(appName, param, timeoutMs = 5000) {
+    if (typeof appName !== "string") {
+        throw new TypeError("callPromise: appName must be a string.");
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("callPromise: param must be a DataHandle.");
+    }
+    const timeout = Number(normaliseTimeout(timeoutMs));
+    return runAsyncWithPromise(
+        (cb) => funcs().LF_Async_Call(appName, param.raw, null, cb),
+        _makeJsonDeserializer(),
+        timeout
+    );
+}
+
+// ----------------------------------------------------------------------------
+// UID addressing
+// ----------------------------------------------------------------------------
+
+/** Synchronous Call by UID. */
+function uidCall(uid, param, timeoutMs = 5000) {
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("uidCall: param must be a DataHandle.");
+    }
+    const timeout = Number(normaliseTimeout(timeoutMs));
+    const uidArg = _wrapUid(uid);
+    const result = funcs().LF_UID_Call(uidArg, param.raw, BigInt(timeout));
+    if (result === null || result === undefined) {
+        throw new LingoFuseCallError("LF_UID_Call returned a null handle.");
+    }
+    return DataHandle.fromRaw(result, true);
+}
+
+/** Non-blocking Call by UID with an inline callback. */
+function uidCallAsync(uid, param, onResult, userData = undefined) {
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("uidCallAsync: param must be a DataHandle.");
+    }
+    if (typeof onResult !== "function") {
+        throw new TypeError("uidCallAsync: onResult must be a function.");
+    }
+    const uidArg = _wrapUid(uid);
+    return runLegacyOp(
+        (cb) => funcs().LF_UID_Async_Call(uidArg, param.raw, null, cb),
+        onResult,
+        userData,
+        _makeJsonDeserializer()
+    );
+}
+
+/** Non-blocking Call by UID returning a CallPromise. */
+function uidCallPromise(uid, param, timeoutMs = 5000) {
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("uidCallPromise: param must be a DataHandle.");
+    }
+    const timeout = Number(normaliseTimeout(timeoutMs));
+    const uidArg = _wrapUid(uid);
+    return runAsyncWithPromise(
+        (cb) => funcs().LF_UID_Async_Call(uidArg, param.raw, null, cb),
+        _makeJsonDeserializer(),
+        timeout
+    );
+}
+
+/** One-way Notify by UID. */
+function uidNotify(uid, param) {
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("uidNotify: param must be a DataHandle.");
+    }
+    const uidArg = _wrapUid(uid);
+    funcs().LF_UID_Notify(uidArg, param.raw);
+}
+
+/** FIFO-ordered one-way Notify by UID. */
+function uidSequencedNotify(uid, param) {
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("uidSequencedNotify: param must be a DataHandle.");
+    }
+    const uidArg = _wrapUid(uid);
+    funcs().LF_UID_Sequenced_Notify(uidArg, param.raw);
+}
+
+// ----------------------------------------------------------------------------
+// P2PName addressing
+// ----------------------------------------------------------------------------
+
+/** Synchronous Call by P2P group name. */
+function p2pnameCall(p2pName, param, timeoutMs = 5000) {
+    if (typeof p2pName !== "string") {
+        throw new TypeError("p2pnameCall: p2pName must be a string.");
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("p2pnameCall: param must be a DataHandle.");
+    }
+    const timeout = Number(normaliseTimeout(timeoutMs));
+    const result = funcs().LF_P2PNAME_Call(
+        p2pName,
+        param.raw,
+        BigInt(timeout)
+    );
+    if (result === null || result === undefined) {
+        throw new LingoFuseCallError(
+            "LF_P2PNAME_Call returned a null handle."
+        );
+    }
+    return DataHandle.fromRaw(result, true);
+}
+
+/** Non-blocking Call by P2P group name with an inline callback. */
+function p2pnameCallAsync(p2pName, param, onResult, userData = undefined) {
+    if (typeof p2pName !== "string") {
+        throw new TypeError("p2pnameCallAsync: p2pName must be a string.");
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("p2pnameCallAsync: param must be a DataHandle.");
+    }
+    if (typeof onResult !== "function") {
+        throw new TypeError("p2pnameCallAsync: onResult must be a function.");
+    }
+    return runLegacyOp(
+        (cb) => funcs().LF_P2PNAME_Async_Call(p2pName, param.raw, null, cb),
+        onResult,
+        userData,
+        _makeJsonDeserializer()
+    );
+}
+
+/** Non-blocking Call by P2P group name returning a CallPromise. */
+function p2pnameCallPromise(p2pName, param, timeoutMs = 5000) {
+    if (typeof p2pName !== "string") {
+        throw new TypeError(
+            "p2pnameCallPromise: p2pName must be a string."
+        );
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError(
+            "p2pnameCallPromise: param must be a DataHandle."
+        );
+    }
+    const timeout = Number(normaliseTimeout(timeoutMs));
+    return runAsyncWithPromise(
+        (cb) => funcs().LF_P2PNAME_Async_Call(p2pName, param.raw, null, cb),
+        _makeJsonDeserializer(),
+        timeout
+    );
+}
+
+/** One-way Notify by P2P group name. */
+function p2pnameNotify(p2pName, param) {
+    if (typeof p2pName !== "string") {
+        throw new TypeError("p2pnameNotify: p2pName must be a string.");
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError("p2pnameNotify: param must be a DataHandle.");
+    }
+    funcs().LF_P2PNAME_Notify(p2pName, param.raw);
+}
+
+/** FIFO-ordered one-way Notify by P2P group name. */
+function p2pnameSequencedNotify(p2pName, param) {
+    if (typeof p2pName !== "string") {
+        throw new TypeError(
+            "p2pnameSequencedNotify: p2pName must be a string."
+        );
+    }
+    if (!(param instanceof DataHandle)) {
+        throw new TypeError(
+            "p2pnameSequencedNotify: param must be a DataHandle."
+        );
+    }
+    funcs().LF_P2PNAME_Sequenced_Notify(p2pName, param.raw);
+}
+
+// ============================================================================
 // Shutdown
 // ============================================================================
 
@@ -579,6 +916,7 @@ module.exports = {
 
     // Runtime options
     setOption,
+    getOption,
 
     // Application name
     generateAppName,
@@ -589,6 +927,24 @@ module.exports = {
     tryCall,
     notify,
     sequencedNotify,
+
+    // Async / Promise remote invocation (App-name addressing)
+    callAsync,
+    callPromise,
+
+    // UID addressing
+    uidCall,
+    uidCallAsync,
+    uidCallPromise,
+    uidNotify,
+    uidSequencedNotify,
+
+    // P2PName addressing
+    p2pnameCall,
+    p2pnameCallAsync,
+    p2pnameCallPromise,
+    p2pnameNotify,
+    p2pnameSequencedNotify,
 
     // Shutdown
     shutdown,

@@ -4,93 +4,35 @@
  *
  * This module is the ONLY place in the JavaScript binding where native
  * code is invoked. Every higher-level wrapper goes through the functions
- * declared here. It mirrors the role of `NativeMethods.cs` in the C#
- * binding and the function-pointer table in `LingoFuse.c`.
+ * declared here.
  *
  * ============================================================================
  * RESPONSIBILITY
  * ============================================================================
  *   1. Locate and load the platform-specific LingoFuse shared library.
- *   2. Declare all 37 exported C functions with correct signatures.
- *   3. Provide opaque handle types (DataHnd, AppHnd).
- *   4. Declare callback prototypes for Call, Notify, and Network events.
+ *   2. Declare all 59 exported C functions with correct signatures.
+ *   3. Provide opaque handle types (DataHnd, AppHnd, TP2P_UID).
+ *   4. Declare callback prototypes for Call, Notify, Network events,
+ *      and asynchronous Call (LfAsyncCallOnResult).
  *   5. Expose a clean, synchronous API surface for the RAII layer.
  *
  * ============================================================================
- * CALLING CONVENTION
+ * UID TYPE - TWO DIFFERENT ROLES
  * ============================================================================
- * All exported functions use the C calling convention (cdecl). Koffi uses
- * cdecl by default, so no explicit convention annotation is required.
+ * The Pascal-side type `TP2P_UID___` is `array[0..31] of Byte`. It
+ * plays TWO different roles on the C ABI, and each role requires a
+ * DIFFERENT Koffi-level representation:
  *
- * ============================================================================
- * STRING ENCODING
- * ============================================================================
- * Every string parameter is a UTF-8, NUL-terminated C string (const char*).
- * Koffi's `str` type handles the conversion automatically: JavaScript
- * strings are encoded to UTF-8 on the way in, and decoded from UTF-8 on
- * the way out.
+ *   ROLE 1 - ARGUMENT (input position):
+ *       The Koffi type is `TP2P_UID` (a `uint8[32]` array).
  *
- * ============================================================================
- * PLATFORM LIBRARY NAMES
- * ============================================================================
- *   Windows 64-bit  ->  LingoFuse64.dll
- *   Windows 32-bit  ->  LingoFuse32.dll
- *   Linux / BSD     ->  liblingofuse.so
- *   macOS           ->  liblingofuse.dylib
+ *   ROLE 2 - RETURN VALUE (only LF_Get_P2P_UID):
+ *       The Koffi type is `koffi.pointer("uint8")`. The pointer is
+ *       allocated by the native side and released ~5 seconds later.
  *
- * ============================================================================
- * PORTABILITY
- * ============================================================================
- * This module is designed to run on Node.js, Deno (2.x), and Bun.
+ * DO NOT unify these two roles.
  *
- *   - `process.platform` and `process.arch` are read defensively; both
- *     Deno 2.x and Bun provide a Node-compatible `process` shim.
- *
- *   - `process.execPath` and `process.cwd()` are guarded by type checks
- *     because they may be missing or behave differently in restricted
- *     embedded environments.
- *
- *   - `__dirname` is guarded by a type check because this file is
- *     currently shipped as CommonJS. If the file is ever converted to
- *     ESM, the `__dirname` branch is silently skipped and the caller
- *     must supply the native library via one of the other search paths
- *     or via the system loader.
- *
- *   - `require("koffi")` works on Node and Bun directly. On Deno it
- *     works only when the package is loaded through the npm: specifier
- *     (for example `import lf from "npm:lingofuse-js"`), which makes
- *     Deno's npm compatibility layer provide a CommonJS `require`.
- *
- * See PORTABILITY.md for the full set of usage recommendations.
- *
- * ============================================================================
- * CALLBACK LIFETIME
- * ============================================================================
- * Koffi distinguishes between transient and registered callbacks. LingoFuse
- * callbacks (Call, Notify, Network events) are invoked by native worker
- * threads at arbitrary times after registration. They MUST be registered
- * callbacks (`koffi.register`) to remain valid. The higher-level wrappers
- * in this package manage registration and unregistration.
- *
- * ============================================================================
- * BYTE BUFFER PARAMETERS
- * ============================================================================
- * The native LF_WriteBuffer / LF_ReadBuffer parameters are declared as
- * `const void*` / `void*` in C. In this Koffi binding they are declared
- * as `uint8_t*` so that Koffi accepts and returns `Uint8Array` values
- * directly. The native function is unaffected by this choice: it sees
- * the same pointer either way. Declaring the parameter as `void*` would
- * force the caller to pass raw addresses, which Koffi does not accept
- * for a `Uint8Array`.
- *
- * ============================================================================
- * THREAD SAFETY
- * ============================================================================
- * The native library is thread-safe. However, a single DataHnd must not be
- * written concurrently from multiple JavaScript threads. The RAII layer
- * documents the serialisation contract.
- *
- * ============================================================================
+ * All comments and docstrings are in English.
  */
 
 "use strict";
@@ -106,12 +48,7 @@ const fs = require("fs");
 /**
  * Returns the platform-specific shared library file name.
  *
- * `process.platform` and `process.arch` are read defensively: on
- * Node.js, Deno 2.x, and Bun they are available; on a hypothetical
- * future runtime that lacks them, the function falls back to a
- * conservative default.
- *
- * @returns {string} The library file name (e.g. "LingoFuse64.dll").
+ * @returns {string}
  */
 function selectPlatformFileName() {
   const platform =
@@ -125,31 +62,18 @@ function selectPlatformFileName() {
   if (platform === "darwin") {
     return "liblingofuse.dylib";
   }
-  // Linux, BSD, and any other ELF-based system.
   return "liblingofuse.so";
 }
 
 /**
  * Returns a list of candidate search paths for the shared library.
  *
- * Resolution order:
- *   1. The directory containing the current executable.
- *   2. The current working directory.
- *   3. The package's own native/ directory (for bundled deployments).
- *
- * Every branch is defensive: a runtime that lacks `process.execPath`,
- * `process.cwd`, or `__dirname` simply skips that candidate and moves
- * on. The final fallback in loadLibrary() is to ask the system loader
- * to resolve the bare library name, which covers PATH on Windows,
- * LD_LIBRARY_PATH on Linux, and DYLD_LIBRARY_PATH on macOS.
- *
- * @returns {string[]} An ordered list of absolute file paths to try.
+ * @returns {string[]}
  */
 function buildSearchPaths() {
   const fileName = selectPlatformFileName();
   const candidates = [];
 
-  // 1. Next to the executable.
   try {
     if (
       typeof process !== "undefined" &&
@@ -159,10 +83,9 @@ function buildSearchPaths() {
       candidates.push(path.join(path.dirname(process.execPath), fileName));
     }
   } catch (_) {
-    // process.execPath may be unavailable in exotic embeddings.
+    // process.execPath may be unavailable.
   }
 
-  // 2. Current working directory.
   try {
     if (
       typeof process !== "undefined" &&
@@ -171,16 +94,9 @@ function buildSearchPaths() {
       candidates.push(path.join(process.cwd(), fileName));
     }
   } catch (_) {
-    // process.cwd may be unavailable or may throw in restricted sandboxes.
+    // process.cwd may be unavailable.
   }
 
-  // 3. Package-local native/ directory.
-  //
-  // __dirname is available in CommonJS. The binding is currently
-  // shipped as CommonJS, so this branch is reliable on Node and Bun.
-  // It is guarded with a type check so that a future conversion to
-  // ESM does not break this function: in ESM, __dirname is undefined
-  // and this candidate is silently skipped.
   if (typeof __dirname === "string" && __dirname.length > 0) {
     candidates.push(path.join(__dirname, "..", "native", fileName));
   }
@@ -201,7 +117,7 @@ let lib = null;
 /**
  * Loads the LingoFuse shared library.
  *
- * @returns {object} The Koffi library object.
+ * @returns {object}
  * @throws {Error} If the library cannot be found or loaded.
  */
 function loadLibrary() {
@@ -223,7 +139,6 @@ function loadLibrary() {
     }
   }
 
-  // Final attempt: let the system loader resolve the bare file name.
   const bareName = selectPlatformFileName();
   try {
     lib = koffi.load(bareName);
@@ -248,18 +163,36 @@ function loadLibrary() {
 // ============================================================================
 
 /**
- * Opaque handle to a LingoFuse data buffer (TDataHnd).
+ * Argument-role type: a 32-byte UID, passed by value in cdecl.
  *
- * Never dereference this pointer. All access goes through the exported
- * LF_* functions.
+ * {!!!!!  WHY A STRUCT, NOT A BARE ARRAY  !!!!!}
+ * Koffi rejects `koffi.array("uint8", 32)` when it appears as a
+ * function parameter type ("Type uint8_t[32] cannot be used as a
+ * parameter"). The ABI-correct representation is a struct wrapping
+ * the 32-byte array, exactly matching the C header:
+ *
+ *     typedef struct TP2P_UID_s {
+ *         uint8_t bytes[32];
+ *     } TP2P_UID;
+ *
+ * On x86-64 (SysV and Windows x64), a >16-byte aggregate is classified
+ * MEMORY by the psABI and is passed on the stack. A Koffi struct with
+ * a single fixed-size array member reproduces that layout exactly.
+ *
+ * Used as an ARGTYPES entry ONLY. Do NOT use this as the return type of
+ * LF_Get_P2P_UID; that function returns a POINTER.
+ */
+const TP2P_UID = koffi.struct("TP2P_UID", {
+  bytes: koffi.array("uint8", 32, "Typed"),
+});
+
+/**
+ * Opaque handle to a LingoFuse data buffer (TDataHnd).
  */
 const DataHnd = koffi.pointer("DataHnd", koffi.opaque());
 
 /**
  * Opaque handle to a LingoFuse application (TAppHnd).
- *
- * Never dereference this pointer. All access goes through the exported
- * LF_* functions.
  */
 const AppHnd = koffi.pointer("AppHnd", koffi.opaque());
 
@@ -269,10 +202,6 @@ const AppHnd = koffi.pointer("AppHnd", koffi.opaque());
 
 /**
  * Callback prototype for Call-mode (request-response) APIs.
- *
- * @param trigger  User-supplied pointer passed at registration time.
- * @param input    Read-only input data handle.
- * @param output   Writable output data handle.
  */
 const LfCallFunc = koffi.proto(
   "LfCallFunc",
@@ -282,9 +211,6 @@ const LfCallFunc = koffi.proto(
 
 /**
  * Callback prototype for Notify-mode (one-way) APIs.
- *
- * @param trigger  User-supplied pointer passed at registration time.
- * @param input    Read-only input data handle.
  */
 const LfNotifyFunc = koffi.proto(
   "LfNotifyFunc",
@@ -294,9 +220,6 @@ const LfNotifyFunc = koffi.proto(
 
 /**
  * Callback prototype for network connect/disconnect events.
- *
- * @param addr  UTF-8 endpoint string. Valid ONLY during the callback
- *              invocation; copy the string immediately if you need it.
  */
 const LfNetworkEventFunc = koffi.proto(
   "LfNetworkEventFunc",
@@ -304,89 +227,94 @@ const LfNetworkEventFunc = koffi.proto(
   ["str"]
 );
 
+/**
+ * Callback prototype for the asynchronous remote invocation family.
+ *
+ * Parameters:
+ *   - data   : the opaque pointer the caller passed at the call site.
+ *   - result : a DataHnd OWNED BY THE FRAMEWORK. Released IMMEDIATELY
+ *              after this callback returns. Do NOT call LF_FreeData
+ *              on it, and do NOT retain the pointer past its own
+ *              return.
+ */
+const LfAsyncCallOnResult = koffi.proto(
+  "LfAsyncCallOnResult",
+  "void",
+  [koffi.pointer("void"), DataHnd]
+);
+
 // ============================================================================
 // Function declarations
 // ============================================================================
 
 /**
- * Declares all 37 exported LingoFuse functions and returns an object
+ * Declares all 59 exported LingoFuse functions and returns an object
  * holding them.
  *
  * @param {object} library  The Koffi library object.
- * @returns {object} An object whose properties are the declared functions.
+ * @returns {object}
  */
 function declareFunctions(library) {
   const f = {};
 
   // --------------------------------------------------------------------
-  // Data handle operations (10)
+  // Data handle operations (12)
   // --------------------------------------------------------------------
 
-  /**
-   * LF_CreateData
-   * Creates a new AUTO-RECYCLED data handle bound to the given API
-   * name. The handle is added to the library's idle pool; the pool
-   * scans every 5 seconds and frees any handle that has been idle for
-   * more than 10 minutes.
-   */
   f.LF_CreateData = library.func("LF_CreateData", DataHnd, ["str"]);
 
-  /**
-   * LF_CreateData_Permanent
-   * Creates a new PERMANENT data handle bound to the given API name.
-   *
-   * Difference from LF_CreateData:
-   *   - NOT added to the library's idle pool.
-   *   - The automatic idle-timeout reclaimer will NEVER free it.
-   *   - LF_FreeData releases it synchronously.
-   *
-   * Use this for handles that must survive for the entire process
-   * lifetime (cached templates, long-lived scratch buffers, global
-   * registries). Do NOT use it for short-lived handles; the pool
-   * safety net is lost.
-   *
-   * [PITFALL - NO-OP WINDOW]
-   *   LF_FreeData is a no-op while the simulated main thread is not
-   *   active (before LF_PrepareDone or after LF_ExitMainThread).
-   *   Permanent handles created in that window stay allocated until
-   *   the process terminates. LF_Shutdown releases any permanent
-   *   handle still alive at teardown.
-   */
   f.LF_CreateData_Permanent = library.func(
     "LF_CreateData_Permanent",
     DataHnd,
     ["str"]
   );
 
-  /**
-   * LF_FreeData
-   * Releases a data handle. Passing a null handle is safe and ignored.
-   *
-   * For an auto-recycled handle this only marks the handle as deleted;
-   * the actual release happens on the next pool scan (at most 5
-   * seconds later). For a permanent handle the release is synchronous.
-   *
-   * [PITFALL] This call is a NO-OP while the simulated main thread is
-   * not active. Permanent handles created in that window stay
-   * allocated until the process terminates or LF_Shutdown runs.
-   */
   f.LF_FreeData = library.func("LF_FreeData", "void", [DataHnd]);
 
-  f.LF_GetBuffer = library.func("LF_GetBuffer", koffi.pointer("void"), [DataHnd]);
+  f.LF_GetBuffer = library.func(
+    "LF_GetBuffer",
+    koffi.pointer("void"),
+    [DataHnd]
+  );
+
   f.LF_WriteBuffer = library.func("LF_WriteBuffer", "int64", [
     DataHnd,
     koffi.pointer("uint8_t"),
     "int64",
   ]);
+
   f.LF_ReadBuffer = library.func("LF_ReadBuffer", "int64", [
     DataHnd,
     koffi.pointer("uint8_t"),
     "int64",
   ]);
+
   f.LF_GetPos = library.func("LF_GetPos", "int64", [DataHnd]);
   f.LF_SetPos = library.func("LF_SetPos", "void", [DataHnd, "int64"]);
   f.LF_GetSize = library.func("LF_GetSize", "int64", [DataHnd]);
   f.LF_SetSize = library.func("LF_SetSize", "void", [DataHnd, "int64"]);
+
+  /**
+   * LF_Get_P2P_UID
+   * Reads the auto-injected sender UID ("side data") from an INPUT
+   * data handle. Returns a POINTER to a 32-byte UID.
+   */
+  f.LF_Get_P2P_UID = library.func(
+    "LF_Get_P2P_UID",
+    koffi.pointer("uint8"),
+    [DataHnd]
+  );
+
+  /**
+   * LF_Get_P2P_Name
+   * Reads the auto-injected sender P2P group name ("side data") from
+   * an INPUT data handle.
+   */
+  f.LF_Get_P2P_Name = library.func(
+    "LF_Get_P2P_Name",
+    "str",
+    [DataHnd]
+  );
 
   // --------------------------------------------------------------------
   // Application handle operations (5)
@@ -394,24 +322,12 @@ function declareFunctions(library) {
 
   f.LF_CreateApp = library.func("LF_CreateApp", AppHnd, ["str", "str"]);
   f.LF_FreeApp = library.func("LF_FreeApp", "void", [AppHnd]);
-
-  /**
-   * LF_Generate_AppName
-   * Returns a pointer to a temporary buffer valid for ~5 seconds.
-   * Koffi copies the string immediately into a JavaScript string.
-   */
   f.LF_Generate_AppName = library.func("LF_Generate_AppName", "str", []);
-
-  /**
-   * LF_Get_AppName
-   * Same 5-second validity rule as LF_Generate_AppName.
-   */
   f.LF_Get_AppName = library.func("LF_Get_AppName", "str", [AppHnd]);
-
   f.LF_BindApp = library.func("LF_BindApp", "int", [AppHnd]);
 
   // --------------------------------------------------------------------
-  // API registration (3)
+  // API registration, app-bound (3)
   // --------------------------------------------------------------------
 
   f.LF_RegisterCall = library.func("LF_RegisterCall", "int", [
@@ -429,6 +345,28 @@ function declareFunctions(library) {
     koffi.pointer(LfNotifyFunc),
   ]);
   f.LF_Unregister = library.func("LF_Unregister", "int", [AppHnd, "str"]);
+
+  // --------------------------------------------------------------------
+  // API registration, process-wide P2P (3)
+  // --------------------------------------------------------------------
+
+  f.LF_Register_P2P_Call = library.func(
+    "LF_Register_P2P_Call",
+    "int",
+    ["str", "str", koffi.pointer("void"), koffi.pointer(LfCallFunc)]
+  );
+
+  f.LF_Register_P2P_Notify = library.func(
+    "LF_Register_P2P_Notify",
+    "int",
+    ["str", "str", koffi.pointer("void"), koffi.pointer(LfNotifyFunc)]
+  );
+
+  f.LF_Unregister_P2P = library.func(
+    "LF_Unregister_P2P",
+    "int",
+    ["str"]
+  );
 
   // --------------------------------------------------------------------
   // Local execution (2)
@@ -454,7 +392,7 @@ function declareFunctions(library) {
   f.LF_ExitMainThread = library.func("LF_ExitMainThread", "void", []);
 
   // --------------------------------------------------------------------
-  // Remote invocation (3)
+  // Remote invocation by App name (5)
   // --------------------------------------------------------------------
 
   f.LF_Call = library.func("LF_Call", DataHnd, [
@@ -462,6 +400,25 @@ function declareFunctions(library) {
     DataHnd,
     "uint64",
   ]);
+
+  f.LF_Async_Call = library.func("LF_Async_Call", "int", [
+    "str",
+    DataHnd,
+    koffi.pointer("void"),
+    koffi.pointer(LfAsyncCallOnResult),
+  ]);
+
+  f.LF_Async_Sequenced_Call = library.func(
+    "LF_Async_Sequenced_Call",
+    "int",
+    [
+      "str",
+      DataHnd,
+      koffi.pointer("void"),
+      koffi.pointer(LfAsyncCallOnResult),
+    ]
+  );
+
   f.LF_Notify = library.func("LF_Notify", "void", ["str", DataHnd]);
   f.LF_Sequenced_Notify = library.func("LF_Sequenced_Notify", "void", [
     "str",
@@ -469,26 +426,120 @@ function declareFunctions(library) {
   ]);
 
   // --------------------------------------------------------------------
-  // Options and diagnostics (7)
+  // Remote invocation by UID (5)
+  // --------------------------------------------------------------------
+
+  f.LF_UID_Call = library.func("LF_UID_Call", DataHnd, [
+    TP2P_UID,
+    DataHnd,
+    "uint64",
+  ]);
+
+  f.LF_UID_Async_Call = library.func("LF_UID_Async_Call", "int", [
+    TP2P_UID,
+    DataHnd,
+    koffi.pointer("void"),
+    koffi.pointer(LfAsyncCallOnResult),
+  ]);
+
+  f.LF_UID_Async_Sequenced_Call = library.func(
+    "LF_UID_Async_Sequenced_Call",
+    "int",
+    [
+      TP2P_UID,
+      DataHnd,
+      koffi.pointer("void"),
+      koffi.pointer(LfAsyncCallOnResult),
+    ]
+  );
+
+  f.LF_UID_Notify = library.func("LF_UID_Notify", "void", [
+    TP2P_UID,
+    DataHnd,
+  ]);
+
+  f.LF_UID_Sequenced_Notify = library.func(
+    "LF_UID_Sequenced_Notify",
+    "void",
+    [TP2P_UID, DataHnd]
+  );
+
+  // --------------------------------------------------------------------
+  // Remote invocation by P2P name (5)
+  // --------------------------------------------------------------------
+
+  f.LF_P2PNAME_Call = library.func("LF_P2PNAME_Call", DataHnd, [
+    "str",
+    DataHnd,
+    "uint64",
+  ]);
+
+  f.LF_P2PNAME_Async_Call = library.func(
+    "LF_P2PNAME_Async_Call",
+    "int",
+    [
+      "str",
+      DataHnd,
+      koffi.pointer("void"),
+      koffi.pointer(LfAsyncCallOnResult),
+    ]
+  );
+
+  f.LF_P2PNAME_Async_Sequenced_Call = library.func(
+    "LF_P2PNAME_Async_Sequenced_Call",
+    "int",
+    [
+      "str",
+      DataHnd,
+      koffi.pointer("void"),
+      koffi.pointer(LfAsyncCallOnResult),
+    ]
+  );
+
+  f.LF_P2PNAME_Notify = library.func("LF_P2PNAME_Notify", "void", [
+    "str",
+    DataHnd,
+  ]);
+
+  f.LF_P2PNAME_Sequenced_Notify = library.func(
+    "LF_P2PNAME_Sequenced_Notify",
+    "void",
+    ["str", DataHnd]
+  );
+
+  // --------------------------------------------------------------------
+  // Options and diagnostics (8)
   // --------------------------------------------------------------------
 
   f.LF_SetOption = library.func("LF_SetOption", "void", ["str", "str"]);
+
+  f.LF_GetOption = library.func("LF_GetOption", "str", ["str"]);
+
   f.LF_GetStatusCount = library.func("LF_GetStatusCount", "int", []);
   f.LF_GetStatus = library.func("LF_GetStatus", "str", []);
-
-  /**
-   * LF_PostStatus
-   * Injects a custom log message into the status queue.
-   *
-   * The message is queued even when the simulated main thread is not
-   * running. The queue is bounded at 1000 entries; older entries are
-   * dropped when the buffer is full.
-   */
   f.LF_PostStatus = library.func("LF_PostStatus", "void", ["str"]);
-
   f.LF_CheckMainThread = library.func("LF_CheckMainThread", "int", []);
   f.LF_CheckApp = library.func("LF_CheckApp", "int", ["str"]);
   f.LF_CheckApi = library.func("LF_CheckApi", "int", ["str", "str"]);
+
+  f.LF_Check_UID = library.func("LF_Check_UID", "int", [TP2P_UID]);
+
+  f.LF_Check_UID_Api = library.func("LF_Check_UID_Api", "int", [
+    TP2P_UID,
+    "str",
+  ]);
+
+  f.LF_Check_P2PNAME = library.func(
+    "LF_Check_P2PNAME",
+    "int",
+    ["str"]
+  );
+
+  f.LF_Check_P2PNAME_Api = library.func(
+    "LF_Check_P2PNAME_Api",
+    "int",
+    ["str", "str"]
+  );
 
   // --------------------------------------------------------------------
   // Shutdown (1)
@@ -518,21 +569,10 @@ function declareFunctions(library) {
 let _instance = null;
 
 /**
- * Returns the binding instance, loading the native library and declaring
- * all functions on first call.
+ * Returns the binding instance, loading the native library and
+ * declaring all functions on first call.
  *
- * @returns {{
- *   koffi: object,
- *   types: { DataHnd: object, AppHnd: object },
- *   callbacks: {
- *     LfCallFunc: object,
- *     LfNotifyFunc: object,
- *     LfNetworkEventFunc: object
- *   },
- *   funcs: object,
- *   platform: string,
- *   libraryName: string
- * }}
+ * @returns {object}
  */
 function getBinding() {
   if (_instance) {
@@ -547,11 +587,13 @@ function getBinding() {
     types: Object.freeze({
       DataHnd,
       AppHnd,
+      TP2P_UID,
     }),
     callbacks: Object.freeze({
       LfCallFunc,
       LfNotifyFunc,
       LfNetworkEventFunc,
+      LfAsyncCallOnResult,
     }),
     funcs: Object.freeze(funcs),
     platform:
@@ -580,12 +622,12 @@ module.exports = {
   isLoaded,
   selectPlatformFileName,
   buildSearchPaths,
-  // Expose the raw Koffi module for advanced use cases (e.g. custom types).
   koffi,
-  // Expose type constructors for the higher-level layers.
   DataHnd,
   AppHnd,
+  TP2P_UID,
   LfCallFunc,
   LfNotifyFunc,
   LfNetworkEventFunc,
+  LfAsyncCallOnResult,
 };

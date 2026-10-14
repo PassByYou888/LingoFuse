@@ -1,6 +1,6 @@
 {
   "name": "lingofuse-js",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "JavaScript binding for the LingoFuse distributed RPC framework. Runs on Node.js, Deno (2.x), and Bun.",
   "type": "commonjs",
   "keywords": [
@@ -29,6 +29,10 @@
     "./framework": "./framework.js",
     "./network-events": "./network-events.js",
     "./status": "./status.js",
+    "./options": "./options.js",
+    "./address": "./address.js",
+    "./async-support": "./async-support.js",
+    "./p2p-registration": "./p2p-registration.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -42,6 +46,10 @@
     "framework.js",
     "network-events.js",
     "status.js",
+    "options.js",
+    "address.js",
+    "async-support.js",
+    "p2p-registration.js",
     "check-env.js",
     "PORTABILITY.md",
     "cross",
@@ -49,8 +57,12 @@
   ],
   "scripts": {
     "test": "node test/test.js",
+    "test:v2": "node test/test2.js",
+    "test:all": "node test/test.js && node test/test2.js",
     "test:bun": "bun test/test.js",
+    "test:v2:bun": "bun test/test2.js",
     "test:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/test.js",
+    "test:v2:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/test2.js",
     "demo": "node test/lf_js_helloworld.js",
     "demo:bun": "bun test/lf_js_helloworld.js",
     "demo:deno": "deno run --allow-ffi --allow-read --allow-env --allow-net --allow-sys test/lf_js_helloworld.js",

@@ -88,14 +88,31 @@ export const io = lf.io;
 export const framework = lf.framework;
 export const network = lf.network;
 export const status = lf.status;
+export const options = lf.options;
+export const address = lf.address;
+export const async = lf.async;
+
+// Addressing shortcuts (top-level convenience)
+export const AppTarget = lf.AppTarget;
+export const UIDTarget = lf.UIDTarget;
+export const P2PNameTarget = lf.P2PNameTarget;
+export const CallPromise = lf.CallPromise;
+export const AsyncBridge = lf.AsyncBridge;
+
+// Process-wide P2P registration
+export const registerP2PCall = lf.registerP2PCall;
+export const registerP2PNotify = lf.registerP2PNotify;
+export const unregisterP2P = lf.unregisterP2P;
 
 // Exceptions
 export const LingoFuseError = lf.LingoFuseError;
 export const LingoFuseLibraryLoadError = lf.LingoFuseLibraryLoadError;
 export const LingoFuseCallError = lf.LingoFuseCallError;
+export const LingoFuseTimeoutError = lf.LingoFuseTimeoutError;
 export const LingoFuseIoError = lf.LingoFuseIoError;
 export const LingoFuseObjectDisposedError = lf.LingoFuseObjectDisposedError;
 export const LingoFuseCallbackError = lf.LingoFuseCallbackError;
+export const LingoFuseRegistrationError = lf.LingoFuseRegistrationError;
 
 // Advanced escape hatch
 export const _binding = lf._binding;

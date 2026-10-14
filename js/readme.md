@@ -5,15 +5,40 @@
 调用 LingoFuse 原生库的 C ABI。
 
 本绑定由一个 CommonJS 核心和一个轻量 ESM 包装组成，与 C++、C#、
-Pascal 各版本一一对应：
+Pascal、Python 各版本一一对应：
 
-- 相同的 **37 个**导出 C 函数。
+- 相同的 **59 个**导出 C 函数。
 - 相同的 NUL 结尾 UTF-8 线格式。
 - 相同的 JSON 序列化策略（紧凑、字面 UTF-8、无 `\uXXXX` 转义）。
 - 相同的字符串三态容错读取。
 - 相同的 `tryCall` / `getAppName` / `createPermanent` 便捷 API。
+- 相同的三种寻址模式（App 名 / UID / P2PName）。
+- 相同的 Handle 所有权模型（同步族 / 异步族）。
+- 相同的 P2P 身份侧数据语义。
 
 在一个绑定上能工作的逻辑，在其他绑定上也一样。
+
+---
+
+## v2.0 相比 v1.0 的变化
+
+v1.0 是一个 C ABI 直译层：59 个导出函数中只覆盖了 37 个，只提供
+`App` 名寻址和回调式异步。
+
+v2.0 补齐了完整能力，并在其上构建了**面向业务的抽象层**：
+
+| 维度 | v1.0 | v2.0 |
+|------|:----:|:----:|
+| C ABI 覆盖 | 37 / 59 | **59 / 59** |
+| 调用风格 | 内联回调 + 同步 | 内联回调 + async/await + 同步 |
+| 寻址模式 | App 名 | App 名 / UID / P2PName |
+| 运行时选项 | 通用 `setOption` | 通用 + **16 对 typed 快捷** |
+| P2P 身份读取 | 无 | `DataHandle.getP2PUid` / `getP2PName` |
+| P2P 全局注册 | 无 | `registerP2PCall` / `registerP2PNotify` |
+| 异常层级 | 6 类 | **8 类** |
+| 测试套件 | 127 项 | 127 + **96 项** |
+
+**没有破坏性变更**。v1.0 的所有代码在 v2.0 上原样运行。
 
 ---
 
@@ -47,6 +72,10 @@ Pascal 各版本一一对应：
    - [6.12 `tryCall` 与 `call` 的选择](#612-trycall-与-call-的选择)
    - [6.13 永久句柄与短生命周期句柄](#613-永久句柄与短生命周期句柄)
    - [6.14 JSON 载荷约定](#614-json-载荷约定)
+   - [**6.15 三种调用风格（v2.0 新增）**](#615-三种调用风格v20-新增)
+   - [**6.16 三种寻址模式（v2.0 新增）**](#616-三种寻址模式v20-新增)
+   - [**6.17 typed options（v2.0 新增）**](#617-typed-optionsv20-新增)
+   - [**6.18 P2P 身份读取（v2.0 新增）**](#618-p2p-身份读取v20-新增)
 7. [故障排查](#7-故障排查)
 8. [API 速查](#8-api-速查)
 
@@ -77,19 +106,24 @@ js/
 ├── check-env.js               环境诊断脚本
 ├── index.js                   CommonJS 入口
 ├── index.mjs                  ESM 入口
-├── errors.js                  异常层级
-├── binding.js                 Koffi 声明与库加载
-├── data-handle.js             TDataHnd 的 RAII 封装
+├── errors.js                  异常层级（v2.0：8 类）
+├── binding.js                 Koffi 声明与库加载（59 个符号）
+├── data-handle.js             TDataHnd 的 RAII 封装（含 P2P 身份访问器）
 ├── app-handle.js              TAppHnd 的 RAII 封装
 ├── lf-io.js                   JSON / 字符串 / 字节 I/O
 ├── framework.js               进程级 ABI 门面
 ├── network-events.js          连接 / 断开事件处理器
-├── status.js                  状态队列与健康检查
+├── status.js                  状态队列与健康检查（含 UID / P2PName 检查）
+├── options.js                 typed 运行时选项（v2.0 新增）
+├── address.js                 三种寻址抽象（v2.0 新增）
+├── async-support.js           异步子系统（v2.0 新增）
+├── p2p-registration.js        进程级 P2P 注册（v2.0 新增）
 ├── package.json
 ├── PORTABILITY.md             各运行时的专项说明
 ├── readme.md                  本文件
 ├── test/
-│   ├── test.js                测试套件（自带 harness，跨运行时）
+│   ├── test.js                v1.0 测试套件（127 项）
+│   ├── test2.js               v2.0 测试套件（96 项）
 │   └── lf_js_helloworld.js    端到端演示
 ├── cross/
 │   ├── cross-service.js       信标（协调器）
@@ -357,7 +391,7 @@ node check-env.js
 ========================================================================
   [OK]   require('errors.js') succeeded.
   [OK]   require('binding.js') succeeded.
-  ...
+  ... (13 行)
 
 ========================================================================
 5. LingoFuse native library
@@ -395,6 +429,8 @@ node test/lf_js_helloworld.js
 
 ### 5.3 运行测试套件
 
+v1.0 基线套件（127 项）：
+
 ```bash
 node test/test.js
 ```
@@ -409,14 +445,34 @@ Summary
   total   : 127
 ```
 
+v2.0 新增套件（96 项）：
+
+```bash
+node test/test2.js
+```
+
+预期输出（末尾摘要）：
+
+```
+Summary
+  runtime : Node.js 24.21.0
+  passed  : 96
+  failed  : 0
+  total   : 96
+```
+
+两个套件合起来覆盖 **223 项**断言。
+
 ### 5.4 npm 脚本
 
 如果你愿意，同样三条命令可以通过 npm 执行：
 
 ```bash
-npm run check      # node check-env.js
-npm run demo       # node test/lf_js_helloworld.js
-npm test           # node test/test.js
+npm run check       # node check-env.js
+npm run demo        # node test/lf_js_helloworld.js
+npm test            # node test/test.js        (v1.0，127 项)
+npm run test:v2     # node test/test2.js       (v2.0，96 项)
+npm run test:all    # 依次运行两个套件
 ```
 
 ---
@@ -684,15 +740,21 @@ const lf = require("lingofuse-js");
 // 加载运行时（幂等；可省略）。
 lf.loadLibrary();
 
-// 访问四个命名空间。
+// 访问七个命名空间。
 lf.io;         // JSON / 字符串 / 字节 I/O
 lf.framework;  // 进程级 ABI 门面
 lf.network;    // 连接 / 断开事件
 lf.status;     // 状态队列与健康检查
+lf.options;    // typed 运行时选项             【v2.0 新增】
+lf.address;    // 三种寻址模式                 【v2.0 新增】
+lf.async;      // 异步子系统                   【v2.0 新增】
 
 // 顶层类型。
 const dh = new lf.DataHandle("my_api");
 const app = new lf.AppHandle("MyApp", "description");
+
+// 顶层寻址快捷（等价于 lf.address.AppTarget 等）。
+const t = new lf.AppTarget("MyApp");
 ```
 
 ### 6.8 ESM 用法
@@ -931,7 +993,9 @@ if (response2.size === 0) {
 response2.dispose();
 ```
 
-**所有权**：`tryCall` 返回 `null` 时已自动释放内部句柄；返回 `DataHandle` 时，调用者负责 `dispose`。这一契约与 C# 的 `Framework.TryCall` 完全一致。
+**所有权**：`tryCall` 返回 `null` 时已自动释放内部句柄；返回
+`DataHandle` 时，调用者负责 `dispose`。这一契约与 C# 的
+`Framework.TryCall` 完全一致。
 
 ### 6.13 永久句柄与短生命周期句柄
 
@@ -1003,6 +1067,461 @@ lf.framework.shutdown();
 
 ---
 
+### 6.15 三种调用风格（v2.0 新增）
+
+LingoFuse JS 绑定提供**三种平行的调用风格**。三者共享同一个
+`AsyncBridge` 子系统，可以随意混用，但每种风格适合不同的业务
+场景。
+
+| 风格 | 入口 | 阻塞？ | 适合 |
+|------|------|:------:|------|
+| **A. 内联回调** | `target.callAsync(api, payload, (r, e) => {...})` | 否 | 事件驱动代码、简单业务、不想引入 `async` |
+| **B. async/await** | `await target.call(api, payload)` | 否（挂起） | 现代 async 业务代码、需要串行逻辑 |
+| **C. 同步** | `target.callSync(api, payload)` | 是 | 脚本、测试、CLI 工具 |
+
+#### 6.15.1 风格 A —— 内联回调
+
+**最适合把业务代码直接写在回调体里**，无需 `await`、无需
+`Promise` 包装。
+
+```javascript
+const target = new lf.AppTarget("Calculator");
+
+target.callAsync("add", { a: 5, b: 7 }, (result, error, userData) => {
+    // 业务代码直接写在这里
+    if (error) {
+        console.error("call failed:", error);
+        return;
+    }
+    console.log("result:", result);   // { result: 12 }
+});
+```
+
+回调签名：`(result, error, userData) => void`。
+
+| 参数 | 含义 |
+|------|------|
+| `result` | 反序列化后的 JSON 值；失败时为 `null` |
+| `error` | `LingoFuseError` / `LingoFuseTimeoutError` 实例；成功时为 `null` |
+| `userData` | 调用时传入的第 4 个参数（可选） |
+
+**要点**：
+
+- 回调**运行在 JS 事件循环**上（由 Koffi 桥接从 native 工作线程
+  序列化过来）。**不要阻塞它**。
+- 回调内**不要**调用任何同步的 LingoFuse 函数（如
+  `target.callSync`）—— 会死锁。
+- 回调体抛出的异常会被吞掉并写入 stderr；不会传回 native 栈。
+
+#### 6.15.2 风格 B —— async/await
+
+`target.call(api, payload, { timeoutMs })` 返回一个 `CallPromise`
+（thenable）。用 `await` 拿结果：
+
+```javascript
+const target = new lf.AppTarget("Calculator");
+
+try {
+    const result = await target.call("add", { a: 5, b: 7 }, { timeoutMs: 3000 });
+    console.log("result:", result);   // { result: 12 }
+} catch (err) {
+    if (err instanceof lf.LingoFuseTimeoutError) {
+        console.error("timed out; err.abandoned =", true);
+    } else {
+        console.error("call failed:", err);
+    }
+}
+```
+
+**取消语义**：`CallPromise` **不是**标准 `Promise`，它带有一个
+额外的 `abandoned` 标志。当 JS 侧的超时先于 native 回调到达时：
+
+- `CallPromise` 会以 `LingoFuseTimeoutError` reject
+- `abandoned` 变为 `true`
+- **native 请求不会被取消**：`AsyncBridge` 会保留回调一个 grace
+  周期，任何迟到的结果都被丢弃
+
+这个设计的原因（以及为什么不能简单地取消）见 `async-support.js`
+的文件头。
+
+#### 6.15.3 风格 C —— 同步
+
+```javascript
+const target = new lf.AppTarget("Calculator");
+
+const result = target.callSync("add", { a: 5, b: 7 }, { timeoutMs: 3000 });
+console.log("result:", result);   // { result: 12 }
+```
+
+- **成功**返回反序列化后的值。
+- **超时**抛 `LingoFuseTimeoutError`。
+- **不可达**抛 `LingoFuseCallError`。
+
+还有非抛异常版本：
+
+```javascript
+const result = target.tryCallSync("add", { a: 5, b: 7 }, { timeoutMs: 3000 });
+if (result === null) {
+    console.log("call failed");
+} else {
+    console.log("result:", result);
+}
+```
+
+**警告**：`callSync` 会**阻塞 JS 事件循环**直到 native 调用返回。
+仅用于脚本、测试、CLI 工具。不要在服务器热路径里使用。
+
+#### 6.15.4 三者共享同一个 AsyncBridge
+
+三种风格都走同一个进程级 `AsyncBridge`：
+
+```javascript
+const stats = lf.AsyncBridge.instance().stats();
+console.log(stats);
+// {
+//   total: <int>,          // 当前活跃的 op 数
+//   pending: <int>,        // 等待回调
+//   fired: <int>,          // 回调已触发，等待释放
+//   abandoned: <int>,      // 已超时，等待 grace 过期
+//   not_queued: <int>,     // 派发失败
+//   released_total: <int>, // 累计释放数
+//   grace_seconds: <float>,
+//   period_seconds: <float>,
+// }
+```
+
+`AsyncBridge` 是**单例**。三种风格的用户**共享同一份计数**。
+
+---
+
+### 6.16 三种寻址模式（v2.0 新增）
+
+LingoFuse 支持三种**正交**的寻址模式。三者共享同一个调用接口
+（`call` / `callAsync` / `callSync` / `tryCallSync` /
+`sequencedCall` / `sequencedCallAsync` / `notify` /
+`sequencedNotify`），只在**路由语义**上不同。
+
+| Target 类型 | 路由键 | 本地优先？ | 负载均衡？ | 死掉后 |
+|-------------|--------|:---------:|:---------:|--------|
+| `AppTarget` | App 名（string） | ✅ 是 | ❌ N/A | 需重新注册 |
+| `UIDTarget` | UID（32 字节） | ✅ 是 | ❌ N/A | **UID 已失效** |
+| `P2PNameTarget` | 组名（string） | ❌ 否 | ✅ 是 | 转发到组内其他成员 |
+
+#### 6.16.1 `AppTarget` —— 按应用名寻址
+
+最常用的方式。路由到**任意**具有匹配名字的客户端。
+
+```javascript
+const target = new lf.AppTarget("Calculator");
+
+const result = await target.call("add", { a: 1, b: 2 });
+```
+
+**本地优先**：如果调用者进程本身注册了同名 App 且暴露了目标 API，
+调用会在**本地**完成，不经过网络。
+
+```javascript
+// 多客户端场景下，同名 App 会被 C4 mesh 自动负载均衡。
+// 使用 "Least Recently Used" 策略。
+```
+
+#### 6.16.2 `UIDTarget` —— 按会话 UID 寻址
+
+路由到**具体**的 32 字节会话。适合"我想给刚才那个客户端发消息"
+这类场景。
+
+```javascript
+// UID 可以是 Uint8Array(32) 或 64 字符十六进制字符串。
+const uidHex = "4fa01fc4a85b6099a037c5a3f01f49a89564268a2d7fd48009d636246cfc2633";
+const target = new lf.UIDTarget(uidHex);
+
+const result = await target.call("add", { a: 1, b: 2 });
+```
+
+**UID 可以打到目标上的任意 API**，不管它是 App 注册的（
+`app.registerCall`）还是进程级 P2P 注册的
+（`registerP2PCall`）—— 不需要知道目标 App 名。
+
+**UID 生命周期**：UID 在每次 `TunnelLink` 时**重新生成**。调用方
+如果缓存了 UID，**链路断开后必须重新探测**。
+
+#### 6.16.3 `P2PNameTarget` —— 按组名寻址
+
+路由到**任意**用户自定义组中的客户端。服务端**负载均衡**。
+
+```javascript
+const target = new lf.P2PNameTarget("workers");
+
+// 服务端会在所有 P2PName = "workers" 的客户端中选一个
+const result = await target.call("process", { task: "..." });
+```
+
+**不是本地优先**：即使调用者进程本身在目标组里，调用也会**转发
+到服务端**做派发。这是刻意的：服务端拥有负载均衡状态。
+
+**设置自己的组名**：
+
+```javascript
+lf.options.setOptP2PName("workers");
+```
+
+必须在 `prepareDone()` 之前设置，或者通过 `Update_UID` 命令
+上报（每秒自动检查）。
+
+#### 6.16.4 `hashKey()` —— 用于 Map / Set 的稳定键
+
+JS 的 `Map` / `Set` 用**引用**比较键。如果你要把 Target 用作
+字典键，用 `hashKey()`：
+
+```javascript
+const m = new Map();
+m.set(new lf.AppTarget("X").hashKey(), 1);
+m.get(new lf.AppTarget("X").hashKey());   // => 1
+```
+
+每种寻址模式返回带前缀的键：`app:X`、`uid:<hex64>`、`p2p:G`。
+三种模式**不会**碰撞（即使字符串部分相同）。
+
+---
+
+### 6.17 typed options（v2.0 新增）
+
+`lf.options` 命名空间提供 **16 对 typed setter/getter**，一一对应
+Pascal / C# 绑定的 `LF_Set_Opt_*` / `LF_Get_Opt_*` 系列。
+
+#### 6.17.1 完整的选项对照表
+
+| Option | Setter / Getter | 类型 | 默认 |
+|--------|-----------------|------|------|
+| `password` | `setOptPassword` / `getOptPassword` | string | 空（返回固定掩码） |
+| `debug` | `setOptDebug` / `getOptDebug` | string（只写） | — |
+| `Quiet` | `setOptQuiet` / `getOptQuiet` | bool | `false` |
+| `ShowThreadID` | `setOptShowThreadID` / `getOptShowThreadID` | bool | `true` |
+| `ConsoleOutput` | `setOptConsoleOutput` / `getOptConsoleOutput` | bool | 平台相关 |
+| `Overlap_Connection` | `setOptOverlapConnection` / `getOptOverlapConnection` | bool | `false` |
+| `Wait_Connection_ReadyOk` | `setOptWaitConnectionReadyOk` / `getOptWaitConnectionReadyOk` | bool | `true` |
+| `Wait_Connection_Timeout` | `setOptWaitConnectionTimeout` / `getOptWaitConnectionTimeout` | int（毫秒） | `30000` |
+| `IPC_Serv_ThreadCount` | `setOptIpcServThreadCount` / `getOptIpcServThreadCount` | int | 平台相关 |
+| `IPC_Serv_MaxQueueLength` | `setOptIpcServMaxQueueLength` / `getOptIpcServMaxQueueLength` | int | 平台相关 |
+| `IPC_Serv_MaxMsgSize` | `setOptIpcServMaxMsgSize` / `getOptIpcServMaxMsgSize` | int（字节） | 平台相关 |
+| `Fixed_Sequenced_Time` | `setOptFixedSequencedTime` / `getOptFixedSequencedTime` | int（毫秒） | `20000` |
+| `LF_P2P_name` | `setOptP2PName` / `getOptP2PName` | string | 空 |
+| `DataHandle_Idle_Timeout` | `setOptDataHandleIdleTimeout` / `getOptDataHandleIdleTimeout` | int（毫秒） | `600000`（10 分钟） |
+| `DataHandle_Pool_Scan_Interval` | `setOptDataHandlePoolScanInterval` / `getOptDataHandlePoolScanInterval` | int（毫秒） | `5000`（5 秒） |
+| `No_Reponse_Cmd_NULL_Flush_Threshold` | `setOptNoReponseCmdNullFlushThreshold` / `getOptNoReponseCmdNullFlushThreshold` | int | `5000` |
+
+#### 6.17.2 使用示例
+
+```javascript
+const lf = require("lingofuse-js");
+
+// 加载库并设置选项。
+lf.loadLibrary();
+
+lf.options.setOptOverlapConnection(true);
+lf.options.setOptWaitConnectionReadyOk(false);
+lf.options.setOptP2PName("my_group");
+
+// 读取选项。
+console.log(lf.options.getOptP2PName());        // "my_group"
+console.log(lf.options.getOptWaitConnectionReadyOk());  // false
+```
+
+#### 6.17.3 ⚠️ `LF_SetOption` 是异步投递的
+
+一旦 LingoFuse 模拟主线程启动（即 `prepareDone()` 返回 1），
+`LF_SetOption` 会通过 `MainThreadPost.PostM_NP(DoRun)` **投递到
+主线程**并在下一个 tick 应用。**setter 返回后立即 getter 读到的是
+旧值**。
+
+```javascript
+// ❌ 错误：读到的可能是旧值
+lf.options.setOptQuiet(true);
+console.log(lf.options.getOptQuiet());   // 可能仍是 false
+
+// ✅ 正确：等待主线程应用
+lf.options.setOptQuiet(true);
+await new Promise((r) => setTimeout(r, 150));
+console.log(lf.options.getOptQuiet());   // true
+```
+
+150 毫秒远大于主线程的 1-10 毫秒 tick 粒度。
+
+**在 `prepareDone()` 之前**设置选项不受这个限制 —— 此时主线程还
+没启动，`LF_SetOption` 是**同步**应用的。
+
+#### 6.17.4 未知选项名被静默忽略
+
+`LF_SetOption` 没有返回值，收到不认识的选项名时**不会报错**。
+typed 快捷函数通过硬编码选项名消除了这个失败模式，但
+`lf.framework.setOption("Typo", "x")` 仍然会静默忽略。
+
+#### 6.17.5 通用 `setOption` 仍然可用
+
+typed 快捷函数是**叠加**在通用 API 之上的，不是替代：
+
+```javascript
+// 动态选项名（从配置文件读取）
+const optionName = process.env.LF_OPTION_NAME || "Quiet";
+lf.framework.setOption(optionName, "True");
+
+// 或者读取原始字符串值
+const raw = lf.framework.getOption("Quiet");   // "True" / "False" / ""
+```
+
+两条路径共享同一个底层 native 调用，混用是安全的。
+
+---
+
+### 6.18 P2P 身份读取（v2.0 新增）
+
+LingoFuse 的每个**入站请求载荷**都携带发送方的两个身份字段，
+由**发送方传输层**在发送前自动注入：
+
+```
+[apiName: string]
+[FromUID: 32 bytes]         ← 发送方会话 UID
+[FromP2PName: string]       ← 发送方 P2P 组名
+[Param.Size: Int32]
+[Param: bytes]
+```
+
+这两个字段是**"侧数据"（side data）**。它们**不是句柄本身的
+属性**，而是发送方写入载荷头部的元数据。**接收方只能在触发事件
+的回调 `Input` 参数上读取它们**。
+
+#### 6.18.1 两个访问器
+
+`DataHandle` 上有两个访问器：
+
+```javascript
+const uid  = input.getP2PUid();    // Uint8Array(32)
+const name = input.getP2PName();   // string（未设置时返回 ""）
+```
+
+#### 6.18.2 只能在 INPUT 句柄上调用
+
+| 位置 | 是否有效 |
+|------|:--------:|
+| 回调的 `input` 参数 | ✅ |
+| 本地调用的 `input` | ✅ |
+| 回调的 `output` 参数 | ❌（返回 32 个 0 / 空串） |
+| 你 `new DataHandle(...)` 出来的自建句柄 | ❌（同上） |
+
+对无效位置调用时，库**不抛异常**，而是返回默认值（32 个 0 /
+空字符串），并在 native 侧记录一条警告。
+
+#### 6.18.3 whoami 模式
+
+**经典应用场景**：客户端想知道**自己的** UID（服务端看到的
+"发送方 UID"）。
+
+**服务端**：
+
+```javascript
+const app = new lf.AppHandle("IdentitySvc", "identity echo");
+
+app.registerCall("whoami", "Echo caller identity", (input, output) => {
+    // input 是携带发送方侧数据的 INPUT 句柄
+    const callerUid = input.getP2PUid();
+    const callerName = input.getP2PName();
+
+    // 把 UID 十六进制化方便查看
+    let hex = "";
+    for (const b of callerUid) {
+        hex += b.toString(16).padStart(2, "0");
+    }
+
+    lf.io.writeJson(output, {
+        uid_hex: hex,
+        p2p_name: callerName,
+    });
+});
+```
+
+**客户端**：
+
+```javascript
+const target = new lf.AppTarget("IdentitySvc");
+const result = await target.call("whoami", {});
+
+console.log("my UID:", result.uid_hex);   // 64 字符十六进制
+console.log("my P2P:", result.p2p_name);  // 例如 "jstest2_group"
+
+// 把 UID 存起来，之后可以用 UIDTarget 打到这个会话
+const myUidTarget = new lf.UIDTarget(result.uid_hex);
+```
+
+#### 6.18.4 实现细节（v2.0 勘误）
+
+**`LF_Get_P2P_UID` 返回指针，不是值**。native 侧返回
+`const TP2P_UID*`（指向库拥有的 32 字节缓冲），并在调用后
+**约 5 秒自动释放**。`DataHandle.getP2PUid()` 封装了这一切：
+
+1. 立即用 `koffi.decode` 把 32 字节拷贝出来
+2. **不**释放指针
+3. **不**跨越本次方法调用保留指针
+
+调用者看不到临时指针。
+
+**`LF_Get_P2P_Name`** 返回 `const char*`，同样约 5 秒后失效。
+Koffi 的 `str` 返回类型会在调用边界立刻拷贝成 JS 字符串，所以
+`getP2PName()` 的返回值已经和 native 缓冲脱离。
+
+#### 6.18.5 典型用途
+
+| 场景 | 用法 |
+|------|------|
+| 调用鉴权 | 比较 `getP2PName()` 与白名单 |
+| 审计日志 | 记录 `getP2PUid()`（十六进制）和 `getP2PName()` |
+| 会话管理 | 以 UID 为 key 维护 Session |
+| 多租户 | P2PName 作为租户标识 |
+| 按组路由 | 按 P2PName 分流到不同 worker |
+| whoami 探测 | 服务端返回调用方身份，客户端自我发现 |
+
+#### 6.18.6 `getP2PUid` 与 `options.getOptP2PName` 的区别
+
+这两个概念容易混淆：
+
+| 函数 | 读什么 | 从哪读 |
+|------|--------|--------|
+| `lf.options.getOptP2PName()` | **我**声明的组名 | 本地配置 |
+| `input.getP2PName()` | **发送方**声明的组名 | 侧数据（载荷头部） |
+
+换句话说：
+
+- `getOptP2PName()` 回答"我给**自己**设了什么组名？"
+- `DataHandle.getP2PName()` 回答"**发消息给我的人**是什么组名？"
+
+两者都是 UTF-8 字符串，但来源完全不同。
+
+#### 6.18.7 进程级 P2P 注册（独立概念）
+
+除了 `App.registerCall`（App 绑定注册），v2.0 还提供**进程级
+P2P 注册**，API 只通过 UID 或 P2PName 寻址可达，**不通过 App
+名可达**：
+
+```javascript
+lf.registerP2PCall("whoami", (input, output) => {
+    // 进程级 P2P API 的回调
+    // 这里没有 App 绑定
+    lf.io.writeJson(output, { ok: true });
+}, "Echo");
+
+lf.registerP2PNotify("log", (input) => {
+    // ...
+}, "One-way log");
+
+// 移除
+lf.unregisterP2P("whoami");
+```
+
+**典型用途**：注册一小部分全局可发现的功能（健康检查、能力发现、
+身份回显），任何 mesh 上的客户端都可以按组名或 UID 调用，无需
+知道对方的 App 名。
+
+---
+
 ## 7. 故障排查
 
 ### 7.1 `Cannot find module 'koffi'`
@@ -1015,8 +1534,9 @@ lf.framework.shutdown();
 ### 7.2 `Cannot find module './index.js'`
 
 你从**不包含** `index.js` 的目录运行脚本。每个脚本
-（`check-env.js`、`test/test.js`、`test/lf_js_helloworld.js`）都必须从 `js/`
-目录、与绑定文件在同一目录下运行。不要把脚本移入子目录。
+（`check-env.js`、`test/test.js`、`test/test2.js`、
+`test/lf_js_helloworld.js`）都必须从 `js/` 目录、与绑定文件在同
+一目录下运行。不要把脚本移入子目录。
 
 ### 7.3 `Failed to load the LingoFuse native library`
 
@@ -1033,8 +1553,7 @@ node -e "console.log(require('./binding.js').buildSearchPaths().join('\n'))"
 
 原生库加载成功，但符号解析到了错误或截断的版本。确保 DLL /
 `.so` / `.dylib` 与接口库编写时对应的头文件版本一致
-（LingoFuse 3.0+）。若使用的是 v3.09 或更新版本，`LF_CreateData_Permanent`
-应当也能解析。
+（LingoFuse 5.0+）。
 
 ### 7.5 `prepareDone()` 返回 `0`
 
@@ -1086,33 +1605,98 @@ deno run \
 但 `framework.getAppName` 会显式检查 `isValid`，并拒绝已销毁的句柄。
 捕获异常或在使用前检查 `app.isValid`。
 
+### 7.11 测试在 teardown 阶段卡死（v2.0 新增）
+
+**现象**：所有测试 PASS，但 `Summary` 未打印，进程不退出。
+
+**原因**：某个 native 调用触发了 Pascal 侧的 live query，留下一个
+pending 的异步任务。当 `LF_ExitMainThread` 里的 `C40Clean()` 等待
+该任务完成时，整个 native 主线程阻塞，进而阻塞调用
+`LF_ExitMainThread` 的 JS 事件循环。
+
+最常见的触发源是 `setOptDebug("<command>")`，其中 `<command>` 是
+`service` / `tunnel` / `ZNet_Info` / `HPC_Thread_Info` /
+`Instance_Info` 等。这些命令会创建一个短暂的 `TC40_Console_Help`
+对象并执行 live query。
+
+**诊断**：
+
+1. **启用详细 native 日志**：在 `prepareDone` 之前调用
+   ```javascript
+   lf.options.setOptQuiet(false);
+   lf.options.setOptShowThreadID(true);
+   lf.options.setOptConsoleOutput(true);
+   ```
+   这样会打印 native 主线程每一步。
+
+2. **在 teardown 每一步前后打日志**：
+   ```javascript
+   console.error("[after] step 3 begin: LF_ExitMainThread()");
+   lf.framework.exitMainThread();
+   console.error("[after] step 3 done");
+   ```
+   能定位到具体卡在哪一步。
+
+3. **禁用 watchdog 观察**：
+   ```bash
+   LINGOFUSE_TEST_NO_WATCHDOG=1 node test/test2.js
+   ```
+
+**修复**：不要在测试里执行有副作用的 debug 命令。用无副作用的
+占位符（如 `noop-for-test`）来验证 `setOptDebug` 的 API 契约。
+
+**永久兜底**：v2.0 的 `test2.js` 内置一个**独立子进程 watchdog**
+（90 秒后 SIGKILL 本进程）。这是唯一能绕过 JS 事件循环阻塞的
+机制：任何 in-process timer 在事件循环冻结时都失效，而子进程有
+自己的事件循环。
+
+### 7.12 `LF_Get_P2P_UID` 的指针在 5 秒后失效
+
+不要保存 native 侧返回的指针。用 `DataHandle.getP2PUid()`，它会
+立即 `koffi.decode` 拷贝 32 字节：
+
+```javascript
+// ✅ 正确
+const uid = input.getP2PUid();   // 立即拷贝
+
+// ❌ 错误：不能直接拿 native 指针
+const rawPtr = lf._binding.funcs.LF_Get_P2P_UID(input.raw);
+// 5 秒后 rawPtr 指向的内存会被 native 侧释放
+```
+
 ---
 
 ## 8. API 速查
 
-本接口库暴露四个命名空间、两种 RAII 句柄类型，以及一套异常层级。
+本接口库暴露**七个命名空间**、**两种 RAII 句柄类型**、**三种
+寻址目标类**，以及**一套八类的异常层级**。
 
 ### 8.1 顶层
 
 | 符号                          | 说明                                       |
 |-------------------------------|--------------------------------------------|
-| `VERSION`                     | 绑定版本字符串（`"1.0.0"`）。              |
+| `VERSION`                     | 绑定版本字符串（`"2.0.0"`）。              |
 | `loadLibrary()`               | 主动加载原生库（幂等）。                   |
 | `isLoaded()`                  | 原生库加载后返回 `true`。                  |
 | `libraryName()`               | 平台相关的库文件名。                       |
 | `platform()`                  | `{ platform, arch, runtime }` 摘要。       |
 | `DataHandle`                  | 数据缓冲的 RAII 封装。                     |
 | `AppHandle`                   | 应用的 RAII 封装。                         |
+| `AppTarget`                   | 按 App 名寻址的目标（`lf.address.AppTarget` 的快捷）。 |
+| `UIDTarget`                   | 按 UID 寻址的目标。                        |
+| `P2PNameTarget`               | 按组名寻址的目标。                         |
+| `CallPromise`                 | async/await 风格的 Promise 包装。          |
+| `AsyncBridge`                 | 异步子系统单例。                           |
+| `registerP2PCall()`           | 进程级 P2P Call 注册。                     |
+| `registerP2PNotify()`         | 进程级 P2P Notify 注册。                   |
+| `unregisterP2P()`             | 移除进程级 P2P API。                       |
 | `io`                          | JSON / 字符串 / 字节 I/O 命名空间。        |
 | `framework`                   | 进程级 ABI 门面。                          |
 | `network`                     | 网络事件处理器。                           |
 | `status`                      | 状态队列与健康检查。                       |
-| `LingoFuseError`              | 基类异常。                                 |
-| `LingoFuseLibraryLoadError`   | 库加载失败。                               |
-| `LingoFuseCallError`          | 远程调用失败。                             |
-| `LingoFuseIoError`            | 字节级 I/O 失败。                          |
-| `LingoFuseObjectDisposedError`| dispose 后使用。                           |
-| `LingoFuseCallbackError`      | 回调体失败。                               |
+| `options`                     | typed 运行时选项。                         |
+| `address`                     | 三种寻址模式。                             |
+| `async`                       | 异步子系统（`AsyncBridge` / `AsyncOp` / `CallPromise` 等）。 |
 
 ### 8.2 `lf.io`
 
@@ -1139,13 +1723,26 @@ deno run \
 | `prepareClient(physics, app)`           | 准备一个客户端连接。              |
 | `prepareDone()`                         | 启动框架。                        |
 | `exitMainThread()`                      | 请求优雅退出。                    |
-| `setOption(name, value)`                | 调整运行时选项。                  |
+| `setOption(name, value)`                | 调整运行时选项（通用）。          |
+| `getOption(name)`                       | 读取运行时选项（通用）。          |
 | `generateAppName()`                     | 生成唯一名称。                    |
 | `getAppName(app)`                       | 查询 App 的权威名称。             |
 | `call(appName, param, timeoutMs)`       | 同步远程调用。                    |
 | `tryCall(appName, param, timeoutMs)`    | 超时/不可达时返回 `null` 的 `call`。 |
 | `notify(appName, param)`                | 单向通知。                        |
 | `sequencedNotify(appName, param)`       | FIFO 单向通知。                   |
+| `callAsync(appName, param, cb, data)`   | 内联回调式异步调用。              |
+| `callPromise(appName, param, timeoutMs)`| Promise 式异步调用。              |
+| `uidCall(uid, param, timeoutMs)`        | 同步 UID 调用。                   |
+| `uidCallAsync(uid, param, cb, data)`    | 内联回调式 UID 调用。             |
+| `uidCallPromise(uid, param, timeoutMs)` | Promise 式 UID 调用。             |
+| `uidNotify(uid, param)`                 | 单向 UID 通知。                   |
+| `uidSequencedNotify(uid, param)`        | FIFO 单向 UID 通知。              |
+| `p2pnameCall(name, param, timeoutMs)`   | 同步 P2PName 调用。               |
+| `p2pnameCallAsync(name, param, cb, data)`| 内联回调式 P2PName 调用。         |
+| `p2pnameCallPromise(name, param, timeoutMs)`| Promise 式 P2PName 调用。       |
+| `p2pnameNotify(name, param)`            | 单向 P2PName 通知。               |
+| `p2pnameSequencedNotify(name, param)`   | FIFO 单向 P2PName 通知。          |
 | `shutdown()`                            | 完全关闭。                        |
 
 ### 8.4 `lf.network`
@@ -1169,8 +1766,52 @@ deno run \
 | `checkMainThread()`             | 框架是否运行中？                     |
 | `checkApp(appName)`             | 应用是否可见？                       |
 | `checkApi(appName, apiName)`    | API 是否可见？                       |
+| `checkUid(uid)`                 | UID 是否可见？                       |
+| `checkUidApi(uid, apiName)`     | UID 上的 API 是否可见？              |
+| `checkP2PName(p2pName)`         | 组名是否可见？                       |
+| `checkP2PNameApi(p2pName, apiName)`| 组上的 API 是否可见？             |
 
-### 8.6 `DataHandle`
+### 8.6 `lf.options`
+
+每个选项一对 setter / getter。完整列表见
+[§6.17.1](#6171-完整的选项对照表)。
+
+### 8.7 `lf.address`
+
+| 类              | 说明                                       |
+|-----------------|--------------------------------------------|
+| `Target`        | 抽象基类（不直接使用）。                   |
+| `AppTarget`     | 按 App 名寻址。                            |
+| `UIDTarget`     | 按 UID 寻址。                              |
+| `P2PNameTarget` | 按组名寻址。                               |
+
+**每个 Target 类都暴露以下方法**：
+
+| 方法 | 说明 |
+|------|------|
+| `call(api, payload, {timeoutMs})` | 返回 `CallPromise`，用 `await` 消费 |
+| `callAsync(api, payload, onResult, userData)` | 内联回调 |
+| `callSync(api, payload, {timeoutMs})` | 同步（阻塞） |
+| `tryCallSync(api, payload, {timeoutMs})` | 同步，失败返回 `null` |
+| `sequencedCall(api, payload, {timeoutMs})` | 返回 `CallPromise`，FIFO |
+| `sequencedCallAsync(api, payload, onResult, userData)` | 内联回调，FIFO |
+| `notify(api, payload)` | 单向，无顺序保证 |
+| `sequencedNotify(api, payload)` | 单向，FIFO |
+| `hashKey()` | 稳定的、基于值的字符串键 |
+
+### 8.8 `lf.async`
+
+| 符号 | 说明 |
+|------|------|
+| `AsyncBridge` | 进程级单例。`instance()` / `shutdownInstance()` / `stats()` |
+| `AsyncOp` | 单次异步操作的状态持有者。 |
+| `CallPromise` | Promise 包装，带 `abandoned` 标志。 |
+| `makeLegacyOp` | 底层工厂：构建 legacy 回调风格的 op。 |
+| `makeFutureOp` | 底层工厂：构建 op + CallPromise 对。 |
+| `runAsyncWithPromise` | 一站式：构建 + 派发 + 设超时。 |
+| `runLegacyOp` | 一站式：legacy 回调风格。 |
+
+### 8.9 `DataHandle`
 
 通过 `new lf.DataHandle("api_name")` 创建自动回收句柄；
 通过 `lf.DataHandle.createPermanent("api_name")` 创建永久句柄。
@@ -1189,12 +1830,15 @@ deno run \
 | `tryReadInt8` … `tryReadDouble`            | 不抛异常的原子读。         |
 | `writeString(s)` / `readString()`          | NUL 帧的 UTF-8。           |
 | `tryReadString()`                          | 不抛异常的 `readString`。  |
+| `writeUid(uid)` / `readUid()`              | 32 字节 UID 读写（无 NUL）。 |
+| `getP2PUid()`                              | 读发送方 UID（仅 INPUT）。 |
+| `getP2PName()`                             | 读发送方组名（仅 INPUT）。 |
 | `position` / `size`                        | 游标和缓冲区大小。         |
 | `getBufferPointer()`                       | 内部缓冲区的原生指针。     |
 | `dispose()`                                | 释放原生句柄。             |
 | `isValid` / `isOwning` / `raw`             | 状态访问器。               |
 
-### 8.7 `AppHandle`
+### 8.10 `AppHandle`
 
 通过 `new lf.AppHandle("name", "description")` 创建。使用完毕后
 一定要调用 `dispose()`。
@@ -1209,25 +1853,29 @@ deno run \
 | `dispose()`                                   | 解除关联并停止线程。  |
 | `name` / `isValid` / `raw`                    | 状态访问器。          |
 
-### 8.8 异常层级
+### 8.11 异常层级
 
 | 类型                            | 基类                        | 附加字段                |
 |---------------------------------|-----------------------------|-------------------------|
 | `LingoFuseError`                | `Error`                     | `cause`                 |
 | `LingoFuseLibraryLoadError`     | `LingoFuseError`            | `libraryName`           |
 | `LingoFuseCallError`            | `LingoFuseError`            | `targetApp`, `targetApi`|
+| `LingoFuseTimeoutError`         | `LingoFuseError`            | `targetApp`, `targetApi`, `timeoutMs` |
 | `LingoFuseIoError`              | `LingoFuseError`            | `operation`             |
 | `LingoFuseObjectDisposedError`  | `LingoFuseError`            | `objectName`            |
-| `LingoFuseCallbackError`        | `LingoFuseError`            | `source`, `originalCause`|
+| `LingoFuseCallbackError`        | `LingoFuseError`            | `source`, `originalCause` |
+| `LingoFuseRegistrationError`    | `LingoFuseError`            | `apiName`               |
 
-**捕获策略**：捕获 `LingoFuseError` 即可覆盖所有本接口库抛出的异常；
-需要细化处理时按子类 `instanceof` 判断。
+**捕获策略**：捕获 `LingoFuseError` 即可覆盖所有本接口库抛出的
+异常；需要细化处理时按子类 `instanceof` 判断。
 
 ```javascript
 try {
     // ... LingoFuse 操作 ...
 } catch (err) {
-    if (err instanceof lf.LingoFuseCallError) {
+    if (err instanceof lf.LingoFuseTimeoutError) {
+        console.error("超时:", err.targetApp, err.timeoutMs);
+    } else if (err instanceof lf.LingoFuseCallError) {
         console.error("调用失败:", err.targetApp, err.message);
     } else if (err instanceof lf.LingoFuseError) {
         console.error("LingoFuse 错误:", err.message);
@@ -1266,6 +1914,12 @@ try {
 | 读 JSON             | `dh.readJson()`                    | `LfIo.ReadJson<T>(dh)`            | `lf.io.readJson(dh)`                   |
 | 远程调用（显式）    | `lingofuse::call(...)`             | `Framework.Call(...)`             | `lf.framework.call(...)`               |
 | 远程调用（try）     | `lingofuse::tryCall(...)`          | `Framework.TryCall(...)`          | `lf.framework.tryCall(...)`            |
+| **三种风格调用**    | `call` / `callAsync` / `tryCall`   | `Call` / `CallAsync` / `TryCall`  | `call` / `callAsync` / `callSync`      |
+| **App 寻址**        | `lingofuse::AppTarget`             | `Framework.AppTarget`             | `new lf.AppTarget(...)`                |
+| **UID 寻址**        | `lingofuse::UIDTarget`             | `Framework.UIDTarget`             | `new lf.UIDTarget(...)`                |
+| **P2PName 寻址**    | `lingofuse::P2PNameTarget`         | `Framework.P2PNameTarget`         | `new lf.P2PNameTarget(...)`            |
+| **typed options**   | `LF_Set_Opt_*` / `LF_Get_Opt_*`    | `Lf.SetOpt*` / `Lf.GetOpt*`       | `lf.options.setOpt* / getOpt*`         |
+| **P2P 身份读**      | `dh.getP2PUid()` / `getP2PName()`  | `dh.GetP2PUid()` / `GetP2PName()` | `dh.getP2PUid()` / `dh.getP2PName()`   |
 | 生成唯一名          | `generateAppName()`                | `Framework.GenerateAppName()`     | `lf.framework.generateAppName()`       |
 | 查询 App 权威名     | `getAppName(app)`                  | `Framework.GetAppName(app)`       | `lf.framework.getAppName(app)`         |
 | 回调错误报告        | 无（异常被吞）                     | `Framework.CallbackErrorHandler`  | `lf.framework.setCallbackErrorHandler` |
@@ -1279,6 +1933,10 @@ try {
 - `app-handle.js` 文件头 —— 回调生命周期和线程模型。
 - `framework.js` 文件头 —— 进程级契约和数值参数。
 - `binding.js` 文件头 —— Koffi 声明和平台探测。
+- `address.js` 文件头 —— 三种寻址模式的语义。
+- `async-support.js` 文件头 —— 异步子系统的设计动机和状态机。
+- `options.js` 文件头 —— typed 选项的用途和陷阱。
+- `p2p-registration.js` 文件头 —— 进程级 P2P 命名空间的隔离。
 
 ## 附录 D —— 许可证
 

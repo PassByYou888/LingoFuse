@@ -1,24 +1,34 @@
 # =============================================================================
 #  test.ps1
 # -----------------------------------------------------------------------------
-#  One-shot test driver for the LingoFuse Swift binding.
+#  Thin wrapper around `swift test`.
 #
-#  Steps:
-#    1. Locate the project root.
-#    2. Verify that the Swift toolchain is installed.
-#    3. Build the project (delegates to build.ps1 unless -SkipBuild).
-#    4. Run `swift test` with optional filtering.
-#    5. Parse the XCTest summary and print a compact report.
+#  What this script does NOT do:
+#    - It does not filter, rewrite, or buffer the Swift test output.
+#    - It does not parse XCTest summaries.
+#    - It does not print its own pass/fail summary.
+#
+#  What this script does:
+#    1. Optionally sets the console output encoding to UTF-8.
+#    2. Optionally delegates to build.ps1 for a fresh build.
+#    3. Runs `swift test` and lets its output go straight to the terminal.
+#    4. Returns the swift test exit code.
+#
+#  The exit code is the authoritative signal: 0 means all tests passed,
+#  non-zero means one or more failed. The full XCTest report is on the
+#  terminal.
 #
 #  Usage:
 #      .\test.ps1
 #      .\test.ps1 -Filter CAbiTests
 #      .\test.ps1 -Release
-#      .\test.ps1 -SkipBuild -Quiet
+#      .\test.ps1 -SkipBuild
+#      .\test.ps1 -Quiet
+#      .\test.ps1 -NoEncoding
 #
 #  Exit codes:
 #      0  all tests passed
-#      1  one or more tests failed
+#      1  one or more tests failed, or the build failed
 #      2  startup error (Swift not found, Package.swift missing, ...)
 # =============================================================================
 
@@ -26,10 +36,22 @@ param(
     [string] $Filter = "",
     [switch] $Release,
     [switch] $SkipBuild,
-    [switch] $Quiet
+    [switch] $Quiet,
+    [switch] $NoEncoding
 )
 
 $ErrorActionPreference = "Stop"
+
+# -----------------------------------------------------------------------------
+#  Console output encoding (see the same block in build.ps1).
+# -----------------------------------------------------------------------------
+
+if (-not $NoEncoding) {
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding           = [System.Text.Encoding]::UTF8
+    } catch { }
+}
 
 # -----------------------------------------------------------------------------
 #  Helpers
@@ -50,10 +72,6 @@ function Write-Info([string]$msg) {
 
 function Write-Ok([string]$msg) {
     Write-Host "  [OK]   $msg" -ForegroundColor Green
-}
-
-function Write-Warn([string]$msg) {
-    Write-Host "  [WARN] $msg" -ForegroundColor Yellow
 }
 
 function Write-Err([string]$msg) {
@@ -107,8 +125,9 @@ if (-not $SkipBuild) {
     $buildScript = Join-Path $ProjectDir "build.ps1"
     if (Test-Path $buildScript) {
         $buildArgs = @()
-        if ($Release) { $buildArgs += "-Release" }
-        if ($Quiet)   { $buildArgs += "-Quiet" }
+        if ($Release)    { $buildArgs += "-Release" }
+        if ($Quiet)      { $buildArgs += "-Quiet" }
+        if ($NoEncoding) { $buildArgs += "-NoEncoding" }
 
         & $buildScript @buildArgs
         if ($LASTEXITCODE -ne 0) {
@@ -116,20 +135,21 @@ if (-not $SkipBuild) {
             exit 1
         }
     } else {
-        Write-Warn "build.ps1 not found; falling back to swift build."
         & swift build
         if ($LASTEXITCODE -ne 0) {
             Write-Err "swift build failed."
             exit 1
         }
     }
-    Write-Ok "Build complete."
 } else {
     Write-Info "Skipping build (-SkipBuild requested)."
 }
 
 # -----------------------------------------------------------------------------
 #  5. Run swift test
+#
+#  Direct invocation. No pipeline, no filter, no re-print. Everything
+#  the test runner prints goes straight to the terminal.
 # -----------------------------------------------------------------------------
 
 Write-Section "Running tests"
@@ -144,71 +164,19 @@ if ($Filter) {
     $testArgs += $Filter
 }
 
-$capturedLines = New-Object System.Collections.ArrayList
+& swift @testArgs
+$exitCode = $LASTEXITCODE
 
-try {
-    & swift @testArgs 2>&1 | ForEach-Object {
-        [void]$capturedLines.Add($_)
-        if (-not $Quiet) { Write-Host $_ }
-    }
-    $exitCode = $LASTEXITCODE
-} catch {
-    Write-Err "swift test threw an exception: $_"
+# -----------------------------------------------------------------------------
+#  6. Report
+# -----------------------------------------------------------------------------
+
+Write-Section "Result"
+
+if ($exitCode -eq 0) {
+    Write-Ok "swift test exited with code 0 (all tests passed)."
+    exit 0
+} else {
+    Write-Err "swift test exited with code $exitCode (one or more tests failed)."
     exit 1
 }
-
-# -----------------------------------------------------------------------------
-#  6. Parse the XCTest summary from the captured output
-# -----------------------------------------------------------------------------
-#
-# XCTest prints one "Executed N tests, with M failures" line per suite,
-# ending with an "All tests" summary. We keep the last one, which is the
-# process-wide total.
-
-$totalTests    = 0
-$totalFailures = 0
-$summaryLine   = ""
-
-foreach ($line in $capturedLines) {
-    $s = [string]$line
-    if ($s -match "Executed\s+(\d+)\s+tests?,\s+with\s+(\d+)\s+failures?") {
-        $totalTests    = [int]$Matches[1]
-        $totalFailures = [int]$Matches[2]
-        $summaryLine   = $s
-    }
-}
-
-# -----------------------------------------------------------------------------
-#  7. Report
-# -----------------------------------------------------------------------------
-
-Write-Section "Summary"
-
-Write-Info "Configuration : $Configuration"
-if ($Filter) {
-    Write-Info "Filter        : $Filter"
-}
-if ($summaryLine) {
-    Write-Info "Last XCTest   : $summaryLine"
-}
-Write-Info "Tests         : $totalTests"
-Write-Info "Failures      : $totalFailures"
-
-if ($totalTests -eq 0) {
-    Write-Warn "No test summary was found in the output."
-    Write-Warn "The filter may have matched nothing, or the output format changed."
-    if ($exitCode -eq 0) {
-        Write-Ok "swift test returned exit code 0."
-        exit 0
-    }
-    Write-Err "swift test returned exit code $exitCode."
-    exit 1
-}
-
-if ($totalFailures -gt 0) {
-    Write-Err "$totalFailures test(s) failed out of $totalTests."
-    exit 1
-}
-
-Write-Ok "All $totalTests tests passed."
-exit 0

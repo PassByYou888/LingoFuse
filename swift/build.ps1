@@ -1,41 +1,70 @@
 # =============================================================================
 #  build.ps1
 # -----------------------------------------------------------------------------
-#  One-shot build driver for the LingoFuse Swift binding.
+#  Thin wrapper around `swift build`.
 #
-#  Steps:
-#    1. Locate the project root (the directory that contains this script).
-#    2. Verify that the Swift toolchain is installed and reachable.
-#    3. Print the environment (Swift version, platform, architecture).
-#    4. Locate the LingoFuse native library in the common candidate paths.
-#    5. Run `swift build` in the requested configuration.
-#    6. Optionally copy the native library next to the built executables.
+#  What this script does NOT do:
+#    - It does not filter, rewrite, or buffer the Swift compiler output.
+#    - It does not re-print the output through Write-Host.
+#    - It does not parse the output for warnings or errors.
+#
+#  What this script does:
+#    1. Optionally sets the console output encoding to UTF-8 so that the
+#       native Swift output is decoded correctly on Windows PowerShell.
+#       Without this, the Swift progress glyph "…" is mangled by the
+#       legacy console code page. Pass -NoEncoding to skip this step.
+#    2. Locates the project root and the Swift toolchain.
+#    3. Locates the native LingoFuse library.
+#    4. Runs `swift build` and lets its output go straight to the terminal.
+#    5. Optionally copies the native library next to the built executables.
 #
 #  Usage:
 #      .\build.ps1
 #      .\build.ps1 -Release
 #      .\build.ps1 -CopyNative
 #      .\build.ps1 -Release -CopyNative -Quiet
+#      .\build.ps1 -NoEncoding
 #
 #  Exit codes:
 #      0  build succeeded
 #      1  build failed
 #      2  startup error (Swift not found, Package.swift missing, ...)
-#
-#  Windows execution policy:
-#      If PowerShell refuses to run this script, start the shell with:
-#          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#      or invoke the script directly:
-#          powershell -ExecutionPolicy Bypass -File .\build.ps1
 # =============================================================================
 
 param(
     [switch] $Release,
     [switch] $CopyNative,
-    [switch] $Quiet
+    [switch] $Quiet,
+    [switch] $NoEncoding
 )
 
 $ErrorActionPreference = "Stop"
+
+# -----------------------------------------------------------------------------
+#  Console output encoding
+#
+#  Swift emits UTF-8. Windows PowerShell 5.1 decodes native process output
+#  using the active console code page (CP936 on Simplified Chinese
+#  Windows, CP1252 on Western Windows), which mangles multi-byte glyphs
+#  such as the progress ellipsis "…" (E2 80 A6).
+#
+#  Setting [Console]::OutputEncoding to UTF-8 makes the decoding correct.
+#  This is a decoding hint, not a transformation: the bytes produced by
+#  Swift are unchanged.
+#
+#  Pass -NoEncoding to skip this step entirely and let PowerShell use its
+#  default behaviour. On PowerShell 7+ the default is already UTF-8, so
+#  the flag has no observable effect there.
+# -----------------------------------------------------------------------------
+
+if (-not $NoEncoding) {
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding           = [System.Text.Encoding]::UTF8
+    } catch {
+        # Some hosts do not expose both knobs; ignore and continue.
+    }
+}
 
 # -----------------------------------------------------------------------------
 #  Helpers
@@ -66,9 +95,6 @@ function Write-Err([string]$msg) {
     Write-Host "  [ERR]  $msg" -ForegroundColor Red
 }
 
-# Returns "windows", "macos", "linux", or "unknown".
-# Uses the automatic variables available on PowerShell 6+ and falls back
-# to $env:OS for Windows PowerShell 5.1.
 function Get-HostPlatform {
     if ($IsWindows) { return "windows" }
     if ($IsMacOS)   { return "macos" }
@@ -136,13 +162,6 @@ Write-Info "Configuration     : $Configuration"
 Write-Info "Platform          : $(Get-HostPlatform)"
 Write-Info "Architecture      : $arch"
 
-try {
-    $swiftVersionLine = (& swift --version 2>&1 | Select-Object -First 1)
-    Write-Info "Swift version     : $swiftVersionLine"
-} catch {
-    Write-Warn "Could not determine the Swift version."
-}
-
 # -----------------------------------------------------------------------------
 #  4. Locate the native library
 # -----------------------------------------------------------------------------
@@ -156,7 +175,6 @@ if ([string]::IsNullOrEmpty($nativeLibName)) {
 } else {
     Write-Section "Native library"
 
-    # Common candidate directories, in priority order.
     $candidates = @(
         (Join-Path $ProjectDir "..\Binary"),
         (Join-Path $ProjectDir "Binary"),
@@ -187,6 +205,10 @@ if ([string]::IsNullOrEmpty($nativeLibName)) {
 
 # -----------------------------------------------------------------------------
 #  5. Run swift build
+#
+#  The invocation is a direct call. No pipeline, no ForEach-Object, no
+#  Write-Host. Everything the compiler prints goes straight to the
+#  terminal, with all its colours, progress updates, and warnings.
 # -----------------------------------------------------------------------------
 
 Write-Section "Building"
@@ -200,13 +222,8 @@ if ($Release) {
 Write-Info "Command: swift $($buildArgs -join ' ')"
 Write-Host ""
 
-try {
-    & swift @buildArgs
-    $exitCode = $LASTEXITCODE
-} catch {
-    Write-Err "swift build threw an exception: $_"
-    exit 1
-}
+& swift @buildArgs
+$exitCode = $LASTEXITCODE
 
 if ($exitCode -ne 0) {
     Write-Err "swift build failed with exit code $exitCode"

@@ -4,6 +4,13 @@
 //
 //  Step 2B verification: status queue and health checks.
 //
+//  SECTIONS
+//  --------
+//  Tests 01-09 : original surface (status queue + App-name-scoped
+//                health checks).
+//  Tests 10-13 : v1.1 additions (UID- and P2PName-scoped health
+//                checks).
+//
 
 import XCTest
 import LingoFuse
@@ -54,5 +61,31 @@ final class StatusTests: XCTestCase {
 
     func test09_check_api_absent_is_false() {
         XCTAssertFalse(Status.checkApi("__absent__", "__also_absent__"))
+    }
+
+    // ==================================================================
+    // v1.1 additions — UID- and P2PName-scoped health checks
+    // ==================================================================
+
+    func test10_check_uid_null_is_false() {
+        // A null UID can never match a registered client.
+        XCTAssertFalse(Status.checkUid(.null))
+    }
+
+    func test11_check_uid_api_null_is_false() {
+        XCTAssertFalse(Status.checkUidApi(.null, "some_api"))
+    }
+
+    func test12_check_p2p_name_absent_is_false() {
+        XCTAssertFalse(Status.checkP2PName("__definitely_absent_group__"))
+    }
+
+    func test13_check_p2p_name_api_absent_is_false() {
+        XCTAssertFalse(
+            Status.checkP2PNameApi(
+                "__definitely_absent_group__",
+                "__also_absent__"
+            )
+        )
     }
 }

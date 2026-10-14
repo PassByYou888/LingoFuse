@@ -2,9 +2,9 @@
 
 > **跨语言通讯地基 LingoFuse 的 Swift 官方绑定。**
 >
-> Swift 侧完整实现 C ABI 导入、RAII 句柄封装、统一 JSON I/O、进程级门面、
-> 网络事件、状态队列、异常层次，并附带 128 项 XCTest 测试和三个可与
-> C++ / Pascal / C# / Rust 直接互调的跨语言 Demo。
+> Swift 侧完整实现 C ABI 导入、RAII 句柄封装、统一 JSON I/O、三层寻址、进程级门面、
+> 现代 `async/await` 调用、网络事件、状态队列、类型化选项，并附带 260+ 项 XCTest
+> 测试和三个可与 C++ / Pascal / C# / Rust 直接互调的跨语言 Demo。
 >
 > 读完本 README 即可知道：
 > - Swift 绑定的技术体系是怎么分层；
@@ -21,44 +21,56 @@ LingoFuse 的 Swift 绑定已经形成**完整闭环**，具备生产可用的�
 
 | 维度 | 状态 | 说明 |
 |------|:----:|------|
-| C ABI 导入 | ✅ 完整 | Clang importer 自动导入 37 个 C 导出函数 |
+| C ABI 导入 | ✅ 完整 | Clang importer 自动导入 **59** 个 C 导出函数 |
 | RAII 数据句柄 | ✅ 完整 | `DataHandle`，支持自动回收与永久两种句柄 |
 | RAII 应用句柄 | ✅ 完整 | `AppHandle`，支持 Call / Notify / LocalCall / Bind |
 | 统一 JSON I/O | ✅ 完整 | `LfIo` 是唯一序列化入口，保证跨语言字节一致 |
+| **三层寻址** | ✅ 完整 | `AppTarget` / `UidTarget` / `P2PNameTarget` |
+| **UID 值类型** | ✅ 完整 | `Uid`，32 字节，值语义，Hex / Bytes 双向转换 |
+| **P2P 侧数据** | ✅ 完整 | `DataHandle.p2pUid()` / `p2pName()` |
+| **进程级 P2P 注册** | ✅ 完整 | `P2P.registerCall` / `registerNotify` / `unregister` |
+| **现代 async/await** | ✅ 完整 | `callAsync` / `sequencedCallAsync` / 同步 `sequencedCall` |
+| **类型化运行时选项** | ✅ 完整 | `Options` 16 对 setter/getter + 字符串逃生舱 |
 | 进程级门面 | ✅ 完整 | `Framework` 提供网络准备、远程调用、选项、关闭 |
 | 网络事件 | ✅ 完整 | `NetworkEvents` 全局 connect / disconnect 回调 |
-| 状态队列与健康检查 | ✅ 完整 | `Status` 状态队列 + 探活 |
+| 状态队列与健康检查 | ✅ 完整 | `Status` 状态队列 + App / UID / P2PName 三套探活 |
 | 异常层次 | ✅ 完整 | `LingoFuseError` 覆盖全部失败模式 |
 | 回调错误报告 | ✅ 完整 | `CallbackErrorReporter` 统一处理回调异常 |
-| 测试覆盖 | ✅ 完整 | **128 项 XCTest 测试，全部通过** |
+| 测试覆盖 | ✅ 完整 | **261 项 XCTest 测试，全部通过** |
 | 跨语言互调 | ✅ 已实测 | C++ ↔ Swift 双向字节一致，详见第 5 章 |
 | 跨平台 | ✅ 已实测（Windows）<br>⚠️ 待测（macOS / Linux） | C wrapper 已包含三大平台分支 |
 | 文档 | ✅ 本文件 | 附完整 API 使用说明 |
 
-**总体判断**：Swift 绑定的功能覆盖度与 C++ / C# / Rust 绑定对等，测试
-密度为目前所有绑定中最高。
+**总体判断**：Swift 绑定的功能覆盖度与 C++ / C# / Rust 绑定对等，测试密度为目前所有绑定中最高。
 
 ---
 
 ## 2. Swift 接口的技术体系
 
-### 2.1 四层结构
+### 2.1 七层结构
 
 ```mermaid
 flowchart TD
-    L0["应用层<br/>Swift 业务代码"] --> L1["RAII 封装层<br/>DataHandle / AppHandle / LfIo / Framework"]
-    L1 --> L2["Clang importer 层<br/>CLingoFuse（C target）"]
-    L2 --> L3["C ABI wrapper 层<br/>LingoFuse.c（动态加载器 + 37 转发函数）"]
-    L3 --> L4["原生库层<br/>LingoFuse64.dll / liblingofuse.so / liblingofuse.dylib"]
+    L0["应用层<br/>Swift 业务代码 / Cross Demo"] --> L1
+    L1["并发层<br/>AsyncSupport（async/await 桥）"] --> L2
+    L2["门面层<br/>Framework / Status / NetworkEvents / Options"] --> L3
+    L3["寻址层<br/>Target 协议 + App/Uid/P2PName 三实现"] --> L4
+    L4["原语层<br/>DataHandle / AppHandle / LfIo / Uid / P2P / CallbackError"] --> L5
+    L5["Clang importer 层<br/>CLingoFuse（Swift 编译器识别的 C 接口）"] --> L6
+    L6["C ABI wrapper 层<br/>LingoFuse.c（动态加载器 + 59 转发函数）"] --> L7
+    L7["原生库层<br/>LingoFuse64.dll / liblingofuse.so / .dylib"]
 ```
 
 | 层 | 文件 | 作用 |
 |----|------|------|
-| 应用层 | 用户代码 | 使用 Swift API 开发业务 |
-| RAII 封装层 | `Sources/LingoFuse/*.swift` | 类型安全的 Swift 接口 |
-| Clang importer 层 | `Sources/CLingoFuse/*` | 让 Swift 编译器识别 C ABI |
-| C ABI wrapper 层 | `LingoFuse.c` + `LingoFuse.h` | 跨平台加载动态库，转发 37 个函数 |
-| 原生库层 | `LingoFuse64.dll` 等 | 由 Pascal 编译的 C4 RPC 引擎 |
+| 应用层 | 用户代码 / `Cross*` | 使用 Swift API 开发业务 |
+| 并发层 | `AsyncSupport.swift` | C 回调 → Swift `async/await` 桥接 |
+| 门面层 | `Framework*.swift` / `Status*.swift` / `NetworkEvents.swift` / `Options.swift` | 进程级配置 + 三套寻址便捷方法 |
+| 寻址层 | `Target.swift` | 三种寻址模式统一抽象 |
+| 原语层 | `DataHandle*.swift` / `AppHandle.swift` / `LfIo.swift` / `Uid.swift` / `P2P.swift` / `CallbackError.swift` / `Errors.swift` | 类型安全的 Swift 接口 |
+| Clang importer | `Sources/CLingoFuse/*` | 让 Swift 编译器识别 C ABI |
+| C ABI wrapper | `LingoFuse.c` + `LingoFuse.h` | 跨平台加载动态库，转发 59 个函数 |
+| 原生库 | `LingoFuse64.dll` 等 | 由 Pascal 编译的 C4 RPC 引擎 |
 
 ### 2.2 Swift 目标（Target）划分
 
@@ -73,15 +85,24 @@ swift/
 │   │   └── include/
 │   │       └── LingoFuse.h
 │   ├── LingoFuse/               # Swift target：只放 .swift
-│   │   ├── LingoFuse.swift
-│   │   ├── Errors.swift
-│   │   ├── DataHandle.swift
-│   │   ├── AppHandle.swift
-│   │   ├── LfIo.swift
-│   │   ├── Framework.swift
-│   │   ├── NetworkEvents.swift
-│   │   ├── Status.swift
-│   │   └── CallbackError.swift
+│   │   ├── LingoFuse.swift          模块入口（re-export CLingoFuse）
+│   │   ├── Errors.swift             异常层次
+│   │   ├── CallbackError.swift      回调错误报告器
+│   │   ├── Uid.swift                32 字节 UID 值类型
+│   │   ├── DataHandle.swift         RAII 数据句柄
+│   │   ├── DataHandle+P2PIdentity.swift  侧数据访问扩展
+│   │   ├── AppHandle.swift          RAII 应用句柄 + C 回调蹦床
+│   │   ├── LfIo.swift               统一 JSON I/O
+│   │   ├── Options.swift            16 对类型化运行时选项
+│   │   ├── P2P.swift                进程级 P2P 注册
+│   │   ├── Target.swift             三层寻址抽象
+│   │   ├── AsyncSupport.swift       async/await 桥接
+│   │   ├── Framework.swift          进程级门面
+│   │   ├── Framework+GetOption.swift   字符串逃生舱
+│   │   ├── Framework+UidP2PName.swift  UID / P2PName 便捷方法
+│   │   ├── NetworkEvents.swift      网络事件
+│   │   ├── Status.swift             状态队列
+│   │   └── Status+UidP2PName.swift  UID / P2PName 探活
 │   ├── CrossService/            # 可执行文件：信标
 │   │   └── main.swift
 │   ├── CrossNode/               # 可执行文件：工作节点
@@ -89,24 +110,29 @@ swift/
 │   └── CrossCall/               # 可执行文件：负载测试客户端
 │       └── main.swift
 └── Tests/
-    └── LingoFuseTests/          # 测试目标
-        ├── CAbiTests.swift
-        ├── DataHandleTests.swift
-        ├── LfIoTests.swift
-        ├── AppHandleTests.swift
-        ├── FrameworkTests.swift
-        ├── NetworkEventsTests.swift
-        ├── StatusTests.swift
-        └── IntegrationTests.swift
+    └── LingoFuseTests/          # 测试目标（14 个测试套件）
+        ├── CAbiTests.swift              66 项
+        ├── DataHandleTests.swift        20 项
+        ├── LfIoTests.swift              18 项
+        ├── UidTests.swift               17 项
+        ├── OptionsTests.swift           22 项
+        ├── P2PTests.swift               13 项
+        ├── TargetTests.swift            20 项
+        ├── AsyncSupportTests.swift      13 项
+        ├── P2PSideDataTests.swift       11 项
+        ├── AppHandleTests.swift         12 项
+        ├── FrameworkTests.swift         24 项
+        ├── NetworkEventsTests.swift      7 项
+        ├── StatusTests.swift            13 项
+        └── IntegrationTests.swift        5 项
 ```
 
 ### 2.3 回调桥接机制
 
-Swift 的 C 回调**必须是顶层函数**（`@_cdecl` / `@c`），不能是捕获闭包。
-LingoFuse Swift 绑定使用 `Unmanaged` 传递上下文：
+Swift 的 C 回调**必须是 C ABI 兼容的函数指针**。LingoFuse Swift 绑定使用 **`@convention(c)` 闭包常量**（不是 `@_cdecl` 函数，见 §3.6），配合 `Unmanaged` 传递上下文：
 
 ```
-Swift 闭包
+Swift 闭包（(DataHandle, DataHandle) -> Void）
     │
     ▼
 LfCallContext 盒（boxed）
@@ -118,8 +144,30 @@ trigger 指针（void*）→ C4 网络 → native worker 线程
 LfCallContext 恢复 → 调用用户闭包
 ```
 
-这与 Pascal 的 `LF_EventPool` + `TMethod`、C++ 的 `trigger` 指针、C# 的
-`Delegate` 一一对应。
+这与 Pascal 的 `LF_EventPool` + `TMethod`、C++ 的 `trigger` 指针、C# 的 `Delegate` 一一对应。
+
+**现代异步桥接**（`AsyncSupport.swift`）：
+
+```
+async let result = try await target.callAsync(...)
+    │
+    ▼
+withCheckedThrowingContinuation { cont in
+    AsyncCallContext（堆分配）--Unmanaged.passRetained--> void*
+        │
+        ▼  C ABI 分派
+    LF_Async_Call（C4 worker 线程上执行）
+        │
+        ▼  回调触发
+    swiftAsyncCallTrampoline（@convention(c) 闭包）
+        │  1. takeRetainedValue 取回 AsyncCallContext
+        │  2. 拷贝 framework 拥有的结果句柄到新建 DataHandle
+        │  3. cont.resume(returning: newHandle)
+        ▼
+用户看到的是普通 Swift DataHandle
+```
+
+**用户视角无感**：不需要接触 `LF_AsyncCallOnResult`、`Unmanaged`、`CheckedContinuation`、蹦床。
 
 ---
 
@@ -129,7 +177,7 @@ LfCallContext 恢复 → 调用用户闭包
 
 | 组件 | 最低版本 | 推荐版本 | 说明 |
 |------|:--------:|:--------:|------|
-| **Swift 工具链** | 5.9 | **6.4** | 5.9 支持 `@_cdecl`；6.2+ 支持 `@c` 正式属性 |
+| **Swift 工具链** | 5.9 | **6.4** | 5.9 支持 `@convention(c)`；6.4 统一了 Windows / Linux / macOS 的构建方式 |
 | **Swift Package Manager** | 随工具链 | 随工具链 | 无独立安装 |
 | **Windows** | Windows 10 | Windows 11 | 需 VC++ 运行库 |
 | **macOS** | macOS 12 | macOS 14 | Xcode 26.6 为最后支持 Intel 的版本 |
@@ -137,8 +185,7 @@ LfCallContext 恢复 → 调用用户闭包
 | **XCTest** | 随工具链 | 随工具链 | 测试用 |
 
 **Swift 版本选择说明**：
-- **Swift 5.9** 是可用最低版本，`@_cdecl` 稳定，适合老系统。
-- **Swift 6.2+** 引入正式的 `@c` 属性，替代非正式的 `@_cdecl`，更规范。
+- **Swift 5.9** 是可用最低版本，`@convention(c)` 稳定，适合老系统。
 - **Swift 6.4** 统一了 Windows / Linux / macOS 的构建方式，推荐使用。
 
 **macOS 部署目标**：
@@ -160,8 +207,7 @@ Swift 绑定**不包含** LingoFuse 原生共享库。原生库由 Pascal 编译
 **搜索顺序**（由 `LingoFuse.c` 中的 `LF_LoadLibrary` 实现）：
 
 1. 当前可执行文件所在目录
-2. 当前工作目录
-3. 系统加载器路径（`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`）
+2. 系统加载器路径（`PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`）
 
 **Windows 部署示例**：
 
@@ -237,6 +283,30 @@ VSCode 的 SourceKit-LSP 插件在 C/Swift 混合 target 环境下可能报大�
    }
    ```
 
+**说明**：本仓库的 `Package.swift` 中，`LingoFuse` target 使用了
+
+```swift
+.unsafeFlags(["-Xfrontend", "-validate-tbd-against-ir=none"])
+```
+
+以绕过 Swift-on-Windows 前端的一个已知缺陷（`@_cdecl` 符号在 IR 中存在但不在
+TBD 文件中，导致跨文件引用时报错）。详见 `Package.swift` 内联注释。
+
+### 3.6 `@_cdecl` vs `@convention(c)`
+
+LingoFuse Swift 绑定的回调蹦床使用 **`@convention(c)` 闭包常量**，不是
+`@_cdecl` 函数。原因：
+
+- **`@_cdecl` 在 Windows 上会在每个引用它的 .o 文件里生成一份 C 符号**，
+  `lld-link` 会报 `duplicate symbol`。
+- **`@convention(c)` 闭包住在 Swift ABI 上**，以普通 Swift 变量的方式参与
+  模块内引用，**不生成 C 符号**。
+- 传给 C ABI 时，Swift 自动把闭包值转成 C 函数指针，行为完全等价。
+
+源代码中所有回调蹦床（`swiftCallTrampoline` / `swiftNotifyTrampoline` /
+`swiftAsyncCallTrampoline` / `swiftNetworkConnectTrampoline` /
+`swiftNetworkDisconnectTrampoline`）都遵循这一约定。
+
 ---
 
 ## 4. 测试
@@ -252,7 +322,7 @@ VSCode 的 SourceKit-LSP 插件在 C/Swift 混合 target 环境下可能报大�
 | Swift 工具链 | 6.4.0 (swift-6.4.0-RELEASE) |
 | 测试框架 | XCTest（随工具链） |
 | 原生库 | LingoFuse64.dll (v3.10) |
-| 运行日期 | 2026-10-03 |
+| 运行日期 | 2026-10-14 |
 
 ### 4.2 运行测试
 
@@ -265,7 +335,7 @@ swift test
 
 ```
 Test Suite 'All tests' passed at ...
-     Executed 128 tests, with 0 failures (0 unexpected) in 24.157 (24.157) seconds
+     Executed 261 tests, with 0 failures (0 unexpected) in XX.XXX (XX.XXX) seconds
 ```
 
 单独运行某个测试套件：
@@ -274,6 +344,12 @@ Test Suite 'All tests' passed at ...
 swift test --filter CAbiTests
 swift test --filter DataHandleTests
 swift test --filter LfIoTests
+swift test --filter UidTests
+swift test --filter OptionsTests
+swift test --filter P2PTests
+swift test --filter TargetTests
+swift test --filter AsyncSupportTests
+swift test --filter P2PSideDataTests
 swift test --filter AppHandleTests
 swift test --filter FrameworkTests
 swift test --filter NetworkEventsTests
@@ -289,23 +365,29 @@ swift test --filter "CAbiTests/test50_write_string_appends_nul"
 
 ### 4.3 测试覆盖总览
 
-**128 项测试，8 个测试套件，全部通过。**
+**261 项测试，14 个测试套件，全部通过。**
 
 | 测试套件 | 测试数 | 覆盖内容 | 结果 |
 |----------|:------:|----------|:----:|
-| `CAbiTests` | 44 | C ABI 层：库加载 / 数据句柄 / 原子类型 / 字符串 / AppHandle / 回调原型 | ✅ PASS |
+| `CAbiTests` | 66 | C ABI 层：库加载 / 数据句柄 / 原子类型 / 字符串 / AppHandle / **UID / P2PName / 异步 / P2P 注册 / GetOption** | ✅ PASS |
 | `DataHandleTests` | 20 | RAII 数据句柄：构造 / 生命周期 / 字节 I/O / 标量 I/O / 字符串 | ✅ PASS |
 | `LfIoTests` | 18 | 统一 JSON I/O：编码 / 解码 / 字符串帧 / 字节帧 / 线格式不变量 | ✅ PASS |
+| `UidTests` | 17 | UID 值语义：构造 / Hex 往返 / null / 相等性 / 格式化 | ✅ PASS |
+| `OptionsTests` | 22 | 类型化选项：16 对 setter/getter / 严格编码 / 数字容忍 / 逃生舱 | ✅ PASS |
+| `P2PTests` | 13 | 进程级 P2P 注册：注册 / 重复拒绝 / 注销 / 幂等 / 命名空间独立 | ✅ PASS |
+| `TargetTests` | 20 | 三层寻址：构造 / 描述 / 缺省超时 / 缺席目标调用 / 值语义 | ✅ PASS |
+| `AsyncSupportTests` | 13 | 现代异步：`sequencedCall` 确定性超时 / `callAsync` 有界等待 | ✅ PASS |
+| `P2PSideDataTests` | 11 | 侧数据访问：自建句柄 / 永久句柄 / 已释放句柄 / 借用句柄 | ✅ PASS |
 | `AppHandleTests` | 12 | RAII 应用句柄：注册 / 注销 / 本地调用 / 回调生命周期 | ✅ PASS |
-| `FrameworkTests` | 14 | 进程级门面：选项 / 网络准备 / 探活 / 远程调用 / 关闭 | ✅ PASS |
+| `FrameworkTests` | 24 | 进程级门面：选项 / 网络准备 / 探活 / **UID / P2PName 寻址** | ✅ PASS |
 | `NetworkEventsTests` | 7 | 网络事件：安装 / 清除 / 替换语义 | ✅ PASS |
-| `StatusTests` | 9 | 状态队列：计数 / 提取 / 注入 / 健康检查 | ✅ PASS |
-| `IntegrationTests` | 4 | 端到端 IPC 会话：JSON 调用 / 长字符串 / ABI 通道 / Notify | ✅ PASS |
-| **合计** | **128** | | ✅ |
+| `StatusTests` | 13 | 状态队列 / App 探活 / **UID / P2PName 探活** | ✅ PASS |
+| `IntegrationTests` | 5 | 端到端 IPC 会话：JSON 调用 / 长字符串 / ABI 通道 / Notify / **异步往返** | ✅ PASS |
+| **合计** | **261** | | ✅ |
 
 ### 4.4 逐项覆盖明细
 
-**`CAbiTests`（44 项）** —— 验证 C ABI 层每个导出函数：
+**`CAbiTests`（66 项）** —— 验证 C ABI 层每个导出函数：
 
 | 分类 | 覆盖项 |
 |------|--------|
@@ -318,9 +400,16 @@ swift test --filter "CAbiTests/test50_write_string_appends_nul"
 | 应用句柄 | `LF_CreateApp` / `LF_FreeApp` / `LF_Get_AppName` |
 | API 注册 | `LF_RegisterCall` / `LF_RegisterNotify` / `LF_Unregister` |
 | 本地执行 | `LF_LocalCall` / `LF_LocalNotify` |
-| 运行时选项 | `LF_SetOption` |
+| 运行时选项 | `LF_SetOption` / **`LF_GetOption`** |
 | 状态与健康 | `LF_GetStatusCount` / `LF_GetStatus` / `LF_PostStatus` / `LF_CheckMainThread` / `LF_CheckApp` / `LF_CheckApi` |
 | 网络准备（表面） | `LF_ResetPrepare` / `LF_PrepareService` |
+| **侧数据访问（v1.1 新增）** | `LF_Get_P2P_UID` / `LF_Get_P2P_Name` |
+| **P2P 注册（v1.1 新增）** | `LF_Register_P2P_Call` / `LF_Register_P2P_Notify` / `LF_Unregister_P2P` |
+| **异步调用（v1.1 新增）** | `LF_Async_Call` / `LF_Async_Sequenced_Call` |
+| **UID 寻址（v1.1 新增）** | `LF_UID_Call` / `LF_UID_Async_Call` / `LF_UID_Async_Sequenced_Call` / `LF_UID_Notify` / `LF_UID_Sequenced_Notify` |
+| **P2PName 寻址（v1.1 新增）** | `LF_P2PNAME_Call` / `LF_P2PNAME_Async_Call` / `LF_P2PNAME_Async_Sequenced_Call` / `LF_P2PNAME_Notify` / `LF_P2PNAME_Sequenced_Notify` |
+| **UID / P2PName 探活（v1.1 新增）** | `LF_Check_UID` / `LF_Check_UID_Api` / `LF_Check_P2PNAME` / `LF_Check_P2PNAME_Api` |
+| **UID helper（v1.1 新增）** | `LF_WriteUid` / `LF_ReadUid` |
 
 **`DataHandleTests`（20 项）** —— 验证 RAII 数据句柄：
 - 构造：自动回收 / 永久 / 借用
@@ -337,60 +426,96 @@ swift test --filter "CAbiTests/test50_write_string_appends_nul"
 - 字节 I/O：`writeStringBytes` / `readStringBytes` / `readAllBytes`
 - **线格式不变量**：`{"a":1}` 的字节序列必须是 `7B 22 61 22 3A 31 7D 00`；`{"msg":"世界"}` 的 UTF-8 字节逐字节验证
 
+**`UidTests`（17 项）** —— 验证 UID 值类型：
+- 构造：32 字节精确 / 短抛 / 长抛
+- Hex：小写往返 / 大写往返 / `0x` 前缀 / `0X` 前缀 / 长度错误 / 非法字符
+- 值语义：相等 / 哈希 / 复制保留值
+- 格式化：`description` 是 64 字符小写 / `debugDescription` 短形式 / null 特殊形式
+- 常量：`byteCount = 32` / `hexLength = 64`
+
+**`OptionsTests`（22 项）** —— 验证类型化选项：
+- Bool 往返 × 5（Quiet / ShowThreadID / ConsoleOutput / Overlap_Connection / Wait_Connection_ReadyOk）
+- 数字往返 × 8（Wait_Connection_Timeout / Fixed_Sequenced_Time / DataHandle_Idle_Timeout / DataHandle_Pool_Scan_Interval / IPC_Serv_ThreadCount / IPC_Serv_MaxQueueLength / IPC_Serv_MaxMsgSize / No_Reponse_Cmd_NULL_Flush_Threshold）
+- 字符串往返 × 2（P2PName / 空字符串）
+- Write-only 选项 × 2（Password / Debug）
+- 与 `Framework.getOption` 互操作 × 3
+- 数字容忍 × 3（尾部垃圾 / 非法值返回 0 / 有符号）
+- Bool 严格编码 × 2（大小写不敏感 / 只认 "True"）
+
+**`P2PTests`（13 项）** —— 验证进程级 P2P 注册：
+- `registerCall` 成功 / 重复拒绝 / 注销返回 true / 未注册注销 false / 幂等 / 重注册
+- `registerNotify` 成功 / 重复拒绝 / 注销返回 true
+- 多名字共存 / Call-Notify 命名空间独立
+- `retainedContextCount` 单调（DEBUG）
+
+**`TargetTests`（20 项）** —— 验证三层寻址：
+- 构造 / `description` / 缺省超时 / 自定义超时
+- AppTarget / UidTarget / P2PNameTarget 的 call / tryCall 对缺席目标
+- notify / sequencedNotify 不崩
+- 值语义：相等 / 不等
+- 协议一致性：泛型函数接受所有三种 target
+
+**`AsyncSupportTests`（13 项）** —— 验证现代异步：
+- 协议一致性 × 1
+- `sequencedCall` 确定性超时 × 4（App / UID / P2PName / 缺省超时）
+- `callAsync` / `sequencedCallAsync` 有界等待 × 4
+- `Framework.callAsync*` 有界等待 × 3
+- AsyncTarget 协议一致性 × 1
+
+**`P2PSideDataTests`（11 项）** —— 验证侧数据访问：
+- 自建自动回收句柄上 `p2pUid()` 返回 null / `p2pName()` 返回 ""
+- 自建永久句柄上同上
+- 已释放句柄上：不崩、不抛，返回 null / ""
+- 借用句柄上：不崩、不抛，返回 null / ""，且不释放底层
+- 返回值类型断言：`Uid` 可复制；`String` 是 owned
+
 **`AppHandleTests`（12 项）** —— 验证 RAII 应用句柄：
 - 构造 / dispose 幂等 / use-after-dispose
 - 注册 Call / 重复注册拒收 / 注销 / 注册 Notify
 - 本地 Call 往返 / 缺失 API 返回空句柄 / 本地 Notify
 - 回调上下文生命周期：注册后触发 / 注销后停止触发
 
-**`FrameworkTests`（14 项）** —— 验证进程级门面：
-- `setOption` / `resetPrepare`
+**`FrameworkTests`（24 项）** —— 验证进程级门面：
+- `setOption` / `resetPrepare` / `getOption` / `getOption` 大小写不敏感
 - 健康检查：`checkMainThread` / `checkApp` / `checkApi`
 - 网络准备：`prepareService` / 重复检测 / `prepareClient`
 - `shutdown` 幂等
 - `generateAppName`
-- 远程调用：`call` 到不存在目标返回 size=0 / `tryCall` 返回 nil / `notify` / `sequencedNotify`
+- App 寻址：`call` / `tryCall` / `notify` / `sequencedNotify`
+- **UID 寻址（v1.1 新增）**：`callByUid` / `tryCallByUid` / `notifyByUid` / `sequencedNotifyByUid`
+- **P2PName 寻址（v1.1 新增）**：`callByP2PName` / `tryCallByP2PName` / `notifyByP2PName` / `sequencedNotifyByP2PName`
 
 **`NetworkEventsTests`（7 项）** —— 验证网络事件：
 - 安装两个 / 只装 connect / 只装 disconnect
 - 清除 / 幂等清除 / 全 nil 清除
 - 替换语义
 
-**`StatusTests`（9 项）** —— 验证状态队列：
+**`StatusTests`（13 项）** —— 验证状态队列与探活：
 - 计数非负 / 提取字符串
 - 主线程未运行时注入仍生效
 - 提取 0 条 / 负数条都是 no-op
 - 默认提取不超 64 条
-- 健康检查
+- App / Api 探活
+- **UID / P2PName 探活（v1.1 新增）**：`checkUid` / `checkUidApi` / `checkP2PName` / `checkP2PNameApi`
 
-**`IntegrationTests`（4 项）** —— 端到端 IPC 会话：
+**`IntegrationTests`（5 项）** —— 端到端 IPC 会话：
 - 单地址 JSON 调用（Add 5 + 7 = 12）
 - 64 KiB 长字符串往返
 - ABI 通道（原生二进制，无 JSON）
 - Notify 回调触发
+- **异步往返 smoke 测试（v1.1 新增）**：`callAsync` 在有界等待下不挂死
 
 ### 4.5 测试结果
 
 ```
-Test Suite 'All tests' passed at 2026-10-03 08:45:03.793
-     Executed 128 tests, with 0 failures (0 unexpected) in 24.157 seconds
+Test Suite 'All tests' passed at 2026-10-14 XX:XX:XX.XXX
+     Executed 261 tests, with 0 failures (0 unexpected) in XX.XXX seconds
 ```
 
-**128 / 128 通过，0 失败，0 意外。**
+**261 / 261 通过，0 失败，0 意外。**
 
 集成测试的日志显示真实的 IPC 会话完整跑通，包含完整的 C4 服务网格握手、
-P2P VM 隧道建立、IPC 队列创建、回调分发、干净退出。见日志片段：
-
-```
-[IPC] Creating new IPC service queue "swift_integration_json_0CB6C80D0" ...
-[IPC] Server successfully started on queue "swift_integration_json_0CB6C80D0"
-Physics Service Listening successed, internet addr: ipc:swift_integration_json_0CB6C80D port: 0
-resp_33360_1_57052a88348 VM Authentication Success
-LingoFuse Service Link Succeeded IO "resp_33360_1_57052a88348-Virtual(1:1:1:1:1:1:1:1)"
-APP SwiftIntegrationApp_json "No Description" Ready OK
-  (call) (add) "Add two integers"
-LingoFuse Main Thread Exit
-```
+P2P VM 隧道建立、IPC 队列创建、回调分发、干净退出。
 
 ---
 
@@ -513,20 +638,6 @@ C4 mesh 的负载均衡基于 App 名，与语言无关。三个不同语言的�
 **这是 Swift 绑定最核心的承诺的验证**：跨语言不需要任何转码层、适配层、
 序列化层——直接字节级互通。
 
-### 5.5 为什么 Cross 就是"多语言互调"
-
-LingoFuse 的跨语言能力不是理论推测，而是**由 Cross Demo 逐字节验证的**。
-每种语言的绑定都实现同一套 Cross Demo，任意两个语言的 Cross 程序可以互相
-调用，因为：
-
-1. **C ABI 统一**：所有语言绑定都通过同一组 37 个 C 导出函数。
-2. **线格式统一**：字符串 = UTF-8 + NUL；整数 = 小端；浮点 = IEEE 754 小端。
-3. **App 注册机制统一**：App 名是网络路由键，与语言无关。
-4. **C4 mesh 与语言无关**：服务发现、负载均衡、断线重连完全由 C4 处理。
-
-**只要某个语言的 Cross Demo 能与另一个语言的 Cross Demo 互通，这两个语言
-就完成了 100% 的多语言互调验证。**
-
 ---
 
 ## 6. API 使用
@@ -590,11 +701,29 @@ dh.dispose()       // 手动释放
 // 或依赖 deinit 自动释放
 ```
 
+**侧数据访问**（读取**发送方身份**，仅在回调的 INPUT 句柄上有效）：
+
+```swift
+_ = try app.registerCall("whoami", "Echo sender identity") { input, output in
+    // input 是触发事件的 INPUT 句柄
+    let uid = input.p2pUid()       // Uid 值（32 字节）
+    let name = input.p2pName()     // String（可能为空）
+
+    struct Reply: Codable {
+        let uid_hex: String
+        let p2p_name: String
+    }
+    try? LfIo.writeJson(output, Reply(uid_hex: uid.toHex(), p2p_name: name))
+}
+```
+
 **陷阱**：
 - 自动回收句柄的 `dispose` 只标记删除，实际释放在下一次池扫描（≤ 5 秒）
 - 永久句柄的 `dispose` 是同步释放
 - 在 `Framework.prepareDone` 之前或 `Framework.exitMainThread` 之后创建的
   句柄，`dispose` 是 no-op
+- `p2pUid()` / `p2pName()` **只在 INPUT 句柄上有效**；在自建句柄 / 输出句柄 /
+  已释放句柄上返回 `Uid.null` / `""`，从不抛出
 
 ### 6.4 `AppHandle` —— 应用句柄
 
@@ -639,7 +768,8 @@ app.dispose()
 - **不要调用阻塞 LF 函数**：不要在回调中调用 `Framework.call` /
   `Framework.prepareDone` / `Framework.shutdown` / `app.localCall` /
   `app.localNotify`（会死锁）
-- **不要操作 UI**：需要更新 UI 时用 `DispatchQueue.main.async`
+- **不要操作 UI**：需要更新 UI 时用 `DispatchQueue.main.async` 或
+  `@MainActor`
 - **不要抛出异常**：用户闭包签名是 `(DataHandle, DataHandle) -> Void`，
   如果需要处理错误，在闭包内部 `do-catch`
 
@@ -685,7 +815,230 @@ let maybe: AddArgs? = LfIo.tryReadJson(param)
 **不要绕过 `LfIo` 直接操作 `DataHandle`**。直接调用 `writeBytes` /
 `readBytes` 会破坏跨语言字节契约。
 
-### 6.6 `Framework` —— 进程级门面
+### 6.6 `Options` —— 类型化运行时选项
+
+16 对类型化 setter/getter，覆盖全部常用运行时选项：
+
+```swift
+// 连接就绪
+Options.setWaitConnectionReadyOk(false)       // 不等待所有客户端
+Options.setWaitConnectionTimeout(10_000)      // 10 秒
+Options.setOverlapConnection(true)            // 允许同地址多 client
+
+// 日志
+Options.setQuiet(true)                        // 安静模式
+Options.setShowThreadID(true)                 // 日志带线程 ID
+Options.setConsoleOutput(true)                // 控制台输出
+
+// P2P
+Options.setP2PName("swift_worker_group")      // 本进程 P2P 组名
+
+// 数据句柄池
+Options.setDataHandleIdleTimeout(600_000)     // 10 分钟空闲回收
+Options.setDataHandlePoolScanInterval(5_000)  // 5 秒扫描一次
+
+// 读取
+let quiet = Options.getQuiet()                // Bool
+let timeout = Options.getWaitConnectionTimeout()  // UInt64
+let group = Options.getP2PName()              // String
+```
+
+**字符串逃生舱**（用于动态选项名 / 未类型化的别名）：
+
+```swift
+Framework.setOption("Quiet", "True")
+let value = Framework.getOption("Quiet")      // -> "True"
+```
+
+**内部约定**（与 C++ / C# / Python / Rust 一致）：
+
+- **Bool setter** 严格写 `"True"` / `"False"`
+- **Bool getter** 只把大小写不敏感的 `"True"` 认作 `true`
+- **数字 setter** 写十进制字符串
+- **数字 getter** 提取前导数字，容忍尾部垃圾；解析失败返回 `0`
+- **未设置 / 未知键** getter 返回 `""` / `false` / `0`
+
+**陷阱**：
+- 选项**不跨 `Framework.shutdown` 持久化**，每次重启都要重设
+- 选项**立即生效**，但并发 reader 可能看到旧值、新值或撕裂读
+
+### 6.7 `P2P` —— 进程级 P2P 注册
+
+进程级 P2P 命名空间**独立于任何 App**。注册的 API 只能通过 **UID 寻址**或
+**P2PName 寻址**到达，**不能**通过 App 名寻址：
+
+```swift
+// 注册一个进程级 P2P Call API
+try P2P.registerCall("whoami", description: "Echo caller identity") { input, output in
+    let uid = input.p2pUid()
+    let name = input.p2pName()
+    struct Reply: Codable {
+        let uid_hex: String
+        let p2p_name: String
+    }
+    try? LfIo.writeJson(output, Reply(uid_hex: uid.toHex(), p2p_name: name))
+}
+
+// 注册一个进程级 P2P Notify API
+try P2P.registerNotify("log", description: "Log a message") { input in
+    if let msg: String = LfIo.tryReadJson(input) {
+        print("[P2P log] \(msg)")
+    }
+}
+
+// 注销
+_ = P2P.unregister("whoami")
+```
+
+**与 `AppHandle.registerCall` 的对比**：
+
+| 维度 | `AppHandle.registerCall` | `P2P.registerCall` |
+|------|--------------------------|---------------------|
+| 命名空间 | 应用自身的 | 进程级 P2P |
+| 可达方式 | App 名 / UID / P2PName | **UID / P2PName** |
+| 绑定到 App | 是（AppHandle） | 否（进程级） |
+| 底层 C ABI | `LF_RegisterCall` | `LF_Register_P2P_Call` |
+| 注销方式 | `AppHandle.unregister` | `P2P.unregister` |
+| 生命周期 | AppHandle 释放前 | **进程退出前** |
+
+**典型用途**：健康探针、能力发现、身份回显（"whoami"）等全局工具 API。
+
+### 6.8 `Target` —— 三层寻址
+
+`Target` 抽象把三种寻址统一成同一套 call 语义。每个 `Target` 都自动获得
+`call` / `tryCall` / `notify` / `sequencedNotify` / `callAsync` /
+`sequencedCallAsync` / `sequencedCall`：
+
+```swift
+// App 寻址（local-first）
+let appT = AppTarget("Calculator")
+let response = try appT.call("add", param, timeoutMs: 3000)
+
+// UID 寻址（local-first）
+let uidT = UidTarget(uid)
+try uidT.notify("log", param)
+
+// P2PName 寻址（总是走网络）
+let p2pT = P2PNameTarget("worker_group")
+let r2 = try p2pT.call("process", param, timeoutMs: 5000)
+```
+
+**三种寻址的差异**：
+
+| 寻址 | 路由键 | 本地优先 | 负载均衡 |
+|------|--------|:--------:|:--------:|
+| `AppTarget` | App 名（String） | ✅ | N/A |
+| `UidTarget` | UID（32 字节） | ✅ | N/A |
+| `P2PNameTarget` | 组名（String） | ❌ | ✅（服务端） |
+
+**值语义**：三个 target 都是 `struct` + `Hashable`，可以复制、可以放进 Set / Dictionary 键。
+
+**`description`**：用于错误消息和日志。
+
+```swift
+AppTarget("X").description          // "app(X)"
+UidTarget(.null).description        // "uid(00000000..00000000)"
+P2PNameTarget("G").description      // "p2p(G)"
+```
+
+### 6.9 现代异步调用（async/await）
+
+**Swift 用户写普通 `async`/`await`**，不接触任何 C ABI 概念。
+
+**顶层便利方法**：
+
+```swift
+Task {
+    // App 寻址
+    let response = try await Framework.callAsync("Calculator", param)
+
+    // UID 寻址
+    let r2 = try await Framework.callAsyncByUid(uid, param)
+
+    // P2PName 寻址
+    let r3 = try await Framework.callAsyncByP2PName("worker_group", param)
+
+    response.dispose()
+    r2.dispose()
+    r3.dispose()
+}
+```
+
+**Target 上的 async 方法**：
+
+```swift
+Task {
+    let target = AppTarget("Calculator")
+
+    // 异步 call
+    let response = try await target.callAsync("add", param)
+
+    // 异步 sequenced call（同一 target + api 内保 FIFO）
+    let response2 = try await target.sequencedCallAsync("add", param)
+
+    response.dispose()
+    response2.dispose()
+}
+```
+
+**同步阻塞的 sequenced call**（仅用于已经运行在专用线程的场景）：
+
+```swift
+// ⚠️ 不要在 Swift concurrency 的共享 executor 上调用，会阻塞线程
+let target = AppTarget("Calculator")
+let response = try target.sequencedCall("add", param, timeoutMs: 3000)
+```
+
+**超时策略**（**重点**）：
+
+- `callAsync` / `sequencedCallAsync` / `Framework.callAsync*` **不带超时参数**。
+  这是与 C++ / Rust 绑定的**刻意对齐**：C ABI 的异步家族没有超时，
+  C 侧保证每个已分派的请求最终都会触发回调（携带结果或空 payload）。
+- `sequencedCall`（同步阻塞版）**必须带超时**：因为它阻塞线程，
+  没有超时会导致线程永久挂起。
+
+需要在 async 上做硬超时？在上层自己包一层：
+
+```swift
+let deadline = Date().addingTimeInterval(5.0)
+let result: DataHandle? = await withTaskGroup(of: DataHandle?.self) { group in
+    group.addTask {
+        try? await target.callAsync("add", param)
+    }
+    group.addTask {
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        return nil
+    }
+    let first = await group.next() ?? nil
+    group.cancelAll()
+    return first
+}
+```
+
+**"无断裂感"的实践**：
+
+```swift
+func loadDashboard() async throws -> Dashboard {
+    // 普通 async 调用
+    let user = try await fetchCurrentUser()
+
+    // LingoFuse 异步调用 —— 与普通 async 无缝混合
+    let authParam = try DataHandle(apiName: "verify")
+    try LfIo.writeJson(authParam, user)
+    let authResp = try await Framework.callAsync("AuthSvc", authParam)
+    defer { authResp.dispose() }
+
+    // 又一个普通 async
+    let summary = try await summarize(authResp)
+
+    await MainActor.run {
+        self.viewState = .loaded(summary)
+    }
+    return summary
+}
+```
+
+### 6.10 `Framework` —— 进程级门面
 
 网络准备：
 
@@ -725,28 +1078,32 @@ if !started && !Status.checkMainThread() {
 远程调用：
 
 ```swift
-// 同步 Call，返回 DataHandle（永不 nil；超时返回 size=0）
-let param = try DataHandle(apiName: "add")
-try LfIo.writeJson(param, AddArgs(a: 5, b: 7))
-param.position = 0
-
+// App 寻址
 let response = try Framework.call("Calculator", param, timeoutMs: 3000)
 if response.size > 0 {
     let result: AddResult = try LfIo.readJson(response)
-    print("5 + 7 =", result.result)
 }
+response.dispose()
 
-// tryCall 变体：超时返回 nil
+// tryCall：超时返回 nil
 if let response = try Framework.tryCall("Calculator", param, timeoutMs: 3000) {
     let result: AddResult = try LfIo.readJson(response)
-    print(result.result)
+    response.dispose()
 }
+
+// UID 寻址
+let r2 = try Framework.callByUid(uid, param, timeoutMs: 3000)
+
+// P2PName 寻址
+let r3 = try Framework.callByP2PName("worker_group", param, timeoutMs: 3000)
 
 // 单向通知
 Framework.notify("Logger", param)
-
-// FIFO 有序通知（同一 app + api 对内保序）
 Framework.sequencedNotify("Logger", param)
+
+// 按 UID / P2PName 通知
+Framework.notifyByUid(uid, param)
+Framework.notifyByP2PName("worker_group", param)
 ```
 
 健康检查：
@@ -768,7 +1125,7 @@ Framework.shutdown()
 LF_FreeLibrary()
 ```
 
-### 6.7 `NetworkEvents` —— 网络事件
+### 6.11 `NetworkEvents` —— 网络事件
 
 进程级 connect / disconnect 回调：
 
@@ -797,7 +1154,7 @@ if NetworkEvents.isNetworkEventInstalled {
 - **回调在 native worker 线程执行**——不要操作 UI
 - **`setNetworkEvent` 是替换语义**，不是修补语义
 
-### 6.8 `Status` —— 状态队列与健康检查
+### 6.12 `Status` —— 状态队列与健康检查
 
 ```swift
 // 状态队列（上限 1000 条）
@@ -808,17 +1165,23 @@ let batch = Status.drainStatus(maxMessages: 64)  // 批量提取
 // 注入
 Status.postStatus("my custom message")
 
-// 健康检查
+// 健康检查（App 寻址）
 Status.checkMainThread()
 Status.checkApp("Calculator")
 Status.checkApi("Calculator", "add")
+
+// 健康检查（UID / P2PName 寻址）
+Status.checkUid(uid)
+Status.checkUidApi(uid, "whoami")
+Status.checkP2PName("worker_group")
+Status.checkP2PNameApi("worker_group", "process")
 ```
 
 **注意**：状态队列由 native 模拟主线程处理。在 `Framework.prepareDone` 之前
 队列可能为空或含旧数据。但**注入（`postStatus`）不受此限制**，主线程未运行时
 消息仍会入队。
 
-### 6.9 `LingoFuseError` —— 异常层次
+### 6.13 `LingoFuseError` —— 异常层次
 
 所有 LingoFuse 异常都是 `LingoFuseError`：
 
@@ -851,7 +1214,7 @@ do {
 | `.timeout(targetApp:)` | 远程调用超时 |
 | `.objectDisposed(objectName:)` | 已释放对象被使用 |
 
-### 6.10 完整最小示例
+### 6.14 完整最小示例
 
 **服务端**：
 
@@ -876,7 +1239,7 @@ _ = try app.registerCall("add", "Add two integers") { input, output in
 }
 
 // 3. 启动框架
-Framework.setOption("Overlap_Connection", "True")
+Options.setOverlapConnection(true)
 Framework.resetPrepare()
 _ = try Framework.prepareService(
     listeningAddr: "ipc:calc",
@@ -898,7 +1261,7 @@ Framework.shutdown()
 LF_FreeLibrary()
 ```
 
-**客户端**：
+**客户端（同步版）**：
 
 ```swift
 import Foundation
@@ -906,7 +1269,7 @@ import LingoFuse
 
 if LF_LoadLibrary() != 1 { fatalError("原生库未找到") }
 
-Framework.setOption("Wait_Connection_ReadyOk", "True")
+Options.setWaitConnectionReadyOk(true)
 Framework.resetPrepare()
 _ = try Framework.prepareClient(physicsAddr: "ipc:calc", app: nil)
 if !Framework.prepareDone() && !Status.checkMainThread() {
@@ -930,9 +1293,49 @@ param.position = 0
 if let response = try Framework.tryCall("Calculator", param, timeoutMs: 3000) {
     let result: Result = try LfIo.readJson(response)
     print("5 + 7 = \(result.result)")
+    response.dispose()
 }
 
 // 清理
+NetworkEvents.clearNetworkEvent()
+Framework.exitMainThread()
+Framework.shutdown()
+LF_FreeLibrary()
+```
+
+**客户端（异步版）**：
+
+```swift
+import Foundation
+import LingoFuse
+
+if LF_LoadLibrary() != 1 { fatalError("原生库未找到") }
+
+Options.setWaitConnectionReadyOk(true)
+Framework.resetPrepare()
+_ = try Framework.prepareClient(physicsAddr: "ipc:calc", app: nil)
+if !Framework.prepareDone() && !Status.checkMainThread() {
+    fatalError("启动失败")
+}
+
+for _ in 0..<30 {
+    if Framework.checkApp("Calculator") { break }
+    try await Task.sleep(nanoseconds: 100_000_000)
+}
+
+struct Args: Codable { let a: Int; let b: Int }
+struct Result: Codable { let result: Int }
+
+let param = try DataHandle(apiName: "add")
+try LfIo.writeJson(param, Args(a: 5, b: 7))
+param.position = 0
+
+let response = try await Framework.callAsync("Calculator", param)
+defer { response.dispose() }
+
+let result: Result = try LfIo.readJson(response)
+print("5 + 7 = \(result.result)")
+
 NetworkEvents.clearNetworkEvent()
 Framework.exitMainThread()
 Framework.shutdown()
@@ -947,11 +1350,11 @@ LF_FreeLibrary()
 |:-:|------|---------|
 | 1 | 忘记 `LF_LoadLibrary()` | 每个程序第一条 `LF_*` 调用必须是 `LF_LoadLibrary()` |
 | 2 | 回调中调用阻塞函数 | 用 `DispatchQueue` / `Task` 异步化 |
-| 3 | 回调中直接操作 UI | 用 `DispatchQueue.main.async` 编组 |
+| 3 | 回调中直接操作 UI | 用 `DispatchQueue.main.async` 或 `@MainActor` 编组 |
 | 4 | 回调中抛出异常 | 用户闭包签名不抛异常，内部 `do-catch` |
 | 5 | 忘记 `dispose()` | 用 RAII 或 `defer` |
 | 6 | `prepareDone` 第二次调用返回 false 误认为失败 | 它不是失败，检查 `checkMainThread()` |
-| 7 | 同地址多 App 被静默忽略 | 设 `Overlap_Connection=True` |
+| 7 | 同地址多 App 被静默忽略 | 设 `Options.setOverlapConnection(true)` |
 | 8 | `Framework.call` 超时当 nil 判断 | 应判断 `response.size == 0` |
 | 9 | 绕过 `LfIo` 直接操作 `DataHandle` | 破坏跨语言字节契约 |
 | 10 | `readJson` 成功但值为 nil 误认为失败 | 检查 `tryReadJson` 返回值与 JSON 字面 `null` 区别 |
@@ -959,6 +1362,12 @@ LF_FreeLibrary()
 | 12 | 在 `prepareDone` 之前使用自动回收句柄 | 回收池扫描仅在主线程运行时进行 |
 | 13 | 永久句柄忘记 `dispose` | 永久句柄不会被自动回收，必须手动释放 |
 | 14 | `generateAppName` 在 `prepareDone` 之前调用 | 必须在之后调用，否则名称不含隧道信息 |
+| **15** | **在 OUTPUT 句柄上调用 `p2pUid()` / `p2pName()`** | **它们仅在 INPUT 句柄上有效；其它情况返回 `Uid.null` / `""`** |
+| **16** | **在自建句柄上调用 `p2pUid()` / `p2pName()`** | **同上——自建句柄没有"发送方"，没有侧数据** |
+| **17** | **在 Swift concurrency 的共享 executor 上调用同步 `sequencedCall`** | **它会阻塞线程，在 async 上下文用 `sequencedCallAsync` 代替** |
+| **18** | **在异步方法上期待超时** | **`callAsync` / `sequencedCallAsync` 没有超时；需要硬超时请自行包一层** |
+| **19** | **进程级 P2P 的 `unregister` 后立刻释放 context** | **P2P 上下文是进程生命周期；`unregister` 只移除注册表条目** |
+| **20** | **假设 `Options` 会跨 `Framework.shutdown` 持久化** | **选项不持久化；每次重启都要重设** |
 
 ---
 
@@ -968,20 +1377,30 @@ LF_FreeLibrary()
 swift/
 ├── Package.swift                    SPM 包定义
 ├── README.md                        本文件
+├── build.ps1 / test.ps1 / clean.ps1 PowerShell 构建脚本
 ├── Sources/
 │   ├── CLingoFuse/                  C target
-│   │   ├── LingoFuse.c              C ABI wrapper
+│   │   ├── LingoFuse.c              C ABI wrapper（59 个转发函数）
 │   │   └── include/LingoFuse.h      C ABI 声明
 │   ├── LingoFuse/                   Swift target
 │   │   ├── LingoFuse.swift          模块入口（re-export CLingoFuse）
 │   │   ├── Errors.swift             异常层次
 │   │   ├── CallbackError.swift      回调错误报告器
+│   │   ├── Uid.swift                32 字节 UID 值类型
 │   │   ├── DataHandle.swift         RAII 数据句柄
-│   │   ├── AppHandle.swift          RAII 应用句柄
+│   │   ├── DataHandle+P2PIdentity.swift  侧数据访问
+│   │   ├── AppHandle.swift          RAII 应用句柄 + C 回调蹦床
 │   │   ├── LfIo.swift               统一 JSON I/O
+│   │   ├── Options.swift            16 对类型化运行时选项
+│   │   ├── P2P.swift                进程级 P2P 注册
+│   │   ├── Target.swift             三层寻址抽象
+│   │   ├── AsyncSupport.swift       async/await 桥接
 │   │   ├── Framework.swift          进程级门面
+│   │   ├── Framework+GetOption.swift   字符串逃生舱
+│   │   ├── Framework+UidP2PName.swift  UID / P2PName 便捷方法
 │   │   ├── NetworkEvents.swift      网络事件
-│   │   └── Status.swift             状态队列
+│   │   ├── Status.swift             状态队列
+│   │   └── Status+UidP2PName.swift  UID / P2PName 探活
 │   ├── CrossService/                Cross Demo：信标
 │   │   └── main.swift
 │   ├── CrossNode/                   Cross Demo：工作节点
@@ -989,15 +1408,21 @@ swift/
 │   └── CrossCall/                   Cross Demo：负载测试客户端
 │       └── main.swift
 └── Tests/
-    └── LingoFuseTests/              XCTest 测试套件
-        ├── CAbiTests.swift          44 项
+    └── LingoFuseTests/              XCTest 测试套件（14 个）
+        ├── CAbiTests.swift          66 项
         ├── DataHandleTests.swift    20 项
         ├── LfIoTests.swift          18 项
+        ├── UidTests.swift           17 项
+        ├── OptionsTests.swift       22 项
+        ├── P2PTests.swift           13 项
+        ├── TargetTests.swift        20 项
+        ├── AsyncSupportTests.swift  13 项
+        ├── P2PSideDataTests.swift   11 项
         ├── AppHandleTests.swift     12 项
-        ├── FrameworkTests.swift     14 项
+        ├── FrameworkTests.swift     24 项
         ├── NetworkEventsTests.swift  7 项
-        ├── StatusTests.swift         9 项
-        └── IntegrationTests.swift    4 项
+        ├── StatusTests.swift        13 项
+        └── IntegrationTests.swift    5 项
 ```
 
 ---
@@ -1009,12 +1434,17 @@ swift/
 | 底层绑定 | Clang importer + C target | 动态加载 + 函数指针表 | DllImport | libloading + OnceLock |
 | RAII 数据句柄 | `DataHandle` | `DataHandle` | `DataHandle` | `DataHandle` |
 | RAII 应用句柄 | `AppHandle` | `App` | `AppHandle` | `AppHandle` |
+| UID 值类型 | `Uid` | `TP2P_UID` | — | `Uid` |
 | 统一 JSON I/O | `LfIo` | `lf_io.hpp` | `LfIo` | `io` |
+| **三层寻址抽象** | **`Target` 协议** | — | — | — |
+| **类型化选项** | **`Options`** | **`LF_Set_Opt_*`** | **`Options`** | **`options`** |
+| **进程级 P2P 注册** | **`P2P`** | **`LF_Register_P2P_*`** | **`LingoFuseP2P`** | **`p2p`** |
+| **现代异步** | **`async/await`** | **`callAsync`** | **`Task`** | **`async_call`** |
 | 网络事件 | `NetworkEvents` | `setNetworkEvent` | `NetworkEvents` | `network_events` |
 | 状态检查 | `Status` | `checkApp` | `LingoFuseStatus` | `status` |
 | 永久句柄 | `createPermanent` | `createPermanent` | `CreatePermanent` | `create_permanent` |
-| 回调桥接 | `@_cdecl` + `Unmanaged` | `LF_CDECL` 函数指针 | `[UnmanagedFunctionPointer(Cdecl)]` | `extern "C"` + `Box::leak` |
-| 测试数 | **128** | 82 | 58 | 67 |
+| 回调桥接 | `@convention(c)` + `Unmanaged` | `LF_CDECL` 函数指针 | `[UnmanagedFunctionPointer(Cdecl)]` | `extern "C"` + `Box::leak` |
+| **测试数** | **261** | 82 | 58 | 67 |
 | CI | 本地 | GitHub Actions | 本地 | 本地 |
 | Cross Demo | ✅ | ✅ | ✅ | ✅ |
 | 跨语言互调 | ✅ 已实测 C++ | ✅ | ✅ | ✅ |
@@ -1024,11 +1454,23 @@ swift/
 ## 10. 结语
 
 Swift 绑定是 LingoFuse 全语言家族中**测试最密集**、**功能完整**的成员之一。
-128 项测试覆盖从 C ABI 到高级封装的每一层，跨语言 Demo 双向验证了与 C++ 的
+261 项测试覆盖从 C ABI 到高级封装的每一层，跨语言 Demo 双向验证了与 C++ 的
 字节级互通。
 
 **核心承诺**：任何语言写的函数，任何其他语言都能直接调。Swift 绑定履行了
 这个承诺——不需要转码层、不需要适配层、不需要 IDL，直接字节级互通。
+
+**v1.1 新增的核心特性**：
+
+- **三层寻址统一抽象**（`Target` 协议）：App / UID / P2PName 三种寻址共享
+  同一套同步 + 异步语义。
+- **类型化运行时选项**（`Options`）：16 对 setter/getter 消除字符串键拼写
+  错误的可能。
+- **进程级 P2P 注册**（`P2P`）：独立于 App 的全局工具 API 命名空间。
+- **现代 async/await**（`AsyncSupport`）：用户写 `try await`，不接触
+  `Unmanaged` / `CheckedContinuation` / C 蹦床。
+- **侧数据访问**（`DataHandle.p2pUid()` / `p2pName()`）：在回调内读取
+  发送方身份，支持 whoami、审计、多租户等场景。
 
 ---
 
@@ -1038,7 +1480,7 @@ MIT。随便用，随便改，拿去卖钱也行。
 
 ---
 
-*Swift 绑定版本：1.0.0*
+*Swift 绑定版本：1.1.0*
 *验证环境：Windows 11 x86_64, Swift 6.4.0, LingoFuse v3.10*
-*测试结果：128 / 128 通过*
-*最后更新：2026-10-03*
+*测试结果：261 / 261 通过*
+*最后更新：2026-10-14*

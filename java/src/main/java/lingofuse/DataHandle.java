@@ -14,6 +14,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
 
 /**
  * RAII wrapper around a native LingoFuse data handle ({@code TDataHnd}).
@@ -22,14 +23,41 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * {@link #close()}. Provides byte-level, atomic-type, and NUL-framed
  * string I/O on top of the underlying buffer.
  *
- * <p>Thread safety: a single instance is guarded by an internal
+ * <h2>Thread safety</h2>
+ *
+ * <p>A single instance is guarded by an internal
  * {@link ReentrantReadWriteLock}. Mutating operations (write, seek,
  * setSize, close) acquire the write lock; read-only accessors
- * (position, size, getBufferPointer) acquire the read lock. This
- * closes the historical race between {@code close()} and any
- * concurrent I/O, and prevents the buffer-reallocation use-after-free
- * that occurred when a reader held a raw pointer into the buffer
- * while another thread triggered a resize.
+ * (position, size) acquire the read lock. This closes the race
+ * between {@code close()} and any concurrent I/O, and prevents the
+ * buffer-reallocation use-after-free that occurred when a reader
+ * held a raw pointer into the buffer while another thread triggered
+ * a resize.
+ *
+ * <h3>Passing the handle to a native call</h3>
+ *
+ * <p>Every native call that consumes the handle must go through
+ * {@link #withHandle(Function)} rather than reading {@link #raw()}
+ * directly. {@code withHandle} holds the write lock for the entire
+ * duration of the native call, which prevents a concurrent
+ * {@link #close()} from freeing the handle between the moment
+ * {@code raw()} is read and the moment the native function receives
+ * it.
+ *
+ * <pre>{@code
+ * // Correct: the handle cannot be closed during the call.
+ * param.withHandle(h ->
+ *     NativeCall.callSeg(NativeMethods.LF_Call, nameSeg, h, timeout));
+ *
+ * // Incorrect: a concurrent close() can free the handle between
+ * // param.raw() and the native call, causing use-after-free.
+ * NativeCall.callSeg(NativeMethods.LF_Call, nameSeg, param.raw(), timeout);
+ * }</pre>
+ *
+ * <p>{@link #getBufferPointer()} is a low-level escape hatch whose
+ * result is valid only while the caller holds the handle exclusively.
+ * Prefer {@link #readStringBytes()} or {@link #withHandle(Function)}
+ * for any operation that reads through a raw buffer pointer.
  */
 public final class DataHandle implements AutoCloseable {
 
@@ -107,6 +135,20 @@ public final class DataHandle implements AutoCloseable {
         return new DataHandle(raw, owned);
     }
 
+    /**
+     * Returns the raw native pointer without any lifecycle protection.
+     *
+     * <p><b>Do not pass the result directly to a native call.</b>
+     * Use {@link #withHandle(Function)} instead: the pointer returned
+     * here is not protected against a concurrent {@link #close()}.
+     *
+     * <p>This accessor exists for diagnostics (comparing two handles
+     * for identity) and for the rare case where a caller already
+     * holds the write lock through some other means.
+     *
+     * @return the raw native pointer, or {@link MemorySegment#NULL}
+     *         after {@link #close()}
+     */
     public MemorySegment raw() {
         return handle;
     }
@@ -117,6 +159,39 @@ public final class DataHandle implements AutoCloseable {
 
     public boolean isOwning() {
         return owned;
+    }
+
+    /**
+     * Executes {@code action} while holding the internal write lock
+     * and with a guaranteed-valid handle. The action receives the raw
+     * native pointer; it must not retain it beyond the call.
+     *
+     * <p>This is the correct way for callers to pass the handle to a
+     * native function: it prevents a concurrent {@link #close()} from
+     * freeing the handle while the native call is executing.
+     *
+     * <p>The write lock (not the read lock) is used deliberately. A
+     * native call may read from AND write to the handle — for example,
+     * {@code LF_Call} internally increments the handle's "calling"
+     * counter and advances its cursor — so the more conservative
+     * exclusive lock is required.
+     *
+     * @param action the action to run; receives the raw handle pointer
+     * @param <T> the return type
+     * @return whatever {@code action} returns
+     * @throws NullPointerException if {@code action} is null
+     * @throws LingoFuseObjectDisposedException if the handle has been
+     *         closed
+     */
+    public <T> T withHandle(Function<MemorySegment, T> action) {
+        Objects.requireNonNull(action, "action must not be null");
+        ioLock.writeLock().lock();
+        try {
+            ensureOpen();
+            return action.apply(handle);
+        } finally {
+            ioLock.writeLock().unlock();
+        }
     }
 
     @Override
@@ -188,6 +263,26 @@ public final class DataHandle implements AutoCloseable {
         }
     }
 
+    /**
+     * Returns the native pointer to the internal buffer.
+     *
+     * <p><b>The returned pointer is valid only while the caller holds
+     * the handle exclusively.</b> Any subsequent {@code write},
+     * {@code setSize}, or implicit buffer growth reallocates the
+     * buffer and leaves the previous pointer dangling. In a
+     * multi-threaded program, any concurrent operation on this handle
+     * can invalidate the pointer.
+     *
+     * <p>Prefer {@link #readStringBytes()} or
+     * {@link #withHandle(Function)} for anything that reads through a
+     * raw buffer pointer; they hold the write lock for the entire
+     * operation and therefore guarantee pointer validity.
+     *
+     * <p>The pointer must NOT be freed by the caller.
+     *
+     * @return the native buffer pointer, or {@code null} if the buffer
+     *         is empty
+     */
     public MemorySegment getBufferPointer() {
         ioLock.readLock().lock();
         try {
@@ -457,6 +552,74 @@ public final class DataHandle implements AutoCloseable {
                 result = new String(bytes, UTF8);
             }
 
+            NativeCall.callVoid(NativeMethods.LF_SetPos, handle,
+                    scan < total ? scan + 1 : total + 1);
+            return result;
+        } finally {
+            ioLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Reads raw bytes from the current cursor, stopping at the first
+     * NUL.
+     *
+     * <p>Unlike {@link #readAllBytes()}, which consumes the entire
+     * remaining buffer, this stops at the NUL that
+     * {@link #writeString(String)} / {@code LfIo.writeJson} append.
+     * The bytes are returned undecoded, so the caller can inspect or
+     * forward them without a UTF-8 round-trip.
+     *
+     * <p>The whole read — cursor query, buffer-pointer acquisition,
+     * NUL scan, byte copy, and cursor advance — is performed under
+     * the internal write lock. This is the property that makes the
+     * read safe against a concurrent writer: the buffer pointer
+     * obtained from {@code LF_GetBuffer} is valid for the entire
+     * scan-and-copy sequence, and no other thread can reallocate the
+     * buffer under our feet.
+     *
+     * <p>This accessor is the one to use inside a bridge or proxy
+     * that forwards a payload unchanged to a downstream consumer.
+     *
+     * @return the bytes before the NUL; empty when the cursor is at
+     *         or past the end, or when the first byte is a NUL
+     * @throws LingoFuseObjectDisposedException if the handle has been
+     *         closed
+     */
+    public byte[] readStringBytes() {
+        ioLock.writeLock().lock();
+        try {
+            ensureOpen();
+
+            long start = NativeCall.callLong(NativeMethods.LF_GetPos, handle);
+            long total = NativeCall.callLong(NativeMethods.LF_GetSize, handle);
+            if (start >= total) {
+                return new byte[0];
+            }
+
+            MemorySegment buffer = NativeCall.callSeg(
+                    NativeMethods.LF_GetBuffer, handle);
+            if (isNull(buffer)) {
+                return new byte[0];
+            }
+
+            MemorySegment bounded = buffer.reinterpret(total);
+            long scan = start;
+            while (scan < total
+                    && bounded.get(ValueLayout.JAVA_BYTE, scan) != 0) {
+                scan++;
+            }
+
+            int length = (int) (scan - start);
+            byte[] result = new byte[length];
+            if (length > 0) {
+                MemorySegment.copy(bounded, ValueLayout.JAVA_BYTE, start,
+                        result, 0, length);
+            }
+
+            // Advance past the NUL when found; otherwise to one byte
+            // past the end, matching the native fault-tolerant read
+            // behaviour.
             NativeCall.callVoid(NativeMethods.LF_SetPos, handle,
                     scan < total ? scan + 1 : total + 1);
             return result;

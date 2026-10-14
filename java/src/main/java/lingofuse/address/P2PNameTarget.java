@@ -45,6 +45,17 @@ import java.util.Objects;
  * identifying the sender. Both are strings of the same wire type, but
  * they come from two different sources and serve two different
  * purposes.
+ *
+ * <h2>Handle access</h2>
+ *
+ * <p>The synchronous and one-way hooks delegate to {@link Framework},
+ * which already routes the request handle through
+ * {@link DataHandle#withHandle(java.util.function.Function)}. The two
+ * asynchronous hooks that call the native library directly do the
+ * same: they obtain the native pointer through
+ * {@code param.withHandle(h -> ...)} rather than {@code param.raw()},
+ * so a concurrent {@link DataHandle#close()} cannot free the handle
+ * while the native call is executing.
  */
 public final class P2PNameTarget extends Target {
 
@@ -92,12 +103,9 @@ public final class P2PNameTarget extends Target {
     protected int rawAsyncCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(groupName);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Call,
-                    groupSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    groupSeg, h, MemorySegment.NULL, stub));
         }
     }
 
@@ -105,12 +113,9 @@ public final class P2PNameTarget extends Target {
     protected int rawAsyncSequencedCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment groupSeg = arena.allocateFrom(groupName);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_P2PNAME_Async_Sequenced_Call,
-                    groupSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    groupSeg, h, MemorySegment.NULL, stub));
         }
     }
 

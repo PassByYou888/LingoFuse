@@ -76,6 +76,32 @@ import java.util.Objects;
  * future.thenAccept(sum -> System.out.println("5 + 7 = " + sum));
  * }</pre>
  *
+ * <h2>Subclass hook contract</h2>
+ *
+ * <p>Every {@code raw*} hook receives the request {@link DataHandle}
+ * and is responsible for forwarding it to a native function. The hook
+ * MUST access the native pointer through
+ * {@link DataHandle#withHandle(java.util.function.Function)} rather
+ * than reading {@link DataHandle#raw()} directly:
+ *
+ * <pre>{@code
+ * // Correct: the handle cannot be closed during the native call.
+ * MemorySegment raw = param.withHandle(h -> NativeCall.callSeg(
+ *         NativeMethods.LF_UID_Call, uidSeg, h, timeoutMs));
+ *
+ * // Incorrect: a concurrent param.close() frees the handle between
+ * // param.raw() and the native call.
+ * MemorySegment raw = NativeCall.callSeg(
+ *         NativeMethods.LF_UID_Call, uidSeg, param.raw(), timeoutMs);
+ * }</pre>
+ *
+ * <p>{@code withHandle} holds the handle's internal write lock for
+ * the entire duration of the native call. This closes the
+ * use-after-free window that would otherwise exist between reading
+ * the raw pointer and passing it to the native function, and it is
+ * the reason {@code raw()} is documented as a diagnostic-only
+ * accessor.
+ *
  * <h2>Callback lifetime</h2>
  *
  * <p>Callbacks registered through the async callback methods
@@ -132,6 +158,10 @@ public abstract class Target {
     // The API name is NOT passed to the hooks: it is already carried
     // by the DataHandle. The hooks only need the addressing key
     // (which the subclass knows) and the payload.
+    //
+    // EVERY hook MUST access the request handle through
+    // param.withHandle(...), never through param.raw(). See the
+    // "Subclass hook contract" section in the class header.
 
     /**
      * Issues a synchronous call for this addressing mode.

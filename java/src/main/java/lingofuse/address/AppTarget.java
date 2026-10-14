@@ -20,6 +20,17 @@ import java.util.Objects;
  * {@code LF_Call} / {@code LF_Async_Call} / {@code LF_Notify} /
  * {@code LF_Sequenced_Notify}. The API name is carried by the request
  * {@link DataHandle}.
+ *
+ * <h2>Handle access</h2>
+ *
+ * <p>The synchronous and one-way hooks delegate to {@link Framework},
+ * which already routes the request handle through
+ * {@link DataHandle#withHandle(java.util.function.Function)}. The two
+ * asynchronous hooks that call the native library directly do the
+ * same: they obtain the native pointer through
+ * {@code param.withHandle(h -> ...)} rather than {@code param.raw()},
+ * so a concurrent {@link DataHandle#close()} cannot free the handle
+ * while the native call is executing.
  */
 public final class AppTarget extends Target {
 
@@ -67,12 +78,9 @@ public final class AppTarget extends Target {
     protected int rawAsyncCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Call,
-                    nameSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    nameSeg, h, MemorySegment.NULL, stub));
         }
     }
 
@@ -80,12 +88,9 @@ public final class AppTarget extends Target {
     protected int rawAsyncSequencedCall(DataHandle param, MemorySegment stub) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment nameSeg = arena.allocateFrom(appName);
-            return NativeCall.callInt(
+            return param.withHandle(h -> NativeCall.callInt(
                     NativeMethods.LF_Async_Sequenced_Call,
-                    nameSeg,
-                    param.raw(),
-                    MemorySegment.NULL,
-                    stub);
+                    nameSeg, h, MemorySegment.NULL, stub));
         }
     }
 

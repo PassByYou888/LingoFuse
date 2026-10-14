@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lingofuse.errors.LingoFuseException;
 import lingofuse.errors.LingoFuseObjectDisposedException;
 
+import java.lang.foreign.MemorySegment;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -84,9 +85,12 @@ import java.util.Objects;
  *
  * <p>All helpers are stateless with respect to the handle. The
  * internal {@link ObjectMapper} is thread-safe by Jackson's contract.
- * Concurrent access to the SAME {@code DataHandle} must still be
- * serialized by the caller, matching the contract documented in
- * {@link DataHandle}.
+ * Concurrent access to the SAME {@code DataHandle} is serialized by
+ * that handle's internal read/write lock; the helpers that need more
+ * than one native call ({@link #writeStringBytes(DataHandle, byte[])}
+ * and {@link #readStringBytes(DataHandle)}) hold the write lock for
+ * the whole multi-step operation, so a partially-written or
+ * partially-read payload is never observable to a concurrent caller.
  *
  * <h2>Error handling</h2>
  *
@@ -222,6 +226,10 @@ public final class LfIo {
      * <p>An empty string is written as a single NUL byte, matching
      * the wire protocol convention for empty strings.
      *
+     * <p>This method delegates to {@link DataHandle#writeString(String)},
+     * which holds the write lock for the whole "encode + write + NUL"
+     * sequence.
+     *
      * @param handle the target data handle; must not be null
      * @param value  the UTF-8 text; must not be null
      * @throws NullPointerException             if either argument is null
@@ -242,6 +250,11 @@ public final class LfIo {
      * Reads a UTF-8 string from the current cursor, stopping at the
      * first NUL byte. When no NUL is found, all remaining bytes are
      * consumed and returned.
+     *
+     * <p>This method delegates to {@link DataHandle#readString()},
+     * which holds the write lock for the whole "query cursor + scan
+     * buffer + copy + advance cursor" sequence. The buffer pointer
+     * obtained from the native side is valid for the entire scan.
      *
      * @param handle the source data handle; must not be null
      * @return the decoded string; empty at end-of-buffer or when the
@@ -265,6 +278,22 @@ public final class LfIo {
      * <p>The bytes are written verbatim; embedded NUL bytes are
      * preserved.
      *
+     * <h2>Atomicity</h2>
+     *
+     * <p>The data write and the terminating NUL write are performed
+     * under a <b>single</b> acquisition of the handle's write lock.
+     * This closes a window in which a concurrent writer could
+     * interleave between the two native calls and produce a corrupt
+     * framing such as {@code [dataA][dataB][NULA][NULB]}. Without
+     * this, a payload written by one thread could be split across
+     * another thread's payload even though each individual
+     * {@code DataHandle.writeBytes} call was itself well-behaved.
+     *
+     * <p>The lock used is {@link DataHandle}'s internal
+     * {@code ReentrantReadWriteLock} write lock. It is reentrant,
+     * so the nested {@code DataHandle.writeBytes} calls below do not
+     * deadlock.
+     *
      * @param handle the target data handle; must not be null
      * @param data   the source bytes; must not be null; may be empty
      * @throws NullPointerException             if either argument is null
@@ -279,10 +308,16 @@ public final class LfIo {
         Objects.requireNonNull(handle, "handle must not be null");
         Objects.requireNonNull(data, "data must not be null");
 
-        if (data.length > 0) {
-            handle.writeBytes(data);
-        }
-        handle.writeBytes(new byte[]{NUL_BYTE});
+        // Hold the write lock across both the data write and the NUL
+        // write so that no other thread can interleave a partial
+        // payload between them.
+        handle.withHandle((MemorySegment unused) -> {
+            if (data.length > 0) {
+                handle.writeBytes(data);
+            }
+            handle.writeBytes(new byte[]{NUL_BYTE});
+            return null;
+        });
     }
 
     /**
@@ -298,6 +333,12 @@ public final class LfIo {
      * <p>This is the accessor to use inside a bridge or proxy that
      * forwards a payload unchanged to a downstream consumer.
      *
+     * <p>This method delegates to {@link DataHandle#readStringBytes()},
+     * which holds the write lock for the whole multi-step read. The
+     * buffer pointer returned by the native {@code LF_GetBuffer} is
+     * therefore valid for the entire NUL scan and byte copy, and no
+     * concurrent writer can reallocate the buffer underneath it.
+     *
      * @param handle the source data handle; must not be null
      * @return the bytes before the NUL; empty when the cursor is at
      *         or past the end, or when the first byte is a NUL
@@ -307,47 +348,15 @@ public final class LfIo {
      */
     public static byte[] readStringBytes(DataHandle handle) {
         Objects.requireNonNull(handle, "handle must not be null");
-
-        long start = handle.position();
-        long total = handle.size();
-        if (start >= total) {
-            return new byte[0];
-        }
-
-        java.lang.foreign.MemorySegment buffer = handle.getBufferPointer();
-        if (buffer == null || buffer.address() == 0L) {
-            return new byte[0];
-        }
-        java.lang.foreign.MemorySegment bounded = buffer.reinterpret(total);
-
-        long scan = start;
-        while (scan < total
-                && bounded.get(java.lang.foreign.ValueLayout.JAVA_BYTE, scan) != 0) {
-            scan++;
-        }
-
-        int length = (int) (scan - start);
-        byte[] result = new byte[0];
-        if (length > 0) {
-            result = new byte[length];
-            java.lang.foreign.MemorySegment.copy(
-                    bounded,
-                    java.lang.foreign.ValueLayout.JAVA_BYTE,
-                    start,
-                    result,
-                    0,
-                    length);
-        }
-
-        // Advance past the NUL when found; otherwise to one byte past
-        // the end, matching the native fault-tolerant read behaviour.
-        handle.setPosition(scan < total ? scan + 1 : total + 1);
-        return result;
+        return handle.readStringBytes();
     }
 
     /**
      * Reads every remaining byte from the current cursor to the end of
      * the buffer, without NUL handling. The cursor advances to the end.
+     *
+     * <p>This method delegates to {@link DataHandle#readAllBytes()},
+     * which holds the write lock for the whole read.
      *
      * @param handle the source data handle; must not be null
      * @return the remaining bytes; empty when the cursor is at or past
@@ -373,6 +382,10 @@ public final class LfIo {
      * the compact, non-ASCII-literal policy is guaranteed. The output
      * never contains a {@code \\uXXXX} escape for non-ASCII text, and
      * a trailing NUL byte is always appended.
+     *
+     * <p>The actual wire write goes through
+     * {@link #writeStringBytes(DataHandle, byte[])}, which holds the
+     * handle's write lock across the data write and the NUL write.
      *
      * @param handle the target data handle; must not be null
      * @param obj    the value to write; may be null, which produces

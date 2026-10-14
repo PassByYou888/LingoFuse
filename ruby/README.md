@@ -1,6 +1,6 @@
 # LingoFuse Ruby 绑定 — 完整手册
 
-**版本**：1.0.0
+**版本**：2.0.0
 **目标平台**：Windows 10 / 11 / Server 2019+（x64）
 **Ruby 版本**：4.0+（x64-mingw-ucrt）
 
@@ -14,11 +14,23 @@
 4. [依赖安装](#四依赖安装)
 5. [环境诊断](#五环境诊断)
 6. [编译 C 扩展](#六编译-c-扩展)
-7. [**在自有 Ruby 项目中引入 LingoFuse**](#七在自有-ruby-项目中引入-lingofuse)
+7. [在自有 Ruby 项目中引入 LingoFuse](#七在自有-ruby-项目中引入-lingofuse)
 8. [测试](#八测试)
 9. [API 说明](#九api-说明)
+   - [9.1 顶层模块函数](#91-顶层模块函数)
+   - [9.2 DataHandle](#92-lingofusedatahandle)
+   - [9.3 AppHandle](#93-lingofuseapphandle)
+   - [9.4 LfIo](#94-lingofuselfio)
+   - [9.5 Framework](#95-lingofuseframework)
+   - [9.6 Status](#96-lingofusestatus)
+   - [9.7 NetworkEvents](#97-lingofusenetworkevents)
+   - [9.8 Address（v2.0 新增）](#98-lingofuseaddress-v20-新增)
+   - [9.9 AsyncSupport（v2.0 新增）](#99-lingofuseasyncsupport-v20-新增)
+   - [9.10 Options（v2.0 新增）](#910-lingofuseoptions-v20-新增)
+   - [9.11 P2PRegistration（v2.0 新增）](#911-lingofusep2pregistration-v20-新增)
 10. [使用示例](#十使用示例)
 11. [故障排查速查](#十一故障排查速查)
+12. [v2.0 迁移指南](#十二v20-迁移指南)
 
 ---
 
@@ -45,32 +57,43 @@ LingoFuse Ruby 绑定让 Ruby 程序能够：
 flowchart TD
     L0["L0 应用层<br/>你的业务代码"]
     L1["L1 Ruby 门面层<br/>DataHandle / AppHandle / LfIo<br/>Framework / Status / NetworkEvents"]
-    L2["L2 Fiddle 绑定层<br/>37 个 Fiddle::Function 声明<br/>系统 PATH 搜索"]
-    L3["L3 C 扩展层<br/>原生队列 + 4 个 trampoline<br/>Ruby 调度线程"]
+    L2["L2 v2.0 高层 API<br/>Address / AsyncSupport<br/>Options / P2PRegistration"]
+    L3["L3 C 扩展层<br/>原生队列 + 5 个 trampoline<br/>Ruby 调度线程"]
     L4["L4 原生库<br/>LingoFuse64.dll<br/>+ 3 个兄弟 DLL"]
 
     L0 --> L1
-    L1 -->|"本地调用路径"| L2
-    L1 -->|"远端回调路径"| L3
-    L2 -->|"Fiddle.dlopen<br/>PATH 搜索"| L4
+    L1 --> L2
+    L2 -->|"本地调用 / 网络回调"| L3
     L3 -.->|"间接依赖"| L4
 
     classDef app fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
     classDef facade fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
-    classDef fiddle fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+    classDef v2 fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
     classDef cext fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
     classDef native fill:#FCE4EC,stroke:#AD1457,stroke-width:2px,color:#880E4F
 
     class L0 app
     class L1 facade
-    class L2 fiddle
+    class L2 v2
     class L3 cext
     class L4 native
 ```
 
-**依赖方向**：L0 → L1 → (L2 本地 / L3 远端) → L4。
+**依赖方向**：L0 → L1 → L2 → L3 → L4。L3 是唯一的原生入口；L1 和 L2 都不接触 Fiddle 或 C。
 
-### 2.2 C 扩展存在的必要性
+### 2.2 v1.0 与 v2.0 的差异
+
+| 维度 | v1.0.0 | v2.0.0 |
+|------|--------|--------|
+| 原生加载机制 | Fiddle（纯 Ruby） | 自写 C 扩展 `lingofuse_ext.so` |
+| 寻址模式 | 仅 App 名 | App 名 / UID / P2PName |
+| 异步调用 | 仅回调式（`async_call`） | 回调式 + Future 式（`call_future`） |
+| 运行时选项 | 字符串型 `set_option` | + 16 个类型化 `set_opt_xxx` |
+| P2P 注册 | 无 | 有（进程级，独立于 App） |
+| 远端回调 | 不可用（Fiddle 死锁） | 可用（C 扩展编组） |
+| 测试套件 | 14 个文件 | 18 个文件 |
+
+### 2.3 C 扩展存在的必要性
 
 **这是整个绑定最重要的设计决策。** Ruby 的 Fiddle **无法**从 LingoFuse 的原生工作线程回调 Ruby 代码。
 
@@ -95,8 +118,9 @@ flowchart TD
 | 注册 Call / Notify API，但只从本地触发 | 不需要 |
 | 需要接收远端调用（作为服务端） | **必需** |
 | 需要网络事件回调 | **必需** |
+| 需要异步调用（`call_future`） | **必需** |
 
-### 2.3 C 扩展如何解决问题
+### 2.4 C 扩展如何解决问题
 
 **原生线程侧**：
 
@@ -127,26 +151,21 @@ flowchart TD
     class A,B,C,D,E,F ruby
 ```
 
-### 2.4 GVL 分流决策
+### 2.5 v2.0 新增的第五个 trampoline
 
-```mermaid
-flowchart TD
-    Start["trampoline 被调用"] --> Check{"持有 GVL?"}
-    Check -->|"是<br/>LocalCall"| InPlace["直接执行 Proc"]
-    Check -->|"否<br/>远端调用"| Enqueue["入队 + 阻塞等待"]
+v1.x 的 C 扩展有 4 个 trampoline（Call / Notify / Network connect / Network disconnect）。v2.0 新增了第五个：
 
-    InPlace --> Done1["返回"]
-    Enqueue --> Done2["调度线程执行后返回"]
+| Trampoline | Kind | 触发者 | 回调参数 |
+|------------|:----:|--------|----------|
+| `trampoline_call` | 0 | `LF_RegisterCall` | `(trigger, input, output)` |
+| `trampoline_notify` | 1 | `LF_RegisterNotify` | `(trigger, input)` |
+| `trampoline_network_connect` | 2 | `LF_Set_Network_Event` | `(addr)` |
+| `trampoline_network_disconnect` | 3 | `LF_Set_Network_Event` | `(addr)` |
+| **`trampoline_async_call`** | **4** | `LF_Async_Call` | **`(data, result)`** |
 
-    classDef gvlHeld fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
-    classDef gvlFree fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
-    class InPlace,Done1 gvlHeld
-    class Enqueue,Done2 gvlFree
-```
+`trampoline_async_call` 的 `data` 承载 `CallbackRef*`，`result` 是框架拥有的 `TDataHnd`。它的生命周期契约在 `lib/lingofuse/async_support.rb` 里详细说明。
 
-**为什么必须分流**：如果本地调用也走队列，主线程会阻塞在 `wait_for_item`，而调度线程需要 GVL 才能运行 —— 形成**死锁**。
-
-### 2.5 DataHandle 生命周期状态机
+### 2.6 DataHandle 生命周期状态机
 
 **三种构造方式**：
 
@@ -185,7 +204,7 @@ stateDiagram-v2
     end note
 ```
 
-### 2.6 依赖关系
+### 2.7 依赖关系
 
 ```mermaid
 flowchart TD
@@ -202,33 +221,41 @@ flowchart TD
     Load --> NatBridge["native_bridge.rb"]
     Load --> CBErr["callback_error_reporter.rb"]
 
-    Binding -->|"Fiddle.dlopen<br/>PATH 搜索"| DLL["LingoFuse64.dll"]
-    NatBridge -->|"require_relative"| Ext["lib/lingofuse_ext.so"]
+    Load --> OptV2["options.rb"]
+    Load --> AsyncV2["async_support.rb"]
+    Load --> AddrV2["address.rb"]
+    Load --> P2PV2["p2p_registration.rb"]
 
+    Binding -->|"require_relative<br/>lib/lingofuse_ext.so"| Ext["C 扩展"]
+    NatBridge -->|"回调编组"| Ext
+
+    Ext -->|"LoadLibrary"| DLL["LingoFuse64.dll"]
     DLL --> ZIPC["z_ipc_64.dll"]
     DLL --> MI["mimalloc64.dll"]
     MI --> MIRed["mimalloc-redirect.dll"]
 
     classDef app fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
     classDef rb fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
+    classDef v2 fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
     classDef ext fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
     classDef native fill:#FCE4EC,stroke:#AD1457,stroke-width:2px,color:#880E4F
 
     class App,Load app
     class Errors,Binding,DataHandle,AppHandle,LfIo,Framework,Status,NetEvt,NatBridge,CBErr rb
+    class OptV2,AsyncV2,AddrV2,P2PV2 v2
     class Ext ext
     class DLL,ZIPC,MI,MIRed native
 ```
 
-### 2.7 文件布局
+### 2.8 文件布局
 
 ```
 ruby/
 ├── README.md                      本文件
-├── BUILD_EXTENSION.md             C 扩展编译指南
+├── BUILD_AND_DEPLOY.md            C 扩展构建与部署指南
 ├── INSTALL_DEPENDENCIES.md        依赖安装指南
 ├── Gemfile                        Bundler 声明
-├── lingofuse.gemspec              gem 元数据
+├── lingofuse.gemspec              gem 元数据（v2.0.0）
 ├── Rakefile                       rake 任务
 │
 ├── setup_build_env.ps1            C 扩展一键编译
@@ -243,30 +270,36 @@ ruby/
 │   └── launch.json                VS Code 调试配置
 │
 ├── lib/
-│   ├── lingofuse.rb               公共入口
+│   ├── lingofuse.rb               公共入口（v2.0.0）
 │   ├── lingofuse_ext.so           C 扩展（编译产物）
 │   └── lingofuse/
 │       ├── errors.rb              异常层级
 │       ├── callback_error_reporter.rb
-│       ├── binding.rb             Fiddle 声明 + PATH 搜索
+│       ├── binding.rb             C 扩展包装
 │       ├── data_handle.rb
 │       ├── app_handle.rb
 │       ├── lf_io.rb
 │       ├── framework.rb
 │       ├── status.rb
 │       ├── network_events.rb
-│       └── native_bridge.rb
+│       ├── native_bridge.rb
+│       ├── options.rb             v2.0：16 对类型化访问器
+│       ├── async_support.rb       v2.0：CallFuture / AsyncBridge
+│       ├── address.rb             v2.0：三寻址 Target
+│       └── p2p_registration.rb    v2.0：进程级 P2P 注册
 │
 ├── ext/lingofuse_ext/
 │   ├── extconf.rb                 mkmf 配置
-│   └── lingofuse_ext.c            C 源文件
+│   ├── LingoFuse.h                C ABI 头（上游）
+│   ├── LingoFuse.c                加载器 + 59 forwarders
+│   └── lingofuse_ext.c            Ruby C API 表面
 │
 ├── cross/
 │   ├── cross_service.rb           信标
 │   ├── cross_node.rb              工作节点
 │   └── cross_call.rb              压测客户端
 │
-└── test/                          14 个测试文件
+└── test/                          18 个测试文件
     ├── test_errors.rb
     ├── test_callback_error_reporter.rb
     ├── test_module_helpers.rb
@@ -280,6 +313,10 @@ ruby/
     ├── test_network_events.rb
     ├── test_framework.rb
     ├── test_network.rb
+    ├── test_options.rb              v2.0
+    ├── test_address.rb              v2.0
+    ├── test_async_support.rb        v2.0
+    ├── test_p2p_registration.rb     v2.0
     └── test_native_bridge_self_test.rb
 ```
 
@@ -305,7 +342,7 @@ flowchart LR
     Minitest["gem: minitest"] --> Tests["测试"]
     Rake["gem: rake"] --> Tests
     Debug["gem: debug<br/>可选"] --> Tests
-    Runtime --> LF["LingoFuse<br/>Ruby 绑定"]
+    Runtime --> LF["LingoFuse<br/>Ruby 绑定 v2.0"]
     Tests --> LF
     DLL["LingoFuse64.dll<br/>+ 3 兄弟"] -->|"PATH"| LF
 
@@ -334,7 +371,7 @@ flowchart LR
 | gem: minitest | 5.0 | **5.x 最新** | — | 通常随 Ruby 一起装 |
 | gem: rake | 13.0 | **13.x 最新** | — | |
 | gem: debug | — | **1.11+** | — | 可选，用于 VS Code 调试 |
-| LingoFuse DLL | 3.0 | **3.10+** | — | 与 `LingoFuse-v3.10` 匹配 |
+| LingoFuse DLL | 3.10 | **3.10+** | — | 需支持 v2.0 的 C ABI |
 
 **关键警告**：
 
@@ -424,7 +461,7 @@ ruby -I lib -e "require 'lingofuse'; puts LingoFuse.loaded?"
 | 脚本 | 检查对象 | 何时运行 |
 |------|----------|----------|
 | `check_env.ps1` | 编译 C 扩展的工具链 | 首次搭建环境、编译失败时 |
-| `check_env.rb` | Ruby 绑定的运行时 | 首次使用、加载失败时 |
+| `check_env.rb` | Ruby 绑定的运行时（含 v2.0 子系统探测） | 首次使用、加载失败时 |
 
 **一键运行**：
 
@@ -436,11 +473,21 @@ ruby check_env.rb
 
 **期望**：两个脚本都以 `Failed : 0` 结尾。
 
+`check_env.rb` 的 5 个 Section：
+
+| Section | 内容 |
+|:-------:|------|
+| 1 | Ruby 运行时信息 |
+| 2 | 包布局（15 个 lib 文件 + 7 个 test 文件） |
+| 3 | 原生库加载 + 4 个 v2.0 子系统标志 + C ABI 往返 |
+| 4 | 全栈冒烟测试（AppHandle.local_call） |
+| 5 | v2.0 子系统快速探测（Address / Options / AsyncSupport / P2PRegistration） |
+
 ---
 
 ## 六、编译 C 扩展
 
-详见 [`BUILD_EXTENSION.md`](BUILD_EXTENSION.md)。
+详见 [`BUILD_AND_DEPLOY.md`](BUILD_AND_DEPLOY.md)。
 
 ### 6.1 一键编译
 
@@ -483,8 +530,8 @@ flowchart TD
 ========================================================================
 6. Artifact
 ========================================================================
-  [OK]   Built: lingofuse_ext.so (45056 bytes)
-  [OK]   Installed: D:\...\lib\lingofuse_ext.so (45056 bytes)
+  [OK]   Built: lingofuse_ext.so (98304 bytes)
+  [OK]   Installed: D:\...\lib\lingofuse_ext.so (98304 bytes)
 
 ========================================================================
 7. Load test
@@ -514,33 +561,28 @@ Ruby 有三种"库"，加载机制完全不同：
 |------|------|--------|----------|
 | **Ruby 源文件** | `*.rb` | `require` / `require_relative` | `$LOAD_PATH` 或相对当前文件 |
 | **Ruby C 扩展** | `lingofuse_ext.so` | `require_relative`（**本绑定**） | 相对 `native_bridge.rb` 固定为 `lib/` |
-| **原生系统 DLL** | `LingoFuse64.dll` | `Fiddle.dlopen` | **仅系统环境变量**（PATH / LD_LIBRARY_PATH / DYLD_*） |
+| **原生系统 DLL** | `LingoFuse64.dll` | `LF_LoadLibrary`（C 扩展内部） | **仅系统 PATH** |
 
 **核心结论**：
 
 > **C 扩展由 `native_bridge.rb` 通过 `require_relative` 加载，位置固定在 `lib/`。你只需要把整个 `ruby/` 目录拷过去，`.so` 会自动被找到。**
 >
-> **原生 DLL 由 `Fiddle.dlopen` 加载，走操作系统加载器的规则。你必须把包含 4 个 DLL 的目录加到 PATH 上。**
+> **原生 DLL 由 C 扩展内部的 `LF_LoadLibrary` 加载，走操作系统加载器的规则。你必须把包含 4 个 DLL 的目录加到 PATH 上。**
 
 ### 7.2 两条独立的搜索路径
 
 ```mermaid
 flowchart TD
     A["require_relative<br/>'../lingofuse_ext'"] --> B["lib/lingofuse_ext.so<br/>相对 native_bridge.rb 定位"]
-    C["Fiddle.dlopen<br/>'LingoFuse64.dll'"] --> D["系统 PATH 逐目录搜索"]
-    D --> E["找到后<br/>SetDllDirectoryW 注册目录"]
-    E --> F["LoadLibrary 绝对路径"]
+    C["LF_LoadLibrary<br/>C 扩展内部"] --> D["系统 PATH 逐目录搜索"]
+    D --> E["找到后<br/>LoadLibrary 绝对路径"]
 
     classDef cext fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
     classDef native fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
 
     class A,B cext
-    class C,D,E,F native
+    class C,D,E native
 ```
-
-**C 扩展**：位置固定为 `lib/lingofuse_ext.so`（与 `lib/lingofuse/` 同级）。这是 `require_relative` 决定的，**不依赖 $LOAD_PATH、不依赖环境变量**。
-
-**原生 DLL**：从系统 PATH 搜索。可以是任意目录，只要是 PATH 上的一环。**4 个 DLL 必须同一目录**。
 
 ### 7.3 只需做两件事
 
@@ -565,8 +607,6 @@ export LD_LIBRARY_PATH="/opt/lingofuse/lib:$LD_LIBRARY_PATH"
 export DYLD_LIBRARY_PATH="/opt/lingofuse/lib:$DYLD_LIBRARY_PATH"
 ```
 
-**没有**绑定专属的环境变量。所有其他 Windows 程序的 PATH 是什么样，这里就是什么样。
-
 ### 7.4 三种引入方案
 
 #### 方案 A — 绝对路径 require（快速验证）
@@ -580,11 +620,8 @@ require 'lingofuse'
 
 puts LingoFuse.loaded?
 puts LingoFuse.library_name
+puts LingoFuse.platform
 ```
-
-**前提**：原生库目录已在 PATH 上。
-
-**优点**：零配置。**缺点**：路径硬编码。
 
 #### 方案 B — 把 `ruby/` 整体拷到项目内（推荐）
 
@@ -609,18 +646,12 @@ puts "loaded: #{LingoFuse.loaded?}"
 puts "native bridge: #{LingoFuse::NativeBridge.available?}"
 ```
 
-**前提**：原生库目录已在 PATH 上（与 `ruby/` 无关）。
-
 #### 方案 C — Windows 目录联接（Junction）
-
-**Windows 特有，不需要管理员权限。**
 
 ```powershell
 mkdir C:\temp\my_app\ruby -Force
 cmd /c mklink /J C:\temp\my_app\ruby\lib D:\CoreLibrary\LingoFuse\ruby\lib
 ```
-
-之后照方案 B 用。
 
 ### 7.5 三种方案对比
 
@@ -632,53 +663,32 @@ cmd /c mklink /J C:\temp\my_app\ruby\lib D:\CoreLibrary\LingoFuse\ruby\lib
 
 ### 7.6 完整最小示例
 
-**目录结构**：
-
-```
-C:\temp\my_app\
-├── app.rb
-└── ruby\
-    ├── lib\
-    │   ├── lingofuse.rb
-    │   ├── lingofuse_ext.so
-    │   └── lingofuse\
-    └── ...
-```
-
 **`app.rb`**：
 
 ```ruby
 # frozen_string_literal: true
 
-# ---------------------------------------------------------------------------
-# 步骤 1：把 ruby/lib/ 加到 $LOAD_PATH
-# ---------------------------------------------------------------------------
-
 lib_dir = File.expand_path('ruby/lib', __dir__)
 $LOAD_PATH.unshift(lib_dir) unless $LOAD_PATH.include?(lib_dir)
-
-# ---------------------------------------------------------------------------
-# 步骤 2：加载
-# ---------------------------------------------------------------------------
-# C 扩展（lingofuse_ext.so）由 native_bridge.rb 用 require_relative
-# 自动加载，无需任何 $LOAD_PATH 配置。
-#
-# 原生库（LingoFuse64.dll）由 Fiddle.dlopen 从系统 PATH 加载，
-# 需要在启动前把它的目录加进 PATH。
-# ---------------------------------------------------------------------------
 
 require 'lingofuse'
 
 puts "LingoFuse loaded: #{LingoFuse.loaded?}"
+puts "Version:          #{LingoFuse::VERSION}"
 puts "Library name:     #{LingoFuse.library_name}"
 puts "NativeBridge:     #{LingoFuse::NativeBridge.available?}"
 
-# ---------------------------------------------------------------------------
-# 步骤 3：使用
-# ---------------------------------------------------------------------------
+# v2.0 三寻址
+t = LingoFuse.app('MyApp')
+puts "Target:           #{t.describe}"
 
+# v2.0 类型化选项
+LingoFuse.set_opt_quiet(true)
+puts "quiet:            #{LingoFuse.get_opt_quiet.inspect}"
+LingoFuse.set_opt_quiet(false)
+
+# v2.0 本地往返
 app = LingoFuse::AppHandle.new('MyApp', 'Demo')
-
 app.register_call('echo', 'Echo a string') do |input, output|
   text = LingoFuse::LfIo.read_string(input)
   LingoFuse::LfIo.write_string(output, text)
@@ -688,7 +698,7 @@ param = LingoFuse::DataHandle.new('echo')
 LingoFuse::LfIo.write_string(param, 'hello')
 
 result = app.local_call(param)
-puts "Result: #{LingoFuse::LfIo.read_string(result)}"
+puts "Result:           #{LingoFuse::LfIo.read_string(result)}"
 
 param.dispose
 result.dispose
@@ -698,107 +708,80 @@ app.dispose
 **运行**：
 
 ```powershell
-# 确保原生库在 PATH 上
 $env:PATH = "D:\LingoFuse\Binary;" + $env:PATH
-
 cd C:\temp\my_app
 ruby app.rb
 ```
 
-**期望输出**：
-
-```
-LingoFuse loaded: true
-Library name:     LingoFuse64.dll
-NativeBridge:     true
-Result: hello
-```
-
 ### 7.7 关键注意点
-
-```mermaid
-flowchart TD
-    R1["规则 1<br/>C 扩展 .so<br/>位置固定为 lib/"]
-    R1 --> R1D["require_relative 相对<br/>native_bridge.rb 定位<br/>无需配置"]
-
-    R2["规则 2<br/>原生 DLL<br/>必须放到 PATH"]
-    R2 --> R2D["Fiddle.dlopen 走系统加载器规则<br/>4 个 DLL 必须同目录"]
-
-    R3["规则 3<br/>版本必须匹配"]
-    R3 --> R3D["C 扩展编译时的 Ruby 版本<br/>必须等于运行时版本"]
-
-    classDef rule fill:#E3F2FD,stroke:#1565C0,stroke-width:3px,color:#0D47A1
-    classDef detail fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-    class R1,R2,R3 rule
-    class R1D,R2D,R3D detail
-```
 
 **注意点 1 — C 扩展（`.so`）位置固定**
 
-`lingofuse_ext.so` 必须与 `lingofuse/` 目录同级（都在 `lib/` 下）。`native_bridge.rb` 用 `require_relative '../lingofuse_ext'` 加载它，这是**相对路径**，不经过 `$LOAD_PATH`、不经过 PATH、不经过工作目录。
+`lingofuse_ext.so` 必须与 `lingofuse/` 目录同级（都在 `lib/` 下）。
 
 **注意点 2 — 原生 DLL 必须在 PATH 上**
 
-`LingoFuse64.dll` 等**不归 Ruby 管**，由 `Fiddle.dlopen` 加载，走操作系统加载器的规则。**唯一机制就是 PATH**。
-
 **注意点 3 — 4 个 DLL 必须永远在一起**
-
-`LingoFuse64.dll` 加载时会**按文件名**加载另外三个 DLL。它们必须在**同一目录**，且该目录在 PATH 上。少一个都会报 `The specified module could not be found`。
 
 **注意点 4 — 版本必须匹配**
 
-`lingofuse_ext.so` 编译时的 Ruby 版本必须和运行时的 Ruby 版本一致。换了 Ruby 版本（例如从 4.0.7 升到 4.1.0）必须重新编译。
+`lingofuse_ext.so` 编译时的 Ruby 版本必须和运行时的 Ruby 版本一致。
 
 ---
 
 ## 八、测试
 
-### 8.1 测试体系总览
+### 8.1 测试体系总览（v2.0 共 18 个文件）
 
 ```mermaid
 flowchart TD
-    Root["测试套件<br/>14 个文件 / 331 项测试"]
-
-    Root --> G1["组 1<br/>纯 Ruby<br/>3 文件 / 53 项"]
-    Root --> G2["组 2<br/>JSON 策略<br/>2 文件 / 65 项"]
-    Root --> G3["组 3-5<br/>需原生库<br/>8 文件 / 195 项"]
-    Root --> G6["组 6<br/>C 扩展专用<br/>1 文件 / 18 项"]
+    Root["测试套件<br/>18 个文件"]
+    Root --> G1["组 1<br/>纯 Ruby<br/>3 文件"]
+    Root --> G2["组 2<br/>JSON 策略<br/>2 文件"]
+    Root --> G3["组 3-5<br/>需原生库<br/>8 文件"]
+    Root --> G4["组 6<br/>v2.0 新增<br/>4 文件"]
+    Root --> G5["组 7<br/>C 扩展专用<br/>1 文件"]
 
     classDef root fill:#E3F2FD,stroke:#1565C0,stroke-width:3px,color:#0D47A1
     classDef pure fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
     classDef partial fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
     classDef native fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
-    classDef cext fill:#FCE4EC,stroke:#AD1457,stroke-width:3px,color:#880E4F
+    classDef v2 fill:#FCE4EC,stroke:#AD1457,stroke-width:3px,color:#880E4F
 
     class Root root
     class G1 pure
     class G2 partial
     class G3 native
-    class G6 cext
+    class G4 v2
+    class G5 v2
 ```
 
-| 组 | 文件 | 测试数 | 是否需要原生库 |
-|:--:|------|:------:|:--------------:|
-| 1 | `test_errors.rb` | 23 | 否 |
-| 1 | `test_callback_error_reporter.rb` | 10 | 否 |
-| 1 | `test_module_helpers.rb` | 20 | 否 |
-| 2 | `test_lf_io.rb` | 32 | 部分 |
-| 2 | `test_lf_io_extra.rb` | 33 | 部分 |
-| 3 | `test_data_handle.rb` | 44 | 是 |
-| 3 | `test_data_handle_extra.rb` | 20 | 是 |
-| 4 | `test_app_handle.rb` | 33 | 是 |
-| 4 | `test_app_handle_extra.rb` | 15 | 是 |
-| 5 | `test_status.rb` | 17 | 是 |
-| 5 | `test_network_events.rb` | 27 | 是 |
-| 5 | `test_framework.rb` | 30 | 是 |
-| 5 | `test_network.rb` | 9 | 是 |
-| 6 | `test_native_bridge_self_test.rb` | 18 | C 扩展专用 |
+| 组 | 文件 | 是否需要原生库 | 备注 |
+|:--:|------|:--------------:|------|
+| 1 | `test_errors.rb` | 否 | |
+| 1 | `test_callback_error_reporter.rb` | 否 | |
+| 1 | `test_module_helpers.rb` | 部分 | 部分用例需原生库 |
+| 2 | `test_lf_io.rb` | 部分 | JSON 策略不需，句柄 IO 需 |
+| 2 | `test_lf_io_extra.rb` | 部分 | 同上 |
+| 3 | `test_data_handle.rb` | 是 | |
+| 3 | `test_data_handle_extra.rb` | 是 | |
+| 4 | `test_app_handle.rb` | 是 | |
+| 4 | `test_app_handle_extra.rb` | 是 | |
+| 5 | `test_status.rb` | 是 | |
+| 5 | `test_network_events.rb` | 是 | |
+| 5 | `test_framework.rb` | 是 | |
+| 5 | `test_network.rb` | 是 | |
+| **6** | **`test_options.rb`** | **是** | **v2.0** |
+| **6** | **`test_address.rb`** | **部分** | **v2.0：构造不需，调用需** |
+| **6** | **`test_async_support.rb`** | **是** | **v2.0** |
+| **6** | **`test_p2p_registration.rb`** | **是** | **v2.0** |
+| 7 | `test_native_bridge_self_test.rb` | C 扩展专用 | |
 
 ### 8.2 三种运行方式
 
 | 方式 | 命令 | 用途 |
 |------|------|------|
-| 开发（Windows） | `.\run_tests.ps1` | 交互式跑全部 14 个文件 |
+| 开发（Windows） | `.\run_tests.ps1` | 交互式跑全部 18 个文件 |
 | CI（Windows） | `.\run_test_ci.ps1` | 与开发版功能相同，独立文件 |
 | CI（Linux / macOS） | `bash run_test_ci.sh` | 在 POSIX 环境跑 |
 
@@ -806,12 +789,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S1["Step 1<br/>ruby check_env.rb"] --> Q1{"Passed = 26?"}
+    S1["Step 1<br/>ruby check_env.rb"] --> Q1{"Failed = 0?"}
     Q1 -->|"否"| Fail["退出 1"]
-    Q1 -->|"是"| S2["Step 2<br/>依次跑 14 个测试文件"]
+    Q1 -->|"是"| S2["Step 2<br/>依次跑 18 个测试文件"]
     S2 --> Q2{"全部 0 failures?"}
     Q2 -->|"否"| Fail
-    Q2 -->|"是"| Ok["All 14 test files passed<br/>退出 0"]
+    Q2 -->|"是"| Ok["All 18 test files passed<br/>退出 0"]
 
     classDef ok fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
     classDef fail fill:#FFEBEE,stroke:#C62828,stroke-width:3px,color:#B71C1C
@@ -835,31 +818,9 @@ cd D:\CoreLibrary\LingoFuse\ruby
 
 ```
 ========================================================================
-All 14 test files passed.
+All 18 test files passed.
 ========================================================================
 ```
-
-**各项统计**：
-
-| 文件 | Runs | Assertions | Failures | Errors |
-|------|:----:|:----------:|:--------:|:------:|
-| test_errors.rb | 23 | 39 | 0 | 0 |
-| test_callback_error_reporter.rb | 10 | 17 | 0 | 0 |
-| test_module_helpers.rb | 20 | 41 | 0 | 0 |
-| test_lf_io.rb | 32 | 58 | 0 | 0 |
-| test_lf_io_extra.rb | 33 | 40 | 0 | 0 |
-| test_data_handle.rb | 44 | 85 | 0 | 0 |
-| test_data_handle_extra.rb | 20 | 40 | 0 | 0 |
-| test_app_handle.rb | 33 | 57 | 0 | 0 |
-| test_app_handle_extra.rb | 15 | 28 | 0 | 0 |
-| test_status.rb | 17 | 24-40 * | 0 | 0 |
-| test_network_events.rb | 27 | 37 | 0 | 0 |
-| test_framework.rb | 30 | 41 | 0 | 0 |
-| test_network.rb | 9 | 29 | 0 | 0 |
-| test_native_bridge_self_test.rb | 18 | 55 | 0 | 0 |
-| **合计** | **331** | — | **0** | **0** |
-
-> \* `test_status.rb` 的断言数取决于状态队列长度，非确定性，属正常现象。
 
 ### 8.5 日志中"看起来像错误但实际是预期"的条目
 
@@ -869,7 +830,9 @@ All 14 test files passed.
 | `[LingoFuse] Callback error in ...boom...` | test_app_handle | 故意抛异常，验证异常隔离 |
 | `no found api "does_not_exist"` | 多个文件 | 故意调用不存在的 API |
 | `prepare error: repeat listen/connection addr` | test_framework / test_network | 故意重复地址 |
-| `LF_BindApp: Main thread is not active` | test_app_handle_extra | 故意在无主线程时 bind |
+| `no connection` | test_address | 故意调不可达目标 |
+| `LF_UID_Call: no connection` | test_address | 故意 UID 调不可达 |
+| `LF_P2PNAME_Call: no connection` | test_address | 故意 P2PName 调不可达 |
 | `hint: Data handle pool "N" handles automatically freed.` | 所有含 DataHandle 的测试 | 10 分钟空闲回收，正常行为 |
 
 ---
@@ -884,11 +847,11 @@ require 'lingofuse'
 
 | 函数 | 说明 |
 |------|------|
-| `LingoFuse::VERSION` | 绑定版本字符串（`"1.0.0"`） |
-| `LingoFuse.load_library` | 幂等，总是返回 `true`（加载在 `require` 时已完成） |
+| `LingoFuse::VERSION` | 绑定版本字符串（`"2.0.0"`） |
+| `LingoFuse.load_library` | 幂等，总是返回 `true` |
 | `LingoFuse.loaded?` | 原生库是否已加载 |
 | `LingoFuse.library_name` | 平台相关的库文件名 |
-| `LingoFuse.platform` | `{ ruby:, platform:, library: }` |
+| `LingoFuse.platform` | Hash：`{ ruby:, platform:, library:, version:, has_async_support:, has_address:, has_options:, has_p2p_reg: }` |
 | `LingoFuse.cstr_ptr(str)` | 转 `Fiddle::Pointer`（NUL 结尾 UTF-8） |
 | `LingoFuse.read_cstr(ptr)` | 从指针读 UTF-8 字符串 |
 
@@ -907,33 +870,13 @@ LingoFuse::DataHandle.open('api_name') { |h| ... }     # 块形式
 
 **方法分类**：
 
-```mermaid
-flowchart LR
-    DH["DataHandle"] --> L["生命周期"]
-    DH --> P["位置 / 大小"]
-    DH --> B["字节 I/O"]
-    DH --> S["标量 I/O"]
-    DH --> T["字符串 I/O"]
-
-    L --> L1["dispose / close"]
-    L --> L2["valid? / owning? / raw"]
-    P --> P1["position / size"]
-    P --> P2["get_buffer_pointer"]
-    B --> B1["write_bytes / read_bytes"]
-    B --> B2["read_bytes_exact"]
-    S --> S1["write_int8 .. write_double"]
-    S --> S2["read_int8 .. read_double"]
-    T --> T1["write_string / read_string"]
-    T --> T2["read_string_bytes"]
-
-    classDef root fill:#E3F2FD,stroke:#1565C0,stroke-width:3px,color:#0D47A1
-    classDef group fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-    classDef leaf fill:#E8F5E9,stroke:#2E7D32,stroke-width:1px,color:#1B5E20
-
-    class DH root
-    class L,P,B,S,T group
-    class L1,L2,P1,P2,B1,B2,S1,S2,T1,T2 leaf
-```
+| 类别 | 方法 |
+|------|------|
+| 生命周期 | `dispose` / `close` / `valid?` / `owning?` / `raw` |
+| 位置 / 大小 | `position` / `position=` / `size` / `size=` / `get_buffer_pointer` |
+| 字节 I/O | `write_bytes` / `read_bytes` / `read_bytes_exact` / `try_read_bytes` / `read_all_bytes` |
+| 标量 I/O | `write_int8` … `write_double` / `read_int8` … `read_double`（均小端序） |
+| 字符串 I/O | `write_string` / `read_string` / `read_string_bytes` / `try_read_string` |
 
 ### 9.3 `LingoFuse::AppHandle`
 
@@ -975,15 +918,10 @@ end
 
 **回调整约**：
 
-```mermaid
-flowchart TD
-    R1["回调运行在 Ruby 调度线程"] --> R2["input / output 是借用句柄<br/>不要 dispose"]
-    R2 --> R3["回调内不要调用<br/>local_call / call / notify<br/>（死锁）"]
-    R3 --> R4["回调内不要操作 UI<br/>用 Thread::Queue 转发"]
-
-    classDef rule fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-    class R1,R2,R3,R4 rule
-```
+- 回调运行在 Ruby 调度线程
+- `input` / `output` 是**借用句柄**，不要 `dispose`
+- 回调内不要调用 `local_call` / `call` / `notify`（死锁）
+- 回调内不要操作 UI（用 `Thread::Queue` 转发）
 
 ### 9.4 `LingoFuse::LfIo`
 
@@ -991,7 +929,7 @@ flowchart TD
 
 | 函数 | 说明 |
 |------|------|
-| `LfIo.dumps_json(obj)` | 序列化：紧凑、非 ASCII 字面量 |
+| `LfIo.dumps_json(obj)` | 序列化：紧凑、非 ASCII 字面量、`ensure_ascii: false` |
 | `LfIo.loads_json(text)` | strict 解析 |
 | `LfIo.write_string(handle, str)` | 写 UTF-8 + NUL |
 | `LfIo.read_string(handle)` | 读到 NUL |
@@ -1004,11 +942,7 @@ flowchart TD
 | `LfIo.try_read_json(handle)` | 非抛异常版本（返回 `nil`） |
 | `LfIo.cstr(value)` | 规范化为字符串 |
 
-**线格式**：
-
-```
-[UTF-8 encoded JSON text][NUL byte]
-```
+**线格式**：`[UTF-8 encoded JSON text][NUL byte]`。
 
 **跨语言字节级兼容**：`{"a":1}` 在所有绑定上的字节序列都是：
 
@@ -1027,7 +961,7 @@ flowchart TD
 | `Framework.prepare_client(physics, app)` | 准备客户端连接 |
 | `Framework.prepare_done` | 启动框架（**只返回一次 `true`**） |
 | `Framework.exit_main_thread` | 请求主线程退出 |
-| `Framework.set_option(name, value)` | 调整运行时选项 |
+| `Framework.set_option(name, value)` | 调整运行时选项（字符串型） |
 | `Framework.generate_app_name` | 生成唯一 App 名 |
 | `Framework.get_app_name(app)` | 查询 App 权威名 |
 | `Framework.call(app, param, timeout_ms)` | 同步远程调用 |
@@ -1035,18 +969,6 @@ flowchart TD
 | `Framework.notify(app, param)` | 单向通知 |
 | `Framework.sequenced_notify(app, param)` | FIFO 通知 |
 | `Framework.shutdown` | 完全关闭（幂等） |
-
-**运行时选项**：
-
-| 选项 | 默认 | 说明 |
-|------|:----:|------|
-| `Wait_Ready` / `Wait_Connection_ReadyOk` | `True` | `prepare_done` 是否等待所有客户端就绪 |
-| `Wait_Connection_Timeout` | 30000 | 等待超时（毫秒） |
-| `Overlap_Connection` | `False` | 是否允许同地址多客户端 |
-| `Fixed_Sequenced_Time` | 20000 | 顺序通知回退阈值 |
-| `Quiet` | `False` | 安静模式 |
-| `ShowThreadID` | — | 日志显示线程 ID |
-| `ConsoleOutput` | — | 控制台输出 |
 
 ### 9.6 `LingoFuse::Status`
 
@@ -1078,112 +1000,143 @@ LingoFuse::NetworkEvents.set_listener(listener)
 
 - **Connect** — 客户端首次收到服务 API 广播时触发，**不是** TCP 建链
 - **Disconnect** — 物理链路丢失时触发
-- **回调线程** — 原生工作线程
+- **回调线程** — Ruby 调度线程（v2.0 起，不再是原生线程）
 
-### 9.8 `LingoFuse::NetworkEventListener`
+### 9.8 `LingoFuse::Address`（v2.0 新增）
 
-面向对象风格：
+三寻址抽象。所有 `Target` 共享同一套 call 形状。
 
-```ruby
-class MyListener < LingoFuse::NetworkEventListener
-  def on_connect(addr); end
-  def on_disconnect(addr); end
-end
-
-LingoFuse::NetworkEvents.set_listener(MyListener.new)
-```
-
-### 9.9 `LingoFuse::NetworkEventQueue`
-
-队列式消费：
+**构造**：
 
 ```ruby
-q = LingoFuse::NetworkEventQueue.global_instance
-q.install
-begin
-  loop do
-    type, addr = q.get(timeout: 1.0)
-    # type 是 :connect 或 :disconnect
-  end
-ensure
-  q.uninstall
-end
+LingoFuse.app('MyApp')                  # => AppTarget
+LingoFuse.uid(uid_bytes_or_hex)         # => UIDTarget
+LingoFuse.p2pname('workers')            # => P2PNameTarget
+
+# 或使用完整路径
+LingoFuse::Address.app('MyApp')
+LingoFuse::Address.uid(uid)
+LingoFuse::Address.p2pname('workers')
+
+# 或直接构造
+LingoFuse::AppTarget.new('MyApp', default_timeout_ms: 3000)
+LingoFuse::UIDTarget.new('00' * 32)
+LingoFuse::P2PNameTarget.new('workers')
 ```
 
-### 9.10 `LingoFuse::NativeBridge`
-
-C 扩展的 Ruby 包装。**通常不直接使用**。
+**统一方法**（三个子类共享）：
 
 | 方法 | 说明 |
 |------|------|
-| `NativeBridge.available?` | 扩展是否加载 |
-| `NativeBridge.start` | 启动调度线程（幂等） |
-| `NativeBridge.register_call(app, name, desc, &block)` | 注册 Call，返回 `ref_addr` |
-| `NativeBridge.register_notify(app, name, desc, &block)` | 注册 Notify |
-| `NativeBridge.unregister(ref_addr)` | 释放 ref |
+| `target.call(api, payload = nil, timeout_ms: nil)` | 同步请求，返回反序列化结果；超时抛 `TimeoutError` |
+| `target.call_future(api, payload = nil, timeout_ms: nil)` | 返回 `CallFuture`，不阻塞 |
+| `target.notify(api, payload = nil)` | 单向通知 |
+| `target.sequenced_notify(api, payload = nil)` | FIFO 单向通知 |
+| `target.describe` | 人类可读描述 |
 
-### 9.11 `LingoFuse::CallbackErrorReporter`
+**寻址语义**：
+
+| Target | 路由键 | 本地优先 | 负载均衡 |
+|--------|--------|:--------:|:--------:|
+| `AppTarget` | App 名（String） | ✅ | ❌ |
+| `UIDTarget` | 32 字节 UID | ✅ | ❌ |
+| `P2PNameTarget` | 组名（String） | ❌ | ✅（服务端） |
+
+**UID 输入格式**：32 字节 String 或 64 字符 hex String。
+
+### 9.9 `LingoFuse::AsyncSupport`（v2.0 新增）
+
+现代异步子系统。
+
+**类型**：
+
+| 类型 | 用途 |
+|------|------|
+| `CallFuture` | 线程安全 Future |
+| `AsyncOp` | 单次异步操作的状态机 |
+| `AsyncBridge` | 进程单例，管理所有未决操作 |
+| `AsyncSupport.run_async_with_future` | 工厂方法 |
+
+**`CallFuture` 方法**：
+
+| 方法 | 说明 |
+|------|------|
+| `future.value(timeout_ms: nil)` | 阻塞等待结果，超时抛 `TimeoutError` |
+| `future.done?` | 是否已解析 |
+| `future.abandoned?` | 是否已被放弃 |
+| `future.fulfill(v)` / `future.reject(e)` | 内部使用，幂等 |
+| `future.mark_abandoned!` | 内部使用，幂等 |
+
+**状态机**：
+
+```
+PENDING ── callback fires ──> FIRED
+   │
+   ├── timeout fires ──> ABANDONED ── late callback ──> FIRED
+   │
+   └── dispatch fails ──> NOT_QUEUED
+```
+
+**关键设计**：
+
+- C 请求**无超时**；超时由 Ruby 侧的 `CallFuture#value` 决定
+- 超时后 C 回调仍会到达，但结果被丢弃（`AsyncOp` 检测到已 `ABANDONED` 直接跳过用户回调）
+- 分派失败立即释放 ref，不泄漏
+- 复用：`AsyncBridge.instance.stats` 提供诊断计数
+
+### 9.10 `LingoFuse::Options`（v2.0 新增）
+
+16 对类型化 `set_opt_xxx` / `get_opt_xxx`。
+
+| 选项短名 | Ruby 类型 | 默认值 | 说明 |
+|----------|:---------:|--------|------|
+| `password` | String | 内置 token | 只读时返回 `"********"` 掩码 |
+| `debug` | String | — | 只写；读时返回占位符 |
+| `quiet` | Boolean | false | 抑制大部分日志 |
+| `show_thread_id` | Boolean | true | 日志带线程 ID |
+| `console_output` | Boolean | 取决于宿主 | 控制台输出 |
+| `overlap_connection` | Boolean | false | 允许多客户端同地址 |
+| `wait_connection_ready_ok` | Boolean | true | `prepare_done` 是否等待客户端就绪 |
+| `wait_connection_timeout` | Integer（毫秒） | 30000 | 等待超时 |
+| `ipc_serv_thread_count` | Integer | 平台相关 | IPC 服务端线程数 |
+| `ipc_serv_max_queue_length` | Integer | 平台相关 | IPC 入站队列长度 |
+| `ipc_serv_max_msg_size` | Integer | 平台相关 | IPC 单条消息上限 |
+| `fixed_sequenced_time` | Integer（毫秒） | 20000 | 顺序通知粘性窗口 |
+| `p2p_name` | String | `""` | 本进程 P2P 组名 |
+| `data_handle_idle_timeout` | Integer（毫秒） | 600000 | 自动回收空闲阈值 |
+| `data_handle_pool_scan_interval` | Integer（毫秒） | 5000 | 池扫描间隔 |
+| `no_reponse_cmd_null_flush_threshold` | Integer | 5000 | 无响应命令 NULL 刷新阈值 |
+
+**注意拼写**：`No_Reponse`（无第二个 s）是 Pascal 侧历史拼写，Ruby 侧的 `set_opt_no_reponse_cmd_null_flush_threshold` 必须保留。
+
+**诊断快照**：
 
 ```ruby
-LingoFuse::CallbackErrorReporter.handler = ->(source, error) do
-  puts "[#{source}] #{error.class}: #{error.message}"
-end
-
-LingoFuse::CallbackErrorReporter.report('src', err)
+LingoFuse::Options.to_h   # 返回 16 个 key 的 Hash
 ```
 
-- 未装 handler 时写到 `$stderr`
-- handler 内部异常被吞噬
-- 线程安全
+### 9.11 `LingoFuse::P2PRegistration`（v2.0 新增）
 
-### 9.12 异常层级
+进程级 P2P 注册，与 `AppHandle` 平行但独立。
 
-```mermaid
-classDiagram
-    StandardError <|-- Error
-    Error <|-- LibraryLoadError
-    Error <|-- CallError
-    Error <|-- IoError
-    Error <|-- ObjectDisposedError
-    Error <|-- RegistrationError
-    Error <|-- CallbackError
+| 方法 | 说明 |
+|------|------|
+| `P2PRegistration.register_call(name, desc, &block)` | 注册进程级 Call API |
+| `P2PRegistration.register_notify(name, desc, &block)` | 注册进程级 Notify API |
+| `P2PRegistration.unregister(name)` | 注销，返回 `true` / `false` |
+| `P2PRegistration.registered?(name)` | 查询 |
+| `P2PRegistration.registered_names` | 返回所有已注册名（快照 Array） |
 
-    class Error {
-        +message
-    }
-    class LibraryLoadError {
-        +library_name
-    }
-    class CallError {
-        +target_app
-        +target_api
-    }
-    class IoError {
-        +operation
-    }
-    class ObjectDisposedError {
-        +object_name
-    }
-    class RegistrationError {
-        +api_name
-    }
-    class CallbackError {
-        +source
-        +original_cause
-    }
-```
+**顶层别名**：`LingoFuse.register_p2p_call` / `LingoFuse.register_p2p_notify` / `LingoFuse.unregister_p2p`。
 
-**捕获策略**：
+**与 App 级注册的对照**：
 
-```ruby
-begin
-  # LingoFuse 操作
-rescue LingoFuse::CallError => e
-  puts "调用失败: #{e.target_app}.#{e.target_api}"
-rescue LingoFuse::Error => e
-  puts "LingoFuse 错误: #{e.message}"
-end
-```
+| 维度 | App 级（`AppHandle`） | P2P 级（本模块） |
+|------|----------------------|------------------|
+| 命名空间 | 每个 App 独立 | 进程级，独立于任何 App |
+| 可达性 | App 名 + UID | 仅 UID + P2PName |
+| 生命周期 | 随 `AppHandle` 释放而解绑 | 存活到进程退出（`LF_Shutdown`） |
+| 重复注册 | 抛 `RegistrationError` | 抛 `RegistrationError` |
 
 ---
 
@@ -1214,7 +1167,94 @@ result.dispose
 app.dispose
 ```
 
-### 10.2 服务端
+### 10.2 三寻址（v2.0）
+
+```ruby
+require 'lingofuse'
+
+# --- App 名寻址（本地优先）---
+t_app = LingoFuse.app('Calculator')
+result = t_app.call('add', { 'a' => 40, 'b' => 2 }, timeout_ms: 3000)
+puts result['result']  # 42
+
+# --- UID 寻址（本地优先）---
+my_uid = "\x00" * 32    # 实际通过 whoami 探测获得
+t_uid = LingoFuse.uid(my_uid)
+t_uid.notify('log', { 'msg' => 'hello' })
+
+# --- P2PName 寻址（永远走网络，服务端负载均衡）---
+t_p2p = LingoFuse.p2pname('worker_group')
+t_p2p.notify('log', { 'msg' => 'broadcast' })
+```
+
+### 10.3 现代异步（v2.0）
+
+```ruby
+require 'lingofuse'
+
+# --- Future 风格 ---
+t = LingoFuse.app('CalcSvc')
+future = t.call_future('add', { 'a' => 5, 'b' => 7 }, timeout_ms: 3000)
+
+# 做别的事，然后再取结果
+result = future.value(timeout_ms: 5000)
+puts result['result']  # 12
+
+# --- 超时与放弃标志 ---
+future2 = t.call_future('slow_api', nil, timeout_ms: 50)
+begin
+  future2.value(timeout_ms: 200)
+rescue LingoFuse::TimeoutError
+  puts 'timed out'
+  puts "abandoned? #{future2.abandoned?}"  # true
+end
+```
+
+### 10.4 类型化选项（v2.0）
+
+```ruby
+require 'lingofuse'
+
+# --- 布尔 ---
+LingoFuse.set_opt_quiet(true)
+puts LingoFuse.get_opt_quiet.inspect   # true
+LingoFuse.set_opt_quiet(false)
+
+# --- 整数 ---
+LingoFuse.set_opt_wait_connection_timeout(60000)
+puts LingoFuse.get_opt_wait_connection_timeout  # 60000
+
+# --- 字符串 ---
+LingoFuse.set_opt_p2p_name('worker_group')
+puts LingoFuse.get_opt_p2p_name.inspect  # "worker_group"
+LingoFuse.set_opt_p2p_name('')
+
+# --- 诊断快照 ---
+puts LingoFuse::Options.to_h[:quiet]
+```
+
+### 10.5 进程级 P2P 注册（v2.0）
+
+```ruby
+require 'lingofuse'
+
+# 注册一个进程级工具 API，任何客户端可以通过 UID 或 P2PName 调用
+LingoFuse.register_p2p_call('whoami', 'echo caller identity') do |input, output|
+  uid = input.get_p2p_uid     # 32 字节二进制
+  name = input.get_p2p_name   # UTF-8 字符串
+  output.write_json({
+    'uid_hex' => uid.unpack1('H*'),
+    'p2p_name' => name
+  })
+end
+
+# ... 服务运行 ...
+
+# 注销
+LingoFuse.unregister_p2p('whoami')
+```
+
+### 10.6 服务端
 
 ```ruby
 require 'lingofuse'
@@ -1224,10 +1264,10 @@ app = LingoFuse::AppHandle.new('Calculator', 'Server')
 app.register_call('add', 'Add') do |input, output|
   req = LingoFuse::LfIo.read_json(input)
   result = (req['a'] || 0) + (req['b'] || 0)
-  LingoFuse::LfIo.write_json(output, { result: result })
+  LingoFuse::LfIo.write_json(output, { 'result' => result })
 end
 
-LingoFuse::Framework.set_option('Wait_Ready', 'False')
+LingoFuse.set_opt_wait_connection_ready_ok(false)
 LingoFuse::Framework.reset_prepare
 LingoFuse::Framework.prepare_service('ipc:calc', 'ipc:calc')
 LingoFuse::Framework.prepare_client('ipc:calc', app)
@@ -1242,12 +1282,12 @@ app.dispose
 LingoFuse::Framework.shutdown
 ```
 
-### 10.3 客户端
+### 10.7 客户端
 
 ```ruby
 require 'lingofuse'
 
-LingoFuse::Framework.set_option('Wait_Ready', 'False')
+LingoFuse.set_opt_wait_connection_ready_ok(false)
 LingoFuse::Framework.reset_prepare
 LingoFuse::Framework.prepare_client('ipc:calc', nil)
 LingoFuse::Framework.prepare_done
@@ -1258,19 +1298,20 @@ LingoFuse::Framework.prepare_done
   sleep 0.2
 end
 
-param = LingoFuse::DataHandle.new('add')
-LingoFuse::LfIo.write_json(param, { a: 40, b: 2 })
+# --- 用 v2.0 三寻址 API ---
+t = LingoFuse.app('Calculator')
+begin
+  result = t.call('add', { 'a' => 40, 'b' => 2 }, timeout_ms: 3000)
+  puts result['result']  # 42
+rescue LingoFuse::TimeoutError => e
+  warn "call timed out: #{e.message}"
+end
 
-result = LingoFuse::Framework.call('Calculator', param, 3000)
-puts LingoFuse::LfIo.read_json(result)['result']   # 42
-
-param.dispose
-result.dispose
 LingoFuse::Framework.exit_main_thread
 LingoFuse::Framework.shutdown
 ```
 
-### 10.4 Cross Demo
+### 10.8 Cross Demo
 
 三个进程，验证跨进程 / 跨语言：
 
@@ -1283,26 +1324,6 @@ ruby cross/cross_node.rb
 
 # 终端 3
 ruby cross/cross_call.rb
-```
-
-```mermaid
-flowchart LR
-    Call["cross_call<br/>压测客户端<br/>32 线程 × 10 秒"]
-    Service["cross_service<br/>信标<br/>不注册任何 API"]
-    Node["cross_node<br/>工作节点<br/>demo.add / demo.inv_seri"]
-
-    Call -->|"① 发现信标"| Service
-    Service -.->|"② 广播 App 路由"| Node
-    Call ==>|"③ Call add / inv_seri"| Node
-    Node -->|"④ 字节响应"| Call
-
-    classDef beacon fill:#FFF3E0,stroke:#E65100,stroke-width:3px,color:#BF360C
-    classDef worker fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px,color:#1B5E20
-    classDef client fill:#E3F2FD,stroke:#1565C0,stroke-width:3px,color:#0D47A1
-
-    class Service beacon
-    class Node worker
-    class Call client
 ```
 
 | 进程 | 角色 | 说明 |
@@ -1321,19 +1342,21 @@ flowchart LR
 | `cannot load such file -- lingofuse` | `$LOAD_PATH` 未包含 `lib/` | §7.4 |
 | `Failed to load the LingoFuse native library` | 原生库不在 PATH 上 | §4.4 |
 | `The specified module could not be found` | 兄弟 DLL 缺失或分散 | 4 个 DLL 必须同目录 |
-| `[BUG] rb_thread_call_with_gvl()` | C 扩展未编译 | 跑 `setup_build_env.ps1` |
-| `[LingoFuse::NativeBridge] lingofuse_ext not available` | C 扩展不在 `lib/` | BUILD_EXTENSION.md 问题 5 |
+| `[BUG] rb_thread_call_with_gvl()` | C 扩展未编译或未加载 | 跑 `setup_build_env.ps1` |
+| `[LingoFuse::NativeBridge] lingofuse_ext not available` | C 扩展不在 `lib/` | BUILD_AND_DEPLOY.md |
 | `No GNU Make found` | DevKit 未安装 / PATH 顺序 | INSTALL_DEPENDENCIES.md §3.2 |
 | `Fatal makefile ... No terminator` | 用了 Embarcadero Make | 前置 msys64 到 PATH |
-| `gettimeofday: conflicting types` | 头文件冲突 | 更新 `lingofuse_ext.c`（去 `<sys/time.h>`） |
-| `undefined reference to 'clock_gettime'` | MinGW 缺 pthread | 重装 DevKit |
 | `Cannot replace lib\lingofuse_ext.so` | 文件被占用 | `Get-Process ruby \| Stop-Process -Force` |
 | `prepare error: repeat listen` | 地址重复 | `Framework.reset_prepare` 后重试 |
-| `prepare error: repeat connection` | 地址重复 | 设 `Overlap_Connection=True` |
+| `prepare error: repeat connection` | 地址重复 | 设 `overlap_connection = true` |
 | `no connection` | 目标 App 不可见 | 等 broadcast 广播，用 `check_app` 轮询 |
+| `no found app/api` | App/API 名不匹配 | 检查拼写、大小写 |
 | `hint: Data handle pool ... automatically freed.` | 10 分钟空闲回收 | 正常行为 |
 | `callback raised: ...`（前缀 `NativeBridge`） | 回调抛异常 | 修回调 |
-| 调试器无法启动 | `debug` gem 未装 | `gem install debug` |
+| `CallFuture#value timed out after Nms` | 异步超时 | 提高 `timeout_ms` 或检查服务端 |
+| `P2P API '...' is already registered` | P2P 名重复 | 用 `registered_names` 检查 |
+| `UID must be exactly 32 bytes` | UID 长度错误 | 用 32 字节或 64 字符 hex |
+| `调试器无法启动` | `debug` gem 未装 | `gem install debug` |
 
 ### 11.1 通用排查顺序
 
@@ -1343,7 +1366,7 @@ flowchart TD
     Q1 -->|"否"| Fix1["修复编译环境"]
     Q1 -->|"是"| Q2{"setup_build_env.ps1<br/>通过?"}
     Q2 -->|"否"| Fix2["按 Section 0 报错修复"]
-    Q2 -->|"是"| Q3{"check_env.rb<br/>通过?"}
+    Q2 -->|"是"| Q3{"check_env.rb<br/>Failed = 0?"}
     Q3 -->|"否"| Fix3["修复运行时环境"]
     Q3 -->|"是"| Q4{"run_test_ci.ps1<br/>通过?"}
     Q4 -->|"否"| Fix4["看具体失败的测试文件"]
@@ -1357,6 +1380,60 @@ flowchart TD
     class Fix1,Fix2,Fix3,Fix4 fail
     class Q1,Q2,Q3,Q4 check
 ```
+
+---
+
+## 十二、v2.0 迁移指南
+
+### 12.1 从 v1.x 升级到 v2.0
+
+**第一步：重编译 C 扩展**
+
+```powershell
+cd D:\CoreLibrary\LingoFuse\ruby
+powershell -ExecutionPolicy Bypass -File clean.ps1
+powershell -ExecutionPolicy Bypass -File setup_build_env.ps1
+```
+
+**第二步：更新 Gemfile / gemspec**
+
+`lingofuse.gemspec` 的版本号已经是 `2.0.0`。
+
+**第三步：审查现有代码**
+
+绝大多数 v1.x 代码在 v2.0 上**无改动可用**。以下是唯二需要注意的点：
+
+| 项 | v1.x 行为 | v2.0 行为 |
+|----|-----------|-----------|
+| `LingoFuse.platform.keys` | 3 个 | **8 个**（+ version + 4 个 has_xxx） |
+| `LingoFuse::VERSION` | `"1.0.0"` | `"2.0.0"` |
+| `LingoFuse.loaded?` | 已存在 | 已存在（语义一致） |
+
+**第四步：可选 — 使用 v2.0 新特性**
+
+- **三寻址**：把 `Framework.call('app', ...)` 改为 `LingoFuse.app('app').call(...)`
+- **异步**：把 `async_call` + 回调改为 `call_future`
+- **类型化选项**：把 `Framework.set_option('Quiet', 'True')` 改为 `LingoFuse.set_opt_quiet(true)`
+- **P2P 注册**：用 `LingoFuse.register_p2p_call` 替代 App 级注册（如果需要跨 App 可达）
+
+### 12.2 v1.x 到 v2.0 API 对照表
+
+| v1.x | v2.0 |
+|------|------|
+| `client.json_call('api', payload)` | `LingoFuse.app('MyApp').call('api', payload)` |
+| `client.json_notify('api', payload)` | `LingoFuse.app('MyApp').notify('api', payload)` |
+| `client.async_call('api', payload, on_result: ...)` | `LingoFuse.app('MyApp').call_future('api', payload)` |
+| `Framework.set_option('Quiet', 'True')` | `LingoFuse.set_opt_quiet(true)` |
+| `Framework.set_option('Wait_Connection_Timeout', '30000')` | `LingoFuse.set_opt_wait_connection_timeout(30000)` |
+| `app.register_call('api', 'desc', &block)` | 不变 |
+| `app.local_call(param)` | 不变 |
+| `LingoFuse::DataHandle.new('api')` | 不变 |
+
+### 12.3 双向兼容性
+
+**v2.0 内部**：所有 v1.x API 都保留（`Framework.call` / `Framework.notify` 等），可以与 v2.0 新 API 混用。
+
+**v1.x 无法运行 v2.0 代码**：v2.0 新 API（`Address` / `AsyncSupport` / `Options` / `P2PRegistration`）在 v1.x 上不存在。
 
 ---
 
@@ -1398,7 +1475,7 @@ flowchart TD
 cd D:\CoreLibrary\LingoFuse\ruby
 
 .\check_env.ps1                        # 编译环境
-ruby check_env.rb                      # 运行时环境
+ruby check_env.rb                      # 运行时环境（含 v2.0 子系统探测）
 
 # ============ 编译 C 扩展 ============
 .\setup_build_env.ps1                  # 一键编译 + 安装 + 加载测试
@@ -1407,13 +1484,15 @@ ruby check_env.rb                      # 运行时环境
 .\clean.ps1 -KeepInstalled             # 只清 ext/，保留 lib/
 
 # ============ 测试 ============
-.\run_tests.ps1                        # 开发测试
-.\run_test_ci.ps1                      # CI 测试
+.\run_tests.ps1                        # 开发测试（18 个文件）
+.\run_test_ci.ps1                      # CI 测试（18 个文件）
 
 # 单个测试
 ruby test\test_errors.rb
-ruby test\test_data_handle.rb
-ruby test\test_native_bridge_self_test.rb
+ruby test\test_address.rb
+ruby test\test_async_support.rb
+ruby test\test_options.rb
+ruby test\test_p2p_registration.rb
 
 # ============ Cross Demo（三个终端）============
 ruby cross\cross_service.rb
@@ -1433,7 +1512,7 @@ flowchart TD
     R1 --> R1D["require_relative 相对<br/>native_bridge.rb 定位<br/>不受 PATH / LOAD_PATH 影响"]
 
     R2["规则 2<br/>原生 DLL<br/>必须在 PATH 上"]
-    R2 --> R2D["Fiddle.dlopen 走系统加载器规则<br/>4 个 DLL 必须同一目录"]
+    R2 --> R2D["LF_LoadLibrary 走系统加载器规则<br/>4 个 DLL 必须同一目录"]
 
     R3["规则 3<br/>版本必须匹配"]
     R3 --> R3D["C 扩展编译时的 Ruby 版本<br/>必须等于运行时版本"]
@@ -1456,28 +1535,9 @@ flowchart TD
 **原生库 `LingoFuse64.dll` + 3 个兄弟**：
 
 - 位置：PATH 上的任意目录
-- 加载者：`binding.rb` 的 `Fiddle.dlopen`
+- 加载者：C 扩展内部的 `LF_LoadLibrary`
 - 需要配置吗？**需要**。把它们所在的目录加到 PATH 上。
 - 4 个 DLL 必须在**同一目录**。
-
-### C.3 两条独立的搜索路径（再次强调）
-
-```mermaid
-flowchart LR
-    A["C 扩展<br/>lingofuse_ext.so"] --> A1["require_relative<br/>相对路径"]
-    A1 --> A2["lib/"]
-
-    B["原生库<br/>LingoFuse64.dll"] --> B1["Fiddle.dlopen<br/>系统加载器"]
-    B1 --> B2["PATH 逐目录"]
-
-    classDef cext fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
-    classDef native fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
-
-    class A,A1,A2 cext
-    class B,B1,B2 native
-```
-
-**两者互不影响，各有各的搜索机制。搞清楚这一点，所有加载问题都能自己排查。**
 
 ---
 
@@ -1487,4 +1547,4 @@ MIT。
 
 ---
 
-*文档版本 1.1 · 与 LingoFuse Ruby 绑定 1.0.0 匹配 · 最后更新 2026-10-06*
+*文档版本 2.0 · 与 LingoFuse Ruby 绑定 2.0.0 匹配 · 最后更新 2026-10-14*

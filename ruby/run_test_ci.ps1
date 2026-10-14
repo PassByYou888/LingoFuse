@@ -65,6 +65,27 @@ if ($LASTEXITCODE -ne 0) {
 # -----------------------------------------------------------------------------
 # Step 2 — Test files, in dependency order
 # -----------------------------------------------------------------------------
+#
+# The order is:
+#   1. Tests that do not require the native library at all.
+#   2. Tests that partially require it (JSON policy still runs).
+#   3. Tests that fully require it.
+#   4. Tests that specifically exercise the C extension.
+#
+# This makes a failure point at the layer where it actually occurred.
+#
+# The v2.0 additions (test_options, test_address, test_async_support,
+# test_p2p_registration) are placed AFTER test_network but BEFORE
+# test_native_bridge_self_test. Two of them (async_support,
+# p2p_registration) exercise the C extension's callback-marshaling
+# dispatcher under realistic load; placing them just before the
+# self-test keeps that cluster together.
+#
+# `test_native_bridge_self_test.rb` is intentionally placed LAST: it
+# is the only file that exercises the C extension in isolation, and
+# running it after the network tests guarantees those tests have
+# already exercised the dispatcher under realistic load.
+# -----------------------------------------------------------------------------
 
 $tests = @(
     'test/test_errors.rb',
@@ -80,6 +101,10 @@ $tests = @(
     'test/test_network_events.rb',
     'test/test_framework.rb',
     'test/test_network.rb',
+    'test/test_options.rb',
+    'test/test_address.rb',
+    'test/test_async_support.rb',
+    'test/test_p2p_registration.rb',
     'test/test_native_bridge_self_test.rb'
 )
 

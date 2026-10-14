@@ -18,9 +18,26 @@
 # work for bytes above 0x7F (which is exactly what UTF-8 needs).
 #
 # ============================================================================
+# v2.0 platform.keys EXPANSION
+# ============================================================================
+# LingoFuse::VERSION moved from 1.0.0 to 2.0.0, and LingoFuse.platform
+# now reports four additional subsystem-availability flags:
+#
+#     :version           — the binding version (mirrors VERSION)
+#     :has_async_support — LingoFuse::AsyncSupport is loaded
+#     :has_address       — LingoFuse::Address is loaded
+#     :has_options       — LingoFuse::Options is loaded
+#     :has_p2p_reg       — LingoFuse::P2PRegistration is loaded
+#
+# The tests below pin the FULL key set. A future addition to
+# LingoFuse.platform must update test_platform_returns_the_expected_keys
+# in the same commit.
+#
+# ============================================================================
 
 require 'minitest/autorun'
 require 'fiddle'
+require 'rbconfig'
 
 _lib_dir = File.expand_path('../lib', __dir__)
 $LOAD_PATH.unshift(_lib_dir) unless $LOAD_PATH.include?(_lib_dir)
@@ -97,7 +114,21 @@ class TestModuleHelpers < Minitest::Test
   def test_platform_returns_the_expected_keys
     info = LingoFuse.platform
     assert_kind_of Hash, info
-    assert_equal %i[ruby platform library].sort, info.keys.sort
+
+    # The exact key set. Adding a new key to LingoFuse.platform
+    # requires updating this list in the same commit.
+    expected = %i[
+      ruby
+      platform
+      library
+      version
+      has_async_support
+      has_address
+      has_options
+      has_p2p_reg
+    ]
+    assert_equal expected.sort, info.keys.sort,
+                 'LingoFuse.platform must return exactly the documented keys'
   end
 
   def test_platform_reports_the_running_ruby_version
@@ -113,6 +144,32 @@ class TestModuleHelpers < Minitest::Test
   def test_platform_reports_a_library_name
     info = LingoFuse.platform
     assert_equal LingoFuse.library_name, info[:library]
+  end
+
+  def test_platform_reports_the_binding_version
+    info = LingoFuse.platform
+    assert_equal LingoFuse::VERSION, info[:version]
+  end
+
+  def test_platform_reports_subsystem_availability_flags
+    info = LingoFuse.platform
+
+    # Every flag is a boolean. The actual value depends on which
+    # submodules were loaded by the entry point; require 'lingofuse'
+    # loads all four, so all four must be true.
+    %i[has_async_support has_address has_options has_p2p_reg].each do |key|
+      assert_includes [true, false], info[key],
+                      "platform[#{key.inspect}] must be a boolean"
+    end
+
+    assert_equal true, info[:has_async_support],
+                 'require "lingofuse" must load LingoFuse::AsyncSupport'
+    assert_equal true, info[:has_address],
+                 'require "lingofuse" must load LingoFuse::Address'
+    assert_equal true, info[:has_options],
+                 'require "lingofuse" must load LingoFuse::Options'
+    assert_equal true, info[:has_p2p_reg],
+                 'require "lingofuse" must load LingoFuse::P2PRegistration'
   end
 
   # ------------------------------------------------------------------

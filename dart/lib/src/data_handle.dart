@@ -1,4 +1,29 @@
-// RAII wrapper around a native LingoFuse data handle.
+// RAII wrapper around a native LingoFuse data handle (TDataHnd).
+//
+// TWO I/O PATHS
+// -------------
+// The existing byte / scalar / string I/O methods use the legacy
+// direct-FFI path (getBindings()). They work whether or not the C
+// bridge has been started.
+//
+// The four methods added in v2 -- getP2PUid, getP2PName, writeUid,
+// readUid -- are bridge-only because they need the C bridge's
+// marshalling:
+//
+//   * getP2PUid / getP2PName dereference a transient library-owned
+//     pointer that must be copied immediately. The bridge does the
+//     copy; the legacy path would require Dart to reason about a
+//     ~5-second pointer validity window.
+//
+//   * writeUid / readUid hide the ARGUMENT-role TP2P_UID struct,
+//     which Dart FFI cannot pass by value.
+//
+// Calling these four methods without an active BridgeHost throws
+// StateError. This is by design: the bridge is the single supported
+// path for identity and UID I/O, and making its availability explicit
+// avoids a silent fallback to a fragile code path.
+//
+// All diagnostics are in English.
 
 import 'dart:convert';
 import 'dart:ffi';
@@ -6,10 +31,19 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'bridge/bridge_error.dart';
+import 'bridge/bridge_ffi.dart';
+import 'bridge/bridge_host.dart';
 import 'errors.dart';
 import 'runtime.dart';
 
-/// RAII wrapper around a native LingoFuse data handle (TDataHnd).
+/// RAII wrapper around a native LingoFuse data handle.
+///
+/// A handle is either OWNING or BORROWING. Owning handles are created
+/// by the public constructor or by [DataHandle.createPermanent] and are
+/// released by [dispose]. Borrowing handles are created by
+/// [DataHandle.fromRaw] with `owned: false`, typically inside a
+/// callback, and are released by the framework.
 class DataHandle {
   final Pointer<Void> _raw;
   final bool _owned;
@@ -17,7 +51,13 @@ class DataHandle {
 
   DataHandle._(this._raw, this._owned);
 
-  /// Creates a new auto-recycled data handle.
+  /// Creates a new auto-recycled data handle bound to the given API name.
+  ///
+  /// The handle is added to the library's idle pool. It is released by
+  /// [dispose] (which marks it for release) or by the idle reclaimer
+  /// after 10 minutes of inactivity.
+  ///
+  /// Uses the legacy direct-FFI path: no BridgeHost required.
   factory DataHandle(String apiName) {
     final lf = getBindings();
     final cname = apiName.toNativeUtf8().cast<Char>();
@@ -32,7 +72,12 @@ class DataHandle {
     }
   }
 
-  /// Creates a new permanent data handle (never auto-recycled).
+  /// Creates a new PERMANENT data handle bound to the given API name.
+  ///
+  /// The handle is NOT added to the idle pool. It is released only by
+  /// an explicit [dispose], which acts synchronously.
+  ///
+  /// Uses the legacy direct-FFI path: no BridgeHost required.
   factory DataHandle.createPermanent(String apiName) {
     final lf = getBindings();
     final cname = apiName.toNativeUtf8().cast<Char>();
@@ -48,7 +93,13 @@ class DataHandle {
     }
   }
 
-  /// Wraps an existing raw handle. Use `owned: false` inside callbacks.
+  /// Wraps an existing raw handle.
+  ///
+  /// Pass `owned: false` inside a callback: the framework owns the
+  /// handle and will release it when the callback returns.
+  ///
+  /// Also used by [BridgeHost] when a Protocol-A callback delivers a
+  /// borrowed input or output handle.
   factory DataHandle.fromRaw(Pointer<Void> raw, {bool owned = false}) {
     return DataHandle._(raw, owned);
   }
@@ -67,9 +118,9 @@ class DataHandle {
     }
   }
 
-  // -----------------------------------------------------------------
+  // =================================================================
   // Position and size
-  // -----------------------------------------------------------------
+  // =================================================================
 
   int get position {
     _ensureNotDisposed();
@@ -97,11 +148,12 @@ class DataHandle {
     getBindings().LF_SetSize(_raw, value);
   }
 
-  // -----------------------------------------------------------------
+  // =================================================================
   // Byte I/O
-  // -----------------------------------------------------------------
+  // =================================================================
 
-  /// Appends raw bytes at the current cursor.
+  /// Appends raw bytes at the current cursor. Cursor advances by the
+  /// number of bytes written; the buffer grows as needed.
   int writeBytes(List<int> bytes) {
     _ensureNotDisposed();
     if (bytes.isEmpty) return 0;
@@ -122,7 +174,7 @@ class DataHandle {
     }
   }
 
-  /// Reads up to [count] bytes.
+  /// Reads up to [count] bytes. Returns fewer bytes at end-of-buffer.
   Uint8List readBytes(int count) {
     _ensureNotDisposed();
     if (count <= 0) return Uint8List(0);
@@ -137,7 +189,8 @@ class DataHandle {
     }
   }
 
-  /// Reads exactly [count] bytes; throws on short read.
+  /// Reads exactly [count] bytes. Throws on short read and restores
+  /// the cursor to its original position.
   Uint8List readBytesExact(int count) {
     _ensureNotDisposed();
     if (count <= 0) return Uint8List(0);
@@ -153,7 +206,7 @@ class DataHandle {
     return bytes;
   }
 
-  /// Reads all remaining bytes.
+  /// Reads all remaining bytes. Cursor advances to the end.
   Uint8List readAllBytes() {
     _ensureNotDisposed();
     final pos = position;
@@ -162,12 +215,11 @@ class DataHandle {
     return readBytes(total - pos);
   }
 
-  // -----------------------------------------------------------------
-  // Byte reads up to NUL (fault-tolerant)
-  // -----------------------------------------------------------------
-
   /// Reads raw bytes up to the first NUL, or the end of the buffer.
-  /// Advances the cursor past the NUL, or to `size + 1` if none found.
+  ///
+  /// Advances the cursor past the NUL, or to `size + 1` when no NUL is
+  /// found. This matches the fault-tolerant read semantics shared by
+  /// every LingoFuse binding.
   Uint8List readBytesUntilNul() {
     _ensureNotDisposed();
     final lf = getBindings();
@@ -202,9 +254,9 @@ class DataHandle {
     }
   }
 
-  // -----------------------------------------------------------------
+  // =================================================================
   // Scalar I/O (little-endian)
-  // -----------------------------------------------------------------
+  // =================================================================
 
   void writeInt8(int v) => writeBytes([v & 0xFF]);
   void writeUInt8(int v) => writeBytes([v & 0xFF]);
@@ -244,9 +296,9 @@ class DataHandle {
   double readDouble() =>
       ByteData.sublistView(readBytesExact(8)).getFloat64(0, Endian.little);
 
-  // -----------------------------------------------------------------
+  // =================================================================
   // NUL-framed string I/O
-  // -----------------------------------------------------------------
+  // =================================================================
 
   /// Writes a UTF-8 string followed by a single NUL byte.
   void writeString(String value) {
@@ -276,11 +328,162 @@ class DataHandle {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
-  // -----------------------------------------------------------------
+  // =================================================================
+  // P2P identity (bridge-only)
+  // =================================================================
+
+  /// Returns the sender's 32-byte session UID.
+  ///
+  /// {!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+  /// This reads the FromUID field that the SENDER'S transport layer
+  /// injects automatically before transmission. It is valid ONLY on an
+  /// INPUT handle (the argument of a registered Call / Notify
+  /// callback). On an output handle or on a caller-created handle it
+  /// returns 32 zero bytes.
+  ///
+  /// Requires an active BridgeHost. Throws [StateError] otherwise.
+  ///
+  /// The returned [Uint8List] is a fresh copy; it is safe to retain
+  /// indefinitely.
+  Uint8List getP2PUid() {
+    _ensureNotDisposed();
+    _ensureBridgeAvailable('getP2PUid');
+
+    final ffi = BridgeFfi.instance;
+    final buf = calloc<Uint8>(32);
+    try {
+      final rc = ffi.lfBridgeGetP2PUid(_raw, buf);
+      if (rc != BridgeErrorCode.ok) {
+        throw BridgeException(
+          rc,
+          _readBridgeError(ffi),
+          operation: 'getP2PUid',
+        );
+      }
+      return Uint8List.fromList(buf.asTypedList(32));
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  /// Returns the sender's P2P group name as a Dart string.
+  ///
+  /// Same side-data semantics as [getP2PUid]: valid ONLY on an input
+  /// handle. Returns an empty string when the sender did not declare a
+  /// P2P name (a legitimate configuration).
+  ///
+  /// Requires an active BridgeHost. Throws [StateError] otherwise.
+  String getP2PName() {
+    _ensureNotDisposed();
+    _ensureBridgeAvailable('getP2PName');
+
+    final ffi = BridgeFfi.instance;
+    // Use a large enough buffer to hold any realistic P2P name. The
+    // bridge copies into the caller's buffer, and P2P names are
+    // user-defined short identifiers, not arbitrary payloads.
+    const int kBufSize = 4096;
+    final buf = calloc<Char>(kBufSize);
+    try {
+      final rc = ffi.lfBridgeGetP2PName(_raw, buf, kBufSize);
+      if (rc != BridgeErrorCode.ok &&
+          rc != BridgeErrorCode.bufferTooSmall) {
+        throw BridgeException(
+          rc,
+          _readBridgeError(ffi),
+          operation: 'getP2PName',
+        );
+      }
+      return buf.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  // =================================================================
+  // UID binary I/O (bridge-only)
+  // =================================================================
+
+  /// Appends the 32-byte UID at the current cursor. No terminator.
+  ///
+  /// Requires an active BridgeHost. Throws [StateError] otherwise.
+  void writeUid(Uint8List uid) {
+    _ensureNotDisposed();
+    if (uid.length != 32) {
+      throw RangeError(
+          'UID must be exactly 32 bytes, got ${uid.length}.');
+    }
+    _ensureBridgeAvailable('writeUid');
+
+    final ffi = BridgeFfi.instance;
+    final buf = calloc<Uint8>(32);
+    try {
+      buf.asTypedList(32).setAll(0, uid);
+      final rc = ffi.lfBridgeWriteUid(_raw, buf);
+      if (rc != BridgeErrorCode.ok) {
+        throw BridgeException(
+          rc,
+          _readBridgeError(ffi),
+          operation: 'writeUid',
+        );
+      }
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  /// Reads exactly 32 bytes from the current cursor as a UID. No
+  /// terminator is consumed. Throws [LingoFuseIoError] on a short read.
+  ///
+  /// Requires an active BridgeHost. Throws [StateError] otherwise.
+  Uint8List readUid() {
+    _ensureNotDisposed();
+    _ensureBridgeAvailable('readUid');
+
+    final ffi = BridgeFfi.instance;
+    final buf = calloc<Uint8>(32);
+    try {
+      final rc = ffi.lfBridgeReadUid(_raw, buf);
+      if (rc != BridgeErrorCode.ok) {
+        throw LingoFuseIoError(
+          'readUid failed with bridge code $rc',
+          operation: 'readUid',
+        );
+      }
+      return Uint8List.fromList(buf.asTypedList(32));
+    } finally {
+      calloc.free(buf);
+    }
+  }
+
+  // =================================================================
+  // Internal helpers
+  // =================================================================
+
+  void _ensureBridgeAvailable(String operation) {
+    if (BridgeHost.instanceOrNull == null) {
+      throw StateError(
+        '$operation requires the bridge layer. '
+        'Call "await BridgeHost.start()" before using it.',
+      );
+    }
+  }
+
+  String _readBridgeError(BridgeFfi ffi) {
+    final ptr = ffi.lfBridgeLastError();
+    if (ptr == nullptr) return '';
+    return ptr.cast<Utf8>().toDartString();
+  }
+
+  // =================================================================
   // Lifetime
-  // -----------------------------------------------------------------
+  // =================================================================
 
   /// Releases the native handle if owned. Idempotent.
+  ///
+  /// For an owning auto-recycled handle, this only marks the handle as
+  /// deleted; the actual release happens on the next pool scan (at
+  /// most 5 seconds later). For a permanent handle, the release is
+  /// synchronous. For a borrowing handle, this is a no-op.
   void dispose() {
     if (_disposed) return;
     if (!_owned) return;

@@ -1,4 +1,25 @@
-// Runtime loading of the LingoFuse native library.
+// Runtime loading of the LingoFuse native libraries.
+//
+// TWO LOADING PATHS
+// -----------------
+// This package currently supports two ways of talking to LingoFuse:
+//
+//   1. LEGACY  getBindings()
+//        Loads LingoFuse64.dll directly and returns the ffigen-generated
+//        bindings. Used by the v1.x DataHandle / AppHandle / Framework
+//        code paths. Kept for backward compatibility.
+//
+//   2. BRIDGE  getBridge()
+//        Loads lf_dart_bridge.dll and returns the C bridge wrapper.
+//        Every LF_* call goes through the bridge, which handles UID
+//        marshalling, callback synchronisation, and typed options.
+//        This is the future path: v2.0 will migrate every caller to it.
+//
+// The two paths may coexist in the same process. LingoFuse64.dll is
+// loaded once by each; the OS shares the module, so there is no state
+// duplication inside LingoFuse itself.
+//
+// All diagnostics are in English.
 
 import 'dart:ffi';
 import 'dart:io';
@@ -6,9 +27,15 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'bindings_generated.dart';
+import 'bridge/bridge_ffi.dart';
 import 'errors.dart';
 
-/// Selects the platform-specific shared library file name.
+// ===========================================================================
+// Legacy path: direct load of LingoFuse64.dll
+// ===========================================================================
+
+/// Selects the platform-specific shared library file name for
+/// LingoFuse itself.
 String selectPlatformFileName() {
   if (Platform.isWindows) {
     return (sizeOf<Pointer>() == 8) ? 'LingoFuse64.dll' : 'LingoFuse32.dll';
@@ -75,8 +102,27 @@ DynamicLibrary _loadLibrary() {
 
 LingoFuseBindings? _bindings;
 
-/// Returns the process-wide LingoFuse bindings singleton, loading the
-/// native library on first call.
+/// Returns the process-wide direct LingoFuse bindings singleton,
+/// loading LingoFuse64.dll on first call.
+///
+/// This is the legacy path. New code should prefer [getBridge].
 LingoFuseBindings getBindings() {
   return _bindings ??= LingoFuseBindings(_loadLibrary());
+}
+
+// ===========================================================================
+// Bridge path: load lf_dart_bridge.dll
+// ===========================================================================
+
+/// Returns the process-wide bridge singleton, loading
+/// lf_dart_bridge.dll on first call.
+///
+/// This is the recommended path for all new code. The bridge wraps
+/// every LF_* function and resolves Dart's FFI limitations (struct
+/// marshalling, callback threading, transient pointers) on the C side.
+///
+/// May be called before or after [getBindings]; the two paths are
+/// independent and can coexist.
+BridgeFfi getBridge() {
+  return BridgeFfi.load();
 }

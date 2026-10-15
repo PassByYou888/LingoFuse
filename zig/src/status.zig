@@ -32,28 +32,19 @@
 //  ---------
 //  Every function that returns an allocated slice transfers ownership
 //  to the caller. Free the returned slice with `alloc.free`.
+//
+//  Shared helpers
+//  --------------
+//  The NUL-terminated copy helper `dupeZ` lives in `util.zig`, shared
+//  by every module in this binding that needs to copy a native string
+//  into an allocator-owned slice. This module imports it rather than
+//  defining its own.
 // =============================================================================
 
 const std = @import("std");
 const sys = @import("sys.zig");
 const Error = @import("error.zig").Error;
-
-// -----------------------------------------------------------------------------
-// Allocator helper
-// -----------------------------------------------------------------------------
-//
-// `std.mem.Allocator.dupeZ` was removed in Zig 0.17. This local helper
-// reproduces its semantics using only `alloc.alloc` and `alloc.free`,
-// both of which are stable across Zig releases.
-//
-// The returned slice is sentinel-terminated: `result[result.len] == 0`
-// is guaranteed, and `result.ptr` is a valid `[*:0]u8`.
-fn dupeZ(alloc: std.mem.Allocator, s: []const u8) Error![:0]u8 {
-    const buf = alloc.alloc(u8, s.len + 1) catch return Error.OutOfMemory;
-    @memcpy(buf[0..s.len], s);
-    buf[s.len] = 0;
-    return buf[0..s.len :0];
-}
+const util = @import("util.zig");
 
 /// Return the number of pending log messages in the status queue.
 ///
@@ -79,9 +70,8 @@ pub fn getStatusCount() i32 {
 /// An empty queue and an empty message both produce `""`. Use
 /// `getStatusCount` first if the distinction matters.
 pub fn getStatus(alloc: std.mem.Allocator) Error![:0]u8 {
-    const ptr = sys.getStatus() orelse return dupeZ(alloc, "");
-    const slice = std.mem.span(ptr);
-    return dupeZ(alloc, slice);
+    const ptr = sys.getStatus();
+    return util.copyCstrOrEmpty(alloc, ptr);
 }
 
 /// Drain up to `max_messages` pending status messages in FIFO order.
@@ -141,10 +131,7 @@ pub fn drainStatus(
     // Do NOT special-case `count == 0` here. With `count == 0`, the
     // call below allocates a valid zero-length slice and the
     // `@memcpy` is a no-op, so the same code path handles both the
-    // empty and the non-empty cases. The earlier version freed
-    // `messages` before the allocation and relied on the empty
-    // allocation never failing; if it did fail, the `errdefer`
-    // above would double-free `messages`.
+    // empty and the non-empty cases.
     const shrunk = alloc.alloc([:0]u8, count) catch
         return Error.OutOfMemory;
     @memcpy(shrunk, messages[0..count]);

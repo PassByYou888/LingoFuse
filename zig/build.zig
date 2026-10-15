@@ -10,7 +10,18 @@
 //      zig build json-smoke            - runs the lf_json C ABI smoke test.
 //      zig build network-events-smoke  - runs the network events smoke test.
 //      zig build status-smoke          - runs the status queue smoke test.
-//      zig build test                  - runs the Zig-native unit test suite.
+//      zig build uid-smoke             - runs the UID value type smoke test.
+//      zig build identity-smoke        - runs the P2P identity side-data
+//                                        smoke test.
+//      zig build options-smoke         - runs the typed options smoke test.
+//      zig build async-smoke           - runs the async call family smoke
+//                                        test.
+//      zig build p2p-smoke             - runs the process-wide P2P
+//                                        registration smoke test.
+//      zig build addressing-smoke      - runs the three addressing schemes
+//                                        smoke test.
+//      zig build test                  - runs the Zig-native unit test
+//                                        suite.
 //      zig build cross-service         - builds the cross demo coordinator.
 //      zig build cross-node            - builds the cross demo worker node.
 //      zig build cross-call            - builds the cross demo load client.
@@ -147,8 +158,14 @@ pub fn build(b: *std.Build) void {
 
     // -------------------------------------------------------------------------
     // Smoke executables (run steps).
+    //
+    // Ordered by layer, from lowest (raw ABI / value types) to highest
+    // (complete addressing stack).  The default `zig build` builds every
+    // one of them.
     // -------------------------------------------------------------------------
-    const smoke_exe = addSmokeStep(
+
+    // --- Stage 1: raw ABI ---------------------------------------------
+    const abi_smoke_exe = addSmokeStep(
         b,
         lingofuse_mod,
         target,
@@ -159,6 +176,7 @@ pub fn build(b: *std.Build) void {
         "Run the ABI smoke test as a program",
     );
 
+    // --- Unified I/O and the JSON engine ------------------------------
     const io_smoke_exe = addSmokeStep(
         b,
         lingofuse_mod,
@@ -181,6 +199,7 @@ pub fn build(b: *std.Build) void {
         "Run the lf_json C ABI smoke test as a program",
     );
 
+    // --- Diagnostics --------------------------------------------------
     const events_smoke_exe = addSmokeStep(
         b,
         lingofuse_mod,
@@ -201,6 +220,73 @@ pub fn build(b: *std.Build) void {
         "examples/status_smoke.zig",
         "status-smoke",
         "Run the status queue smoke test as a program",
+    );
+
+    // --- v0.4 additions ----------------------------------------------
+    const uid_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "uid_smoke",
+        "examples/uid_smoke.zig",
+        "uid-smoke",
+        "Run the UID value type smoke test as a program",
+    );
+
+    const identity_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "identity_smoke",
+        "examples/identity_smoke.zig",
+        "identity-smoke",
+        "Run the P2P identity side-data smoke test as a program",
+    );
+
+    const options_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "options_smoke",
+        "examples/options_smoke.zig",
+        "options-smoke",
+        "Run the typed options smoke test as a program",
+    );
+
+    const async_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "async_smoke",
+        "examples/async_smoke.zig",
+        "async-smoke",
+        "Run the async call family smoke test as a program",
+    );
+
+    const p2p_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "p2p_smoke",
+        "examples/p2p_smoke.zig",
+        "p2p-smoke",
+        "Run the process-wide P2P registration smoke test as a program",
+    );
+
+    const addressing_smoke_exe = addSmokeStep(
+        b,
+        lingofuse_mod,
+        target,
+        optimize,
+        "addressing_smoke",
+        "examples/addressing_smoke.zig",
+        "addressing-smoke",
+        "Run the three addressing schemes smoke test as a program",
     );
 
     // -------------------------------------------------------------------------
@@ -257,12 +343,25 @@ pub fn build(b: *std.Build) void {
 
     // -------------------------------------------------------------------------
     // Default step: build every smoke executable and every demo.
+    //
+    // The default step intentionally includes all run-eligible smoke
+    // executables (so that a plain `zig build` produces every binary),
+    // but NOT the run steps themselves. Running is triggered explicitly
+    // with `zig build <step-name>`.
     // -------------------------------------------------------------------------
-    b.default_step.dependOn(&smoke_exe.step);
+    b.default_step.dependOn(&abi_smoke_exe.step);
     b.default_step.dependOn(&io_smoke_exe.step);
     b.default_step.dependOn(&json_smoke_exe.step);
     b.default_step.dependOn(&events_smoke_exe.step);
     b.default_step.dependOn(&status_smoke_exe.step);
+
+    b.default_step.dependOn(&uid_smoke_exe.step);
+    b.default_step.dependOn(&identity_smoke_exe.step);
+    b.default_step.dependOn(&options_smoke_exe.step);
+    b.default_step.dependOn(&async_smoke_exe.step);
+    b.default_step.dependOn(&p2p_smoke_exe.step);
+    b.default_step.dependOn(&addressing_smoke_exe.step);
+
     b.default_step.dependOn(&cross_service_exe.step);
     b.default_step.dependOn(&cross_node_exe.step);
     b.default_step.dependOn(&cross_call_exe.step);

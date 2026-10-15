@@ -159,14 +159,16 @@ fn addHandler(
     output: *lf.DataHandle,
 ) lf.Error!void {
     _ = ctx;
-    var buf: [4]u8 = undefined;
-    _ = try input.readBytes(&buf);
-    const a = std.mem.readInt(i32, &buf, .little);
-    _ = try input.readBytes(&buf);
-    const b = std.mem.readInt(i32, &buf, .little);
+    var a_buf: [4]u8 = undefined;
+    var b_buf: [4]u8 = undefined;
+    _ = try input.readBytes(&a_buf);
+    _ = try input.readBytes(&b_buf);
+    const a = std.mem.readInt(i32, &a_buf, .little);
+    const b = std.mem.readInt(i32, &b_buf, .little);
     const sum = a +% b;
-    std.mem.writeInt(i32, &buf, sum, .little);
-    try output.writeBytes(&buf);
+    var out_buf: [4]u8 = undefined;
+    std.mem.writeInt(i32, &out_buf, sum, .little);
+    try output.writeBytes(&out_buf);
 }
 
 fn echoHandler(
@@ -241,18 +243,10 @@ fn stepDataHandleAfterDeinit(log: *Log) !void {
     var h = try lf.DataHandle.create("smoke_after_deinit");
     h.deinit();
 
-    try check(log,
-        expectError(h.size(), lf.Error.NullHandle),
-        "size returns NullHandle");
-    try check(log,
-        expectError(h.position(), lf.Error.NullHandle),
-        "position returns NullHandle");
-    try check(log,
-        expectError(h.setPosition(0), lf.Error.NullHandle),
-        "setPosition returns NullHandle");
-    try check(log,
-        expectError(h.writeBytes("x"), lf.Error.NullHandle),
-        "writeBytes returns NullHandle");
+    try check(log, expectError(h.size(), lf.Error.NullHandle), "size returns NullHandle");
+    try check(log, expectError(h.position(), lf.Error.NullHandle), "position returns NullHandle");
+    try check(log, expectError(h.setPosition(0), lf.Error.NullHandle), "setPosition returns NullHandle");
+    try check(log, expectError(h.writeBytes("x"), lf.Error.NullHandle), "writeBytes returns NullHandle");
     log.line("[ok]   DataHandle: operations after deinit");
 }
 
@@ -409,9 +403,7 @@ fn stepDataHandleNegativeSize(log: *Log) !void {
     var h = try lf.DataHandle.create("smoke_neg_size");
     defer h.deinit();
 
-    try check(log,
-        expectError(h.setSize(-1), lf.Error.InvalidArgument),
-        "InvalidArgument");
+    try check(log, expectError(h.setSize(-1), lf.Error.InvalidArgument), "InvalidArgument");
     log.line("[ok]   DataHandle: negative size");
 }
 
@@ -420,9 +412,7 @@ fn stepDataHandleNegativePos(log: *Log) !void {
     var h = try lf.DataHandle.create("smoke_neg_pos");
     defer h.deinit();
 
-    try check(log,
-        expectError(h.setPosition(-1), lf.Error.InvalidArgument),
-        "InvalidArgument");
+    try check(log, expectError(h.setPosition(-1), lf.Error.InvalidArgument), "InvalidArgument");
     log.line("[ok]   DataHandle: negative position");
 }
 
@@ -527,13 +517,8 @@ fn stepAppHandleAfterDeinit(log: *Log) !void {
     app.deinit();
 
     try check(log, !app.isValid(), "invalid");
-    try check(log,
-        expectError(app.registerCall("x", "y", null, addHandler),
-            lf.Error.NullHandle),
-        "registerCall returns NullHandle");
-    try check(log,
-        expectError(app.unregister("x"), lf.Error.NullHandle),
-        "unregister returns NullHandle");
+    try check(log, expectError(app.registerCall("x", "y", null, addHandler), lf.Error.NullHandle), "registerCall returns NullHandle");
+    try check(log, expectError(app.unregister("x"), lf.Error.NullHandle), "unregister returns NullHandle");
     log.line("[ok]   AppHandle: after deinit");
 }
 
@@ -566,10 +551,7 @@ fn stepAppHandleDuplicate(log: *Log) !void {
     defer app.deinit();
 
     try app.registerCall("dup", "first", null, addHandler);
-    try check(log,
-        expectError(app.registerCall("dup", "second", null, addHandler),
-            lf.Error.RegistrationFailed),
-        "second returns RegistrationFailed");
+    try check(log, expectError(app.registerCall("dup", "second", null, addHandler), lf.Error.RegistrationFailed), "second returns RegistrationFailed");
     log.line("[ok]   AppHandle: duplicate");
 }
 
@@ -830,8 +812,7 @@ pub fn main() void {
 
     log.line("");
     log.line("================================================================");
-    log.fmt("  Results: {d} passed, {d} failed, {d} total",
-        .{ passed, failed, passed + failed });
+    log.fmt("  Results: {d} passed, {d} failed, {d} total", .{ passed, failed, passed + failed });
     log.line("================================================================");
 
     if (failed != 0) exit(1);

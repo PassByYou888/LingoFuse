@@ -44,11 +44,20 @@
 //  ---------
 //  AppHandle is NOT thread-safe. Registration must be complete before
 //  the App is exposed to the mesh.
+//
+//  Shared helpers
+//  --------------
+//  The NUL-terminated copy helper `dupeZ` lives in `util.zig`, shared
+//  by every module in this binding that needs to copy a native string
+//  into an allocator-owned slice. This module imports it rather than
+//  defining its own.
 // =============================================================================
+
 const std = @import("std");
 const sys = @import("sys.zig");
 const Error = @import("error.zig").Error;
 const DataHandle = @import("data_handle.zig").DataHandle;
+const util = @import("util.zig");
 
 // -----------------------------------------------------------------------------
 // Handler types
@@ -86,18 +95,6 @@ const NotifyContext = struct {
     handler: NotifyHandler,
     api_name: [:0]const u8,
 };
-
-/// Duplicate `name` into a page-allocator block, NUL-terminated.
-///
-/// The caller owns the returned slice. On failure, returns
-/// `Error.OutOfMemory` and allocates nothing.
-fn dupApiName(name: [:0]const u8) Error![:0]u8 {
-    const buf = std.heap.page_allocator.alloc(u8, name.len + 1) catch
-        return Error.OutOfMemory;
-    @memcpy(buf[0..name.len], name);
-    buf[name.len] = 0;
-    return buf[0..name.len :0];
-}
 
 // -----------------------------------------------------------------------------
 // Trampolines
@@ -206,16 +203,17 @@ pub const AppHandle = struct {
         handler: CallHandler,
     ) Error!void {
         const hnd = self.raw orelse return Error.NullHandle;
+        const alloc = std.heap.page_allocator;
 
         // Allocate the context.
-        const ctx_obj = std.heap.page_allocator.create(CallContext) catch
+        const ctx_obj = alloc.create(CallContext) catch
             return Error.OutOfMemory;
 
         // Copy the API name. The context is intentionally leaked on
         // the success path, so this copy is also never freed. See the
         // module docstring for the rationale.
-        const name_buf = dupApiName(api_name) catch {
-            std.heap.page_allocator.destroy(ctx_obj);
+        const name_buf = util.dupeZ(alloc, api_name) catch {
+            alloc.destroy(ctx_obj);
             return Error.OutOfMemory;
         };
 
@@ -237,8 +235,8 @@ pub const AppHandle = struct {
             // did NOT store the context pointer. Reclaim both blocks
             // so that a rejected registration (typically a duplicate
             // API name) does not leak memory.
-            std.heap.page_allocator.free(name_buf);
-            std.heap.page_allocator.destroy(ctx_obj);
+            alloc.free(name_buf);
+            alloc.destroy(ctx_obj);
             return Error.RegistrationFailed;
         }
     }
@@ -254,12 +252,13 @@ pub const AppHandle = struct {
         handler: NotifyHandler,
     ) Error!void {
         const hnd = self.raw orelse return Error.NullHandle;
+        const alloc = std.heap.page_allocator;
 
-        const ctx_obj = std.heap.page_allocator.create(NotifyContext) catch
+        const ctx_obj = alloc.create(NotifyContext) catch
             return Error.OutOfMemory;
 
-        const name_buf = dupApiName(api_name) catch {
-            std.heap.page_allocator.destroy(ctx_obj);
+        const name_buf = util.dupeZ(alloc, api_name) catch {
+            alloc.destroy(ctx_obj);
             return Error.OutOfMemory;
         };
 
@@ -277,8 +276,8 @@ pub const AppHandle = struct {
             notifyTrampoline,
         );
         if (ret != 1) {
-            std.heap.page_allocator.free(name_buf);
-            std.heap.page_allocator.destroy(ctx_obj);
+            alloc.free(name_buf);
+            alloc.destroy(ctx_obj);
             return Error.RegistrationFailed;
         }
     }

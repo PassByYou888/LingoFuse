@@ -27,10 +27,48 @@
 //  `sys.DataHnd` is already `?*anyopaque`, i.e. an optional pointer.
 //  The field is therefore declared as `sys.DataHnd`, NOT as
 //  `?sys.DataHnd`.
+//
+//  P2P identity side data
+//  ----------------------
+//  The framework injects two identity fields into every inbound
+//  request payload on the SENDER side, before transmission:
+//
+//      FromUID       - the sender's 32-byte session UID
+//      FromP2PName   - the sender's P2P group name (UTF-8)
+//
+//  These are "side data": they are metadata the sender wrote into the
+//  payload header, not properties of the handle itself. A receiver can
+//  therefore read them only on the INPUT handle that the framework
+//  delivered to a registered callback.
+//
+//  `p2pUid` and `p2pName` expose these fields:
+//
+//      Handle                                         Valid?
+//      --------------------------------------------   ------
+//      input argument of a Call / Notify callback     yes
+//      input handle of a local call / notify          yes
+//      output argument of a Call callback             no
+//      caller-created handle (create / permanent)     no
+//
+//  The two accessors never fail for the invalid cases: the native
+//  library logs a warning and returns a pointer to a zero-filled UID /
+//  an empty string, which these wrappers translate to `Uid.NULL` and
+//  the empty string respectively.
+//
+//  Pointer lifetime
+//  ----------------
+//  `LF_Get_P2P_UID` returns a pointer allocated by the native library
+//  and scheduled for automatic release about 5 seconds after the call.
+//  `LF_Get_P2P_Name` returns a C string pointer with the same release
+//  rule. Both accessors in this module COPY IMMEDIATELY and never
+//  expose the raw pointer to the caller, so the returned values are
+//  safe to retain indefinitely.
 // =============================================================================
 const std = @import("std");
 const sys = @import("sys.zig");
 const Error = @import("error.zig").Error;
+const Uid = @import("uid.zig").Uid;
+const util = @import("util.zig");
 
 /// RAII wrapper around a native LingoFuse data handle.
 pub const DataHandle = struct {
@@ -163,8 +201,80 @@ pub const DataHandle = struct {
 
     /// Write `value` as UTF-8 bytes followed by a single NUL byte.
     /// An empty `value` writes exactly one byte (the NUL).
+    ///
+    /// This is a LOW-LEVEL helper used to build payloads that will be
+    /// read back with a NUL-aware reader. It is the equivalent of the
+    /// C++ `DataHandle::write(const std::string&)`.
+    ///
+    /// For reading the value back with the fault-tolerant rules, use
+    /// `io.readString` instead of `readBytes`.
     pub fn writeString(self: *Self, value: []const u8) Error!void {
         try self.writeBytes(value);
         try self.writeBytes(&[_]u8{0});
+    }
+
+    // -------------------------------------------------------------------------
+    // P2P identity side data
+    // -------------------------------------------------------------------------
+
+    /// Return the sender's 32-byte session UID.
+    ///
+    /// # Contract
+    ///
+    /// This reads SIDE DATA injected by the sender's transport layer
+    /// into the payload header; it is not a property of the handle
+    /// itself. It is therefore meaningful only on the INPUT handle of
+    /// a registered callback (or the input of a local call).
+    ///
+    /// On any other handle -- an output handle, or a caller-created
+    /// handle -- the native library logs a warning and returns a
+    /// pointer to a zero-filled UID. This wrapper translates that to
+    /// `Uid.NULL`.
+    ///
+    /// # Pointer lifetime
+    ///
+    /// The native pointer is valid for about 5 seconds; this method
+    /// COPIES THE 32 BYTES IMMEDIATELY, so the returned value is safe
+    /// to retain indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// - `Error.NullHandle` if this handle is not valid.
+    pub fn p2pUid(self: Self) Error!Uid {
+        const h = self.raw orelse return Error.NullHandle;
+        const ptr = sys.getP2PUid(h) orelse return Uid.NULL;
+        return Uid.fromPtr(ptr);
+    }
+
+    /// Return the sender's P2P group name.
+    ///
+    /// # Contract
+    ///
+    /// Same side-data rule as `p2pUid`: this is meaningful only on the
+    /// INPUT handle of a registered callback. On any other handle the
+    /// native library logs a warning and returns an empty string.
+    ///
+    /// # Pointer lifetime
+    ///
+    /// The native pointer is valid for about 5 seconds; this method
+    /// COPIES THE STRING IMMEDIATELY into an allocator-owned slice,
+    /// so the returned value is safe to retain indefinitely.
+    ///
+    /// # Ownership
+    ///
+    /// The caller owns the returned slice and must free it with
+    /// `alloc.free`.
+    ///
+    /// # Errors
+    ///
+    /// - `Error.NullHandle` if this handle is not valid.
+    /// - `Error.OutOfMemory` if the copy allocation fails.
+    pub fn p2pName(
+        self: Self,
+        alloc: std.mem.Allocator,
+    ) Error![:0]u8 {
+        const h = self.raw orelse return Error.NullHandle;
+        const ptr = sys.getP2PName(h);
+        return util.copyCstrOrEmpty(alloc, ptr);
     }
 };

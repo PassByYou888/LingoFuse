@@ -1,11 +1,10 @@
 /*
  * lf_shim.c - Implementation of the LingoFuse C callback bridge.
  *
- * See lf_shim.h for the design rationale.
- *
- * This file contains NO mock logic. It calls the LF_* functions as
- * extern symbols; the linker resolves them from either mock_lf.c
- * (test build) or the real LingoFuse library (production build).
+ * See lf_shim.h for the design rationale. This file contains NO mock
+ * logic. It calls the LF_* functions as extern symbols; the linker
+ * resolves them from either mock_lf.c (test build) or the real
+ * LingoFuse library (production build).
  *
  * Locking discipline
  * ------------------
@@ -15,8 +14,7 @@
  * after the consumer signals completion. This is required: a
  * consumer that accessed the handle directly would enter the real
  * LingoFuse library from a different thread than the one that owns
- * the handle, and would deadlock on the library's per-handle locks
- * (see SHIM_MECHANISM_GUIDE.md).
+ * the handle, and would deadlock on the library's per-handle locks.
  *
  * Shutdown contract
  * -----------------
@@ -27,21 +25,41 @@
  * period (100 ms) and unblock itself, then free its event.
  *
  * Because of this asynchrony, the caller MUST fully stop the
- * Julia-side consumer BEFORE calling lf_shim_shutdown(). Otherwise a
- * leftover event could be dequeued by the (still-running) consumer
- * after the trampoline has already freed it, producing a
- * use-after-free. The Julia layer (stop_callback_consumer) already
- * enforces this ordering.
+ * Julia-side consumer BEFORE calling lf_shim_shutdown().
  *
  * Re-initialisation contract
  * --------------------------
  * lf_shim_init() may be called more than once per process. The
- * second and subsequent calls reset the shutdown flag so that a
- * fresh consumer can start. The mutex and condition variable are
- * preserved across calls.
+ * second and subsequent calls reset the shutdown flag. The mutex and
+ * condition variable are preserved across calls.
  *
  * Precondition: the previous consumer MUST have been fully stopped
- * before re-initialising, for the same reason as above.
+ * before re-initialising.
+ *
+ * ============================================================================
+ * WHY NO THREAD-LOCAL STORAGE (MIN-GW COMPATIBILITY)
+ * ============================================================================
+ * An earlier draft of this file used `__thread` / `__declspec(thread)`
+ * to give each runtime-option getter its own thread-local buffer.
+ *
+ * MinGW-w64 ignores the attribute in a runtime-loaded DLL (which is
+ * what every ccall-loaded shared library is). The compiler emits
+ * only a `-Wattributes` warning and treats the variable as a plain
+ * static, silently breaking the "thread-local" contract and, in the
+ * worst case, misplacing the variable's storage.
+ *
+ * The current implementation therefore avoids TLS entirely:
+ *
+ *   - Each typed string getter owns a dedicated static buffer, so
+ *     concurrent getters of DIFFERENT options never interfere.
+ *
+ *   - The generic lf_shim_get_option uses a mutex-protected static
+ *     buffer. Concurrent callers of the SAME generic getter may
+ *     observe each other's results; this is documented on the
+ *     public declaration and on the getter's implementation below.
+ *
+ * The performance impact is negligible: the option getters are not
+ * on any hot path, and the typed getters take no lock at all.
  */
 
 #include "lf_shim.h"
@@ -58,7 +76,7 @@
 
   #include <windows.h>
 
-  typedef CRITICAL_SECTION  lf_mutex_t;
+  typedef CRITICAL_SECTION   lf_mutex_t;
   typedef CONDITION_VARIABLE lf_cond_t;
 
   static void lf_mutex_init(lf_mutex_t* m)    { InitializeCriticalSection(m); }
@@ -118,50 +136,70 @@
 /* ================================================================= */
 /* External LingoFuse functions                                       */
 /* ================================================================= */
-/*
- * The shim needs two groups of LF_* functions:
- *
- *   1. Registration entry points. Used by lf_shim_register_call /
- *      lf_shim_register_notify / lf_shim_install_network_events.
- *
- *   2. Data handle accessors. Used by the trampolines to snapshot
- *      the input payload and to write the consumer's response to the
- *      output handle.
- *
- * In the mock build all seven symbols come from mock_lf.c. In the
- * real build, lf_real_link.c resolves them lazily against the real
- * LingoFuse library.
- */
 
-extern int  LF_RegisterCall(
-    void* app, const char* name, const char* desc,
-    void* trigger,
-    void (*cb)(void* trigger, void* input, void* output));
+typedef void (*lf_call_cb_t)(void*, void*, void*);
+typedef void (*lf_notify_cb_t)(void*, void*);
+typedef void (*lf_net_cb_t)(const char*);
+typedef void (*lf_async_cb_t)(void*, void*);
 
-extern int  LF_RegisterNotify(
+/* ---- Registration ---- */
+
+extern int LF_RegisterCall(
     void* app, const char* name, const char* desc,
-    void* trigger,
-    void (*cb)(void* trigger, void* input));
+    void* trigger, lf_call_cb_t cb);
+
+extern int LF_RegisterNotify(
+    void* app, const char* name, const char* desc,
+    void* trigger, lf_notify_cb_t cb);
+
+extern int LF_Register_P2P_Call(
+    const char* name, const char* desc,
+    void* trigger, lf_call_cb_t cb);
+
+extern int LF_Register_P2P_Notify(
+    const char* name, const char* desc,
+    void* trigger, lf_notify_cb_t cb);
+
+extern int LF_Unregister_P2P(const char* name);
 
 extern void LF_Set_Network_Event(
-    void (*on_connect)(const char* addr),
-    void (*on_disconnect)(const char* addr));
+    lf_net_cb_t on_connect, lf_net_cb_t on_disconnect);
+
+/* ---- Data handle accessors ---- */
 
 extern int64_t LF_GetSize(void* hnd);
-extern void    LF_SetPos (void* hnd, int64_t pos);
-extern int64_t LF_ReadBuffer (void* hnd, void* buff, int64_t size);
+extern void    LF_SetPos(void* hnd, int64_t pos);
+extern int64_t LF_ReadBuffer(void* hnd, void* buff, int64_t size);
 extern int64_t LF_WriteBuffer(void* hnd, const void* buff, int64_t size);
+
+/* ---- Async dispatch ---- */
+
+extern int LF_Async_Call(
+    const char* app, void* param, void* data, lf_async_cb_t cb);
+
+extern int LF_Async_Sequenced_Call(
+    const char* app, void* param, void* data, lf_async_cb_t cb);
+
+extern int LF_UID_Async_Call(
+    lf_shim_uid_t uid, void* param, void* data, lf_async_cb_t cb);
+
+extern int LF_UID_Async_Sequenced_Call(
+    lf_shim_uid_t uid, void* param, void* data, lf_async_cb_t cb);
+
+extern int LF_P2PNAME_Async_Call(
+    const char* group, void* param, void* data, lf_async_cb_t cb);
+
+extern int LF_P2PNAME_Async_Sequenced_Call(
+    const char* group, void* param, void* data, lf_async_cb_t cb);
+
+/* ---- Runtime options ---- */
+
+extern void        LF_SetOption(const char* name, const char* value);
+extern const char* LF_GetOption(const char* name);
 
 /* ================================================================= */
 /* Allocation-failure diagnostic                                      */
 /* ================================================================= */
-/*
- * Every heap allocation in this file is checked for failure. To avoid
- * flooding stderr under sustained out-of-memory conditions, only the
- * first failure is reported. The message is intentionally coarse: an
- * allocation failure in the shim has no useful recovery path, and the
- * caller will observe an empty response.
- */
 
 static int g_alloc_warned = 0;
 
@@ -189,11 +227,13 @@ struct lf_shim_event {
     void*           input_data;
     size_t          input_len;
 
-    /* Response bytes supplied by the consumer via lf_shim_set_output.
-     * Owned by the event. Written to the native output handle by the
-     * trampoline after the consumer signals completion. */
+    /* Response bytes supplied by the consumer via lf_shim_set_output. */
     void*           output_data;
     size_t          output_len;
+
+    /* Snapshot of the async result payload. */
+    void*           result_data;
+    size_t          result_len;
 
     /* Borrowed from LingoFuse. Valid only on the trampoline thread
      * for the duration of the callback. The consumer never touches
@@ -229,6 +269,8 @@ static lf_shim_event_t* event_alloc(int kind, int64_t user_id)
     e->input_len   = 0;
     e->output_data = NULL;
     e->output_len  = 0;
+    e->result_data = NULL;
+    e->result_len  = 0;
     e->done        = 0;
     e->next        = NULL;
 
@@ -244,6 +286,7 @@ static void event_free(lf_shim_event_t* e)
     lf_cond_destroy(&e->cv);
     if (e->input_data)  free(e->input_data);
     if (e->output_data) free(e->output_data);
+    if (e->result_data) free(e->result_data);
     if (e->addr)        free(e->addr);
     free(e);
 }
@@ -259,19 +302,9 @@ static lf_shim_event_t* g_tail         = NULL;
 static volatile int     g_shutdown     = 0;
 static int              g_initialised  = 0;
 
-int lf_shim_init(void)
+LF_SHIM_API int lf_shim_init(void)
 {
     if (g_initialised) {
-        /*
-         * Re-initialisation after a previous shutdown: reset the
-         * shutdown flag so a fresh consumer can start. The mutex and
-         * condition variable are preserved.
-         *
-         * Precondition: the previous consumer MUST have been fully
-         * stopped before this call. Otherwise a leftover event in
-         * the queue could be dequeued by the old consumer after the
-         * trampoline has freed it, producing a use-after-free.
-         */
         lf_mutex_lock(&g_queue_mtx);
         g_shutdown = 0;
         lf_cond_broadcast(&g_queue_cv);
@@ -287,23 +320,10 @@ int lf_shim_init(void)
     return 1;
 }
 
-void lf_shim_shutdown(void)
+LF_SHIM_API void lf_shim_shutdown(void)
 {
     if (!g_initialised) return;
 
-    /*
-     * Signal every trampoline (and the consumer) to stop.
-     *
-     * We deliberately do NOT walk the queue here. Any trampoline
-     * that is currently blocked in wait_for_completion() will notice
-     * g_shutdown within one timeout period and unblock itself, then
-     * free its own event. Walking the queue from this thread would
-     * race with those trampolines, which free their events as soon
-     * as they wake.
-     *
-     * The caller MUST have fully stopped the Julia-side consumer
-     * before invoking this function; see the file header.
-     */
     lf_mutex_lock(&g_queue_mtx);
     g_shutdown = 1;
     lf_cond_broadcast(&g_queue_cv);
@@ -324,7 +344,7 @@ static void queue_push(lf_shim_event_t* e)
     lf_mutex_unlock(&g_queue_mtx);
 }
 
-lf_shim_event_t* lf_shim_wait_event(int timeout_ms)
+LF_SHIM_API lf_shim_event_t* lf_shim_wait_event(int timeout_ms)
 {
     lf_mutex_lock(&g_queue_mtx);
 
@@ -352,70 +372,48 @@ lf_shim_event_t* lf_shim_wait_event(int timeout_ms)
 /* ================================================================= */
 /* Payload snapshot                                                   */
 /* ================================================================= */
-/*
- * Read the entire content of the native input handle into a freshly
- * allocated heap buffer. Called on the trampoline thread, which is
- * the same thread that owns the handle, so no locking is required on
- * the native side.
- */
 
-static void snapshot_input(lf_shim_event_t* e)
+static void snapshot_handle(void* hnd, void** out_data, size_t* out_len)
 {
-    if (!e->input) return;
+    if (!hnd) return;
 
-    LF_SetPos(e->input, 0);
-    int64_t sz = LF_GetSize(e->input);
+    LF_SetPos(hnd, 0);
+    int64_t sz = LF_GetSize(hnd);
     if (sz <= 0) return;
 
-    e->input_data = malloc((size_t)sz);
-    if (!e->input_data) {
-        warn_alloc_failure("snapshot_input");
+    void* buf = malloc((size_t)sz);
+    if (!buf) {
+        warn_alloc_failure("snapshot_handle");
         return;
     }
 
-    int64_t got = LF_ReadBuffer(e->input, e->input_data, sz);
-    e->input_len = (got > 0) ? (size_t)got : 0;
-    if (e->input_len == 0) {
-        free(e->input_data);
-        e->input_data = NULL;
+    int64_t got = LF_ReadBuffer(hnd, buf, sz);
+    if (got > 0) {
+        *out_data = buf;
+        *out_len  = (size_t)got;
+    } else {
+        free(buf);
     }
+}
+
+static void snapshot_input(lf_shim_event_t* e)
+{
+    snapshot_handle(e->input, &e->input_data, &e->input_len);
+}
+
+static void snapshot_result(lf_shim_event_t* e, void* result_hnd)
+{
+    snapshot_handle(result_hnd, &e->result_data, &e->result_len);
 }
 
 /* ================================================================= */
 /* Trampolines                                                        */
 /* ================================================================= */
-/*
- * Each trampoline:
- *   1. Snapshots the input payload into a heap buffer.
- *   2. Allocates an event and pushes it onto the queue.
- *   3. Blocks on the event's own condition variable until either the
- *      consumer signals completion or the process-wide shutdown flag
- *      is observed.
- *   4. Writes the consumer's response to the native output handle
- *      (when applicable).
- *   5. Frees the event.
- *
- * Steps 1, 4, and 5 run on the C4 worker thread, so all native
- * handle accesses happen on the thread that owns the handles.
- */
 
 static void wait_for_completion(lf_shim_event_t* e)
 {
     lf_mutex_lock(&e->mtx);
     while (!e->done) {
-        /*
-         * Read g_shutdown without the queue mutex. g_shutdown is a
-         * volatile int; on all platforms this binding targets, a
-         * naturally aligned int read is atomic, and the volatile
-         * qualifier prevents the compiler from caching the value
-         * across loop iterations.
-         *
-         * A 100 ms timeout on the wait ensures that a g_shutdown
-         * change is observed even when no signal arrives on this
-         * event's condition variable. The normal fast path
-         * (consumer signals completion) wakes this trampoline
-         * immediately and does not pay the timeout.
-         */
         if (g_shutdown) break;
         lf_cond_wait(&e->cv, &e->mtx, 100);
     }
@@ -459,6 +457,24 @@ static void shim_notify_trampoline(void* trigger, void* input)
     e->output  = NULL;
 
     snapshot_input(e);
+
+    queue_push(e);
+    wait_for_completion(e);
+    event_free(e);
+}
+
+static void shim_async_result_trampoline(void* data, void* result)
+{
+    int64_t uid = (int64_t)(intptr_t)data;
+
+    lf_shim_event_t* e = event_alloc(LF_SHIM_EVENT_ASYNC_RESULT, uid);
+    if (!e) return;
+
+    e->trigger = data;
+    e->input   = NULL;
+    e->output  = NULL;
+
+    snapshot_result(e, result);
 
     queue_push(e);
     wait_for_completion(e);
@@ -510,11 +526,11 @@ static void shim_network_disconnect_trampoline(const char* addr)
 }
 
 /* ================================================================= */
-/* Public registration API                                            */
+/* Public registration API: App-bound                                 */
 /* ================================================================= */
 
-int lf_shim_register_call(void* app, const char* name,
-                          const char* desc, int64_t user_id)
+LF_SHIM_API int lf_shim_register_call(void* app, const char* name,
+                                      const char* desc, int64_t user_id)
 {
     return LF_RegisterCall(
         app, name, desc,
@@ -522,8 +538,8 @@ int lf_shim_register_call(void* app, const char* name,
         shim_call_trampoline);
 }
 
-int lf_shim_register_notify(void* app, const char* name,
-                            const char* desc, int64_t user_id)
+LF_SHIM_API int lf_shim_register_notify(void* app, const char* name,
+                                        const char* desc, int64_t user_id)
 {
     return LF_RegisterNotify(
         app, name, desc,
@@ -531,7 +547,41 @@ int lf_shim_register_notify(void* app, const char* name,
         shim_notify_trampoline);
 }
 
-void lf_shim_install_network_events(int64_t connect_uid, int64_t disconnect_uid)
+/* ================================================================= */
+/* Public registration API: process-wide P2P                          */
+/* ================================================================= */
+
+LF_SHIM_API int lf_shim_register_p2p_call(const char* name,
+                                          const char* desc,
+                                          int64_t user_id)
+{
+    return LF_Register_P2P_Call(
+        name, desc,
+        (void*)(intptr_t)user_id,
+        shim_call_trampoline);
+}
+
+LF_SHIM_API int lf_shim_register_p2p_notify(const char* name,
+                                            const char* desc,
+                                            int64_t user_id)
+{
+    return LF_Register_P2P_Notify(
+        name, desc,
+        (void*)(intptr_t)user_id,
+        shim_notify_trampoline);
+}
+
+LF_SHIM_API int lf_shim_unregister_p2p(const char* name)
+{
+    return LF_Unregister_P2P(name);
+}
+
+/* ================================================================= */
+/* Network events                                                     */
+/* ================================================================= */
+
+LF_SHIM_API void lf_shim_install_network_events(int64_t connect_uid,
+                                                int64_t disconnect_uid)
 {
     g_connect_uid    = connect_uid;
     g_disconnect_uid = disconnect_uid;
@@ -539,7 +589,7 @@ void lf_shim_install_network_events(int64_t connect_uid, int64_t disconnect_uid)
                          shim_network_disconnect_trampoline);
 }
 
-void lf_shim_clear_network_events(void)
+LF_SHIM_API void lf_shim_clear_network_events(void)
 {
     LF_Set_Network_Event(NULL, NULL);
     g_connect_uid    = 0;
@@ -547,45 +597,127 @@ void lf_shim_clear_network_events(void)
 }
 
 /* ================================================================= */
+/* Async calls                                                        */
+/* ================================================================= */
+
+LF_SHIM_API int lf_shim_async_call(const char* app_name,
+                                   void*       param_hnd,
+                                   int64_t     user_token)
+{
+    if (!app_name || !param_hnd) return 0;
+    return LF_Async_Call(
+        app_name, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+LF_SHIM_API int lf_shim_async_sequenced_call(const char* app_name,
+                                             void*       param_hnd,
+                                             int64_t     user_token)
+{
+    if (!app_name || !param_hnd) return 0;
+    return LF_Async_Sequenced_Call(
+        app_name, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+LF_SHIM_API int lf_shim_uid_async_call(const lf_shim_uid_t* uid,
+                                       void*                 param_hnd,
+                                       int64_t               user_token)
+{
+    if (!uid || !param_hnd) return 0;
+    return LF_UID_Async_Call(
+        *uid, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+LF_SHIM_API int lf_shim_uid_async_sequenced_call(const lf_shim_uid_t* uid,
+                                                 void*                 param_hnd,
+                                                 int64_t               user_token)
+{
+    if (!uid || !param_hnd) return 0;
+    return LF_UID_Async_Sequenced_Call(
+        *uid, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+LF_SHIM_API int lf_shim_p2pname_async_call(const char* group_name,
+                                           void*       param_hnd,
+                                           int64_t     user_token)
+{
+    if (!group_name || !param_hnd) return 0;
+    return LF_P2PNAME_Async_Call(
+        group_name, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+LF_SHIM_API int lf_shim_p2pname_async_sequenced_call(const char* group_name,
+                                                     void*       param_hnd,
+                                                     int64_t     user_token)
+{
+    if (!group_name || !param_hnd) return 0;
+    return LF_P2PNAME_Async_Sequenced_Call(
+        group_name, param_hnd,
+        (void*)(intptr_t)user_token,
+        shim_async_result_trampoline);
+}
+
+/* ================================================================= */
 /* Consumer API                                                       */
 /* ================================================================= */
 
-int lf_shim_event_kind(const lf_shim_event_t* e)
+LF_SHIM_API int lf_shim_event_kind(const lf_shim_event_t* e)
 {
     return e ? e->kind : -1;
 }
 
-int64_t lf_shim_event_user_id(const lf_shim_event_t* e)
+LF_SHIM_API int64_t lf_shim_event_user_id(const lf_shim_event_t* e)
 {
     return e ? e->user_id : 0;
 }
 
-void* lf_shim_event_input(const lf_shim_event_t* e)
+LF_SHIM_API void* lf_shim_event_input(const lf_shim_event_t* e)
 {
     return e ? e->input : NULL;
 }
 
-void* lf_shim_event_output(const lf_shim_event_t* e)
+LF_SHIM_API void* lf_shim_event_output(const lf_shim_event_t* e)
 {
     return e ? e->output : NULL;
 }
 
-const char* lf_shim_event_addr(const lf_shim_event_t* e)
+LF_SHIM_API const char* lf_shim_event_addr(const lf_shim_event_t* e)
 {
     return e ? e->addr : NULL;
 }
 
-const void* lf_shim_event_input_data(const lf_shim_event_t* e)
+LF_SHIM_API const void* lf_shim_event_input_data(const lf_shim_event_t* e)
 {
     return e ? e->input_data : NULL;
 }
 
-size_t lf_shim_event_input_len(const lf_shim_event_t* e)
+LF_SHIM_API size_t lf_shim_event_input_len(const lf_shim_event_t* e)
 {
     return e ? e->input_len : 0;
 }
 
-int lf_shim_set_output(lf_shim_event_t* e, const void* data, size_t len)
+LF_SHIM_API const void* lf_shim_event_result_data(const lf_shim_event_t* e)
+{
+    return e ? e->result_data : NULL;
+}
+
+LF_SHIM_API size_t lf_shim_event_result_len(const lf_shim_event_t* e)
+{
+    return e ? e->result_len : 0;
+}
+
+LF_SHIM_API int lf_shim_set_output(lf_shim_event_t* e,
+                                   const void*      data,
+                                   size_t           len)
 {
     if (!e) return 0;
 
@@ -609,7 +741,7 @@ int lf_shim_set_output(lf_shim_event_t* e, const void* data, size_t len)
     return 1;
 }
 
-void lf_shim_complete_event(lf_shim_event_t* e)
+LF_SHIM_API void lf_shim_complete_event(lf_shim_event_t* e)
 {
     if (!e) return;
     lf_mutex_lock(&e->mtx);
@@ -617,4 +749,303 @@ void lf_shim_complete_event(lf_shim_event_t* e)
     lf_cond_signal(&e->cv);
     lf_mutex_unlock(&e->mtx);
     /* The trampoline owns the event and will free it after waking up. */
+}
+
+/* ================================================================= */
+/* Runtime options                                                    */
+/* ================================================================= */
+/*
+ * Each typed string getter owns a dedicated static buffer, so
+ * concurrent getters of DIFFERENT options never interfere.
+ *
+ * The generic lf_shim_get_option uses a mutex-protected static
+ * buffer. Two concurrent callers of the generic getter may overwrite
+ * each other's results; the returned pointer is only valid until the
+ * next call to the generic getter on ANY thread. This limitation is
+ * documented on the public declaration and is acceptable because the
+ * generic getter is a fallback for dynamic option names, not the
+ * primary access path.
+ *
+ * No thread-local storage is used; see the file header.
+ */
+
+#define LF_OPT_BUF_SIZE 512
+
+static char g_opt_buf_password[LF_OPT_BUF_SIZE];
+static char g_opt_buf_debug[LF_OPT_BUF_SIZE];
+static char g_opt_buf_p2p_name[LF_OPT_BUF_SIZE];
+
+static lf_mutex_t g_opt_generic_mtx;
+static char       g_opt_buf_generic[LF_OPT_BUF_SIZE];
+static int        g_opt_generic_mtx_init = 0;
+
+static void lf_opt_generic_mtx_ensure(void)
+{
+    if (g_opt_generic_mtx_init) return;
+    lf_mutex_init(&g_opt_generic_mtx);
+    g_opt_generic_mtx_init = 1;
+}
+
+/* ---- Internal helpers ---- */
+
+static const char* copy_opt_into(const char* name,
+                                 char*       buf,
+                                 size_t      buf_size)
+{
+    if (!buf || buf_size == 0) return "";
+    const char* v = LF_GetOption(name);
+    if (!v) v = "";
+    size_t n = strlen(v);
+    if (n >= buf_size) n = buf_size - 1;
+    memcpy(buf, v, n);
+    buf[n] = '\0';
+    return buf;
+}
+
+static void lf_set_opt_str(const char* name, const char* value)
+{
+    if (!name) return;
+    if (!value) value = "";
+    LF_SetOption(name, value);
+}
+
+static void lf_set_opt_bool(const char* name, int value)
+{
+    lf_set_opt_str(name, value ? "True" : "False");
+}
+
+static void lf_set_opt_int(const char* name, int value)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", value);
+    lf_set_opt_str(name, buf);
+}
+
+static void lf_set_opt_u64(const char* name, uint64_t value)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
+    lf_set_opt_str(name, buf);
+}
+
+static int lf_get_opt_bool(const char* name)
+{
+    const char* v = LF_GetOption(name);
+    if (!v || !*v) return 0;
+    /* Case-insensitive comparison with "True". */
+    if (v[0] == 'T' || v[0] == 't') {
+        if ((v[1] == 'r' || v[1] == 'R') &&
+            (v[2] == 'u' || v[2] == 'U') &&
+            (v[3] == 'e' || v[3] == 'E'))
+            return 1;
+    }
+    return 0;
+}
+
+static int64_t lf_get_opt_i64(const char* name)
+{
+    const char* v = LF_GetOption(name);
+    if (!v || !*v) return 0;
+    return (int64_t)strtoll(v, NULL, 10);
+}
+
+static uint64_t lf_get_opt_u64(const char* name)
+{
+    const char* v = LF_GetOption(name);
+    if (!v || !*v) return 0;
+    return (uint64_t)strtoull(v, NULL, 10);
+}
+
+/* ---- Authentication ---- */
+
+LF_SHIM_API void lf_shim_set_opt_password(const char* value)
+{
+    lf_set_opt_str("password", value);
+}
+
+LF_SHIM_API const char* lf_shim_get_opt_password(void)
+{
+    return copy_opt_into("password", g_opt_buf_password, LF_OPT_BUF_SIZE);
+}
+
+/* ---- Logging and diagnostics ---- */
+
+LF_SHIM_API void lf_shim_set_opt_debug(const char* value)
+{
+    lf_set_opt_str("debug", value);
+}
+
+LF_SHIM_API const char* lf_shim_get_opt_debug(void)
+{
+    return copy_opt_into("debug", g_opt_buf_debug, LF_OPT_BUF_SIZE);
+}
+
+LF_SHIM_API void lf_shim_set_opt_quiet(int value)
+{
+    lf_set_opt_bool("Quiet", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_quiet(void)
+{
+    return lf_get_opt_bool("Quiet");
+}
+
+LF_SHIM_API void lf_shim_set_opt_show_thread_id(int value)
+{
+    lf_set_opt_bool("ShowThreadID", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_show_thread_id(void)
+{
+    return lf_get_opt_bool("ShowThreadID");
+}
+
+LF_SHIM_API void lf_shim_set_opt_console_output(int value)
+{
+    lf_set_opt_bool("ConsoleOutput", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_console_output(void)
+{
+    return lf_get_opt_bool("ConsoleOutput");
+}
+
+/* ---- Connection readiness ---- */
+
+LF_SHIM_API void lf_shim_set_opt_overlap_connection(int value)
+{
+    lf_set_opt_bool("Overlap_Connection", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_overlap_connection(void)
+{
+    return lf_get_opt_bool("Overlap_Connection");
+}
+
+LF_SHIM_API void lf_shim_set_opt_wait_connection_ready_ok(int value)
+{
+    lf_set_opt_bool("Wait_Connection_ReadyOk", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_wait_connection_ready_ok(void)
+{
+    return lf_get_opt_bool("Wait_Connection_ReadyOk");
+}
+
+LF_SHIM_API void lf_shim_set_opt_wait_connection_timeout(uint64_t value_ms)
+{
+    lf_set_opt_u64("Wait_Connection_Timeout", value_ms);
+}
+
+LF_SHIM_API uint64_t lf_shim_get_opt_wait_connection_timeout(void)
+{
+    return lf_get_opt_u64("Wait_Connection_Timeout");
+}
+
+/* ---- IPC ---- */
+
+LF_SHIM_API void lf_shim_set_opt_ipc_serv_thread_count(int value)
+{
+    lf_set_opt_int("IPC_Serv_ThreadCount", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_ipc_serv_thread_count(void)
+{
+    return (int)lf_get_opt_i64("IPC_Serv_ThreadCount");
+}
+
+LF_SHIM_API void lf_shim_set_opt_ipc_serv_max_queue_length(int value)
+{
+    lf_set_opt_int("IPC_Serv_MaxQueueLength", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_ipc_serv_max_queue_length(void)
+{
+    return (int)lf_get_opt_i64("IPC_Serv_MaxQueueLength");
+}
+
+LF_SHIM_API void lf_shim_set_opt_ipc_serv_max_msg_size(int value)
+{
+    lf_set_opt_int("IPC_Serv_MaxMsgSize", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_ipc_serv_max_msg_size(void)
+{
+    return (int)lf_get_opt_i64("IPC_Serv_MaxMsgSize");
+}
+
+/* ---- Sequenced notifications ---- */
+
+LF_SHIM_API void lf_shim_set_opt_fixed_sequenced_time(uint64_t value_ms)
+{
+    lf_set_opt_u64("Fixed_Sequenced_Time", value_ms);
+}
+
+LF_SHIM_API uint64_t lf_shim_get_opt_fixed_sequenced_time(void)
+{
+    return lf_get_opt_u64("Fixed_Sequenced_Time");
+}
+
+/* ---- P2P group name ---- */
+
+LF_SHIM_API void lf_shim_set_opt_p2p_name(const char* value)
+{
+    lf_set_opt_str("LF_P2P_name", value);
+}
+
+LF_SHIM_API const char* lf_shim_get_opt_p2p_name(void)
+{
+    return copy_opt_into("LF_P2P_name", g_opt_buf_p2p_name, LF_OPT_BUF_SIZE);
+}
+
+/* ---- Data handle pool ---- */
+
+LF_SHIM_API void lf_shim_set_opt_data_handle_idle_timeout(uint64_t value_ms)
+{
+    lf_set_opt_u64("DataHandle_Idle_Timeout", value_ms);
+}
+
+LF_SHIM_API uint64_t lf_shim_get_opt_data_handle_idle_timeout(void)
+{
+    return lf_get_opt_u64("DataHandle_Idle_Timeout");
+}
+
+LF_SHIM_API void lf_shim_set_opt_data_handle_pool_scan_interval(uint64_t value_ms)
+{
+    lf_set_opt_u64("DataHandle_Pool_Scan_Interval", value_ms);
+}
+
+LF_SHIM_API uint64_t lf_shim_get_opt_data_handle_pool_scan_interval(void)
+{
+    return lf_get_opt_u64("DataHandle_Pool_Scan_Interval");
+}
+
+/* ---- Command flushing ---- */
+
+LF_SHIM_API void lf_shim_set_opt_no_reponse_cmd_null_flush_threshold(int value)
+{
+    /* Historical spelling "Reponse" (no second 's') matches the
+     * Pascal-side option key verbatim. */
+    lf_set_opt_int("No_Reponse_Cmd_NULL_Flush_Threshold", value);
+}
+
+LF_SHIM_API int lf_shim_get_opt_no_reponse_cmd_null_flush_threshold(void)
+{
+    return (int)lf_get_opt_i64("No_Reponse_Cmd_NULL_Flush_Threshold");
+}
+
+/* ---- Generic (dynamic option names) ---- */
+
+LF_SHIM_API void lf_shim_set_option(const char* name, const char* value)
+{
+    lf_set_opt_str(name, value);
+}
+
+LF_SHIM_API const char* lf_shim_get_option(const char* name)
+{
+    lf_opt_generic_mtx_ensure();
+    lf_mutex_lock(&g_opt_generic_mtx);
+    const char* result = copy_opt_into(name, g_opt_buf_generic, LF_OPT_BUF_SIZE);
+    lf_mutex_unlock(&g_opt_generic_mtx);
+    return result;
 }

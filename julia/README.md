@@ -2,7 +2,9 @@
 
 > **跨语言 RPC 框架 LingoFuse 的 Julia 官方绑定。**
 >
-> Julia 写的函数可以被任何其他语言直接调用，Julia 也可以直接调用任何其他语言写的 LingoFuse 服务。与 Pascal / C / C++ / C# / Python / JavaScript 各绑定的**线格式字节级一致**。
+> Julia 写的函数可以被任何其他语言直接调用，Julia 也可以直接调用任何其他语言写的 LingoFuse 服务。
+>
+> **跨语言互操作已与 C++ / Pascal / Python 双向验证通过**，线格式字节级一致。
 
 ---
 
@@ -18,9 +20,12 @@
 - [八、核心 API 速查](#八核心-api-速查)
 - [九、测试](#九测试)
 - [十、测试对应应用场景](#十测试对应应用场景)
-- [十一、Cross Demo](#十一cross-demo)
-- [十二、已知限制](#十二已知限制)
-- [十三、许可](#十三许可)
+- [十一、跨语言互操作](#十一跨语言互操作)
+- [十二、Cross Demo](#十二cross-demo)
+- [十三、已知限制](#十三已知限制)
+- [十四、踩坑速查](#十四踩坑速查)
+- [十五、许可](#十五许可)
+- [附录 A：Julia 源文件依赖顺序](#附录-ajulia-源文件依赖顺序)
 
 ---
 
@@ -30,7 +35,7 @@
 
 - [**`c_ext/SHIM_MECHANISM_GUIDE.md`**](c_ext/SHIM_MECHANISM_GUIDE.md) — C shim 机制的完整验证文档。**修改回调层之前必读。**
 - [**`example/README.md`**](example/README.md) — Cross Demo 三进程启动指南。
-- [**`test/runtests.jl`**](test/runtests.jl) — 标准 Julia 测试入口。
+- [**`test/runtests.jl`**](test/runtests.jl) — 标准 Julia 测试入口（调度 mock 组 + real 组）。
 - **`check_env.ps1`** — 环境诊断脚本（9 节）。
 - **`build.ps1` / `clean.ps1` / `test.ps1`** — 根目录一键脚本。
 
@@ -39,11 +44,11 @@
 ```mermaid
 flowchart TB
     ROOT["julia/"]
-    ROOT --> SCRIPTS["根目录脚本<br/>build.ps1<br/>clean.ps1<br/>test.ps1<br/>check_env.ps1"]
+    ROOT --> SCRIPTS["根目录脚本<br/>build.ps1 / clean.ps1<br/>test.ps1 / check_env.ps1"]
     ROOT --> CEXT["c_ext/<br/>C 回调桥"]
-    ROOT --> SRC["src/<br/>Julia 包源码<br/>13 个 .jl"]
-    ROOT --> EX["example/<br/>Cross Demo<br/>3 个 .jl"]
-    ROOT --> TEST["test/<br/>验收测试<br/>8 个 .jl + runtests"]
+    ROOT --> SRC["src/<br/>Julia 包源码<br/>17 个 .jl"]
+    ROOT --> EX["example/<br/>Cross Demo<br/>3 个 .jl + README"]
+    ROOT --> TEST["test/<br/>验收测试<br/>13 个 + 3 调度器 + 2 诊断"]
 
     style ROOT fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
     style CEXT fill:#FADBD8,stroke:#922B21,stroke-width:3px,color:#641E16
@@ -52,7 +57,37 @@ flowchart TB
     style EX fill:#E8F4FF,stroke:#1E3A8A,stroke-width:3px,color:#0D2F52
 ```
 
-各目录的详细说明分散在下面各章节。
+**`src/` 文件清单**（17 个）：
+
+| 文件 | 职责 |
+|------|------|
+| `LingoFuse.jl` | 模块入口，include 顺序 |
+| `trace.jl` | 运行时 trace（`LINGOFUSE_TRACE=1`） |
+| `error.jl` | 8 个异常类型的层级 |
+| `uid.jl` | UID 类型（`NTuple{32,UInt8}`）+ 转换 |
+| `loader.jl` | 运行时库解析 + PATH 准备 |
+| `abi.jl` | 59 个 `LF_*` ccall 绑定 |
+| `shim.jl` | 66 个 `shim_*` ccall 绑定 + shim 搜索 |
+| `callback.jl` | 消费循环 + 5 类事件分派 |
+| `data_handle.jl` | `DataHandle` RAII + 身份访问器 |
+| `binio.jl` | 小端序二进制 I/O |
+| `app.jl` | `App` RAII + do-block 变体 |
+| `async.jl` | `Future` 类型 |
+| `target.jl` | 三寻址 + 同步/异步/do-block 全套 |
+| `p2p.jl` | 进程级 P2P 注册 API |
+| `network.jl` | 网络准备 + 生命周期 |
+| `io.jl` | JSON3 统一 I/O |
+| `status.jl` | 网络事件监听 + 状态队列 |
+
+**`test/` 文件清单**（18 个）：
+
+| 分类 | 文件 |
+|------|------|
+| **mock 组**（7） | `test_uid.jl` / `test_abi.jl` / `test_shim_bind.jl` / `test_callback.jl` / `test_async_unit.jl` / `test_target.jl` / `test_p2p.jl` |
+| **real 组**（6） | `test_io.jl` / `test_raii.jl` / `test_network.jl` / `smoke.jl` / `test_status.jl` / `test_e2e_local.jl` |
+| **调度器**（3） | `runtests.jl` / `runtests_mock.jl` / `runtests_real.jl` |
+| **诊断**（2） | `diag.jl` / `try_module.jl` |
+| **M1 遗留**（1） | `test_restart.jl` |
 
 ---
 
@@ -362,14 +397,14 @@ flowchart TB
     M["c_ext/lf_shim_mock.dll"]
     R["c_ext/real/lf_shim_real.dll"]
 
-    M --> MU["供 test_shim.jl 使用<br/>（Step 1 仿真）"]
-    R --> RU["供所有 Julia 代码使用<br/>（Step 2+）"]
+    M --> MU["供 mock 组测试使用<br/>（驱动回调不经过网络）"]
+    R --> RU["供所有生产代码使用<br/>以及 real 组测试"]
 
     style R fill:#2ECC71,stroke:#1E8449,stroke-width:4px,color:#FFFFFF
     style M fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
 ```
 
-**日常使用只需要 `lf_shim_real.dll`。** mock 版只是 Step 1 的仿真测试产物。
+**日常使用只需要 `lf_shim_real.dll`。** mock 版只是 mock 组测试的依赖。
 
 ### 5.4 清理
 
@@ -547,7 +582,27 @@ flowchart LR
     style E fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
 ```
 
-### 6.6 DataHandle 生命周期
+### 6.6 Handler 内是一条"纯 Julia 沙箱"
+
+**Handler 内可以**：
+
+- 操作 `Vector{UInt8}` / `String` / 数值
+- 打印日志、计数、修改捕获的变量
+- 使用 `ReentrantLock` 保护共享状态
+- 抛异常（会被 consumer 吞掉并记录）
+
+**Handler 内禁止**：
+
+- 调用任何 `LF_*` 函数
+- 创建或释放 `DataHandle` / `App`
+- 使用 `binio.jl` / `data_handle.jl`
+- 调用 `LF_Call` / `LF_Notify` / `prepare_*`
+
+**根因**：handler 运行在 consumer 线程；它被触发时，caller 线程通常正阻塞在 `LF_Call` 的 libuv worker 上，持有真库的内部锁。任何来自 handler 的 `LF_*` 调用都会与那把锁争用 → 死锁。
+
+这是本绑定最重要的使用约束，详见 [第十四章](#十四踩坑速查) 的 `PIT-HANDLER-001`。
+
+### 6.7 DataHandle 生命周期
 
 ```mermaid
 stateDiagram-v2
@@ -611,7 +666,7 @@ dispose!(app)
 push!(LOAD_PATH, "path/to/julia/src")
 using LingoFuse
 
-set_option("Wait_Ready", "False")
+set_option("Wait_Connection_ReadyOk", "True")
 set_option("Quiet", "True")
 
 reset_prepare()
@@ -765,7 +820,7 @@ flowchart LR
 | `app_name(app)` | 返回 App 名 |
 | `dispose!(app)` / `is_disposed(app)` | 生命周期 |
 
-**Warmup 契约**：`register_call!` / `register_notify!` 默认 `warmup=true`，会在注册时用三个合成 payload（空、2 字节、256 字节）**真实调用**你的 handler。副作用（日志、状态修改、I/O）会发生三次。有副作用的 handler 请传 `warmup=false`。
+**Warmup 契约**：`register_call!` / `register_notify!` 默认 `warmup=true`，会在注册时用三个合成 payload（空、2 字节、256 字节）**真实调用**你的 handler。副作用（日志、状态修改、I/O）会发生三次。有副作用的 handler 请传 `warmup=false`。详见 [第十四章](#十四踩坑速查) 的 `PIT-WARMUP-001`。
 
 ### 8.4 网络（`network.jl`）
 
@@ -812,16 +867,41 @@ flowchart LR
 
 ```powershell
 cd D:\CoreLibrary\LingoFuse\julia
-.\test.ps1
+julia --threads=2 test\runtests.jl
 ```
 
-`test.ps1` **自动扫描 `test/*.jl`**，对每个文件启动一个带 `--threads=2` 的独立 Julia 子进程。新增测试只需把 `.jl` 放进 `test/` 目录即可，无需修改脚本。
+`runtests.jl` 是**调度器**，它依次 spawn 两个子进程：
 
-**唯一自动排除**：`runtests.jl`（标准 Julia 测试入口，它会调用其它所有脚本，包含会导致重复执行）。
+```
+runtests.jl
+  ├── runtests_mock.jl    （7 个 mock 组测试，仅依赖 mock shim）
+  └── runtests_real.jl    （6 个 real 组测试，依赖真库 + real shim）
+```
 
-输出末尾的汇总表会列出每个测试文件的 PASS / FAIL 和耗时。
+### 9.2 为什么分 mock 组和 real 组
 
-### 9.2 单跑一个测试
+```mermaid
+flowchart TB
+    ROOT["runtests.jl"] --> M["runtests_mock.jl"]
+    ROOT --> R["runtests_real.jl"]
+
+    M --> M1["依赖 mock shim<br/>测试框架自身"]
+    R --> R1["依赖 real shim<br/>测试真库集成"]
+
+    M1 -.x.-> R1
+
+    style M fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
+    style R fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+```
+
+**两个 shim 无法在同一 Julia 进程里共存**——`src/shim.jl` 在包加载时解析一次 shim 路径，之后所有 `shim_*` 调用都走同一个变体。因此 mock 组和 real 组必须分进程。
+
+| 分组 | shim | 测试内容 |
+|------|------|---------|
+| **mock 组** | `lf_shim_mock.dll` | 框架完整性、UID、async 驱动、P2P 注册、回调分派 |
+| **real 组** | `lf_shim_real.dll` | I/O、RAII、真库网络、端到端 RPC |
+
+### 9.3 单跑一个测试
 
 ```powershell
 julia --threads=2 test\test_io.jl
@@ -829,124 +909,60 @@ julia --threads=2 test\test_network.jl
 # ...
 ```
 
-或通过标准 Julia 测试入口：
+或单跑一组：
 
 ```powershell
-julia --threads=2 test\runtests.jl
+julia --threads=2 test\runtests_mock.jl
+julia --threads=2 test\runtests_real.jl
 ```
 
 > ⚠️ **必须带 `--threads=2`。** 少带会立即抛 `LingoFuseStateError`。
 
-### 9.3 测试套件构成
+### 9.4 mock 组（7 个测试，294 项断言）
 
-```mermaid
-flowchart TB
-    ROOT["test/<br/>8 个 .jl"]
+| 文件 | 断言数 | 内容 |
+|------|:------:|------|
+| `test_uid.jl` | 50 | UID 类型 / 构造 / 往返 / 哈希 / Ref / show |
+| `test_abi.jl` | 14 | 59 个 `LF_*` 符号完整性 + 安全调用 |
+| `test_shim_bind.jl` | 71 | 66 个 `shim_*` 符号 + typed options + async 派发 + NULL 安全 |
+| `test_callback.jl` | 35 | 消费循环 + 5 类事件分派 + 身份访问器 + 重启 |
+| `test_async_unit.jl` | 50 | Future 状态机 + 并发竞争 + 阻塞语义 |
+| `test_target.jl` | 56 | 三寻址 + payload 形态 + Future 端到端 + do-block + 软超时 |
+| `test_p2p.jl` | 18 | P2P 注册 + do-block + warmup 控制 |
 
-    ROOT --> T1["test_io.jl<br/>40 项"]
-    ROOT --> T2["test_raii.jl<br/>29 项"]
-    ROOT --> T3["test_network.jl<br/>13 项"]
-    ROOT --> T4["test_status.jl<br/>30 项"]
-    ROOT --> T5["test_restart.jl<br/>6 项"]
-    ROOT --> T6["smoke.jl<br/>4 场景"]
-    ROOT --> T7["diag.jl / try_module.jl<br/>诊断冒烟"]
+### 9.5 real 组（6 个测试，137 项断言 + 4 场景）
 
-    style ROOT fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
-    style T5 fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
+| 文件 | 断言数 | 内容 |
+|------|:------:|------|
+| `test_io.jl` | 40 | JSON I/O + 字符串 / 字节 / 线格式不变量 |
+| `test_raii.jl` | 29 | DataHandle / App 生命周期 + 本地调用 |
+| `test_network.jl` | 13 | 单进程环回 RPC + prepare + 诊断 |
+| `smoke.jl` | 4 场景 | 四种 handler 定义形状兼容性 |
+| `test_status.jl` | 30 | 网络事件 + 有界队列 + 状态队列 |
+| `test_e2e_local.jl` | 25 | 完整端到端（service + client + call + notify） |
+
+### 9.6 其他
+
+| 文件 | 用途 |
+|------|------|
+| `test_restart.jl` | M1 遗留：进程内重启回调层 |
+| `diag.jl` | Step 1 最小复现（`@threadcall` + 闭包） |
+| `try_module.jl` | `using LingoFuse` 冒烟 |
+
+### 9.7 验收状态
+
+`julia --threads=2 test/runtests.jl` 全绿：
+
+```
+Test Summary:           | Pass  Total
+LingoFuse Julia binding |    2      2
+  mock shim group       |    1      1
+  real shim group       |    1      1
 ```
 
-### 9.4 各测试的内容
+**主测试合计：431 项断言 + 4 场景，全部 PASS。**
 
-**`test_io.jl`（40 项）** — 统一 I/O 层
-
-```mermaid
-flowchart LR
-    A["test_io.jl"] --> B["dumps_json / loads_json"]
-    A --> C["字符串 / 字节 I/O"]
-    A --> D["JSON on handles"]
-    A --> E["线格式不变量"]
-
-    style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-```
-
-**`test_raii.jl`（29 项）** — RAII + 本地调用
-
-```mermaid
-flowchart LR
-    A["test_raii.jl"] --> B["DataHandle 生命周期"]
-    A --> C["App 注册 + 本地调用"]
-    A --> D["闭包 handler"]
-
-    style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-```
-
-**`test_network.jl`（13 项）** — 网络准备 + 环回
-
-```mermaid
-flowchart LR
-    A["test_network.jl"] --> B["单进程环回 RPC"]
-    A --> C["prepare / prepare_done"]
-    A --> D["诊断接口"]
-
-    style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-```
-
-**`test_status.jl`（30 项）** — 事件 + 状态
-
-```mermaid
-flowchart LR
-    A["test_status.jl"] --> B["网络事件监听"]
-    A --> C["有界队列"]
-    A --> D["状态队列"]
-
-    style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-```
-
-**`test_restart.jl`（6 项）** — 进程内重启回调层
-
-```mermaid
-flowchart LR
-    A["test_restart.jl"] --> B["round 1<br/>启动 → 停止"]
-    A --> C["round 2<br/>再启动 → 调用 → 停止"]
-
-    style C fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
-```
-
-**`smoke.jl`（4 场景）** — handler 定义形状兼容性
-
-```mermaid
-flowchart LR
-    A["smoke.jl"] --> S1["S1: 具名函数"]
-    A --> S2["S2: 匿名闭包"]
-    A --> S3["S3: 捕获变量的闭包"]
-    A --> S4["S4: 运行时注册的闭包"]
-
-    style A fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
-```
-
-**`diag.jl` / `try_module.jl`** — 诊断
-
-- `diag.jl`：Step 1 最小复现（`@threadcall` 跨线程闭包）
-- `try_module.jl`：`using LingoFuse` 冒烟
-
-### 9.5 验收状态
-
-`.\test.ps1` 全绿，8 个测试文件全部 PASS：
-
-| 测试 | 状态 | 用时 |
-|------|:----:|:----:|
-| `diag.jl` | ✅ PASS | ~3.3 s |
-| `smoke.jl` | ✅ PASS | ~4.1 s |
-| `test_io.jl` | ✅ PASS | ~4.2 s |
-| `test_network.jl` | ✅ PASS | ~9.8 s |
-| `test_raii.jl` | ✅ PASS | ~4.2 s |
-| `test_restart.jl` | ✅ PASS | ~3.6 s |
-| `test_status.jl` | ✅ PASS | ~4.3 s |
-| `try_module.jl` | ✅ PASS | ~3.1 s |
-
-**主测试合计：118 项断言（40 + 29 + 13 + 30 + 6）全绿。**
-
-### 9.6 诊断工具
+### 9.8 诊断工具
 
 | 工具 | 用途 |
 |------|------|
@@ -961,29 +977,31 @@ flowchart LR
 
 每个测试文件对应一类**真实应用场景**。
 
-### 10.1 测试 → 场景对应表
+### 10.1 mock 组
 
 | 测试 | 应用场景 | 真实使用示例 |
 |------|---------|-------------|
-| **`test_io.jl`** | 应用与其它语言服务交换 JSON 数据 | Julia 服务作为 LLM 后端返回结构化 JSON |
-| | 跨语言线格式兼容 | Julia handler 被 C++ 调用，字节必须一致 |
-| | 字符串 / 二进制编解码 | 传输 base64、图像字节流 |
-| **`test_raii.jl`** | 单进程本地 RPC，无网络 | 单元测试：在 Julia 进程内验证 API 逻辑 |
-| | 注册 API 并本地执行 | 快速验证 handler 实现 |
-| | 闭包 handler 支持 | 捕获外部状态的回调 |
-| **`test_network.jl`** | 单进程内的完整 RPC 环回 | 集成测试：一个进程内跑完 prepare → 调用 → 清理 |
-| | 服务发现 | `check_app` / `check_api` 探测目标是否上线 |
-| | 进程级重启 | 测试 `shutdown()` 后能否重新初始化 |
-| **`test_status.jl`** | 网络事件监听 | 客户端上线 / 下线时触发业务逻辑 |
-| | 日志采集 | 通过 `drain_status` 收集 native 层日志 |
-| | 有界队列背压 | 生产者阻塞，避免 OOM |
-| **`test_restart.jl`** | **长运行服务中重建回调层** | 长时间运行的服务在计划内重启网络模块 |
-| | 单元测试多轮循环 | 一个 Julia 进程内跑多轮测试，不重新 fork |
-| **`smoke.jl`** | 不同 handler 定义形状的兼容性 | 具名函数 / 匿名闭包 / 捕获变量的闭包 / 运行时注册 |
-| **`diag.jl`** | `@threadcall` + GC 交互 | 诊断 safepoint 死锁的最小复现 |
-| **`try_module.jl`** | 包加载冒烟 | CI 中验证 `using LingoFuse` 是否成功 |
+| **`test_uid.jl`** | UID 作为会话标识 | whoami 探测、会话粘性路由 |
+| **`test_abi.jl`** | 底层 ABI 完整性 | 升级 LingoFuse 后回归验证符号表 |
+| **`test_shim_bind.jl`** | 回调桥完整性 | 升级 shim 后验证所有入口点 |
+| **`test_callback.jl`** | 跨线程回调 | 模拟 C4 worker 触发回调，验证 consumer 分派 |
+| **`test_async_unit.jl`** | 异步调用状态机 | 验证 Future 的超时 / 结果 / 错误三态 |
+| **`test_target.jl`** | 三寻址调用 | App 名 / UID / P2PName 三种路由方式 |
+| **`test_p2p.jl`** | 进程级 P2P 注册 | 全局工具 API（whoami / health） |
 
-### 10.2 场景分类
+### 10.2 real 组
+
+| 测试 | 应用场景 | 真实使用示例 |
+|------|---------|-------------|
+| **`test_io.jl`** | 应用与其它语言服务交换 JSON | Julia 服务作为 LLM 后端返回结构化 JSON |
+| | 跨语言线格式兼容 | Julia handler 被 C++ 调用，字节必须一致 |
+| **`test_raii.jl`** | 单进程本地 RPC | 单元测试：验证 API 逻辑不经过网络 |
+| **`test_network.jl`** | 单进程完整环回 | 集成测试：一个进程内跑完 prepare → 调用 → 清理 |
+| **`smoke.jl`** | 四种 handler 定义形状 | 具名 / 匿名 / 捕获变量 / 运行时注册 |
+| **`test_status.jl`** | 网络事件监听 | 客户端上线 / 下线时触发业务逻辑 |
+| **`test_e2e_local.jl`** | 完整 RPC 生命周期 | 单进程模拟 Cross Demo 全链路 |
+
+### 10.3 场景分类
 
 ```mermaid
 flowchart TB
@@ -999,47 +1017,155 @@ flowchart TB
     A --> A1["test_io.jl"]
     B --> B1["test_raii.jl"]
     C --> C1["test_network.jl"]
-    C --> C2["smoke.jl"]
+    C --> C2["test_e2e_local.jl"]
+    C --> C3["smoke.jl"]
     D --> D1["test_status.jl"]
     E --> E1["test_restart.jl"]
-    F --> F1["diag.jl"]
-    F --> F2["try_module.jl"]
+    F --> F1["test_uid.jl / test_abi.jl"]
+    F --> F2["test_shim_bind.jl / test_callback.jl"]
+    F --> F3["test_async_unit.jl / test_target.jl / test_p2p.jl"]
 
     style S fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
-    style E1 fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
 ```
 
-### 10.3 什么时候跑哪个测试
+### 10.4 什么时候跑哪个测试
 
 | 我改了什么？ | 应该跑什么 |
 |-------------|-----------|
-| 回调层 / `c_ext/` | `smoke.jl` + `test_restart.jl` |
+| 回调层 / `c_ext/` | mock 组全套 + `smoke.jl` |
 | I/O 层（`io.jl` / `binio.jl`） | `test_io.jl` |
 | RAII / 生命周期 | `test_raii.jl` + `test_restart.jl` |
-| 网络 / 诊断 | `test_network.jl` |
+| 网络 / 诊断 | `test_network.jl` + `test_e2e_local.jl` |
 | 事件 / 状态 | `test_status.jl` |
-| 不确定 | `.\test.ps1`（全套） |
+| `abi.jl` / `shim.jl` 符号 | `test_abi.jl` + `test_shim_bind.jl` |
+| 不确定 | `julia --threads=2 test\runtests.jl`（全套） |
 
 ---
 
-## 十一、Cross Demo
+## 十一、跨语言互操作
+
+LingoFuse 的**核心价值是跨语言互操作**。Julia 绑定完全融入这套体系。
+
+### 11.1 互操作契约
+
+```mermaid
+flowchart LR
+    J["Julia"] -->|"line format"| BUS["LingoFuse 总线"]
+    BUS --> C["C / C++"]
+    BUS --> P["Pascal"]
+    BUS --> PY["Python"]
+    BUS --> CS["C#"]
+    BUS --> JS["JavaScript"]
+    BUS --> MORE["12+ more"]
+
+    style BUS fill:#4A90E2,stroke:#1E3A8A,stroke-width:4px,color:#FFFFFF
+    style J fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
+```
+
+**互操作的四条契约**（所有绑定共同遵守）：
+
+| # | 契约 | 说明 |
+|:-:|------|------|
+| 1 | **UTF-8 字符串 + NUL 结尾** | 所有字符串参数、API 名、App 名都是 UTF-8 |
+| 2 | **小端字节序** | 所有整数 / 浮点写入都是小端 |
+| 3 | **Raw binary payload** | 数据句柄承载任意字节，协议层不解释 |
+| 4 | **回调必须 cdecl** | C ABI 约定的调用方式 |
+
+### 11.2 已验证的互通语言
+
+| 组合 | 状态 | 测试方式 |
+|------|:----:|----------|
+| **Julia ↔ Julia** | ✅ 已验证 | `test_e2e_local.jl`（同进程）+ Cross Demo（跨进程） |
+| **Julia ↔ C++** | ✅ 已验证 | Cross Demo 与 C++ 版 `CrossCall` / `CrossNode` 互通 |
+| **Julia ↔ Pascal** | ✅ 已验证 | Cross Demo 与 Pascal 版 `cross_call` / `cross_node` 互通 |
+| **Julia ↔ Python** | ✅ 已验证 | Cross Demo 与 Python 版 `cross_call.py` / `cross_node.py` 互通 |
+
+### 11.3 Wire 契约细节
+
+**Call 请求（payload 结构）**：
+
+```
+[apiName] [FromUID:32B] [FromP2PName] [Param.Size:Int32] [Param:bytes]
+```
+
+**Call 响应（payload 结构）**：
+
+```
+[Result:bytes]
+```
+
+**跨语言能见度**：调用方只需知道 `apiName` + `Param` 的字节布局；接收方的 `FromUID` / `FromP2PName` 由框架自动注入，业务层无需处理。
+
+### 11.4 二进制 payload 示例（`inv_seri` 的跨语言字节布局）
+
+| 字段 | 类型 | 偏移 | 长度 |
+|------|------|:----:|:----:|
+| `b` | `uint8` | 0 | 1 |
+| `w` | `uint16` | 1 | 2 |
+| `c` | `uint32` | 3 | 4 |
+| `u64` | `uint64` | 7 | 8 |
+| `s` | `string`（NUL 结尾） | 15 | 变长 |
+| `f` | `float32` | 15+n | 4 |
+
+**任何语言的绑定**写入这段字节，另一端都能正确解析。详见 `example/README.md`。
+
+### 11.5 JSON payload 跨语言一致
+
+除了 raw binary，JSON 也是常用的跨语言 payload 形态。工具的**统一 JSON 策略**：
+
+- **`ensure_ascii=False`**：中文、emoji 等非 ASCII 字符以字面 UTF-8 输出，不出现 `\uXXXX` 转义
+- **末尾追加 `#0`**：与 raw binary 的 NUL 结尾一致
+- **读取容错**：无 NUL 时读到末尾（兼容 HTTP bridge 等非标准生产者）
+
+| 语言 | JSON 库 | 策略 |
+|------|---------|------|
+| Julia | JSON3.jl | 字面 UTF-8 |
+| Python | json | `ensure_ascii=False` |
+| C++ | nlohmann/json | 字面 UTF-8 |
+| C# | System.Text.Json | `UnsafeRelaxedJsonEscaping` |
+| Pascal | Z.Json | 字面 UTF-8 |
+
+**四个生产者对同一逻辑 payload 输出完全相同的字节序列。**
+
+### 11.6 未来可对接语言
+
+只要该语言能：
+
+1. 调用 C ABI（`ccall` / FFI / P/Invoke / JNI / NIF / `ccall`）
+2. 提供回调函数指针
+
+就能接入 LingoFuse。当前官方支持列表之外的常见候选：
+
+- **Rust**（`extern "C"` + FFI）
+- **Go**（`purego` / `cgo`）
+- **Swift**（`@convention(c)`）
+- **Erlang/Elixir**（NIF）
+- **Ruby**（Fiddle / C 扩展）
+- **Matlab / R / Julia**（`ccall` + 语言侧序列化）
+- **Fortran**（`iso_c_binding`）
+
+Julia 绑定已经完成，可作为**接入其他语言的参考实现**。
+
+---
+
+## 十二、Cross Demo
 
 三个进程的端到端演示，与 C++ / C# / Pascal / Python / JavaScript 的 Cross Demo **字节级兼容**。
 
-### 11.1 三进程角色
+### 12.1 三进程角色
 
 ```mermaid
 flowchart LR
     S["CrossService.jl<br/>信标"] --> N["CrossNode.jl<br/>Worker"]
     S --> C["CrossCall.jl<br/>压测客户端"]
-    N -->|"demo.add"| C
+    N -->|"demo.add / demo.inv_seri"| C
 
     style S fill:#F5A623,stroke:#B7791F,stroke-width:3px,color:#FFFFFF
     style N fill:#2ECC71,stroke:#1E8449,stroke-width:3px,color:#FFFFFF
     style C fill:#4A90E2,stroke:#1E3A8A,stroke-width:3px,color:#FFFFFF
 ```
 
-### 11.2 启动命令
+### 12.2 启动命令
 
 ```powershell
 # 终端 1
@@ -1052,9 +1178,37 @@ julia --threads=2 example\CrossNode.jl
 julia --threads=2 example\CrossCall.jl
 ```
 
-详细说明见 `example/README.md`。
+### 12.3 跨语言混合部署
 
-### 11.3 并发限制与 `UV_THREADPOOL_SIZE`
+**Cross Demo 的三个进程可以用不同语言实现**。例如：
+
+```
+终端 1:  cross_service.exe       （Pascal 信标）
+终端 2:  CrossNode.exe           （C++ Worker）
+终端 3:  julia CrossCall.jl      （Julia 压测客户端）
+```
+
+或：
+
+```
+终端 1:  cross_service.lpr       （Pascal 信标）
+终端 2:  julia CrossNode.jl      （Julia Worker）
+终端 3:  python cross_call.py    （Python 压测客户端）
+```
+
+**只要三端连到同一个 `ipc:cross` 端点，跨语言调用自动生效。**
+
+### 12.4 CrossNode 的实时输出
+
+handler 内每次调用都会打印（`handler 内不能触碰 LF_*` 是唯一约束，打印不受影响）：
+
+```
+[Node] add(5, 7) = 12
+[Node] inv_seri received: [200, 16, 47, 63, "hello world", 3.14]
+[Node] inv_seri replied:  [3.14, "hello world", 63, 47, 16, 200]
+```
+
+### 12.5 并发限制与 `UV_THREADPOOL_SIZE`
 
 8 task 并发压测受 libuv 线程池限制（默认 4）。要更高并发需先设置：
 
@@ -1063,13 +1217,18 @@ $env:UV_THREADPOOL_SIZE = "32"
 julia --threads=2 example\CrossCall.jl
 ```
 
+### 12.6 详细指南
+
+见 `example/README.md`。
+
 ---
 
-## 十二、已知限制
+## 十三、已知限制
 
 | 限制 | 说明 | 规避 |
 |------|------|------|
 | **必须 `--threads=2`** | 回调 consumer 不能落在 main 线程 | 无（硬性要求） |
+| **Handler 内禁止调 `LF_*`** | handler 运行在 consumer 线程，与 caller 争真库锁 | 详见 `PIT-HANDLER-001` |
 | **libuv 线程池默认 4** | 影响 `@threadcall` 的并发上限 | `UV_THREADPOOL_SIZE` 环境变量 |
 | **32 位未验证** | 只在 x86_64 上验证 | 用 64 位 Julia |
 | **Apple Silicon 未验证** | 只在 x64 上验证 | Rosetta 或等后续版本 |
@@ -1078,19 +1237,191 @@ julia --threads=2 example\CrossCall.jl
 | **`LF_FreeData` 在 `LF_PrepareDone` 前是 no-op** | 初始化期间的句柄释放被忽略 | 用 `create_permanent` 或延后释放 |
 | **`LF_GetStatus` 返回静态缓冲** | 下次调用失效 | 立即拷贝为 Julia `String` |
 | **`read_string!` / `read_string_bytes` 无 NUL 时会扩展 buffer** | 触发 `LF_SetPos(size + 1)`，buffer +1 字节 | 契约行为，与其它绑定一致 |
-| **warmup 会真实调用 handler 三次** | 有副作用的 handler 需 `warmup=false` | 见 8.3 节 |
+| **warmup 会真实调用 handler 三次** | 有副作用的 handler 需 `warmup=false` | 详见 `PIT-WARMUP-001` |
 | **`peek_string_bytes` 是纯读** | 不修改 cursor / size | 与非 peek 版本行为不同 |
 | **库路径依赖系统搜索路径** | `LINGOFUSE_LIBRARY` 未设时靠 `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | 见 2.3 节 |
+| **`shim.jl` 的 real / mock 选择是进程级锁定** | 一次加载后无法在同一进程切换 | mock 测试与 real 测试分进程 |
 
 ---
 
-## 十三、许可
+## 十四、踩坑速查
+
+本章列出**开发和使用 Julia 绑定时反复踩到的坑**，每条都有 ID、症状、根因、修复。
+
+### 14.1 命名约定
+
+```
+PIT-<子系统>-<三位序号>
+```
+
+| 子系统 | 范围 |
+|--------|------|
+| `HANDLER` | handler 编写 |
+| `SHIM` | shim 搜索 / 加载 |
+| `WARMUP` | warmup 语义 |
+| `WAIT` | `Wait_Connection_ReadyOk` |
+| `STR` | Julia 字符串所有权 |
+
+### 14.2 PIT-HANDLER-001：handler 内禁止调 `LF_*`
+
+**症状**：调用发起后整个进程挂起，无任何输出。Ctrl+C 也无法中断（真库锁死）。
+
+**根因**：handler 运行在 consumer 线程；它被触发时，caller 线程正阻塞在 `LF_Call` 的 libuv worker 上，持有真库的内部锁。任何来自 handler 的 `LF_*` 调用（例如 `LF_CreateData` 创建 scratch `DataHandle`）都会争用同一把锁。
+
+**典型触发写法**：
+
+```julia
+# ✗ 错误
+function handle_add(in_bytes::Vector{UInt8})
+    in_dh = DataHandle("add")          # ← LF_CreateData → 死锁
+    out_dh = DataHandle("add")         # ← LF_CreateData → 死锁
+    write_buffer!(in_dh, in_bytes)
+    ...
+end
+```
+
+**正确写法**：
+
+```julia
+# ✓ 正确：纯 Julia 字节操作
+function handle_add(in_bytes::Vector{UInt8})
+    length(in_bytes) == 8 || return UInt8[]
+    a = _le_i32(in_bytes, 0)          # 私有 helper
+    b = _le_i32(in_bytes, 4)
+    c = a + b
+    out = UInt8[]
+    _push_i32!(out, c)
+    return out
+end
+```
+
+**通用规律**：handler 内可以操作 `Vector{UInt8}` / `String` / 数值，但禁止触碰 `DataHandle` / `App` / `binio.jl` / `abi.jl` / `network.jl`。
+
+### 14.3 PIT-SHIM-001：`shim.jl` 的搜索顺序
+
+**症状**：`shim_is_real()` 返回 `false`，即使 `$env:LINGOFUSE_SHIM` 已指向 real。或反过来，构建了 real 却加载了 mock。
+
+**根因**：`shim.jl` 的搜索顺序决定实际加载哪个。历史版本中 PATH 搜索优先于 in-tree，导致 `c_ext/lf_shim_mock.dll` 先命中。
+
+**当前搜索顺序**（v0.2.0）：
+
+```
+1. $env:LINGOFUSE_SHIM          ← 显式覆盖，永远最先
+2. c_ext/real/lf_shim_real.dll  ← in-tree，real 优先
+3. c_ext/lf_shim_real.dll
+4. c_ext/lf_shim_mock.dll
+5. PATH 中的 real / mock
+6. 可执行文件旁
+```
+
+**调试**：
+
+```powershell
+julia --threads=2 -e 'push!(LOAD_PATH, "src"); using LingoFuse; println(shim_path()); println(shim_is_real())'
+```
+
+**mock 组测试的 pin**：三个 mock 测试文件在开头显式设置 `ENV["LINGOFUSE_SHIM"]` 指向 mock。这是为了在 real 已构建的环境下仍能跑 mock 组测试。
+
+### 14.4 PIT-WARMUP-001：warmup 会真实调用 handler 三次
+
+**症状**：注册 API 时 handler 被调用 3 次（空、2 字节、256 字节 payload），日志出现 3 条噪音，状态被改 3 次。
+
+**根因**：`register_call!` 默认 `warmup=true`，用三个合成 payload 提前触发 JIT 编译，避免 handler 首次被调用时在 consumer 线程上编译引发崩溃（历史上的 Julia 1.13 JIT 边界 case）。
+
+**修复**：
+
+```julia
+# 选项 1：handler 内做长度检查，让 warmup payload 静默返回
+function handle_add(in_bytes)
+    length(in_bytes) == 8 || return UInt8[]   # ← 三个 warmup payload 都被拒绝
+    ...
+end
+
+# 选项 2：如果 handler 有副作用（DB / 网络 / 计费），禁用 warmup
+register_call!(app, "add", "", handle_add; warmup = false)
+```
+
+**权衡**：`warmup=false` 会推迟 JIT 编译到首次真实调用，理论上存在编译竞争风险（见 `c_ext/lf_shim.jl` 头部的 "JIT COMPILATION THREAD RACE"）。除非 handler 有强副作用，否则**推荐用长度检查**保留 warmup。
+
+### 14.5 PIT-WAIT-001：`Wait_Connection_ReadyOk` 的两种场景
+
+**症状**：单进程内 `prepare_service` + `prepare_client` + `prepare_done` 后，`check_api` 返回 false，`LF_Call` 报 `no found app`。
+
+**根因**：`Wait_Connection_ReadyOk=False`（部署模式）让 `prepare_done` 立即返回，此时 ClientConnected 事件尚未触发，App 未绑定到客户端，本地路由表查不到。
+
+**正确用法**：
+
+| 场景 | 推荐值 | 理由 |
+|------|:------:|------|
+| **单进程** service + client + call | `True` | App 必须在本进程可见才能本地短路 |
+| **跨进程** service 与 worker | `False` | 无序启动，allow worker 先启动 |
+| **跨进程** caller | `True` | caller 需要 mesh 完全就绪才发起调用 |
+
+**修正后的写法**：
+
+```julia
+# 单进程 e2e（test_e2e_local.jl）
+set_option("Wait_Connection_ReadyOk", "True")
+
+# Cross worker（example/CrossNode.jl），与 C++ / Pascal / Python 一致
+set_option("Wait_Connection_ReadyOk", "False")
+```
+
+### 14.6 PIT-STR-001：`String(v::Vector{UInt8})` 转移所有权
+
+**症状**：第二次读同一 `Vector{UInt8}` 内容为空。
+
+**根因**：Julia 的 `String(::Vector{UInt8})` 会**接管**向量的底层存储（零拷贝），原向量变空。
+
+**修复**：
+
+```julia
+# ✗ 错误
+raw = read_buffer!(dh, n)
+text1 = String(raw)     # ← raw 变空
+text2 = String(raw)     # ← ""
+
+# ✓ 正确
+text1 = String(copy(raw))   # 拷贝一份给 String
+text2 = String(raw)         # 原向量仍可用
+```
+
+### 14.7 PIT-STR-002：字符串参数的 API 名 / App 名必须 NUL 结尾
+
+**症状**：`no found app("...")` 但 App 明明存在；或者 App 名末尾多一个乱码字符。
+
+**根因**：C ABI 的字符串参数是 `PAnsiChar`，必须 NUL 结尾。Julia 的 `String` → `Ptr{UInt8}` 通过 `Base.unsafe_convert` 转换，**会自动追加 NUL**，但如果手动构造指针就需要自己加。
+
+**修复**：用 `AbstractString` 类型，让 Julia 自动处理。**不要**手动 `pointer(s)`。
+
+```julia
+# ✓ 正确
+prepare_client("ipc:cross", app)
+
+# ✗ 危险
+prepare_client(unsafe_string(pointer(s), n), app)   # 需要自己保证 n 后跟 NUL
+```
+
+### 14.8 坑 ID 速查表
+
+| ID | 一句话 |
+|----|--------|
+| `PIT-HANDLER-001` | Handler 内禁止调 `LF_*` / `DataHandle` / `binio.jl` |
+| `PIT-SHIM-001` | `shim.jl` 搜索顺序：env → in-tree real → PATH |
+| `PIT-WARMUP-001` | Warmup 会真实调用 handler 三次，长度检查或禁用 |
+| `PIT-WAIT-001` | 单进程用 `Wait=True`，跨进程 worker 用 `False` |
+| `PIT-STR-001` | `String(v)` 转移所有权，用 `String(copy(v))` |
+| `PIT-STR-002` | 字符串参数用 `AbstractString`，让 Julia 加 NUL |
+
+---
+
+## 十五、许可
 
 MIT License. 详见仓库根目录 `LICENSE`。
 
 ---
 
-## 附：Julia 源文件依赖顺序
+## 附录 A：Julia 源文件依赖顺序
 
 `src/LingoFuse.jl` 的 `include` 顺序是有意义的。
 
@@ -1099,52 +1430,71 @@ MIT License. 详见仓库根目录 `LICENSE`。
 ```mermaid
 flowchart LR
     A["trace.jl"] --> B["error.jl"]
-    B --> C["loader.jl"]
-    C --> D["abi.jl"]
+    B --> C["uid.jl"]
+    C --> D["loader.jl"]
+    D --> E["abi.jl"]
 
     style A fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
-    style D fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+    style E fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
 ```
 
 ### A.2 第二组 — 回调与封装
 
 ```mermaid
 flowchart LR
-    D["abi.jl"] --> E["shim.jl"]
-    E --> F["callback.jl"]
-    F --> G["data_handle.jl"]
-    G --> H["app.jl"]
+    E["abi.jl"] --> F["shim.jl"]
+    F --> G["callback.jl"]
+    G --> H["data_handle.jl"]
+    H --> I["binio.jl"]
+    I --> J["app.jl"]
 
-    style D fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
-    style H fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+    style E fill:#E8F4FF,stroke:#1E3A8A,stroke-width:2px,color:#0D2F52
+    style J fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
 ```
 
-### A.3 第三组 — 网络与 I/O
+### A.3 第三组 — 异步与寻址
 
 ```mermaid
 flowchart LR
-    H["app.jl"] --> I["network.jl"]
-    I --> J["io.jl"]
-    J --> K["binio.jl"]
-    K --> L["status.jl"]
+    J["app.jl"] --> K["async.jl"]
+    K --> L["target.jl"]
+    L --> M["p2p.jl"]
 
-    style H fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
-    style L fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+    style J fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+    style M fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
 ```
 
-### A.4 硬性约束
+### A.4 第四组 — 网络与 I/O
+
+```mermaid
+flowchart LR
+    M["p2p.jl"] --> N["network.jl"]
+    N --> O["io.jl"]
+    O --> P["status.jl"]
+
+    style M fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+    style P fill:#D5F5E3,stroke:#1E8449,stroke-width:2px,color:#0E4D2A
+```
+
+### A.5 硬性约束
 
 ```mermaid
 flowchart TD
     C1["error.jl 必须在 loader.jl 之前<br/>（loader 会抛 LingoFuseLoadError）"]
-    C2["abi.jl 必须在所有包装层之前"]
-    C3["shim.jl 必须在 callback.jl 之前"]
+    C2["uid.jl 必须在 abi.jl 之前<br/>（abi 的签名引用 LFShimUID）"]
+    C3["abi.jl 必须在所有包装层之前"]
+    C4["shim.jl 必须在 callback.jl 之前"]
+    C5["app.jl 必须在 p2p.jl 之前<br/>（p2p 复用 _warmup_handler）"]
+    C6["async.jl 必须在 target.jl 之前"]
 
     style C1 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
     style C2 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
     style C3 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style C4 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style C5 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
+    style C6 fill:#FFF7E6,stroke:#B7791F,stroke-width:3px,color:#7E5109
 ```
 
 ---
 
-*本文档对应的 LingoFuse 运行时版本：v3.10。Julia 绑定版本：v0.1.0。*
+*本文档对应的 LingoFuse 运行时版本：v3.10。Julia 绑定版本：v0.2.0。*

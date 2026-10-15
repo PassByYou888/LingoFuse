@@ -39,6 +39,28 @@
 # clients and stops its sequenced notification threads. The underlying
 # native object remains in the global pool until LF_Shutdown is called;
 # the Julia handle becomes invalid immediately.
+#
+# do-block calling convention
+# ---------------------------
+# The registration functions come in two flavours, selected by the
+# type of the FIRST positional argument:
+#
+#   register_call!(app, api_name, desc, handler; warmup)
+#       -- handler-last form, idiomatic when the handler is a named
+#          function or a value held in a variable.
+#
+#   register_call!(handler, app, api_name, desc; warmup)
+#       -- handler-first form, required by Julia's do-block syntax:
+#
+#              register_call!(app, "add", "desc") do in_bytes
+#                  ...
+#              end
+#
+#          The do-block rewrite turns the trailing block into the
+#          first argument, so the dispatcher sees a Function in
+#          position 1.
+#
+# Both forms are exactly equivalent. Mixing them in one file is fine.
 
 # ------------------------------------------------------------------ #
 # Struct and constructor                                             #
@@ -235,6 +257,35 @@ function register_call!(app::App,
 end
 
 """
+    register_call!(handler::Function, app::App, api_name, desc;
+                   warmup = true) -> Bool
+
+do-block variant of `register_call!`.
+
+This method exists solely so that the idiomatic Julia do-block syntax
+works:
+
+    register_call!(app, "add", "desc") do in_bytes
+        ...
+    end
+
+The do-block rewrite places the trailing block as the FIRST
+positional argument, so the dispatcher must see a `Function` there.
+The arguments after the handler are the same as in the handler-last
+form, in the same order: `(app, api_name, desc)`.
+
+This method is exactly equivalent to the handler-last form.
+"""
+function register_call!(handler::Function,
+                        app::App,
+                        api_name::AbstractString,
+                        desc::AbstractString;
+                        warmup::Bool = true)::Bool
+    return register_call!(app, api_name, desc, handler;
+                          warmup = warmup)
+end
+
+"""
     register_notify!(app::App, api_name, desc, handler; warmup = true) -> Bool
 
 Register a Notify API whose handler receives the notification payload
@@ -254,6 +305,22 @@ function register_notify!(app::App,
         _warmup_handler(handler)
     end
     return ok
+end
+
+"""
+    register_notify!(handler::Function, app::App, api_name, desc;
+                     warmup = true) -> Bool
+
+do-block variant of `register_notify!`. See `register_call!`'s
+do-block variant for the full rationale.
+"""
+function register_notify!(handler::Function,
+                          app::App,
+                          api_name::AbstractString,
+                          desc::AbstractString;
+                          warmup::Bool = true)::Bool
+    return register_notify!(app, api_name, desc, handler;
+                            warmup = warmup)
 end
 
 """

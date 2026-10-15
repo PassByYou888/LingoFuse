@@ -445,7 +445,7 @@ if (Test-Path $cExtDir -PathType Container) {
         }
     } else {
         Write-Status "INFO" "Real shim not built: $realShim"
-        Write-Status "INFO" "Build it with: cd `"$cExtDir\real`"; .\build.ps1"
+        Write-Status "INFO" "Build it with: cd `"$cExtDir`"; .\build.ps1"
     }
 } else {
     Write-Status "INFO" "Skipped (c_ext directory not found)."
@@ -463,25 +463,25 @@ Write-Host ""
 Write-Host "Next steps for the LingoFuse Julia binding:" -ForegroundColor White
 Write-Host ""
 
-Write-Host "  [Step 1]  Build the C shims" -ForegroundColor Gray
-Write-Host "            cd `"$cExtDir`"" -ForegroundColor DarkGray
-Write-Host "            .\build.ps1" -ForegroundColor DarkGray
-Write-Host "            cd `"$cExtDir\real`"" -ForegroundColor DarkGray
+Write-Host "  [Build]   Compile the C shims (mock + real):" -ForegroundColor Gray
+Write-Host "            cd `"$scriptDir`"" -ForegroundColor DarkGray
 Write-Host "            .\build.ps1" -ForegroundColor DarkGray
 Write-Host ""
 
-Write-Host "  [Step 1]  Run the mock shim test (REQUIRES 2+ JULIA THREADS)" -ForegroundColor Gray
-Write-Host "            julia --threads=2 test_shim.jl" -ForegroundColor DarkGray
+Write-Host "  [Test]    Run the full acceptance suite:" -ForegroundColor Gray
+Write-Host "            julia --threads=2 test\runtests.jl" -ForegroundColor DarkGray
+Write-Host "            (dispatches mock group + real group)" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "            Or run every test/*.jl as a flat list:" -ForegroundColor Gray
+Write-Host "            .\test.ps1" -ForegroundColor DarkGray
 Write-Host ""
 
-Write-Host "  [Step 2]  Wire the 33 non-callback LF_* exports to the real" -ForegroundColor Gray
-Write-Host "            LingoFuse runtime. Requires section 7 to be PASS." -ForegroundColor Gray
+Write-Host "  [Demo]    Run the three-process Cross Demo:" -ForegroundColor Gray
+Write-Host "            Terminal 1:  julia --threads=2 example\CrossService.jl" -ForegroundColor DarkGray
+Write-Host "            Terminal 2:  julia --threads=2 example\CrossNode.jl" -ForegroundColor DarkGray
+Write-Host "            Terminal 3:  julia --threads=2 example\CrossCall.jl" -ForegroundColor DarkGray
 Write-Host ""
-
-Write-Host "  [Step 3]  Add the high-level JSON / string wrapper layer." -ForegroundColor Gray
-Write-Host ""
-
-Write-Host "  [Step 4]  Port the Cross demo (CrossService / CrossNode / CrossCall)." -ForegroundColor Gray
+Write-Host "            See example\README.md for startup-order details." -ForegroundColor DarkGray
 Write-Host ""
 
 if ($executionPolicy -eq "Restricted") {

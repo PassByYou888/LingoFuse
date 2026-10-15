@@ -1,32 +1,83 @@
 # shim.jl - Julia bindings for the C callback shim.
 #
-# See the original header comment in git history for the full design
-# rationale. This revision:
+# See the original header comment in git history for the design
+# rationale. This revision only changes the shim-library search
+# order; the binding set is unchanged.
 #
-#   1. Replaces the hard-coded relative search with a two-stage
-#      resolver: (a) the platform library search path, then
-#      (b) the in-tree build directories relative to this source
-#      file. The shim is a build artefact of the Julia package, so
-#      the in-tree locations ship with the package and the entire
-#      julia/ directory can be relocated without any configuration
-#      change.
+# Search order (see _candidate_shim_paths below):
 #
-#   2. Keeps the three payload accessors introduced by the
-#      payload-snapshot revision of the C shim:
-#          shim_event_input_data
-#          shim_event_input_len
-#          shim_set_output
-#      These are the ONLY way the consumer may interact with the
-#      event payload; they never touch a native data handle.
+#   1. LINGOFUSE_SHIM environment variable (explicit override).
+#   2. In-tree c_ext directories, real before mock:
+#         c_ext/real/lf_shim_real.dll
+#         c_ext/lf_shim_real.dll
+#         c_ext/lf_shim_mock.dll
+#   3. System library search path (PATH on Windows, LD_LIBRARY_PATH /
+#      DYLD_LIBRARY_PATH elsewhere). In each directory, real before
+#      mock.
+#   4. Alongside the current program.
 #
-#   3. Keeps the convenience helper shim_read_input that returns a
-#      Julia-owned Vector{UInt8} copy of the input snapshot in one
-#      call.
+# Why real is preferred over mock
+# --------------------------------
+# A freshly built c_ext/real/lf_shim_real.dll is the correct default
+# for every example and every integration test: it shares one
+# in-process registration table with the real LingoFuse library, so
+# register_call! and LF_Call see the same APIs.
+#
+# An earlier revision placed the PATH search before the in-tree
+# search. When c_ext itself was on PATH (which it commonly is in a
+# development shell), the PATH search found c_ext/lf_shim_mock.dll
+# first and returned it, silently overriding the freshly built real
+# shim. The symptom was:
+#
+#     PASS  register_call! 'add' returned true
+#     PASS  App 'demo' is visible after prepare_done
+#     FAIL  API 'add' is visible after prepare_done
+#     no found app("demo") api("add")
+#
+# Unit tests that specifically require the mock must set
+# LINGOFUSE_SHIM explicitly, or run through test/run_mock_tests.ps1.
+# The affected test files are:
+#
+#     test/test_callback.jl
+#     test/test_target.jl
+#     test/test_p2p.jl
+#
+# Each of them sets ENV["LINGOFUSE_SHIM"] before including this file.
+#
+# Locking / threading contract
+# ----------------------------
+# The consumer side NEVER touches a native data handle. The shim
+# snapshots the input payload on the trampoline thread and writes the
+# response back after the consumer signals completion. This module
+# therefore uses only the payload accessors
+# (shim_event_input_data, shim_event_input_len,
+#  shim_event_result_data, shim_event_result_len,
+#  shim_set_output) and never calls LF_ReadBuffer / LF_WriteBuffer
+# from the consumer side.
+#
+# String-returning option getters
+# -------------------------------
+# The three typed string getters (password, debug, p2p_name) own
+# dedicated static buffers in the shim; concurrent calls for DIFFERENT
+# options never interfere. The generic shim_get_option uses a
+# mutex-protected shared buffer, so two concurrent calls to it may
+# observe each other's results. All four return `const char*`, which
+# ccall converts to a Julia String before the wrapper returns; the
+# result is a fresh copy and safe to retain.
+
+# -------------------------------------------------------------------- #
+# Event kind constants                                                 #
+# -------------------------------------------------------------------- #
 
 const LF_SHIM_EVENT_CALL               = Cint(0)
 const LF_SHIM_EVENT_NOTIFY             = Cint(1)
 const LF_SHIM_EVENT_NETWORK_CONNECT    = Cint(2)
 const LF_SHIM_EVENT_NETWORK_DISCONNECT = Cint(3)
+const LF_SHIM_EVENT_ASYNC_RESULT       = Cint(4)
+
+# -------------------------------------------------------------------- #
+# Platform-specific shim library names                                 #
+# -------------------------------------------------------------------- #
 
 const _SHIM_REAL_NAME = if Sys.iswindows()
     "lf_shim_real.dll"
@@ -44,56 +95,55 @@ else
     "liblf_shim_mock.so"
 end
 
-# Resolve the C shim library path.
-#
-# Search order:
-#
-#   1. LINGOFUSE_SHIM override, when set. Must name an existing
-#      file.
-#   2. Every directory on the platform's library search path (see
-#      loader.jl for the exact list per platform). This allows the
-#      shim to be installed system-wide alongside the runtime.
-#   3. The in-tree build directories, relative to this source file:
-#      <julia>/c_ext/real/ and <julia>/c_ext/. These ship with the
-#      package, so the entire julia/ directory can be relocated
-#      without any configuration change.
-#   4. Alongside the current program, if any.
-#
-# When no directory on the search path contains the shim, the empty
-# string is returned and shim_available() reports false. The caller
-# (start_callback_consumer) will then raise a diagnostic error that
-# names the missing file and the ways to provide it.
+# -------------------------------------------------------------------- #
+# Shim library resolution                                              #
+# -------------------------------------------------------------------- #
+
 function _candidate_shim_paths()::Vector{String}
     candidates = String[]
 
+    # --- 1. Explicit override. Always wins. ---
     override = get(ENV, "LINGOFUSE_SHIM", "")
     if !isempty(override)
         push!(candidates, override)
     end
 
-    for dir in _library_search_directories()
-        push!(candidates, joinpath(dir, _SHIM_REAL_NAME))
-    end
-
+    # --- 2. In-tree c_ext directories, BEFORE any PATH search. ---
+    #
+    # The order within this group is deliberate:
+    #     real subdirectory -> real sibling -> mock sibling
+    #
+    # Real is preferred because a freshly built real shim is the
+    # correct default. Unit tests that need the mock must request
+    # it explicitly via LINGOFUSE_SHIM.
     here      = @__DIR__
     julia_dir = normpath(joinpath(here, ".."))
     c_ext_dir = joinpath(julia_dir, "c_ext")
 
     push!(candidates, joinpath(c_ext_dir, "real", _SHIM_REAL_NAME))
     push!(candidates, joinpath(c_ext_dir, _SHIM_REAL_NAME))
+    push!(candidates, joinpath(c_ext_dir, _SHIM_MOCK_NAME))
 
+    # --- 3. System library search path. ---
+    #
+    # Consulted after the in-tree locations so that a source-tree
+    # build always takes precedence over a system-wide install.
+    for dir in _library_search_directories()
+        push!(candidates, joinpath(dir, _SHIM_REAL_NAME))
+        push!(candidates, joinpath(dir, _SHIM_MOCK_NAME))
+    end
+
+    # --- 4. Alongside the current program, if any. ---
     if !isempty(Base.PROGRAM_FILE)
         push!(candidates,
               joinpath(dirname(Base.PROGRAM_FILE), _SHIM_REAL_NAME))
+        push!(candidates,
+              joinpath(dirname(Base.PROGRAM_FILE), _SHIM_MOCK_NAME))
     end
 
     return candidates
 end
 
-# Walk the candidate list and return the first entry that resolves to
-# an existing file. The bare library name is not a candidate here:
-# the shim is a build artefact of this package and its absence is a
-# deployment error that should be surfaced rather than papered over.
 function _find_shim_library()::String
     for p in _candidate_shim_paths()
         if isabspath(p)
@@ -152,7 +202,7 @@ function shim_shutdown()::Nothing
 end
 
 # ================================================================== #
-# Registration                                                        #
+# Registration: App-bound                                             #
 # ================================================================== #
 
 function shim_register_call(app_hnd::Ptr{Cvoid},
@@ -183,6 +233,56 @@ function shim_register_notify(app_hnd::Ptr{Cvoid},
     return ret == 1
 end
 
+# ================================================================== #
+# Registration: process-wide P2P                                      #
+# ================================================================== #
+#
+# The P2P namespace is INDEPENDENT of any App. APIs registered here
+# are reachable via UID addressing and P2PName addressing ONLY. They
+# are NOT reachable via App-name addressing.
+#
+# Lifetime: survives until lf_shim_shutdown / LF_Shutdown. Not torn
+# down by LF_FreeApp.
+
+function shim_register_p2p_call(name::AbstractString,
+                                desc::AbstractString,
+                                user_id::Int64)::Bool
+    _require_shim()
+    trace("shim: register_p2p_call name=$(name) uid=$(user_id)")
+    ret = ccall((:lf_shim_register_p2p_call, LINGOFUSE_SHIM_PATH),
+                Cint,
+                (Cstring, Cstring, Int64),
+                name, desc, user_id)
+    trace("shim: register_p2p_call name=$(name) ret=$(ret)")
+    return ret == 1
+end
+
+function shim_register_p2p_notify(name::AbstractString,
+                                  desc::AbstractString,
+                                  user_id::Int64)::Bool
+    _require_shim()
+    trace("shim: register_p2p_notify name=$(name) uid=$(user_id)")
+    ret = ccall((:lf_shim_register_p2p_notify, LINGOFUSE_SHIM_PATH),
+                Cint,
+                (Cstring, Cstring, Int64),
+                name, desc, user_id)
+    trace("shim: register_p2p_notify name=$(name) ret=$(ret)")
+    return ret == 1
+end
+
+function shim_unregister_p2p(name::AbstractString)::Bool
+    _require_shim()
+    trace("shim: unregister_p2p name=$(name)")
+    ret = ccall((:lf_shim_unregister_p2p, LINGOFUSE_SHIM_PATH),
+                Cint, (Cstring,), name)
+    trace("shim: unregister_p2p name=$(name) ret=$(ret)")
+    return ret == 1
+end
+
+# ================================================================== #
+# Network events                                                      #
+# ================================================================== #
+
 function shim_install_network_events(connect_uid::Int64,
                                      disconnect_uid::Int64)::Nothing
     _require_shim()
@@ -201,6 +301,93 @@ function shim_clear_network_events()::Nothing
 end
 
 # ================================================================== #
+# Async dispatch (6 primitives)                                       #
+# ================================================================== #
+#
+# All six primitives dispatch the request and return immediately. The
+# response is delivered later as an LF_SHIM_EVENT_ASYNC_RESULT event
+# whose user_id is the user_token supplied here.
+#
+# Return value:
+#   1  request queued; a result event will follow
+#   0  dispatch failed; no event will follow
+#
+# UID ABI note
+# ------------
+# The shim declares the UID parameter of the two UID-addressed
+# primitives as `const lf_shim_uid_t*` (a POINTER), not by value.
+# This differs from the underlying LF_UID_Async_* functions (which
+# take the UID by value); the shim dereferences the pointer before
+# calling them. The Julia bindings therefore pass a `Ref{LFShimUID}`.
+
+function shim_async_call(app_name::AbstractString,
+                         param_hnd::Ptr{Cvoid},
+                         user_token::Int64)::Cint
+    _require_shim()
+    return ccall((:lf_shim_async_call, LINGOFUSE_SHIM_PATH),
+                 Cint,
+                 (Cstring, Ptr{Cvoid}, Int64),
+                 app_name, param_hnd, user_token)
+end
+
+function shim_async_sequenced_call(app_name::AbstractString,
+                                   param_hnd::Ptr{Cvoid},
+                                   user_token::Int64)::Cint
+    _require_shim()
+    return ccall((:lf_shim_async_sequenced_call, LINGOFUSE_SHIM_PATH),
+                 Cint,
+                 (Cstring, Ptr{Cvoid}, Int64),
+                 app_name, param_hnd, user_token)
+end
+
+function shim_uid_async_call(uid::LFShimUID,
+                             param_hnd::Ptr{Cvoid},
+                             user_token::Int64)::Cint
+    _require_shim()
+    uid_ref = Ref(uid)
+    return GC.@preserve uid_ref begin
+        ccall((:lf_shim_uid_async_call, LINGOFUSE_SHIM_PATH),
+              Cint,
+              (Ptr{LFShimUID}, Ptr{Cvoid}, Int64),
+              uid_ref, param_hnd, user_token)
+    end
+end
+
+function shim_uid_async_sequenced_call(uid::LFShimUID,
+                                       param_hnd::Ptr{Cvoid},
+                                       user_token::Int64)::Cint
+    _require_shim()
+    uid_ref = Ref(uid)
+    return GC.@preserve uid_ref begin
+        ccall((:lf_shim_uid_async_sequenced_call, LINGOFUSE_SHIM_PATH),
+              Cint,
+              (Ptr{LFShimUID}, Ptr{Cvoid}, Int64),
+              uid_ref, param_hnd, user_token)
+    end
+end
+
+function shim_p2pname_async_call(group_name::AbstractString,
+                                 param_hnd::Ptr{Cvoid},
+                                 user_token::Int64)::Cint
+    _require_shim()
+    return ccall((:lf_shim_p2pname_async_call, LINGOFUSE_SHIM_PATH),
+                 Cint,
+                 (Cstring, Ptr{Cvoid}, Int64),
+                 group_name, param_hnd, user_token)
+end
+
+function shim_p2pname_async_sequenced_call(group_name::AbstractString,
+                                           param_hnd::Ptr{Cvoid},
+                                           user_token::Int64)::Cint
+    _require_shim()
+    return ccall((:lf_shim_p2pname_async_sequenced_call,
+                  LINGOFUSE_SHIM_PATH),
+                 Cint,
+                 (Cstring, Ptr{Cvoid}, Int64),
+                 group_name, param_hnd, user_token)
+end
+
+# ================================================================== #
 # Consumer side                                                       #
 # ================================================================== #
 
@@ -211,6 +398,10 @@ function shim_wait_event(timeout_ms::Integer)::Ptr{Cvoid}
     e != C_NULL && trace("shim: wait_event returned an event pointer")
     return e
 end
+
+# -------------------------------------------------------------------- #
+# Event accessors                                                      #
+# -------------------------------------------------------------------- #
 
 function shim_event_kind(e::Ptr{Cvoid})::Cint
     return ccall((:lf_shim_event_kind, LINGOFUSE_SHIM_PATH),
@@ -243,53 +434,30 @@ end
 # Event payload accessors                                             #
 # ================================================================== #
 
-"""
-    shim_event_input_data(e) -> Ptr{UInt8}
-
-Return the snapshot of the input payload, or a null pointer when the
-input was empty or absent.
-
-The buffer is owned by the event and is freed by the trampoline after
-the consumer signals completion. The consumer must copy the bytes
-into Julia-owned storage before that point; the helper
-[`shim_read_input`](@ref) does exactly that.
-
-This accessor exists because the consumer MUST NOT read the native
-input handle directly: doing so would enter the real LingoFuse
-library from a thread other than the one that owns the handle, and
-would deadlock on the library's per-handle locks.
-"""
 function shim_event_input_data(e::Ptr{Cvoid})::Ptr{UInt8}
     return ccall((:lf_shim_event_input_data, LINGOFUSE_SHIM_PATH),
                  Ptr{UInt8}, (Ptr{Cvoid},), e)
 end
 
-"""
-    shim_event_input_len(e) -> Csize_t
-
-Return the length in bytes of the input snapshot, or zero when the
-input was empty or absent.
-"""
 function shim_event_input_len(e::Ptr{Cvoid})::Csize_t
     return ccall((:lf_shim_event_input_len, LINGOFUSE_SHIM_PATH),
                  Csize_t, (Ptr{Cvoid},), e)
 end
 
-"""
-    shim_read_input(e) -> Vector{UInt8}
+function shim_event_result_data(e::Ptr{Cvoid})::Ptr{UInt8}
+    return ccall((:lf_shim_event_result_data, LINGOFUSE_SHIM_PATH),
+                 Ptr{UInt8}, (Ptr{Cvoid},), e)
+end
 
-Return a Julia-owned copy of the event's input snapshot. The
-underlying native buffer is owned by the shim and is freed by the
-trampoline after the consumer signals completion; the returned
-vector is independent and safe to retain past that point.
+function shim_event_result_len(e::Ptr{Cvoid})::Csize_t
+    return ccall((:lf_shim_event_result_len, LINGOFUSE_SHIM_PATH),
+                 Csize_t, (Ptr{Cvoid},), e)
+end
 
-An empty input, a null snapshot, or a zero length all map to an
-empty Vector{UInt8}.
+# ================================================================== #
+# Julia-owned copies of event payloads                                #
+# ================================================================== #
 
-The copy is performed with a single unsafe_copyto! into a freshly
-allocated Julia array, which avoids the version-dependent signatures
-of Base.unsafe_wrap.
-"""
 function shim_read_input(e::Ptr{Cvoid})::Vector{UInt8}
     p = shim_event_input_data(e)
     n = shim_event_input_len(e)
@@ -299,19 +467,19 @@ function shim_read_input(e::Ptr{Cvoid})::Vector{UInt8}
     return out
 end
 
-"""
-    shim_set_output(e, data) -> Bool
+function shim_read_result(e::Ptr{Cvoid})::Vector{UInt8}
+    p = shim_event_result_data(e)
+    n = shim_event_result_len(e)
+    (p == C_NULL || n == 0) && return UInt8[]
+    out = Vector{UInt8}(undef, Int(n))
+    unsafe_copyto!(pointer(out), p, Int(n))
+    return out
+end
 
-Hand the response bytes to the shim. The data is copied into a heap
-buffer owned by the event; the trampoline writes it to the native
-output handle after the consumer signals completion.
+# ================================================================== #
+# Event completion                                                    #
+# ================================================================== #
 
-Calling this more than once replaces the previous payload. An empty
-`data` clears any previously set output and marks the response as
-empty.
-
-Returns `true` on success.
-"""
 function shim_set_output(e::Ptr{Cvoid},
                          data::AbstractVector{UInt8})::Bool
     isempty(data) && return true
@@ -324,19 +492,275 @@ function shim_set_output(e::Ptr{Cvoid},
     return ret == 1
 end
 
-"""
-    shim_complete_event(e) -> Nothing
-
-Signal the blocked trampoline to return. The caller must have
-finished all output work (via [`shim_set_output`](@ref)) before
-invoking this. The event object is freed by the trampoline after
-this call returns; the caller must not touch `e` afterwards.
-"""
 function shim_complete_event(e::Ptr{Cvoid})::Nothing
     trace("shim: complete_event $(e)")
     ccall((:lf_shim_complete_event, LINGOFUSE_SHIM_PATH),
           Cvoid, (Ptr{Cvoid},), e)
     return nothing
+end
+
+# ================================================================== #
+# Runtime options: typed get / set                                    #
+# ================================================================== #
+#
+# The 16 runtime options exposed by the Pascal side through
+# LF_Set_Opt_* / LF_Get_Opt_* are mirrored here as one typed
+# set/get pair per option. The generic shim_set_option /
+# shim_get_option remain available for dynamic option names.
+
+# ---- Authentication -------------------------------------------------- #
+
+function shim_set_opt_password(value::AbstractString)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_password, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cstring,), value)
+    return nothing
+end
+
+function shim_get_opt_password()::String
+    _require_shim()
+    p = ccall((:lf_shim_get_opt_password, LINGOFUSE_SHIM_PATH),
+              Ptr{UInt8}, ())
+    p == C_NULL && return ""
+    return unsafe_string(p)
+end
+
+# ---- Logging and diagnostics ---------------------------------------- #
+
+function shim_set_opt_debug(value::AbstractString)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_debug, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cstring,), value)
+    return nothing
+end
+
+function shim_get_opt_debug()::String
+    _require_shim()
+    p = ccall((:lf_shim_get_opt_debug, LINGOFUSE_SHIM_PATH),
+              Ptr{UInt8}, ())
+    p == C_NULL && return ""
+    return unsafe_string(p)
+end
+
+function shim_set_opt_quiet(value::Bool)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_quiet, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), value ? 1 : 0)
+    return nothing
+end
+
+function shim_get_opt_quiet()::Bool
+    _require_shim()
+    return ccall((:lf_shim_get_opt_quiet, LINGOFUSE_SHIM_PATH),
+                 Cint, ()) != 0
+end
+
+function shim_set_opt_show_thread_id(value::Bool)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_show_thread_id, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), value ? 1 : 0)
+    return nothing
+end
+
+function shim_get_opt_show_thread_id()::Bool
+    _require_shim()
+    return ccall((:lf_shim_get_opt_show_thread_id, LINGOFUSE_SHIM_PATH),
+                 Cint, ()) != 0
+end
+
+function shim_set_opt_console_output(value::Bool)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_console_output, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), value ? 1 : 0)
+    return nothing
+end
+
+function shim_get_opt_console_output()::Bool
+    _require_shim()
+    return ccall((:lf_shim_get_opt_console_output, LINGOFUSE_SHIM_PATH),
+                 Cint, ()) != 0
+end
+
+# ---- Connection readiness ------------------------------------------- #
+
+function shim_set_opt_overlap_connection(value::Bool)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_overlap_connection, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), value ? 1 : 0)
+    return nothing
+end
+
+function shim_get_opt_overlap_connection()::Bool
+    _require_shim()
+    return ccall((:lf_shim_get_opt_overlap_connection,
+                  LINGOFUSE_SHIM_PATH), Cint, ()) != 0
+end
+
+function shim_set_opt_wait_connection_ready_ok(value::Bool)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_wait_connection_ready_ok,
+           LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), value ? 1 : 0)
+    return nothing
+end
+
+function shim_get_opt_wait_connection_ready_ok()::Bool
+    _require_shim()
+    return ccall((:lf_shim_get_opt_wait_connection_ready_ok,
+                  LINGOFUSE_SHIM_PATH), Cint, ()) != 0
+end
+
+function shim_set_opt_wait_connection_timeout(value_ms::UInt64)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_wait_connection_timeout, LINGOFUSE_SHIM_PATH),
+          Cvoid, (UInt64,), value_ms)
+    return nothing
+end
+
+function shim_get_opt_wait_connection_timeout()::UInt64
+    _require_shim()
+    return ccall((:lf_shim_get_opt_wait_connection_timeout,
+                  LINGOFUSE_SHIM_PATH), UInt64, ())
+end
+
+# ---- IPC ------------------------------------------------------------ #
+
+function shim_set_opt_ipc_serv_thread_count(value::Integer)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_ipc_serv_thread_count, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), Cint(value))
+    return nothing
+end
+
+function shim_get_opt_ipc_serv_thread_count()::Int
+    _require_shim()
+    return Int(ccall((:lf_shim_get_opt_ipc_serv_thread_count,
+                      LINGOFUSE_SHIM_PATH), Cint, ()))
+end
+
+function shim_set_opt_ipc_serv_max_queue_length(value::Integer)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_ipc_serv_max_queue_length,
+           LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), Cint(value))
+    return nothing
+end
+
+function shim_get_opt_ipc_serv_max_queue_length()::Int
+    _require_shim()
+    return Int(ccall((:lf_shim_get_opt_ipc_serv_max_queue_length,
+                      LINGOFUSE_SHIM_PATH), Cint, ()))
+end
+
+function shim_set_opt_ipc_serv_max_msg_size(value::Integer)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_ipc_serv_max_msg_size, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), Cint(value))
+    return nothing
+end
+
+function shim_get_opt_ipc_serv_max_msg_size()::Int
+    _require_shim()
+    return Int(ccall((:lf_shim_get_opt_ipc_serv_max_msg_size,
+                      LINGOFUSE_SHIM_PATH), Cint, ()))
+end
+
+# ---- Sequenced notifications ---------------------------------------- #
+
+function shim_set_opt_fixed_sequenced_time(value_ms::UInt64)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_fixed_sequenced_time, LINGOFUSE_SHIM_PATH),
+          Cvoid, (UInt64,), value_ms)
+    return nothing
+end
+
+function shim_get_opt_fixed_sequenced_time()::UInt64
+    _require_shim()
+    return ccall((:lf_shim_get_opt_fixed_sequenced_time,
+                  LINGOFUSE_SHIM_PATH), UInt64, ())
+end
+
+# ---- P2P group name -------------------------------------------------- #
+
+function shim_set_opt_p2p_name(value::AbstractString)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_p2p_name, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cstring,), value)
+    return nothing
+end
+
+function shim_get_opt_p2p_name()::String
+    _require_shim()
+    p = ccall((:lf_shim_get_opt_p2p_name, LINGOFUSE_SHIM_PATH),
+              Ptr{UInt8}, ())
+    p == C_NULL && return ""
+    return unsafe_string(p)
+end
+
+# ---- Data handle pool ----------------------------------------------- #
+
+function shim_set_opt_data_handle_idle_timeout(value_ms::UInt64)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_data_handle_idle_timeout,
+           LINGOFUSE_SHIM_PATH),
+          Cvoid, (UInt64,), value_ms)
+    return nothing
+end
+
+function shim_get_opt_data_handle_idle_timeout()::UInt64
+    _require_shim()
+    return ccall((:lf_shim_get_opt_data_handle_idle_timeout,
+                  LINGOFUSE_SHIM_PATH), UInt64, ())
+end
+
+function shim_set_opt_data_handle_pool_scan_interval(
+    value_ms::UInt64)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_data_handle_pool_scan_interval,
+           LINGOFUSE_SHIM_PATH),
+          Cvoid, (UInt64,), value_ms)
+    return nothing
+end
+
+function shim_get_opt_data_handle_pool_scan_interval()::UInt64
+    _require_shim()
+    return ccall((:lf_shim_get_opt_data_handle_pool_scan_interval,
+                  LINGOFUSE_SHIM_PATH), UInt64, ())
+end
+
+# ---- Command flushing ----------------------------------------------- #
+
+function shim_set_opt_no_reponse_cmd_null_flush_threshold(
+    value::Integer)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_opt_no_reponse_cmd_null_flush_threshold,
+           LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cint,), Cint(value))
+    return nothing
+end
+
+function shim_get_opt_no_reponse_cmd_null_flush_threshold()::Int
+    _require_shim()
+    return Int(ccall((:lf_shim_get_opt_no_reponse_cmd_null_flush_threshold,
+                      LINGOFUSE_SHIM_PATH), Cint, ()))
+end
+
+# ---- Generic (dynamic option names) --------------------------------- #
+
+function shim_set_option(name::AbstractString,
+                         value::AbstractString)::Nothing
+    _require_shim()
+    ccall((:lf_shim_set_option, LINGOFUSE_SHIM_PATH),
+          Cvoid, (Cstring, Cstring), name, value)
+    return nothing
+end
+
+function shim_get_option(name::AbstractString)::String
+    _require_shim()
+    p = ccall((:lf_shim_get_option, LINGOFUSE_SHIM_PATH),
+              Ptr{UInt8}, (Cstring,), name)
+    p == C_NULL && return ""
+    return unsafe_string(p)
 end
 
 # ================================================================== #
@@ -347,14 +771,47 @@ export LF_SHIM_EVENT_CALL,
        LF_SHIM_EVENT_NOTIFY,
        LF_SHIM_EVENT_NETWORK_CONNECT,
        LF_SHIM_EVENT_NETWORK_DISCONNECT,
+       LF_SHIM_EVENT_ASYNC_RESULT,
        LINGOFUSE_SHIM_PATH,
        shim_available, shim_is_real, shim_path,
        shim_init, shim_shutdown,
        shim_register_call, shim_register_notify,
+       shim_register_p2p_call, shim_register_p2p_notify,
+       shim_unregister_p2p,
        shim_install_network_events, shim_clear_network_events,
+       shim_async_call, shim_async_sequenced_call,
+       shim_uid_async_call, shim_uid_async_sequenced_call,
+       shim_p2pname_async_call, shim_p2pname_async_sequenced_call,
        shim_wait_event,
        shim_event_kind, shim_event_user_id,
        shim_event_input, shim_event_output, shim_event_addr,
        shim_event_input_data, shim_event_input_len,
-       shim_read_input, shim_set_output,
-       shim_complete_event
+       shim_event_result_data, shim_event_result_len,
+       shim_read_input, shim_read_result,
+       shim_set_output, shim_complete_event,
+       shim_set_opt_password, shim_get_opt_password,
+       shim_set_opt_debug, shim_get_opt_debug,
+       shim_set_opt_quiet, shim_get_opt_quiet,
+       shim_set_opt_show_thread_id, shim_get_opt_show_thread_id,
+       shim_set_opt_console_output, shim_get_opt_console_output,
+       shim_set_opt_overlap_connection, shim_get_opt_overlap_connection,
+       shim_set_opt_wait_connection_ready_ok,
+       shim_get_opt_wait_connection_ready_ok,
+       shim_set_opt_wait_connection_timeout,
+       shim_get_opt_wait_connection_timeout,
+       shim_set_opt_ipc_serv_thread_count,
+       shim_get_opt_ipc_serv_thread_count,
+       shim_set_opt_ipc_serv_max_queue_length,
+       shim_get_opt_ipc_serv_max_queue_length,
+       shim_set_opt_ipc_serv_max_msg_size,
+       shim_get_opt_ipc_serv_max_msg_size,
+       shim_set_opt_fixed_sequenced_time,
+       shim_get_opt_fixed_sequenced_time,
+       shim_set_opt_p2p_name, shim_get_opt_p2p_name,
+       shim_set_opt_data_handle_idle_timeout,
+       shim_get_opt_data_handle_idle_timeout,
+       shim_set_opt_data_handle_pool_scan_interval,
+       shim_get_opt_data_handle_pool_scan_interval,
+       shim_set_opt_no_reponse_cmd_null_flush_threshold,
+       shim_get_opt_no_reponse_cmd_null_flush_threshold,
+       shim_set_option, shim_get_option

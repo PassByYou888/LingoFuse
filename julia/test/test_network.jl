@@ -7,8 +7,23 @@
 #   4. exit_main_thread stops the loop without releasing resources.
 #   5. shutdown releases resources; a second shutdown is a no-op.
 #
+# MODE REQUIREMENT
+# ----------------
+# This test exercises the REAL LingoFuse network stack:
+#   - LF_PrepareService / LF_PrepareClient / LF_PrepareDone
+#   - LF_Call on a live IPC endpoint
+#   - LF_Generate_AppName / LF_Get_AppName after the main thread is up
+#
+# These functions come from the real library (LINGOFUSE_LIBRARY_PATH)
+# and are not implemented by the mock shim. The test therefore
+# auto-skips in MOCK mode with a clear message; the mock's coverage
+# for the same functionality lives in test_callback.jl and
+# test_target.jl (async path) and in test_p2p.jl (registration path).
+#
 # The test uses a unique IPC endpoint name (PID + random suffix) so
 # repeated runs do not collide with a previous process's endpoint.
+#
+# NOTE: uid.jl MUST be included before abi.jl (see test_io.jl).
 
 ENV["LINGOFUSE_TRACE"] = "0"
 
@@ -16,6 +31,7 @@ const _SRC = joinpath(@__DIR__, "..", "src")
 
 include(joinpath(_SRC, "trace.jl"))
 include(joinpath(_SRC, "error.jl"))
+include(joinpath(_SRC, "uid.jl"))
 include(joinpath(_SRC, "loader.jl"))
 include(joinpath(_SRC, "abi.jl"))
 include(joinpath(_SRC, "shim.jl"))
@@ -23,6 +39,23 @@ include(joinpath(_SRC, "callback.jl"))
 include(joinpath(_SRC, "data_handle.jl"))
 include(joinpath(_SRC, "app.jl"))
 include(joinpath(_SRC, "network.jl"))
+
+# ------------------------------------------------------------------ #
+# Mode gate                                                          #
+# ------------------------------------------------------------------ #
+
+if !shim_is_real()
+    println(stderr, "[test] SKIP: network test requires the REAL shim.")
+    println(stderr, "[test]   Current shim: $(LINGOFUSE_SHIM_PATH)")
+    println(stderr, "[test]   The mock shim does not implement " *
+                    "LF_PrepareService / LF_PrepareDone / LF_Call.")
+    println(stderr, "[test]   Build lf_shim_real.dll and set " *
+                    "LINGOFUSE_SHIM to its path to enable this test.")
+    println(stderr, "")
+    println(stderr, "[test] results: passed=0  failed=0  skipped=1")
+    println(stderr, "[test] OK")
+    exit(0)
+end
 
 # ------------------------------------------------------------------ #
 # Report                                                             #
@@ -53,9 +86,9 @@ function unique_endpoint(prefix::String)::String
     return "ipc:jltest_$(prefix)_$(pid)_$(salt)"
 end
 
-const APP_NAME     = "JlNetworkTestApp"
-const API_NAME     = "echo"
-const ENDPOINT     = unique_endpoint("net")
+const APP_NAME = "JlNetworkTestApp"
+const API_NAME = "echo"
+const ENDPOINT = unique_endpoint("net")
 
 println(stderr, "[test] endpoint = ", ENDPOINT)
 
@@ -76,8 +109,8 @@ try
     # Prepare service and client.
     reset_prepare()
 
-    set_option("Wait_Ready", "False")          # do not block on connect
-    set_option("Quiet", "True")                # suppress native chatter
+    set_option("Wait_Connection_ReadyOk", "False")   # do not block on connect
+    set_option("Quiet", "True")                      # suppress native chatter
 
     tag_s = prepare_service(ENDPOINT, ENDPOINT)
     ck(tag_s >= 0, "prepare_service returned a tag ($(tag_s))")

@@ -8,6 +8,9 @@
 #   - A finalizer that releases the handle if dispose! was forgotten.
 #   - Byte-level I/O, string helpers, and cursor management on top of
 #     the raw LF_* primitives from abi.jl.
+#   - Sender-identity accessors (get_p2p_uid, get_p2p_name) that read
+#     the "side data" the framework injects into every inbound
+#     payload.
 #
 # Two ownership modes
 # -------------------
@@ -56,6 +59,16 @@
 # produce incorrect results. Callers that must handle arbitrary
 # bytes should use read_buffer_exact! or read_string_bytes and
 # perform their own decoding with an explicit error handler.
+#
+# Sender identity accessors
+# -------------------------
+# get_p2p_uid and get_p2p_name read "side data" injected by the
+# SENDER's transport layer before transmission. They are meaningful
+# ONLY on the input handle of a registered callback; on any other
+# handle (an output handle, or a handle the caller created itself)
+# the C side logs a warning and returns a zero UID / empty string.
+# The wrapper forwards that behaviour verbatim; no exception is
+# raised.
 
 # ------------------------------------------------------------------ #
 # Struct and constructors                                            #
@@ -162,8 +175,6 @@ function dispose!(dh::DataHandle)
         return nothing
     end
     if !dh.owned
-        # Borrowed handle: leave the wrapper state untouched so that
-        # a subsequent read within the same callback still works.
         return nothing
     end
 
@@ -292,8 +303,6 @@ function read_buffer!(dh::DataHandle, n::Integer)::Vector{UInt8}
         return UInt8[]
     end
     if got < k
-        # Short read: shrink in place. resize! does not copy, unlike
-        # out[1:got].
         resize!(out, Int(got))
     end
     return out
@@ -379,16 +388,8 @@ C++ bindings and is preserved here byte-for-byte.
 
 UTF-8 (NOT validated)
 ---------------------
-This function does NOT validate or repair UTF-8. It constructs the
-result with `String(::Vector{UInt8})`, which takes ownership of the
-bytes without transcoding. If the payload contains invalid UTF-8
-sequences, the returned String may be malformed, and subsequent
-character-level operations on it (iteration, indexing, regex) may
-raise an error or produce incorrect results.
-
-Callers that need to handle arbitrary bytes should use
-`read_buffer_exact!` or `read_string_bytes` and decode explicitly
-with the error handler of their choice.
+This function does NOT validate or repair UTF-8. See the module
+docstring for the full note.
 """
 function read_string!(dh::DataHandle)::String
     _ensure_valid(dh)
@@ -403,18 +404,92 @@ function read_string!(dh::DataHandle)::String
 
     nul_idx = findfirst(==(0x00), raw)
     if nul_idx === nothing
-        # No NUL: the cursor already advanced to the end of the
-        # buffer; move it to size + 1 to match the fault-tolerant
-        # read contract of every other binding. The native layer
-        # grows the buffer by one byte.
         set_cursor_position!(dh, total + 1)
         return String(raw)
     end
 
-    # Advance the cursor past the NUL.
     set_cursor_position!(dh, start + nul_idx)
     payload = raw[1:nul_idx-1]
     return String(payload)
+end
+
+# ------------------------------------------------------------------ #
+# Sender identity accessors                                          #
+# ------------------------------------------------------------------ #
+#
+# Both accessors read "side data" injected by the SENDER's transport
+# layer before transmission. They are meaningful ONLY on the input
+# handle of a registered callback.
+#
+# On any other handle (an output handle, or a handle the caller
+# created itself), the C side logs a warning and returns a zero UID /
+# empty string. The wrapper forwards that behaviour verbatim; no
+# exception is raised.
+
+"""
+    get_p2p_uid(dh::DataHandle) -> LFShimUID
+
+Return the sender's 32-byte UID.
+
+{!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+This accessor reads the `FromUID` field that the SENDER'S transport
+layer injects automatically before transmission. It is therefore
+"side data": metadata that the sender wrote into the payload header,
+not a property of the handle itself.
+
+Because of this design, the accessor is valid ONLY on the INPUT
+handle of a registered Call / Notify callback. On any other handle
+the C side logs a warning and returns a zero UID.
+
+Returns:
+    A 32-byte `LFShimUID`. All-zero when the handle is not an input
+    handle, or when the sender did not provide a UID (which normally
+    should not happen for remote requests that reached a callback).
+
+Notes:
+    * The UID is regenerated on every TunnelLink. Caching it across
+      a link loss is unsafe; callers that cache must re-probe after
+      a reconnect.
+    * The returned value is a fresh copy, safe to retain indefinitely.
+    * `LF_Get_P2P_UID` returns a pointer to a 32-byte UID allocated
+      by the C side and scheduled for automatic release about 5
+      seconds after the call. This wrapper copies the 32 bytes
+      immediately with `unsafe_load` and never retains the pointer.
+"""
+function get_p2p_uid(dh::DataHandle)::LFShimUID
+    _ensure_valid(dh)
+    p = LF_Get_P2P_UID(dh.handle)
+    p == C_NULL && return zero_uid()
+    return unsafe_load(p)
+end
+
+"""
+    get_p2p_name(dh::DataHandle) -> String
+
+Return the sender's P2P group name.
+
+{!!!!!  SIDE DATA, NOT A HANDLE PROPERTY  !!!!!}
+Same mechanism as get_p2p_uid: reads the `FromP2PName` field that the
+SENDER'S transport layer injects before transmission. Valid ONLY on
+the INPUT handle of a registered callback.
+
+Returns:
+    The sender's P2P group name, or `""` if the sender did not set
+    one (a legitimate configuration; the default P2P name is empty).
+
+Notes:
+    * The underlying C function returns a pointer to a transient
+      buffer that is released ~5 seconds after the call.
+      `LF_Get_P2P_Name` copies the string into a fresh Julia String
+      with `unsafe_string` before the wrapper returns, so the
+      result is safe to retain indefinitely.
+    * The name is NOT a routing key on its own; it is an identity
+      hint. Use it for admission control, audit, multi-tenancy, or
+      logging.
+"""
+function get_p2p_name(dh::DataHandle)::String
+    _ensure_valid(dh)
+    return LF_Get_P2P_Name(dh.handle)
 end
 
 # ------------------------------------------------------------------ #
@@ -433,4 +508,6 @@ export DataHandle,
        read_buffer_exact!,
        read_all!,
        write_string!,
-       read_string!
+       read_string!,
+       get_p2p_uid,
+       get_p2p_name

@@ -10,6 +10,11 @@
 #   - read_all_bytes / peek_string_bytes
 #   - write_json! / read_json / try_read_json / read_json_or_bytes
 #   - Wire-format invariants (byte-for-byte compatibility)
+#
+# NOTE: uid.jl MUST be included before abi.jl. abi.jl's signatures
+# reference LFShimUID (the 32-byte tuple type), which is defined in
+# uid.jl. Omitting the include produces an UndefVarError at the
+# LF_Get_P2P_UID binding.
 
 ENV["LINGOFUSE_TRACE"] = "0"
 
@@ -17,6 +22,7 @@ const _SRC = joinpath(@__DIR__, "..", "src")
 
 include(joinpath(_SRC, "trace.jl"))
 include(joinpath(_SRC, "error.jl"))
+include(joinpath(_SRC, "uid.jl"))
 include(joinpath(_SRC, "loader.jl"))
 include(joinpath(_SRC, "abi.jl"))
 include(joinpath(_SRC, "shim.jl"))

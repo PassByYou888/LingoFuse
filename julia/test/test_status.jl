@@ -12,6 +12,8 @@
 # peer to connect to), and verifies the queue's surface directly by
 # calling the producer helper `_enqueue` on it. This isolates the
 # queue's own correctness from the mesh's timing.
+#
+# NOTE: uid.jl MUST be included before abi.jl (see test_io.jl).
 
 ENV["LINGOFUSE_TRACE"] = "0"
 
@@ -19,6 +21,7 @@ const _SRC = joinpath(@__DIR__, "..", "src")
 
 include(joinpath(_SRC, "trace.jl"))
 include(joinpath(_SRC, "error.jl"))
+include(joinpath(_SRC, "uid.jl"))
 include(joinpath(_SRC, "loader.jl"))
 include(joinpath(_SRC, "abi.jl"))
 include(joinpath(_SRC, "shim.jl"))

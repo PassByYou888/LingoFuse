@@ -10,10 +10,10 @@
 #
 # The shim solves this by snapshotting the input payload on the
 # trampoline thread and accepting the consumer's response through
-# lf_shim_set_output. This module therefore uses only the three
-# payload accessors (shim_event_input_data, shim_event_input_len,
-# shim_set_output) and never calls LF_ReadBuffer or LF_WriteBuffer
-# from the consumer.
+# lf_shim_set_output. This module therefore uses only the payload
+# accessors (shim_event_input_data, shim_event_input_len,
+# shim_event_result_data, shim_event_result_len, shim_set_output) and
+# never calls LF_ReadBuffer or LF_WriteBuffer from the consumer.
 #
 # World age
 # ---------
@@ -40,6 +40,29 @@
 # quiesces the consumer task before calling into the shim, so the
 # shim's re-initialisation path (which resets g_shutdown) is safe.
 # See c_ext/lf_shim.c for the underlying contract.
+#
+# Handler registry
+# ----------------
+# All four event kinds share ONE uid registry (HANDLERS). uids are
+# allocated from a single monotonically increasing counter, so a uid
+# cannot be reused and there is no ambiguity between event kinds.
+#
+# The four handlers have three distinct signatures:
+#
+#   Call / Async result  :: Function(Vector{UInt8})
+#   Notify               :: Function(Vector{UInt8})
+#   Network              :: Function(String, String)
+#
+# Call and Async result share a signature by design: an async result
+# is delivered to the user exactly like a Call response, as a
+# Julia-owned Vector{UInt8} carrying the raw payload.
+#
+# Async result dispatch
+# ---------------------
+# The ASYNC_RESULT branch was added in this revision. The dispatch
+# function _dispatch_async_result reads the result payload through
+# shim_read_result (a Julia-owned copy) and invokes the handler with
+# Base.invokelatest, matching every other dispatch site.
 
 const HANDLERS      = Dict{Int64, Function}()
 const HANDLERS_LOCK = ReentrantLock()
@@ -88,6 +111,16 @@ function _read_event_input(e::Ptr{Cvoid})::Vector{UInt8}
     return shim_read_input(e)
 end
 
+"""
+    _read_event_result(e) -> Vector{UInt8}
+
+Return a Julia-owned copy of the event's async result snapshot. See
+`shim_read_result` for the underlying contract.
+"""
+function _read_event_result(e::Ptr{Cvoid})::Vector{UInt8}
+    return shim_read_result(e)
+end
+
 # ------------------------------------------------------------------ #
 # Event dispatch                                                     #
 # ------------------------------------------------------------------ #
@@ -115,10 +148,6 @@ function _dispatch_call(e::Ptr{Cvoid}, uid::Int64)
         trace("callback: handler output length=$(length(result))")
         ok = shim_set_output(e, result)
         if !ok
-            # The shim's allocation of the output buffer failed (or the
-            # event pointer was invalid). The caller will receive an
-            # empty response. This is the only signal we can produce
-            # from the consumer thread; report it and continue.
             println(stderr,
                     "[LingoFuse] shim_set_output failed for uid=", uid,
                     " (response length=", length(result),
@@ -150,6 +179,40 @@ function _dispatch_network(e::Ptr{Cvoid}, uid::Int64, which::String)
     return nothing
 end
 
+"""
+    _dispatch_async_result(e, uid)
+
+Dispatch one LF_SHIM_EVENT_ASYNC_RESULT event.
+
+The event's user_id field carries the user_token supplied when the
+async request was issued; the handler registered under that token is
+invoked with a Julia-owned copy of the async result payload.
+
+A token with no registered handler is not an error: an async request
+may complete after its caller has already given up on it (a Python-
+style "abandoned" timeout). In that case the event is silently
+dropped. The C-side shim always signals completion of the event, so
+no resource leaks.
+"""
+function _dispatch_async_result(e::Ptr{Cvoid}, uid::Int64)
+    trace("callback: dispatch ASYNC_RESULT uid=$(uid)")
+    handler = _lookup_handler(uid)
+    if handler === nothing
+        trace("callback: no handler for async token=$(uid) (dropped)")
+        return nothing
+    end
+
+    result_bytes = _read_event_result(e)
+    trace("callback: async result length=$(length(result_bytes))")
+
+    Base.invokelatest(handler, result_bytes)
+    return nothing
+end
+
+# ------------------------------------------------------------------ #
+# Consumer loop                                                      #
+# ------------------------------------------------------------------ #
+
 function _consumer_loop()
     CONSUMER_TID[] = Threads.threadid()
     trace("callback: consumer STARTED on tid=$(CONSUMER_TID[])")
@@ -174,6 +237,8 @@ function _consumer_loop()
                 _dispatch_network(e, uid, "connect")
             elseif kind == LF_SHIM_EVENT_NETWORK_DISCONNECT
                 _dispatch_network(e, uid, "disconnect")
+            elseif kind == LF_SHIM_EVENT_ASYNC_RESULT
+                _dispatch_async_result(e, uid)
             end
         catch err
             println(stderr,
@@ -191,6 +256,10 @@ function _consumer_loop()
     return nothing
 end
 
+# ------------------------------------------------------------------ #
+# Consumer lifecycle                                                 #
+# ------------------------------------------------------------------ #
+
 function start_callback_consumer()::Nothing
     CONSUMER_RUNNING[] && return nothing
 
@@ -201,9 +270,6 @@ function start_callback_consumer()::Nothing
         ))
     end
 
-    # Check the shim's initialisation result. A false return means the
-    # shim could not set up its queue; without this check the consumer
-    # would start and silently poll an uninitialised queue forever.
     if !shim_init()
         throw(LingoFuseLoadError(
             LINGOFUSE_SHIM_PATH,
@@ -270,6 +336,10 @@ end
 
 is_callback_consumer_running()::Bool = CONSUMER_RUNNING[]
 
+# ------------------------------------------------------------------ #
+# Registration wrappers                                              #
+# ------------------------------------------------------------------ #
+
 function register_call_with_handler(app_hnd::Ptr{Cvoid},
                                     name::AbstractString,
                                     desc::AbstractString,
@@ -290,6 +360,46 @@ function register_notify_with_handler(app_hnd::Ptr{Cvoid},
     return ok
 end
 
+"""
+    register_async_handler(handler::Function) -> Int64
+
+Allocate a token for an asynchronous result handler.
+
+The handler is invoked with a single `Vector{UInt8}` argument, the
+async result payload, whenever an LF_SHIM_EVENT_ASYNC_RESULT event
+carrying this token arrives. The caller is responsible for pairing
+the returned token with an async dispatch call (shim_async_call and
+friends) and for releasing it via release_async_handler once no
+further result is expected.
+
+There is no automatic release: an async request that never completes
+leaves its token registered until the process exits. The caller
+(the future / do-block layer in async.jl) is responsible for
+releasing the token after the request resolves or times out.
+"""
+function register_async_handler(handler::Function)::Int64
+    return _alloc_uid(handler)
+end
+
+"""
+    release_async_handler(token::Int64) -> Nothing
+
+Release an async handler token allocated by register_async_handler.
+
+Idempotent: releasing an unknown or already-released token is a
+no-op. The C shim may still deliver a late event for the token; such
+an event finds no handler and is dropped (see
+`_dispatch_async_result`).
+"""
+function release_async_handler(token::Int64)::Nothing
+    _release_uid(token)
+    return nothing
+end
+
+# ------------------------------------------------------------------ #
+# Network event handlers                                             #
+# ------------------------------------------------------------------ #
+
 const _NETWORK_HANDLER_UIDS = Ref{NTuple{2,Int64}}((0, 0))
 
 function install_network_handlers(
@@ -299,9 +409,6 @@ function install_network_handlers(
     c_uid = on_connect    === nothing ? 0 : _alloc_uid(on_connect)
     d_uid = on_disconnect === nothing ? 0 : _alloc_uid(on_disconnect)
 
-    # Install on the native side first. If this fails, release the
-    # freshly allocated uids so they do not leak, and rethrow. The
-    # previously installed handlers remain active.
     try
         shim_install_network_events(c_uid, d_uid)
     catch
@@ -310,8 +417,6 @@ function install_network_handlers(
         rethrow()
     end
 
-    # Native install succeeded. Now release the previous handlers and
-    # publish the new uids.
     prev = _NETWORK_HANDLER_UIDS[]
     prev[1] != 0 && _release_uid(prev[1])
     prev[2] != 0 && _release_uid(prev[2])
@@ -329,10 +434,16 @@ function clear_network_handlers()::Nothing
     return nothing
 end
 
+# ------------------------------------------------------------------ #
+# Exports                                                            #
+# ------------------------------------------------------------------ #
+
 export start_callback_consumer,
        stop_callback_consumer,
        is_callback_consumer_running,
        register_call_with_handler,
        register_notify_with_handler,
+       register_async_handler,
+       release_async_handler,
        install_network_handlers,
        clear_network_handlers

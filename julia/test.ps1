@@ -5,13 +5,17 @@
 # consumer (see SHIM_MECHANISM_GUIDE.md, rule 7).
 #
 # Automatically excluded:
-#   runtests.jl    the standard Julia test entry point; it re-runs
-#                  every other script and would cause duplicates.
+#   runtests.jl        the standard Julia test entry point. It
+#                      spawns runtests_mock.jl and runtests_real.jl
+#                      and would cause every test to run twice.
+#   runtests_mock.jl   mock-shim scheduler; runs 7 acceptance tests
+#                      in nested subprocesses.
+#   runtests_real.jl   real-shim scheduler; runs 7 acceptance tests
+#                      in nested subprocesses.
 #
 # Any other *.jl file in test/ is executed, including the diagnostic
-# scripts (diag.jl, try_module.jl) and the restart regression test
-# (test_restart.jl). To exclude a file permanently, add its name to
-# the $exclude array below.
+# scripts (diag.jl, try_module.jl, _smoke_module.jl). To exclude a
+# file permanently, add its name to the $exclude array below.
 #
 # Exit code:
 #   0  all tests passed
@@ -43,12 +47,14 @@ Write-Host "[INFO] Test dir: $testDir" -ForegroundColor Cyan
 # Scan test/*.jl sorted alphabetically for a stable execution order.
 # Files whose name appears in $exclude are skipped.
 #
-# The exclusion list is intentionally minimal. runtests.jl is the only
-# file that would cause duplicate execution, because it invokes every
-# other script through a nested subprocess.
+# The exclusion list covers the three runtests*.jl schedulers: they
+# re-run every other script through nested subprocesses, so leaving
+# them in would double the runtime and duplicate every failure.
 
 $exclude = @(
-    "runtests.jl"
+    "runtests.jl",
+    "runtests_mock.jl",
+    "runtests_real.jl"
 )
 
 $files = Get-ChildItem -Path $testDir -Filter "*.jl" -File |

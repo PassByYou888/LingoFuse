@@ -1,0 +1,30 @@
+=== LingoFuse R test service ===
+Runtime directory: D:\CoreLibrary\LingoFuse\Binary
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK] Loaded: D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll
+[OK] Symbols resolved
+[OK] APIs registered: echo, add
+LF_PrepareService: Service("ipc:r_test","ipc:r_test",0,"LingoFuse@Tag=1")
+LF_PrepareClient: KeepAlive("ipc:r_test",0,"LingoFuse@Tag=2")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+[IPC] Checking if queue "r_test0" is already occupied...
+[IPC] Queue "r_test0" does not exist – ready to create a new service
+[IPC] Creating new IPC service queue "r_test0" ...
+[IPC] Server successfully started on queue "r_test0"
+LingoFuse Service Listening: "ipc:r_test" OK, Host: "ipc:r_test"
+Connection ipc:r_test:0 Succeeded
+ipc:r_test:0 Disconnected
+Connection ipc:r_test:0 Succeeded
+Ready Network: "ipc:r_test"
+LingoFuse Service Link Succeeded IO "resp_10076_1_195c8a0d2190-Virtual(1:1:1:1:1:1:1:1)"
+APP RTestService "Service for R caller tests" Ready OK, Connection "ipc:r_test"
+  (call) (echo) "Echo input"
+  (call) (add) "Add two integers (JSON)"
+[OK] Service online. Press Enter to exit...
+LingoFuse Service Link Succeeded IO "resp_23152_1_195cdca7bff0-Virtual(1:1:1:1:1:1:1:1)"
+Warning: API "echo" is registered as Call but invoked via Notify; any returned value will be discarded.
+Warning: API "echo" is registered as Call but invoked via Notify; any returned value will be discarded.
+LingoFuse Service User-out IO "resp_23152_1_195cdca7bff0-Virtual(1:1:1:1:1:1:1:1)"

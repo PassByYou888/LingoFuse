@@ -1,0 +1,194 @@
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+
+=== Group 1. Bridge and runtime load ===
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK]   lf_load_library succeeds
+[OK]   lf_is_loaded returns TRUE
+[OK]   options.R sourced
+
+=== Group 2. Boolean options ===
+Quiet = True
+[OK]   Quiet=TRUE round trip
+Quiet = False
+[OK]   Quiet=FALSE round trip
+[LF-DEBUG] LF_SetOption: opt="ShowThreadID" val="False"
+Status Thread ID = False
+[OK]   ShowThreadID=FALSE round trip
+[LF-DEBUG] LF_SetOption: opt="ShowThreadID" val="True"
+Status Thread ID = True
+[OK]   ShowThreadID=TRUE round trip
+[LF-DEBUG] LF_SetOption: opt="ConsoleOutput" val="False"
+[OK]   ConsoleOutput=FALSE round trip
+Console Output = True
+[OK]   ConsoleOutput=TRUE round trip
+[LF-DEBUG] LF_SetOption: opt="Overlap_Connection" val="True"
+Overlap Connection = True
+[OK]   Overlap_Connection=TRUE round trip
+[LF-DEBUG] LF_SetOption: opt="Overlap_Connection" val="False"
+Overlap Connection = False
+[OK]   Overlap_Connection=FALSE round trip
+[OK]   Quiet rejects a character value
+       error: option 'Quiet' requires a length-1 logical (TRUE / FALSE)
+[OK]   Quiet rejects NA
+       error: option 'Quiet' requires a length-1 logical (TRUE / FALSE)
+[OK]   Quiet rejects a vector
+       error: option 'Quiet' requires a length-1 logical (TRUE / FALSE)
+
+=== Group 3. Numeric options ===
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_Timeout" val="15000"
+Wait Connection TimeOut = 15.00
+[OK]   Wait_Connection_Timeout=15000 round trip
+[OK]   Fixed_Sequenced_Time=25000 round trip
+[OK]   DataHandle_Idle_Timeout=1234567 round trip
+[OK]   DataHandle_Pool_Scan_Interval=2500 round trip
+[OK]   No_Reponse_Cmd_NULL_Flush_Threshold=1234 round trip
+[OK]   Wait_Connection_Timeout rejects a string
+       error: option 'Wait_Connection_Timeout' requires a length-1 numeric value
+[OK]   Wait_Connection_Timeout rejects NA
+       error: option 'Wait_Connection_Timeout' requires a length-1 numeric value
+
+=== Group 4. Character options ===
+[OK]   LF_P2P_name='test_group_1' round trip
+[LF-DEBUG] LF_SetOption: opt="Fixed_Sequenced_Time" val="25000"
+Fixed_Sequenced_Time = 25000
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Idle_Timeout" val="1234567"
+Data handle idle timeout = 1234567 ms
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Pool_Scan_Interval" val="2500"
+Data handle pool scan interval = 2500 ms
+[LF-DEBUG] LF_SetOption: opt="No_Reponse_Cmd_NULL_Flush_Threshold" val="1234"
+No_Reponse_Cmd_NULL_Flush_Threshold = 1234
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val="test_group_1"
+Update LF_P2P_name = test_group_1
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val=""
+Update LF_P2P_name = 
+[OK]   LF_P2P_name='' round trip
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val="group with spaces and 涓枃"
+Update LF_P2P_name = group with spaces and 涓枃
+[OK]   LF_P2P_name accepts UTF-8
+[OK]   LF_P2P_name rejects a numeric value
+       error: option 'LF_P2P_name' requires a length-1 character value
+[OK]   LF_P2P_name rejects a vector
+       error: option 'LF_P2P_name' requires a length-1 character value
+
+=== Group 5. Password masking ===
+[LF-DEBUG] LF_SetOption: opt="password" val="very_secret_password"
+Update Password = *****************************
+[OK]   password read is masked
+[OK]   password rejects a numeric value
+       error: option 'password' requires a length-1 character value
+
+=== Group 6. Unknown option behaviour ===
+[OK]   unknown option read returns empty string
+[LF-DEBUG] LF_SetOption: opt="__no_such_option__" val="x"
+[OK]   set_option on unknown key does not raise
+
+=== Group 7. Snapshot / table / reset ===
+[OK]   snapshot returns a named list
+[OK]   snapshot contains 'Quiet'
+[OK]   snapshot contains 'Wait_Connection_Timeout'
+[OK]   options_table returns a data frame
+[OK]   options_table has required columns
+[OK]   options_table lists at least 15 options
+[LF-DEBUG] LF_SetOption: opt="Quiet" val="True"
+Quiet = True
+Quiet = False
+[LF-DEBUG] LF_SetOption: opt="ShowThreadID" val="True"
+Status Thread ID = True
+[LF-DEBUG] LF_SetOption: opt="ConsoleOutput" val="True"
+Console Output = True
+[LF-DEBUG] LF_SetOption: opt="Overlap_Connection" val="False"
+Overlap Connection = False
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_ReadyOk" val="True"
+Wait Connection ReadyOk = True
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_Timeout" val="30000"
+Wait Connection TimeOut = 30.00
+[LF-DEBUG] LF_SetOption: opt="Fixed_Sequenced_Time" val="20000"
+Fixed_Sequenced_Time = 20000
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val=""
+Update LF_P2P_name = 
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Idle_Timeout" val="600000"
+Data handle idle timeout = 600000 ms
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Pool_Scan_Interval" val="5000"
+Data handle pool scan interval = 5000 ms
+[LF-DEBUG] LF_SetOption: opt="No_Reponse_Cmd_NULL_Flush_Threshold" val="5000"
+No_Reponse_Cmd_NULL_Flush_Threshold = 5000
+[OK]   options_reset restores Quiet to default
+[LF-DEBUG] LF_SetOption: opt="password" val="my_own_secret"
+Update Password = *******************
+[LF-DEBUG] LF_SetOption: opt="Quiet" val="False"
+Quiet = False
+[LF-DEBUG] LF_SetOption: opt="ShowThreadID" val="True"
+Status Thread ID = True
+[LF-DEBUG] LF_SetOption: opt="ConsoleOutput" val="True"
+Console Output = True
+[LF-DEBUG] LF_SetOption: opt="Overlap_Connection" val="False"
+Overlap Connection = False
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_ReadyOk" val="True"
+Wait Connection ReadyOk = True
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_Timeout" val="30000"
+Wait Connection TimeOut = 30.00
+[LF-DEBUG] LF_SetOption: opt="Fixed_Sequenced_Time" val="20000"
+Fixed_Sequenced_Time = 20000
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val=""
+Update LF_P2P_name = 
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Idle_Timeout" val="600000"
+Data handle idle timeout = 600000 ms
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Pool_Scan_Interval" val="5000"
+Data handle pool scan interval = 5000 ms
+[LF-DEBUG] LF_SetOption: opt="No_Reponse_Cmd_NULL_Flush_Threshold" val="5000"
+No_Reponse_Cmd_NULL_Flush_Threshold = 5000
+[OK]   options_reset preserves password by default
+[LF-DEBUG] LF_SetOption: opt="Quiet" val="False"
+Quiet = False
+[LF-DEBUG] LF_SetOption: opt="ShowThreadID" val="True"
+Status Thread ID = True
+[LF-DEBUG] LF_SetOption: opt="ConsoleOutput" val="True"
+Console Output = True
+[LF-DEBUG] LF_SetOption: opt="Overlap_Connection" val="False"
+Overlap Connection = False
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_ReadyOk" val="True"
+Wait Connection ReadyOk = True
+[LF-DEBUG] LF_SetOption: opt="Wait_Connection_Timeout" val="30000"
+Wait Connection TimeOut = 30.00
+[LF-DEBUG] LF_SetOption: opt="Fixed_Sequenced_Time" val="20000"
+Fixed_Sequenced_Time = 20000
+[LF-DEBUG] LF_SetOption: opt="LF_P2P_name" val=""
+Update LF_P2P_name = 
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Idle_Timeout" val="600000"
+Data handle idle timeout = 600000 ms
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Pool_Scan_Interval" val="5000"
+Data handle pool scan interval = 5000 ms
+[LF-DEBUG] LF_SetOption: opt="No_Reponse_Cmd_NULL_Flush_Threshold" val="5000"
+No_Reponse_Cmd_NULL_Flush_Threshold = 5000
+[LF-DEBUG] LF_SetOption: opt="password" val="DTC40@ZSERVER"
+Update Password = **********************
+[OK]   options_reset with include_password works
+
+=== Group 8. Shutdown ===
+[LF-DEBUG] LF_ExitMainThread: signaling stop
+NULL
+[LF-DEBUG] LF_Shutdown: begin
+[LF-DEBUG] LF_ExitMainThread: signaling stop
+[LF-DEBUG] SeqCallPool.Stop done
+[LF-DEBUG] SeqNotifyPool.Stop done
+[LF-DEBUG] DataPool.Free_All_Hnd done
+[LF-DEBUG] LF_Shutdown: done
+NULL
+NULL
+[OK]   lf_is_loaded returns FALSE after unload
+
+============================================================
+Options test summary
+============================================================
+  Passed : 39
+  Failed : 0
+============================================================
+
+Typed runtime-option accessors verified.
+[LF-DEBUG] Free_P2P_APP
+[LF-DEBUG] TLF_App.Destroy: name="___LF_P2P_APP___"
+[LF-DEBUG] DataPool.Free_All_Hnd done

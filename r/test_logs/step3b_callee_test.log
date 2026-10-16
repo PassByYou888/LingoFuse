@@ -1,0 +1,28 @@
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+LF_PrepareService: Service("ipc:r_callee","ipc:r_callee",0,"LingoFuse@Tag=1")
+LF_PrepareClient: KeepAlive("ipc:r_callee",0,"LingoFuse@Tag=2")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+[IPC] Checking if queue "r_callee0" is already occupied...
+[IPC] Queue "r_callee0" does not exist – ready to create a new service
+[IPC] Creating new IPC service queue "r_callee0" ...
+[IPC] Server successfully started on queue "r_callee0"
+LingoFuse Service Listening: "ipc:r_callee" OK, Host: "ipc:r_callee"
+Connection ipc:r_callee:0 Succeeded
+ipc:r_callee:0 Disconnected
+Connection ipc:r_callee:0 Succeeded
+Ready Network: "ipc:r_callee"
+LingoFuse Service Link Succeeded IO "resp_24196_1_195ec2421064-Virtual(1:1:1:1:1:1:1:1)"
+APP RService "R callee STEP 3b test" Ready OK, Connection "ipc:r_callee"
+  (call) (add) "Add two ints (JSON)"
+  (call) (echo) "Echo input verbatim"
+  (notify) (log) "Remote logging"
+LingoFuse Service Link Succeeded IO "resp_19312_1_195ef0670724-Virtual(1:1:1:1:1:1:1:1)"
+[RService] remote log: ping from echo_client 
+LingoFuse Service User-out IO "resp_19312_1_195ef0670724-Virtual(1:1:1:1:1:1:1:1)"
+ipc:r_callee:0 Disconnected
+LingoFuse Service User-out IO "resp_24196_1_195ec2421064-Virtual(1:1:1:1:1:1:1:1)"
+LingoFuse Service Listening: "ipc:r_callee:0" Stop
+LingoFuse Main Thread Exit

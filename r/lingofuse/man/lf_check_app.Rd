@@ -10,10 +10,10 @@ lf_check_app(app_name)
 \item{app_name}{Application name.}
 }
 \value{
-\code{TRUE} or \code{FALSE}. The underlying lookup uses a
-  broadcast-updated cache with an approximate 3-second delay; do
-  not treat the result as authoritative.
+\code{TRUE} or \code{FALSE}.
 }
 \description{
-Is an application visible on the mesh?
+The underlying lookup uses a broadcast-updated cache with an
+approximate 3-second delay; do not treat the result as
+authoritative.
 }

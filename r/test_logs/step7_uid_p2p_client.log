@@ -1,0 +1,70 @@
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK]   Runtime loaded
+
+=== Group 1. Client prepare ===
+Update LF_P2P_name = uid_p2p_client_group
+LF_PrepareClient: KeepAlive("ipc:uid_p2p_test",0,"LingoFuse@Tag=1")
+[OK]   prepare_client_with_app returned a valid tag
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+Connection ipc:uid_p2p_test:0 Succeeded
+ipc:uid_p2p_test:0 Disconnected
+Connection ipc:uid_p2p_test:0 Succeeded
+Ready Network: "ipc:uid_p2p_test"
+APP UidP2PClient "UID/P2P test client" Ready OK, Connection "ipc:uid_p2p_test"
+  (call) (client_echo) "client-side echo"
+  (call) (client_id) "return client id"
+  (notify) (log) "log a message"
+[OK]   prepare_done returned 1
+[OK]   check_main_thread is TRUE
+
+=== Group 2. Wait for service ===
+[OK]   UidP2PService is visible with API whoami
+
+=== Group 3. whoami discovery ===
+[OK]   whoami returns a non-empty string
+[OK]   whoami response parses as JSON
+[OK]   whoami returns a 64-char uid_hex
+[OK]   whoami returns our configured p2p_name
+[INFO] My UID is: 86f301f5334fd391904ed83ec7d69de9164333ddd0e405f44634f193dc7f2760
+[INFO] My P2P name: uid_p2p_client_group
+
+=== Group 4. UID addressing (one-way) ===
+[OK]   lf_uid_notify(self, log) delivered via the mesh
+[OK]   lf_uid_notify accepts a hex string
+[OK]   lf_uid_call on unknown API returns empty
+
+=== Group 5. P2PName addressing ===
+[OK]   lf_p2pname_call(server_group, echo) echoes input
+[OK]   lf_p2pname_call(server_group, service_id) hits server
+[OK]   lf_p2pname_call on unknown group returns empty
+
+=== Group 6. UID health check ===
+[OK]   lf_check_uid(our own uid) is TRUE
+[OK]   lf_check_uid_api(our own uid, client_echo) is TRUE
+[OK]   lf_check_uid_api(our own uid, unknown) is FALSE
+[OK]   lf_check_uid(all-zero) is FALSE
+
+=== Group 7. P2PName health check ===
+[OK]   lf_check_p2pname(server group) is TRUE
+[OK]   lf_check_p2pname_api(server group, echo) is TRUE
+[OK]   lf_check_p2pname(unknown group) is FALSE
+ipc:uid_p2p_test:0 Disconnected
+hint: Data handle pool "10" handles automatically freed.
+...
+hint: automatically free handles api "echo" parameter.
+hint: automatically free handles result for p2pname:__no_such_group__ api:echo
+LingoFuse Main Thread Exit
+
+============================================================
+UID / P2PName test summary
+============================================================
+  Passed : 21
+  Failed : 0
+============================================================
+
+UID and P2PName addressing verified.

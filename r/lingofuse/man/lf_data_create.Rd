@@ -13,5 +13,8 @@ lf_data_create(api_name)
 An external pointer handle.
 }
 \description{
-Create a data handle
+The underlying handle is added to the runtime's idle pool and will
+be reclaimed after 10 minutes of inactivity. It must still be
+released explicitly with \code{lf_data_free()} when no longer
+needed.
 }

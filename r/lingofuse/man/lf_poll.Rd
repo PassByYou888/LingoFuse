@@ -23,4 +23,17 @@ Intended to be called repeatedly from a pump loop:
       lf_poll(100)
   }
 }
+
+The pump dispatches all four job kinds:
+\itemize{
+  \item Call / Notify -- to the registered R handler.
+  \item AsyncResult   -- to the on_success / on_error callback
+                         recorded by the async layer.
+  \item NetEvent      -- to the function installed via
+                         \code{lf_set_network_event}.
+}
+
+After processing one job, the pump reaps any async slot whose R-side
+deadline has expired and fires its on_error callback with the
+message \code{"timeout"}.
 }

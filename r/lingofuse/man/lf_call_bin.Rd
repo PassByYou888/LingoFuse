@@ -13,8 +13,7 @@ lf_call_bin(app_name, api_name, req_raw, timeout_ms = 5000)
 
 \item{req_raw}{Request payload as a raw vector.}
 
-\item{timeout_ms}{Timeout in milliseconds. \code{0} means "wait
-forever".}
+\item{timeout_ms}{Timeout in milliseconds.}
 }
 \value{
 The response as a raw vector. A zero-length result indicates

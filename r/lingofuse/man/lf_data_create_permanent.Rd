@@ -13,6 +13,6 @@ lf_data_create_permanent(api_name)
 An external pointer handle.
 }
 \description{
-A permanent handle is never auto-reclaimed by the runtime. It must
-be explicitly released with \code{lf_data_free()}.
+A permanent handle is never auto-reclaimed. It must be explicitly
+released with \code{lf_data_free()}.
 }

@@ -1,0 +1,11 @@
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+[OK]   Runtime loaded
+[OK]   api.R / options.R sourced
+[OK]   App created
+[OK]   APIs registered: whoami, echo, service_id, log
+[OK]   P2P name set to 'uid_p2p_server_group'
+[OK]   Service online: UidP2PService @ ipc:uid_p2p_test
+[INFO] Pumping for up to 30 seconds...
+[INFO] Press Ctrl+C to stop early.
+
+UidP2PService finished.

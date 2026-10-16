@@ -1,0 +1,84 @@
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+
+=== Group 1. Bridge and runtime load ===
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK]   lf_load_library succeeds
+[OK]   lf_is_loaded returns TRUE
+[OK]   options.R / api.R / async.R sourced
+
+=== Group 2. Task object creation and immediate-state queries ===
+[OK]   task is a LingoFuseTask
+[OK]   task is an environment
+[OK]   initial state is 'pending'
+[OK]   lf_task_error returns NULL while pending
+[OK]   lf_task_result raises while pending
+[OK]   print.LingoFuseTask produces output
+
+=== Group 3. Handler chain with manual resolve ===
+[OK]   then handler registered, not yet fired
+[OK]   state is 'done' after resolve
+[OK]   then handler fired exactly once
+[OK]   finally handler fired exactly once
+[OK]   then handler received the result
+[OK]   lf_task_result returns the result
+[OK]   second resolve is a no-op
+
+=== Group 4. Handler chain with manual reject ===
+[OK]   state is 'error' after reject
+[OK]   catch handler fired exactly once
+[OK]   finally handler fired exactly once
+[OK]   catch handler received the message
+[OK]   catch handler received error_kind
+[OK]   lf_task_error returns the message
+[OK]   lf_task_result raises on a failed task
+
+=== Group 5. Handler registration after completion ===
+[OK]   then handler registered after completion fires immediately
+[OK]   catch handler registered after failure fires immediately
+
+=== Group 6. Dispatch failure path ===
+"__no_such_app_async_test__" no connection
+[OK]   on_error fired for an unreachable target
+       error message: async dispatch failed
+       error kind   : 0
+[OK]   error_kind is 0 (dispatch fail) or 1 (timeout)
+
+=== Group 7. Slot table lifecycle ===
+[OK]   async slot count is a number
+[OK]   R-side slot table grew
+NULL
+[OK]   R-side slot table shrank
+
+=== Group 8. Timeout path (synthetic slot) ===
+[1] FALSE
+[OK]   reaper fired on expired slot
+[OK]   reaper reported error_kind == 1 (timeout)
+[OK]   reaper reported 'timeout' as the message
+[OK]   task state after reaper is 'error'
+[OK]   expired slot removed from table
+
+=== Group 9. lf_task_await on a synthetic task ===
+[OK]   lf_task_await returns the resolved value
+[OK]   lf_task_await raises on its own timeout
+[OK]   task state after await timeout is 'error'
+
+=== Group 10. Shutdown ===
+NULL
+hint: Data handle pool "1" handles automatically freed.
+hint: automatically free handles api "no_op" parameter.
+NULL
+NULL
+[OK]   lf_is_loaded returns FALSE after unload
+
+============================================================
+Async test summary
+============================================================
+  Passed : 38
+  Failed : 0
+============================================================
+
+Modern asynchronous layer verified.

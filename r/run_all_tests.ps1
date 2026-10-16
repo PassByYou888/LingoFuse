@@ -4,29 +4,29 @@
 
 .DESCRIPTION
     Orchestrates the full test pipeline described in the LingoFuse R
-    README:
+    README. Twelve steps in total:
 
-      0. (optional) clean the tree
-      1. (optional) build lfR_bridge.dll and the C++ test binaries
-      2. (optional) install the R package (which also copies the
-         bridge sources into lingofuse/src/ and regenerates
-         roxygen2 output when NAMESPACE or man/ is missing)
-      3. (optional) run R CMD check on the package
-      4. STEP 1 - smoke_test.R          (bridge DLL, no runtime)
-      5. STEP 2 - abi_test.R            (C ABI, no network)
-      6. STEP 3a - test_service.exe  +  caller_test.R
-      7. STEP 3b - callee_test.R     +  echo_client.exe
-      8. STEP 4 - cross_node.R       +  cross_client.exe
-      9. demo   - demo\server.R      +  demo\client.R
+      0.  (optional) clean the tree
+      1.  (optional) build lfR_bridge.dll and the C++ test binaries
+      2.  (optional) install the R package
+      3.  (optional) run R CMD check
+      4.  STEP 1   smoke_test.R          (bridge DLL, no runtime)
+      4b. STEP 2a  bridge_selftest.exe   (C++ layer, no R)
+      5.  STEP 2b  abi_test.R            (C ABI, no network)
+      6.  STEP 3a  test_service.exe + caller_test.R
+      7.  STEP 3b  callee_test.R + echo_client.exe
+      8.  STEP 4   cross_node.R + cross_client.exe
+      9.  STEP 5   options_test.R        (typed options)
+      10. STEP 6   async_test.R          (modern async layer)
+      11. STEP 7   uid_p2p_service.R + uid_p2p_client.R
+      12. demo     server.R + client.R
 
     Two-process tests are orchestrated automatically:
-
-      - the long-running side (a service) is launched in the
-        background via Start-Process and stopped in a finally block;
-      - the short-running side (a client) is executed in the
-        foreground with an empty line piped to its stdin so that its
-        final "Press Enter to exit" prompt is satisfied immediately.
-        All of the client's real work happens before that prompt.
+      - the long-running side is launched in the background via
+        Start-Process and stopped in a finally block;
+      - the short-running side is executed in the foreground with an
+        empty line piped to its stdin so that any final "Press Enter"
+        prompt is satisfied immediately.
 
     Every test writes its own log file under .\test_logs\.
 
@@ -42,7 +42,7 @@
     Do not run .\build.ps1 -Rebuild or .\build_package.ps1 -Rebuild.
 
 .PARAMETER SkipInstall
-    Do not install the R package (implies SkipBuild's package half).
+    Do not install the R package.
 
 .PARAMETER SkipCheck
     Do not run .\check_package.ps1.
@@ -165,6 +165,10 @@ if (-not $resolvedRuntime) {
 }
 Write-Ok ("Runtime   : " + $resolvedRuntime)
 
+# Publish the resolved runtime to child processes so that no test
+# script needs to receive the path as an argument.
+$env:LINGOFUSE_RUNTIME = $resolvedRuntime
+
 if (-not (Test-Path -LiteralPath $LogDir -PathType Container)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
@@ -188,7 +192,7 @@ if (-not $SkipClean) {
 }
 
 # -----------------------------------------------------------------------------
-# 1. Build the standalone bridge DLL and the C++ test binaries
+# 1. Build
 # -----------------------------------------------------------------------------
 
 if (-not $SkipBuild) {
@@ -214,12 +218,12 @@ if (-not $SkipBuild) {
 }
 
 # -----------------------------------------------------------------------------
-# 2. Ensure roxygen2 output exists (build_package.ps1 may have covered this)
+# 2. Ensure roxygen2 output exists
 # -----------------------------------------------------------------------------
 
-$pkgDir   = Join-Path $Root "lingofuse"
-$nsPath   = Join-Path $pkgDir "NAMESPACE"
-$manDir   = Join-Path $pkgDir "man"
+$pkgDir = Join-Path $Root "lingofuse"
+$nsPath = Join-Path $pkgDir "NAMESPACE"
+$manDir = Join-Path $pkgDir "man"
 
 $manEmpty = $true
 if (Test-Path -LiteralPath $manDir) {
@@ -232,9 +236,6 @@ if (-not (Test-Path -LiteralPath $nsPath) -or $manEmpty) {
     if (-not (Test-Path -LiteralPath $nsPath)) { Write-Info "NAMESPACE is missing." }
     if ($manEmpty) { Write-Info "man\ contains no .Rd files." }
 
-    # A minimal NAMESPACE stub is required before roxygen2 (via
-    # pkgload) can load the package. The roxygenise() call will
-    # overwrite it.
     if (-not (Test-Path -LiteralPath $nsPath)) {
         Write-Info "Writing a minimal NAMESPACE stub for roxygen2..."
         @'
@@ -266,7 +267,7 @@ useDynLib(lingofuse, .registration = TRUE, .fixes = "C_")
 }
 
 # -----------------------------------------------------------------------------
-# 3. Reinstall R package (optional; build_package.ps1 already installed once)
+# 3. Reinstall R package
 # -----------------------------------------------------------------------------
 
 if (-not $SkipInstall) {
@@ -315,25 +316,48 @@ if ($rc -eq 0) { Write-Ok "STEP 1 passed."; Add-Result "STEP 1 smoke_test.R" "PA
 else { Write-Fail ("STEP 1 exit code " + $rc); Add-Result "STEP 1 smoke_test.R" "FAIL" ("exit " + $rc) }
 
 # -----------------------------------------------------------------------------
-# 6. STEP 2 - abi_test.R
+# 6. STEP 2a - bridge_selftest.exe (C++ layer only)
 # -----------------------------------------------------------------------------
 
-Write-Section "6. STEP 2 - abi_test.R (C ABI, no network)"
+Write-Section "6. STEP 2a - bridge_selftest.exe (C++ layer)"
+
+$selfTestExe = Join-Path $CExtTests "bridge_selftest.exe"
+$selfTestLog = Join-Path $LogDir "step2a_bridge_selftest.log"
+
+if (-not (Test-Path -LiteralPath $selfTestExe)) {
+    Write-Fail ("bridge_selftest.exe not found: " + $selfTestExe)
+    Add-Result "STEP 2a bridge_selftest.exe" "SKIP" "exe missing"
+} else {
+    Push-Location $Root
+    try {
+        & $selfTestExe $resolvedRuntime 2>&1 |
+            Tee-Object -FilePath $selfTestLog
+        $rc = $LASTEXITCODE
+    } finally { Pop-Location }
+    if ($rc -eq 0) { Write-Ok "STEP 2a passed."; Add-Result "STEP 2a bridge_selftest.exe" "PASS" }
+    else { Write-Fail ("STEP 2a exit code " + $rc); Add-Result "STEP 2a bridge_selftest.exe" "FAIL" ("exit " + $rc) }
+}
+
+# -----------------------------------------------------------------------------
+# 7. STEP 2b - abi_test.R
+# -----------------------------------------------------------------------------
+
+Write-Section "7. STEP 2b - abi_test.R (C ABI, no network)"
 $rc = 0
 Push-Location $Root
 try {
     & $Rscript (Join-Path $CExtTests "abi_test.R") $resolvedRuntime 2>&1 |
-        Tee-Object -FilePath (Join-Path $LogDir "step2_abi_test.log")
+        Tee-Object -FilePath (Join-Path $LogDir "step2b_abi_test.log")
     $rc = $LASTEXITCODE
 } finally { Pop-Location }
-if ($rc -eq 0) { Write-Ok "STEP 2 passed."; Add-Result "STEP 2 abi_test.R" "PASS" }
-else { Write-Fail ("STEP 2 exit code " + $rc); Add-Result "STEP 2 abi_test.R" "FAIL" ("exit " + $rc) }
+if ($rc -eq 0) { Write-Ok "STEP 2b passed."; Add-Result "STEP 2b abi_test.R" "PASS" }
+else { Write-Fail ("STEP 2b exit code " + $rc); Add-Result "STEP 2b abi_test.R" "FAIL" ("exit " + $rc) }
 
 # -----------------------------------------------------------------------------
-# 7. STEP 3a - test_service.exe + caller_test.R
+# 8. STEP 3a - test_service.exe + caller_test.R
 # -----------------------------------------------------------------------------
 
-Write-Section "7. STEP 3a - test_service.exe + caller_test.R"
+Write-Section "8. STEP 3a - test_service.exe + caller_test.R"
 
 $testServiceExe = Join-Path $CExtTests "test_service.exe"
 $svcLog         = Join-Path $LogDir    "step3a_test_service.log"
@@ -369,16 +393,15 @@ if (-not (Test-Path -LiteralPath $testServiceExe)) {
         if ($svcProc -and -not $svcProc.HasExited) {
             Write-Info "Stopping test_service.exe..."
             try { Stop-Process -Id $svcProc.Id -Force -ErrorAction SilentlyContinue } catch { }
-            try { Wait-Process  -Id $svcProc.Id -Timeout 3 -ErrorAction SilentlyContinue } catch { }
         }
     }
 }
 
 # -----------------------------------------------------------------------------
-# 8. STEP 3b - callee_test.R + echo_client.exe
+# 9. STEP 3b - callee_test.R + echo_client.exe
 # -----------------------------------------------------------------------------
 
-Write-Section "8. STEP 3b - callee_test.R + echo_client.exe"
+Write-Section "9. STEP 3b - callee_test.R + echo_client.exe"
 
 $echoExe   = Join-Path $CExtTests "echo_client.exe"
 $calleeLog = Join-Path $LogDir    "step3b_callee_test.log"
@@ -421,10 +444,10 @@ if (-not (Test-Path -LiteralPath $echoExe)) {
 }
 
 # -----------------------------------------------------------------------------
-# 9. STEP 4 - cross_node.R + cross_client.exe
+# 10. STEP 4 - cross_node.R + cross_client.exe
 # -----------------------------------------------------------------------------
 
-Write-Section "9. STEP 4 - cross_node.R + cross_client.exe"
+Write-Section "10. STEP 4 - cross_node.R + cross_client.exe"
 
 $crossExe = Join-Path $CExtTests "cross_client.exe"
 $nodeLog  = Join-Path $LogDir    "step4_cross_node.log"
@@ -467,10 +490,97 @@ if (-not (Test-Path -LiteralPath $crossExe)) {
 }
 
 # -----------------------------------------------------------------------------
-# 10. demo - server.R + client.R
+# 11. STEP 5 - options_test.R (typed runtime options)
 # -----------------------------------------------------------------------------
 
-Write-Section "10. demo - server.R + client.R"
+Write-Section "11. STEP 5 - options_test.R"
+
+$optionsLog = Join-Path $LogDir "step5_options_test.log"
+$rc = 0
+Push-Location $Root
+try {
+    & $Rscript (Join-Path $CExtTests "options_test.R") $resolvedRuntime 2>&1 |
+        Tee-Object -FilePath $optionsLog
+    $rc = $LASTEXITCODE
+} finally { Pop-Location }
+if ($rc -eq 0) { Write-Ok "STEP 5 passed."; Add-Result "STEP 5 options_test.R" "PASS" }
+else { Write-Fail ("STEP 5 exit code " + $rc); Add-Result "STEP 5 options_test.R" "FAIL" ("exit " + $rc) }
+
+# -----------------------------------------------------------------------------
+# 12. STEP 6 - async_test.R
+# -----------------------------------------------------------------------------
+
+Write-Section "12. STEP 6 - async_test.R"
+
+$asyncLog = Join-Path $LogDir "step6_async_test.log"
+$rc = 0
+Push-Location $Root
+try {
+    & $Rscript (Join-Path $CExtTests "async_test.R") $resolvedRuntime 2>&1 |
+        Tee-Object -FilePath $asyncLog
+    $rc = $LASTEXITCODE
+} finally { Pop-Location }
+if ($rc -eq 0) { Write-Ok "STEP 6 passed."; Add-Result "STEP 6 async_test.R" "PASS" }
+else { Write-Fail ("STEP 6 exit code " + $rc); Add-Result "STEP 6 async_test.R" "FAIL" ("exit " + $rc) }
+
+# -----------------------------------------------------------------------------
+# 13. STEP 7 - uid_p2p_service.R + uid_p2p_client.R
+# -----------------------------------------------------------------------------
+
+Write-Section "13. STEP 7 - uid_p2p_service.R + uid_p2p_client.R"
+
+$uidServiceScript = Join-Path $CExtTests "uid_p2p_service.R"
+$uidClientScript  = Join-Path $CExtTests "uid_p2p_client.R"
+$uidSvcLog        = Join-Path $LogDir    "step7_uid_p2p_service.log"
+$uidCliLog        = Join-Path $LogDir    "step7_uid_p2p_client.log"
+
+if (-not (Test-Path -LiteralPath $uidServiceScript)) {
+    Write-Fail ("uid_p2p_service.R not found")
+    Add-Result "STEP 7 uid_p2p" "SKIP" "service script missing"
+} elseif (-not (Test-Path -LiteralPath $uidClientScript)) {
+    Write-Fail ("uid_p2p_client.R not found")
+    Add-Result "STEP 7 uid_p2p" "SKIP" "client script missing"
+} else {
+    $uidSvcProc = $null
+    try {
+        Write-Info "Launching uid_p2p_service.R in the background (30 s window)..."
+        $uidSvcProc = Start-Process -FilePath $Rscript `
+            -ArgumentList @($uidServiceScript, $resolvedRuntime, "30") `
+            -RedirectStandardOutput $uidSvcLog `
+            -RedirectStandardError  ($uidSvcLog + ".err") `
+            -PassThru -WindowStyle Hidden
+
+        Write-Info "Waiting 3 seconds for the service to become visible..."
+        Start-Sleep -Seconds 3
+
+        Write-Info "Running uid_p2p_client.R..."
+        Push-Location $Root
+        try {
+            & $Rscript $uidClientScript $resolvedRuntime 2>&1 |
+                Tee-Object -FilePath $uidCliLog
+            $rc = $LASTEXITCODE
+        } finally { Pop-Location }
+
+        Write-Info "Waiting for uid_p2p_service.R to shut down..."
+        if ($uidSvcProc) {
+            try { Wait-Process -Id $uidSvcProc.Id -Timeout 35 -ErrorAction SilentlyContinue } catch { }
+        }
+
+        if ($rc -eq 0) { Write-Ok "STEP 7 passed."; Add-Result "STEP 7 uid_p2p" "PASS" }
+        else { Write-Fail ("STEP 7 exit code " + $rc); Add-Result "STEP 7 uid_p2p" "FAIL" ("exit " + $rc) }
+    } finally {
+        if ($uidSvcProc -and -not $uidSvcProc.HasExited) {
+            Write-Info "Stopping uid_p2p_service.R..."
+            try { Stop-Process -Id $uidSvcProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 14. demo - server.R + client.R
+# -----------------------------------------------------------------------------
+
+Write-Section "14. demo - server.R + client.R"
 
 $srvLog  = Join-Path $LogDir "demo_server.log"
 $cliLog  = Join-Path $LogDir "demo_client.log"
@@ -520,12 +630,12 @@ if (-not (Test-Path -LiteralPath $serverR)) {
 }
 
 # -----------------------------------------------------------------------------
-# 11. Summary
+# 15. Summary
 # -----------------------------------------------------------------------------
 
 Write-Banner "Test Summary"
 
-$fmt = "{0,-32} {1,-6} {2}"
+$fmt = "{0,-40} {1,-6} {2}"
 Write-Host ($fmt -f "Test", "Status", "Detail") -ForegroundColor White
 Write-Host ("-" * 72)
 

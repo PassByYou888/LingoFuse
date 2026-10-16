@@ -12,9 +12,8 @@ lf_check_api(app_name, api_name)
 \item{api_name}{API name.}
 }
 \value{
-\code{TRUE} or \code{FALSE}. Same cache-delay caveat as
-  \code{lf_check_app()}.
+\code{TRUE} or \code{FALSE}.
 }
 \description{
-Is an API visible for a given application?
+Same cache-delay caveat as \code{lf_check_app()}.
 }

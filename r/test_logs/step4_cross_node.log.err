@@ -1,0 +1,15 @@
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime: D:/CoreLibrary/LingoFuse/Binary
+[OK]   APIs registered: demo.add, demo.inv_seri
+[OK]   demo @ ipc:cross
+[INFO] Pumping for up to 20 seconds.
+[INFO] Start cross_client.exe in another terminal.
+[INFO] Press Ctrl+C to stop the pump loop early.
+[RService] inv_seri received: b=200 w=16 c=47 u64=63 s='hello world' f=3.14000010490417
+
+Received requests: 2
+  [1] add: 0300000004000000
+  [2] inv_seri: 31 bytes
+
+STEP 4 cross_node finished.

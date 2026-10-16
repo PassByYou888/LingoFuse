@@ -1,0 +1,41 @@
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK]   Loaded: D:/CoreLibrary/LingoFuse/Binary\LingoFuse64.dll
+LF_PrepareClient: KeepAlive("ipc:r_test",0,"LingoFuse@Tag=1")
+[OK]   prepare_client returned a valid tag
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+Connection ipc:r_test:0 Succeeded
+ipc:r_test:0 Disconnected
+Connection ipc:r_test:0 Succeeded
+Ready Network: "ipc:r_test"
+[OK]   prepare_done returned 1
+[OK]   check_main_thread is TRUE
+[INFO] Waiting for RTestService to become visible...
+[OK]   RTestService is visible on the mesh
+[OK]   check_api(RTestService, add) is TRUE
+[OK]   check_api(RTestService, echo) is TRUE
+[OK]   add returns a string
+[OK]   add response contains result:7
+[OK]   add handles negative integers
+[OK]   echo returns the input verbatim
+[OK]   notify did not raise
+[OK]   sequenced_notify did not raise
+ipc:r_test:0 Disconnected
+hint: Data handle pool "8" handles automatically freed.
+...
+hint: automatically free handles api "echo" parameter.
+hint: automatically free handles api "echo" parameter.
+LingoFuse Main Thread Exit
+
+============================================================
+Caller test summary
+============================================================
+  Passed : 12
+  Failed : 0
+============================================================
+
+STEP 3a verified: R can call LingoFuse services.

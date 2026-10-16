@@ -22,13 +22,14 @@ Runs, in order:
 \details{
 \enumerate{
   \item \code{lf_exit_main_thread}
-  \item \code{lf_app_free(app)} (when \code{app} is non-NULL)
+  \item \code{lf_free_app(app)} (when \code{app} is non-NULL)
   \item \code{lf_shutdown}
 }
 
-The bridge DLL is NOT unloaded: \code{LF_Shutdown} is asynchronous
-and worker threads may still be executing inside the DLL when it
-returns. The operating system unloads the DLL at process exit.
+Also clears every R-side bookkeeping table: async slots, handler
+tables, network event callbacks. The bridge DLL is NOT unloaded:
+\code{LF_Shutdown} is asynchronous and worker threads may still be
+executing inside the DLL when it returns.
 
 Safe to call multiple times.
 }

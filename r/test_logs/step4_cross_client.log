@@ -1,0 +1,26 @@
+=== LingoFuse cross_client ===
+Runtime: D:\CoreLibrary\LingoFuse\Binary
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK] Loaded: D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll
+LF_PrepareClient: KeepAlive("ipc:cross",0,"LingoFuse@Tag=1")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+Connection ipc:cross:0 Succeeded
+ipc:cross:0 Disconnected
+Connection ipc:cross:0 Succeeded
+Ready Network: "ipc:cross"
+[OK] Connected to ipc:cross
+Waiting for demo app...
+>> demo.add(3, 4)
+   << result = 7  (expected 7)
+>> demo.inv_seri(...)
+   << reversed: f=3.14 s="hello world" u64=0x3f u32=0x2f u16=0x10 u8=200
+[OK] Done. Press Enter to exit...
+ipc:cross:0 Disconnected
+hint: Data handle pool "4" handles automatically freed.
+hint: automatically free handles api "inv_seri" parameter.
+hint: automatically free handles result for app:demo api:inv_seri
+LingoFuse Main Thread Exit
+Bye.

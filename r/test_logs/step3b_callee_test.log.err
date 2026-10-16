@@ -1,0 +1,18 @@
+[OK]   Bridge: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   Runtime dir: D:/CoreLibrary/LingoFuse/Binary
+[OK]   Wait timeout: 20 s
+[OK]   Runtime loaded
+[OK]   App created
+[OK]   APIs registered: add, echo, log
+[OK]   Service online: RService @ ipc:r_callee
+[INFO] Pumping jobs for up to 20 seconds...
+[INFO] Start echo_client.exe in another terminal now.
+[INFO] Press Ctrl+C to stop the pump loop early.
+
+Received requests: 4
+  [1] api=add input={"a":3,"b":4}
+  [2] api=add input={"a":-10,"b":25}
+  [3] api=echo input=hello from echo_client
+  [4] api=log input=ping from echo_client
+
+STEP 3b callee test finished.

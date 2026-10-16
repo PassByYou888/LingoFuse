@@ -1,25 +1,49 @@
 # =============================================================================
 # zzz.R
 # -----------------------------------------------------------------------------
-# Package load / unload hooks.
+# Package load / attach / unload hooks.
 #
-# Design decision:
+# Design decisions
+# ----------------
+#   * .onLoad() is where the runtime is loaded, but it is SILENT. R's
+#     "Writing R Extensions" manual (see ?.onAttach and the "Good
+#     practice" section) explicitly asks package authors not to emit
+#     startup messages from .onLoad(): at that point the user has not
+#     yet attached the package, and messages written here are lost in
+#     the noise of the package loading chain.
 #
-#   * .onLoad() is the place where the runtime is actually loaded, but
-#     it is SILENT. R's "Writing R Extensions" manual (see ?.onAttach
-#     and the "Good practice" section) explicitly asks package authors
-#     not to emit startup messages from .onLoad(): at that point the
-#     user has not yet attached the package, and messages written here
-#     are lost in the noise of the package loading chain.
-#
-#   * .onAttach() is the place where user-facing messages belong. It
-#     reads the outcome recorded by .onLoad() from .lf_state and emits
-#     a single packageStartupMessage.
+#   * .onAttach() is where user-facing messages belong. It reads the
+#     outcome recorded by .onLoad() from .lf_state and emits a single
+#     packageStartupMessage.
 #
 #   * Both functions are silent when no runtime is configured. There
 #     is no "call lf_load(dir)" reminder, because that reminder would
 #     fire on every roxygenise(), pkgload::load_all() and devtools
 #     call, turning the message into noise rather than help.
+#
+#   * .onUnload() only touches what it must. It clears the R-side
+#     bookkeeping tables (async slots, handler tables, network event
+#     callbacks) and, when the main thread was started, runs the
+#     LF shutdown sequence. It does NOT unload the bridge DLL when
+#     the runtime was active, because LF_Shutdown is asynchronous
+#     and a worker thread may still be executing inside the DLL.
+#
+# Runtime auto-load policy
+# ------------------------
+# .onLoad consults, in order:
+#
+#   1. The LINGOFUSE_RUNTIME environment variable.
+#   2. The "lingofuse.runtime" R option.
+#
+# If neither is set, no load is attempted and .onAttach emits no
+# message. The user calls lf_load(dir) explicitly when ready.
+#
+# All user-facing strings are English.
+# =============================================================================
+
+
+# =============================================================================
+# .onLoad -- silent
 # =============================================================================
 
 .onLoad <- function(libname, pkgname) {
@@ -83,6 +107,11 @@
     invisible()
 }
 
+
+# =============================================================================
+# .onAttach -- emits at most one startup message
+# =============================================================================
+
 .onAttach <- function(libname, pkgname) {
     status <- .lf_state$load_status
     if (is.null(status)) {
@@ -105,23 +134,50 @@
     invisible()
 }
 
+
+# =============================================================================
+# .onUnload -- release R-side state and, if necessary, run LF shutdown
+# =============================================================================
+
 .onUnload <- function(libpath) {
     # ------------------------------------------------------------------
-    # SAFETY: if LingoFuse was ever started (i.e. lf_prepare_done
-    # returned 1), unloading the bridge DLL here would be a use-after-
-    # free. LF_Shutdown is asynchronous: C4 worker threads may still be
-    # executing inside the DLL when it returns. Freeing the DLL at that
-    # point removes the code from the address space while a thread is
-    # still running inside it, producing an access violation.
+    # Always clear the R-side bookkeeping tables, regardless of whether
+    # the main thread was started. A pending async slot holds a closure
+    # that captures the calling environment; leaving those behind across
+    # an unload would leak the entire environment tree.
     #
-    # When the main thread has never been started, there are no such
+    # This is a pure R-side operation. It does not touch the runtime.
+    # ------------------------------------------------------------------
+    .lf_state$app_handlers        <- list()
+    .lf_state$p2p_handlers        <- list()
+    .lf_state$async_slots         <- list()
+    .lf_state$net_on_connect      <- NULL
+    .lf_state$net_on_disconnect   <- NULL
+    .lf_state$running             <- FALSE
+
+    # ------------------------------------------------------------------
+    # SAFETY: if LingoFuse was ever started (i.e. lf_prepare_done
+    # returned 1), unloading the bridge DLL here would be a
+    # use-after-free. LF_Shutdown is asynchronous: C4 worker threads
+    # may still be executing inside the DLL when it returns. Freeing
+    # the DLL at that point removes the code from the address space
+    # while a thread is still running inside it, producing an access
+    # violation.
+    #
+    # The correct behaviour is to run the LF shutdown sequence
+    # (exit_main_thread + shutdown) and then leave the DLL mapped.
+    # The OS reclaims it at process exit, when all threads have
+    # already been torn down by the loader.
+    #
+    # When the main thread was never started, there are no such
     # threads and the DLL can be safely unloaded.
     # ------------------------------------------------------------------
     ever_started <- isTRUE(.lf_state$main_thread_started)
+    .lf_state$main_thread_started <- FALSE
 
     if (ever_started) {
         tryCatch(.Call("lf_exit_main_thread"), error = function(e) NULL)
-        tryCatch(.Call("lf_shutdown"), error = function(e) NULL)
+        tryCatch(.Call("lf_shutdown"),          error = function(e) NULL)
         packageStartupMessage(
             "lingofuse: LF was running. The bridge DLL is left loaded; ",
             "the OS will reclaim it at process exit.")

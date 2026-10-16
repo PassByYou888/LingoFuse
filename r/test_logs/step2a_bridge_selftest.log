@@ -1,0 +1,369 @@
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+Quiet = True
+Quiet = False
+[LF-DEBUG] LF_SetOption: opt="password" val="selftest_secret"
+Update Password = *********************
+[LF-DEBUG] LF_SetOption: opt="DataHandle_Idle_Timeout" val="123456"
+Data handle idle timeout = 123456 ms
+[LF-DEBUG] TLF_Data.New_Param: api="selftest_api" auto=yes hnd=0000027A80222FD0
+[LF-DEBUG] LF_CreateData: api="selftest_api" hnd=0000027A80222FD0
+[LF-DEBUG] LF_FreeData: hnd=0000027A80222FD0
+[LF-DEBUG] TLF_Data.Free_Data: hnd=0000027A80222FD0 auto=yes
+[LF-DEBUG] LF_FreeData: hnd=0000027A80222FD0
+[LF-DEBUG] TLF_Data.Free_Data: hnd=0000027A80222FD0 auto=yes
+[LF-DEBUG] TLF_Data.New_Param: api="perm_api" auto=no hnd=0000027A80221ED0
+[LF-DEBUG] LF_CreateData_Permanent: api="perm_api" hnd=0000027A80221ED0
+[LF-DEBUG] LF_FreeData: hnd=0000027A80221ED0
+[LF-DEBUG] TLF_Data.Free_Data: hnd=0000027A80221ED0 auto=no
+[LF-DEBUG] TLF_Data.Free_Data___: hnd=0000027A80221ED0 info="api "perm_api" parameter."
+[LF-DEBUG] LF_Generate_AppName: "@__generate__@&bridge_selftest:19228&1"
+[LF-DEBUG] LF_Generate_AppName: "@__generate__@&bridge_selftest:19228&2"
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=yes
+[LF-DEBUG] LF_CreateApp: name="BridgeSelfTest" desc="bridge self-test app" hnd=0000027A80223010
+[LF-DEBUG] LF_RegisterCall: hnd=0000027A80223010 name="echo"
+[LF-DEBUG] TLF_App.DoChange: name="BridgeSelfTest"
+[LF-DEBUG] Engine.Reg_Call: app="BridgeSelfTest" api="echo"
+[LF-DEBUG] LF_RegisterNotify: hnd=0000027A80223010 name="log"
+[LF-DEBUG] TLF_App.DoChange: name="BridgeSelfTest"
+[LF-DEBUG] Engine.Reg_Notify: app="BridgeSelfTest" api="log"
+[LF-DEBUG] LF_RegisterCall: hnd=0000027A80223010 name="echo"
+[LF-DEBUG] LF_Unregister: hnd=0000027A80223010 name="echo"
+[LF-DEBUG] TLF_App.DoChange: name="BridgeSelfTest"
+[LF-DEBUG] Engine.UnReg: app="BridgeSelfTest" api="echo"
+[LF-DEBUG] LF_Unregister: hnd=0000027A80223010 name="echo"
+[LF-DEBUG] LF_Unregister: hnd=0000027A80223010 name="__no_such_api__"
+[LF-DEBUG] LF_RegisterCall: hnd=0000027A80223010 name="echo"
+[LF-DEBUG] TLF_App.DoChange: name="BridgeSelfTest"
+[LF-DEBUG] Engine.Reg_Call: app="BridgeSelfTest" api="echo"
+[LF-DEBUG] LF_Register_P2P_Call: name="__bridge_selftest_p2p_call__"
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Call: app="___LF_P2P_APP___" api="__bridge_selftest_p2p_call__"
+[LF-DEBUG] LF_Register_P2P_Call: name="__bridge_selftest_p2p_call__"
+[LF-DEBUG] LF_Register_P2P_Notify: name="__bridge_selftest_p2p_notify__"
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="__bridge_selftest_p2p_notify__"
+[LF-DEBUG] LF_Unregister_P2P: name="__bridge_selftest_p2p_call__"
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.UnReg: app="___LF_P2P_APP___" api="__bridge_selftest_p2p_call__"
+[LF-DEBUG] LF_Unregister_P2P: name="__bridge_selftest_p2p_call__"
+[LF-DEBUG] LF_Unregister_P2P: name="__bridge_selftest_p2p_notify__"
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.UnReg: app="___LF_P2P_APP___" api="__bridge_selftest_p2p_notify__"
+[LF-DEBUG] LF_Unregister_P2P: name="__never_registered__"
+[LF-DEBUG] Find_Local_UID: result=False
+[LF-DEBUG] Find_Remote_UID: result=False
+[LF-DEBUG] Find_Local_UID: result=False
+[LF-DEBUG] Find_Remote_UID: result=False
+[LF-DEBUG] Find_Local_UID_App: api="__no_such_api__" matched=False app=0000000000000000
+[LF-DEBUG] Find_Remote_UID_API: api="__no_such_api__" result=0000000000000000
+[LF-DEBUG] TLF_Data.New_Param: api="no_op" auto=yes hnd=0000027A80221ED0
+[LF-DEBUG] LF_CreateData: api="no_op" hnd=0000027A80221ED0
+[LF-DEBUG] LF_Async_Call: app="__no_such_app_for_selftest__"
+"__no_such_app_for_selftest__" no connection
+[LF-DEBUG] LF_FreeData: hnd=0000027A80221ED0
+[LF-DEBUG] TLF_Data.Free_Data: hnd=0000027A80221ED0 auto=yes
+========================================================
+LingoFuse R bridge - C++ layer self-test (v2.0)
+========================================================
+Runtime directory: D:\CoreLibrary\LingoFuse\Binary
+
+=== Group 1. Build chain probes (no runtime required) ===
+  [PASS] lf_impl_ping returns 'pong'
+  [PASS] lf_impl_version reports 2.0.0
+  [PASS] lf_impl_stage returns a non-empty string
+  [PASS] lf_impl_compiled returns a non-empty string
+  [PASS] lf_impl_is_loaded returns 0 before load
+  [PASS] lf_impl_loaded_path returns empty before load
+      (6 passed, 0 failed)
+
+=== Group 2. Runtime load ===
+  [PASS] lf_impl_load_library returns 1
+  [PASS] lf_impl_is_loaded returns 1 after load
+  [PASS] lf_impl_loaded_path returns a non-empty string
+  [INFO] loaded from: D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll
+  [PASS] second lf_impl_load_library returns 1 (idempotent)
+      (4 passed, 0 failed)
+
+=== Group 3. Runtime options ===
+  [PASS] set/get option roundtrip (Quiet=True)
+  [PASS] set/get option roundtrip (Quiet=False)
+  [PASS] password option is masked on read
+  [PASS] unknown option returns an empty string
+  [PASS] set/get numeric option roundtrip (DataHandle_Idle_Timeout)
+      (5 passed, 0 failed)
+
+=== Group 4. DataHandle ===
+  [PASS] lf_impl_data_create returns non-NULL
+  [PASS] fresh handle has size 0
+  [PASS] fresh handle has pos 0
+  [PASS] write_buffer reports 5 bytes written
+  [PASS] size is 5 after write
+  [PASS] pos is 5 after write
+  [PASS] lf_impl_data_get_buffer returns non-NULL
+  [PASS] get_buffer content matches what was written
+  [PASS] set_pos(0) succeeds
+  [PASS] read_buffer reports 5 bytes read
+  [PASS] readback content matches
+  [PASS] set_size(8) succeeds
+  [PASS] size is 8 after set_size(8)
+  [PASS] set_size(2) succeeds
+  [PASS] size is 2 after set_size(2)
+  [INFO] lf_impl_data_free is idempotent
+  [PASS] lf_impl_data_create_permanent returns non-NULL
+      (16 passed, 0 failed)
+
+=== Group 5. AppHandle + generate_app_name ===
+  [PASS] generate_app_name returns non-empty
+  [PASS] generate_app_name second call non-empty
+  [PASS] generate_app_name returns unique values
+  [INFO] first generated name: @__generate__@&bridge_selftest:19228&1
+  [PASS] lf_impl_app_create returns non-NULL
+  [PASS] lf_impl_app_name returns the configured name
+  [PASS] lf_impl_register_call_raw(echo) succeeds
+  [PASS] lf_impl_register_notify_raw(log) succeeds
+  [PASS] duplicate register_call_raw is rejected
+  [PASS] app_unregister(echo) returns 1
+  [PASS] second app_unregister(echo) returns 0
+  [PASS] app_unregister(unknown) returns 0
+  [PASS] re-register echo after unregister succeeds
+      (12 passed, 0 failed)
+
+=== Group 6. Process-wide P2P registration ===
+  [PASS] register_p2p_call succeeds
+  [PASS] duplicate register_p2p_call is rejected
+  [PASS] register_p2p_notify succeeds
+  [PASS] unregister_p2p(call) returns 1
+  [PASS] second unregister_p2p(call) returns 0
+  [PASS] unregister_p2p(notify) returns 1
+  [PASS] unregister_p2p(unknown) returns 0
+      (7 passed, 0 failed)
+
+=== Group 7. UID health checks (32-byte by-value ABI) ===
+  [PASS] check_uid(all-zero) returns 0
+  [PASS] check_uid(non-zero unregistered) returns 0
+  [PASS] check_uid_api(zero, unknown) returns 0
+      (3 passed, 0 failed)
+
+=== Group 8. Async dispatch failure path ===
+  [INFO] async slot count before dispatch: 0
+  [INFO] async dispatch returned id=0
+  [PASS] dispatch failure leaves slot count unchanged
+  [PASS] async_release(unknown id) does not crash
+      (2 passed, 0 failed)
+
+=== Group 9. Job queries on NULL handles ===
+  [PASS] job_kind(NULL) returns -1
+  [PASS] job_registry_space(NULL) returns 0
+  [PASS] job_api_name(NULL) returns NULL
+  [PASS] job_is_call(NULL) returns 0
+  [PASS] job_get_input_size(NULL) returns -1
+  [PASS] job_sender_uid_valid(NULL) returns 0
+  [PASS] job_sender_uid(NULL) returns 0
+  [PASS] job_callback_id(NULL) returns 0
+  [PASS] job_result(NULL) returns empty string
+  [PASS] job_error(NULL) returns empty string
+  [PASS] job_error_kind(NULL) returns 3
+  [PASS] job_event_kind(NULL) returns empty string
+  [PASS] job_event_[LF-DEBUG] LF_ResetPrepare: clearing 0 prepare commands
+[LF-DEBUG] LF_PrepareService: listen="ipc:bridge_selftest" host="ipc:bridge_selftest"
+[LF-DEBUG] LF_PrepareService: tag=1 cmd="Service("ipc:bridge_selftest","ipc:bridge_selftest",0,"LingoFuse@Tag=1")"
+LF_PrepareService: Service("ipc:bridge_selftest","ipc:bridge_selftest",0,"LingoFuse@Tag=1")
+[LF-DEBUG] LF_PrepareClient: host="ipc:bridge_selftest" hnd=0000027A80223010
+[LF-DEBUG] LF_PrepareClient: tag=2 cmd="KeepAlive("ipc:bridge_selftest",0,"LingoFuse@Tag=2")"
+LF_PrepareClient: KeepAlive("ipc:bridge_selftest",0,"LingoFuse@Tag=2")
+[LF-DEBUG] LF_PrepareDone: starting simulator main thread
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+NA.LingoFuseR Virtual Addr: "1:1:1:1:1:1:1:1 Port:1" Listen is open
+NA.LingoFuseS Virtual Addr: "2:2:2:2:2:2:2:2 Port:2" Listen is open
+[LF-DEBUG] Service.Init_UID_And_P2PName done
+[LF-DEBUG] TC40_LF_Service.Create: param="Tag=1"
+Build Depend service "LingoFuse" instance class "TC40_LF_Service"
+service LingoFuse p2pVM Received tunnel ip 1:1:1:1:1:1:1:1 port: 1
+service LingoFuse p2pVM Send tunnel ip 2:2:2:2:2:2:2:2 port: 2
+[IPC] Checking if queue "bridge_selftest0" is already occupied...
+[IPC] Queue "bridge_selftest0" does not exist 鈥?ready to create a new service
+[IPC] Creating new IPC service queue "bridge_selftest0" ...
+[IPC] Server successfully started on queue "bridge_selftest0"
+Physics Service Listening successed, internet addr: ipc:bridge_selftest port: 0
+LingoFuse Service Listening: "ipc:bridge_selftest" OK, Host: "ipc:bridge_selftest"
+[LF-DEBUG] Service Start: listen="ipc:bridge_selftest" host="ipc:bridge_selftest" port=0
+Connection ipc:bridge_selftest:0 Succeeded
+[LF-DEBUG] Tunnel Connected: host="ipc:bridge_selftest" port=0
+Physics Tunnel connection successed, internet addr: ipc:bridge_selftest port: 0
+ipc:bridge_selftest:0 Disconnected
+[LF-DEBUG] Tunnel Disconnected: host="ipc:bridge_selftest" port=0
+Connection ipc:bridge_selftest:0 Succeeded
+[LF-DEBUG] Tunnel Connected: host="ipc:bridge_selftest" port=0
+Physics Tunnel connection successed, internet addr: ipc:bridge_selftest port: 0
+[LF-DEBUG] App.Do_LFRegEvent: app="___LF_P2P_APP___" notified=0
+[LF-DEBUG] App.Do_LFRegEvent: app="BridgeSelfTest" notified=0
+[LF-DEBUG] TC40_LF_Client.Create: tag=2 param="Tag=2"
+build "LingoFuse" network done.
+"LingoFuse" network physics address "ipc:bridge_selftest" physics port "0" DCT40 Class:TC40_LF_Client
+"LingoFuse" network p2pVM Received Tunnel IPV6 "1:1:1:1:1:1:1:1" Port:0
+"LingoFuse" network p2pVM Send Tunnel IPV6 "2:2:2:2:2:2:2:2" Port:0
+Ready Network: "ipc:bridge_selftest"
+resp_19228_1_195a4e3eddcc Open VM P2P Tunnel resp_19228_1_195a4e3eddcc
+resp_19228_1_195a4e3eddcc Open VM P2P Tunnel resp_19228_1_195a4e3eddcc
+NA.LingoFuseR Virtual Addr: "1:1:1:1:1:1:1:1 Port:1" Listen is open
+NA.LingoFuseS Virtual Addr: "2:2:2:2:2:2:2:2 Port:2" Listen is open
+resp_19228_1_195a4e3eddcc VM Authentication Success
+resp_19228_1_195a4e3eddcc VM Authentication Success
+resp_19228_1_195a4e3eddcc Virtual Remote Listen state Activted "1:1:1:1:1:1:1:1 port:1"
+resp_19228_1_195a4e3eddcc Virtual Remote Listen state Activted "2:2:2:2:2:2:2:2 port:2"
+NA.LingoFuseR VM-IO Create 1
+NA.LingoFuseS VM-IO Create 1
+[LF-DEBUG] SendTunnel.Create: peer=::
+NA.LingoFuseS VM-IO Create 1
+NA.LingoFuseS Virtual connecting with "2:2:2:2:2:2:2:2 port:2"
+[LF-DEBUG] RecvTunnel.Create: peer=::
+NA.LingoFuseR VM-IO Create 1
+NA.LingoFuseR Virtual connecting with "1:1:1:1:1:1:1:1 port:1"
+resp_19228_1_195a4e3eddcc connecting reponse from frameworkID: 2 p2pID: 1
+resp_19228_1_195a4e3eddcc connecting reponse from frameworkID: 1 p2pID: 1
+Automated P2PVM client connection done.
+NA.LingoFuseS resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) Send Stream cmd: __@GetCurrentCadencer
+NA.LingoFuseS resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) Send Stream cmd: __@TunnelLink
+NA.LingoFuseR resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) execute stream: __@GetCurrentCadencer
+NA.LingoFuseR resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) send stream cmd __@GetCurrentCadencer Result data
+NA.LingoFuseS resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) stream on result: __@GetCurrentCadencer
+NA.LingoFuseR resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) execute stream: __@TunnelLink
+LingoFuse Service Link Succeeded IO "resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)"
+[LF-DEBUG] Service LinkSuccess: peer="resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)"
+[LF-DEBUG] Service.DoLinkSuccess_Event: peer=resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)
+NA.LingoFuseR resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) send stream cmd __@TunnelLink Result data
+NA.LingoFuseS resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) stream on param result: __@TunnelLink
+NA.LingoFuseS resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1) tunnel link success! received:1 <-> send:1
+[LF-DEBUG] Tunnel ClientConnected: tag=2
+[LF-DEBUG] Client.Set_API_APP: tag=2 app=0000027A80223010
+[LF-DEBUG] Client.Update_UID_Info: p2p_name="" api_count=3
+[LF-DEBUG] Client.Init_App_Info: app="BridgeSelfTest"
+APP BridgeSelfTest "bridge self-test app" Ready OK, Connection "ipc:bridge_selftest"
+  (notify) (log) "log message"
+  (call) (echo) "echo back"
+[LF-DEBUG] Client.DoNetworkOnline: tag=2
+[LF-DEBUG] Client.TunnelLink: tag=2 uid regenerated
+[LF-DEBUG] Client.Update_UID_Info: p2p_name="" api_count=3
+[LF-DEBUG] Client.Init_App_Info: app="BridgeSelfTest"
+[LF-DEBUG] SVC.cmd_Update_UID: ENTER peer=resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)
+[LF-DEBUG] Service.Update_P2PName_And_UID: p2p="" api_count=3
+[LF-DEBUG] Service.Schedule_API_Info_Broadcast: links=1 next_tick=287077203
+[LF-DEBUG] SVC.cmd_Update_UID: EXIT p2p=""
+[LF-DEBUG] SVC.cmd_Init_APP_Info: ENTER
+[LF-DEBUG] SVC.cmd_Init_APP_Info: app="BridgeSelfTest" api_count=2 is_local=True
+[LF-DEBUG] Service: API cache invalidated by cmd_Init_APP_Info (app="BridgeSelfTest")
+[LF-DEBUG] SVC.cmd_Update_UID: ENTER peer=resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)
+[LF-DEBUG] Service.Update_P2PName_And_UID: p2p="" api_count=3
+[LF-DEBUG] SVC.cmd_Update_UID: EXIT p2p=""
+[LF-DEBUG] SVC.cmd_Init_APP_Info: ENTER
+[LF-DEBUG] SVC.cmd_Init_APP_Info: app="BridgeSelfTest" api_count=2 is_local=True
+[LF-DEBUG] Service: API cache invalidated by cmd_Init_APP_Info (app="BridgeSelfTest")
+[LF-DEBUG] Client.Do_Init_App_Info_Result: app="BridgeSelfTest" online
+[LF-DEBUG] Client.Do_Init_App_Info_Result: app="BridgeSelfTest" online
+[LF-DEBUG] SVC.cmd_Thread_State: host=0 wait=0
+[LF-DEBUG] Service.Progress: scheduled broadcast fires
+[LF-DEBUG] Service.Broadcast_API_Info: alive=1
+[LF-DEBUG] Service.Broadcast_API_Info done
+[LF-DEBUG] Invalidate All API cache
+[LF-DEBUG] Do_LF_Network_Connect: addr="ipc:bridge_selftest"
+[LF-DEBUG] Client.cmd_update_service_api_info: service_info=1 uid_info=1
+[LF-DEBUG] LF_PrepareDone: result=1
+[LF-DEBUG] SVC.cmd_Thread_State: host=0 wait=0
+[LF-DEBUG] Find_Local_APP: name="BridgeSelfTest" result=0000027A80EC0150
+[LF-DEBUG] Find_Local_API: key="BridgeSelfTest.echo" hit=no result=0000027A80EC0150
+[LF-DEBUG] LF_BindApp: hnd=0000027A80223010 name="BridgeSelfTest"
+LF_BindApp: All clients are already occupied - cannot bind app "BridgeSelfTest".
+[LF-DEBUG] LF_BindApp done: bound=0
+[LF-DEBUG] DataPool.Progress: live=2 timeout_freed=0
+[LF-DEBUG] LF_Generate_AppName: "@__generate__@ipc:bridge_selftest:0&2&bridge_selftest:19228&3"
+[LF-DEBUG] LF_ExitMainThread: signaling stop
+ipc:bridge_selftest:0 Disconnected
+[LF-DEBUG] Tunnel Disconnected: host="ipc:bridge_selftest" port=0
+[LF-DEBUG] Client.DoNetworkOffline: tag=2
+[LF-DEBUG] Invalidate All API cache
+[LF-DEBUG] Do_LF_Network_Disconnect: addr="ipc:bridge_selftest"
+NA.LingoFuseR VMClientIO 1 disconnect
+NA.LingoFuseR VM-IO Destroy 1
+NA.LingoFuseS VMClientIO 1 disconnect
+NA.LingoFuseS VM-IO Destroy 1
+Close VM P2P Tunnel 
+resp_19228_1_195a4e3eddcc Disconnect
+NA.LingoFuseR VMClientIO 1 disconnect
+NA.LingoFuseR VM-IO Destroy 1
+[LF-DEBUG] RecvTunnel.Destroy: app="BridgeSelfTest" p2p=""
+[LF-DEBUG] Service.DoUserOut_Event: app="BridgeSelfTest" p2p="" peer=resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)
+[LF-DEBUG] Service: API cache invalidated by DoUserOut_Event
+[LF-DEBUG] Service.Schedule_API_Info_Broadcast: links=0 next_tick=287079437
+LingoFuse Service User-out IO "resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)"
+[LF-DEBUG] Service UserOut: peer="resp_19228_1_195a4e3eddcc-Virtual(1:1:1:1:1:1:1:1)"
+NA.LingoFuseS VMClientIO 1 disconnect
+NA.LingoFuseS VM-IO Destroy 1
+[LF-DEBUG] SendTunnel.Destroy: p2p=""
+resp_19228_1_195a4e3eddcc Close VM P2P Tunnel resp_19228_1_195a4e3eddcc
+Physics Service Listening Stop.
+LingoFuse Service Listening: "ipc:bridge_selftest:0" Stop
+[LF-DEBUG] Service Stop: listen="ipc:bridge_selftest"
+[LF-DEBUG] TC40_LF_Client.Destroy: tag=2 begin
+[LF-DEBUG] TC40_LF_Client.Destroy: tag=2 done timeout=no
+[LF-DEBUG] TC40_LF_Service.Destroy: begin
+[LF-DEBUG] Service.Free_UID_And_P2PName done
+[LF-DEBUG] TC40_LF_Service.Destroy: done
+[LF-DEBUG] SeqCallPool.Stop done
+[LF-DEBUG] SeqNotifyPool.Stop done
+hint: Data handle pool "2" handles automatically freed.
+hint: automatically free handles api "selftest_api" parameter.
+[LF-DEBUG] TLF_Data.Free_Data___: hnd=0000027A80222FD0 info="api "selftest_api" parameter."
+hint: automatically free handles api "no_op" parameter.
+[LF-DEBUG] TLF_Data.Free_Data___: hnd=0000027A80221ED0 info="api "no_op" parameter."
+[LF-DEBUG] DataPool.Free_All_Hnd done
+LingoFuse Main Thread Exit
+[LF-DEBUG] LF_Shutdown: begin
+[LF-DEBUG] LF_ExitMainThread: signaling stop
+[LF-DEBUG] SeqCallPool.Stop done
+[LF-DEBUG] SeqNotifyPool.Stop done
+[LF-DEBUG] TLF_App.Destroy: name="BridgeSelfTest"
+[LF-DEBUG] DataPool.Free_All_Hnd done
+[LF-DEBUG] LF_Shutdown: done
+addr(NULL) returns empty string
+  [PASS] poll_job(0) on empty queue returns NULL
+  [PASS] pending_job_count is 0 on empty queue
+      (15 passed, 0 failed)
+
+=== Group 10. Full prepare cycle ===
+  [PASS] reset_prepare does not crash
+  [PASS] prepare_service returns a non-negative tag
+  [INFO] prepare_service tag = 1
+  [PASS] prepare_client_with_app returns a non-negative tag
+  [INFO] prepare_client_with_app tag = 2
+  [PASS] prepare_done returns 1
+  [PASS] check_main_thread returns 1 after prepare_done
+  [PASS] check_app(BridgeSelfTest) returns 1
+  [PASS] check_api(BridgeSelfTest, echo) returns 1
+  [PASS] app_bind returns 0 when no free client is available
+  [INFO] status queue count before post: 168
+  [INFO] status queue count after post: 175
+  [PASS] post_status increments the queue count
+  [PASS] posted status message appears in the get_status stream
+  [PASS] generate_app_name works after prepare_done
+  [INFO] generated name (with tunnel info): @__generate__@ipc:bridge_selftest:0&2&bridge_selftest:19228&3
+  [PASS] exit_main_thread does not crash
+  [PASS] check_main_thread returns 0 after exit_main_thread
+  [PASS] app_free does not crash
+  [PASS] shutdown does not crash
+  [PASS] is_loaded returns 0 after unload_library
+
+========================================================
+Self-test summary
+========================================================
+  Passed : 86
+  Failed : 0
+  Total  : 86
+========================================================
+
+Bridge C++ layer verified. Ready for R layer.
+[LF-DEBUG] Free_P2P_APP
+[LF-DEBUG] TLF_App.Destroy: name="___LF_P2P_APP___"
+[LF-DEBUG] DataPool.Free_All_Hnd done

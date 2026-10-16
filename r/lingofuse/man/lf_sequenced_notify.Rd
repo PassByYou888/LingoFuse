@@ -11,7 +11,7 @@ lf_sequenced_notify(app_name, api_name, payload)
 
 \item{api_name}{Target API name.}
 
-\item{payload}{Payload as a string (typically JSON).}
+\item{payload}{Payload as a string.}
 }
 \value{
 \code{NULL}, invisibly.

@@ -1,0 +1,20 @@
+[OK]   Bridge library found: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[OK]   dyn.load succeeded
+[OK]   lf_ping returns a character vector
+[OK]   lf_ping returns "pong"
+[OK]   lf_echo round-trips a string
+[OK]   lf_echo round-trips an integer
+[OK]   lf_echo round-trips a double
+[OK]   lf_info returns a list
+[OK]   lf_info list has a non-empty version field
+[OK]   lf_info list has a non-empty stage field
+[OK]   lf_info list has a compiled field
+
+============================================================
+Smoke test summary
+============================================================
+  Passed : 9
+  Failed : 0
+============================================================
+
+STEP 1 build chain verified. The R <-> C++ pipeline is ready.

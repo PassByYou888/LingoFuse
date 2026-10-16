@@ -4,7 +4,14 @@
 \alias{lf_register_call}
 \title{Register a Call API (request-response)}
 \usage{
-lf_register_call(app, api_name, description = "", handler, bin = FALSE)
+lf_register_call(
+  app,
+  api_name,
+  description = "",
+  handler,
+  bin = FALSE,
+  with_context = FALSE
+)
 }
 \arguments{
 \item{app}{Application handle.}
@@ -14,11 +21,22 @@ lf_register_call(app, api_name, description = "", handler, bin = FALSE)
 \item{description}{Human-readable description.}
 
 \item{handler}{Function called on each request. Receives the input
-payload (a string by default, a raw vector when \code{bin = TRUE})
-and must return the response payload in the same form.}
+payload (a string by default, a raw vector when \code{bin = TRUE}).
+When \code{with_context = TRUE} the handler also receives a second
+argument \code{ctx}, a named list with two elements:
+\describe{
+  \item{sender_uid}{Length-32 raw vector, or \code{NULL} if the
+    runtime did not populate side data for this request.}
+  \item{sender_p2p_name}{Length-1 character vector; empty string
+    when the sender did not set a P2P group name.}
+}}
 
 \item{bin}{When \code{TRUE}, the handler works with raw vectors
 instead of strings.}
+
+\item{with_context}{When \code{TRUE}, pass a context list as the
+second argument to the handler. Default \code{FALSE} preserves
+the historical single-argument signature.}
 }
 \value{
 \code{TRUE}, invisibly.

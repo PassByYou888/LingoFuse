@@ -7,7 +7,7 @@
 lf_data_free(hnd)
 }
 \arguments{
-\item{hnd}{Data handle to release.}
+\item{hnd}{Data handle.}
 }
 \value{
 \code{NULL}, invisibly.

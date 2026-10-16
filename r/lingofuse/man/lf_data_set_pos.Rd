@@ -2,18 +2,18 @@
 % Please edit documentation in R/api.R
 \name{lf_data_set_pos}
 \alias{lf_data_set_pos}
-\title{Set the read/write position of a data handle}
+\title{Set the read / write position of a data handle}
 \usage{
 lf_data_set_pos(hnd, pos)
 }
 \arguments{
 \item{hnd}{Data handle.}
 
-\item{pos}{New position, in bytes.}
+\item{pos}{New position in bytes.}
 }
 \value{
 \code{NULL}, invisibly.
 }
 \description{
-Set the read/write position of a data handle
+Set the read / write position of a data handle
 }

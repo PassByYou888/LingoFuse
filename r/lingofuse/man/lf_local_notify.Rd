@@ -2,22 +2,25 @@
 % Please edit documentation in R/api.R
 \name{lf_local_notify}
 \alias{lf_local_notify}
-\title{In-process notification}
+\title{In-process notification (R-side dispatch)}
 \usage{
-lf_local_notify(app, api_name, payload)
+lf_local_notify(app, api_name, payload, p2p = FALSE)
 }
 \arguments{
 \item{app}{Application handle. Accepted for API symmetry with
-\code{lf_notify()}; the dispatch itself does not use it.}
+\code{lf_call()}; the R-side dispatch itself does not use it.}
 
 \item{api_name}{API name.}
 
 \item{payload}{Payload as a string (or a raw vector for binary APIs).}
+
+\item{p2p}{When \code{TRUE}, look up \code{api_name} in the
+process-wide P2P handler table instead of the App-bound table.}
 }
 \value{
 \code{NULL}, invisibly.
 }
 \description{
 Dispatches directly to the handler registered under \code{api_name},
-bypassing the C4 mesh. The return value (if any) is discarded.
+bypassing the C4 mesh. The handler's return value is discarded.
 }

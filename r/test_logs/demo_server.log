@@ -1,0 +1,28 @@
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+LF_PrepareService: Service("ipc:r_calc","ipc:r_calc",0,"LingoFuse@Tag=1")
+LF_PrepareClient: KeepAlive("ipc:r_calc",0,"LingoFuse@Tag=2")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+[IPC] Checking if queue "r_calc0" is already occupied...
+[IPC] Queue "r_calc0" does not exist – ready to create a new service
+[IPC] Creating new IPC service queue "r_calc0" ...
+[IPC] Server successfully started on queue "r_calc0"
+LingoFuse Service Listening: "ipc:r_calc" OK, Host: "ipc:r_calc"
+Connection ipc:r_calc:0 Succeeded
+ipc:r_calc:0 Disconnected
+Connection ipc:r_calc:0 Succeeded
+Ready Network: "ipc:r_calc"
+LingoFuse Service Link Succeeded IO "resp_8652_1_19751d52bed4-Virtual(1:1:1:1:1:1:1:1)"
+APP CalcR "R calculator demo" Ready OK, Connection "ipc:r_calc"
+  (call) (add) "add two integers"
+[server] online: CalcR @ ipc:r_calc
+[server] pumping for up to  20  seconds. Ctrl+C to stop.
+LingoFuse Service Link Succeeded IO "resp_20800_1_197563c31044-Virtual(1:1:1:1:1:1:1:1)"
+LingoFuse Service User-out IO "resp_20800_1_197563c31044-Virtual(1:1:1:1:1:1:1:1)"
+[server] shutting down
+ipc:r_calc:0 Disconnected
+LingoFuse Service User-out IO "resp_8652_1_19751d52bed4-Virtual(1:1:1:1:1:1:1:1)"
+LingoFuse Service Listening: "ipc:r_calc:0" Stop
+LingoFuse Main Thread Exit

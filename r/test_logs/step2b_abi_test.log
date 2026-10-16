@@ -1,0 +1,54 @@
+[OK]   Bridge library: D:\CoreLibrary\LingoFuse\r\libs\lfR_bridge.dll
+[INFO] Runtime directory: D:/CoreLibrary/LingoFuse/Binary
+[OK]   dyn.load succeeded
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK]   Runtime loaded: D:/CoreLibrary/LingoFuse/Binary\LingoFuse64.dll
+[OK]   lf_is_loaded returns TRUE
+[OK]   lf_loaded_path matches
+[OK]   lf_data_create returns externalptr
+[OK]   fresh handle has size 0
+[OK]   fresh handle has pos 0
+[OK]   write_buffer reports 5 bytes
+[OK]   size is now 5
+[OK]   pos is now 5
+NULL
+[OK]   set_pos(0) succeeded
+[OK]   read_buffer returns 5 bytes
+[OK]   readback bytes match
+NULL
+[OK]   read past end returns 0 bytes
+NULL
+NULL
+[OK]   lf_data_free is idempotent
+[OK]   use-after-free raises an error
+       error: lf_data_get_size: handle is NULL
+[OK]   permanent handle created
+NULL
+[OK]   permanent handle freed
+[OK]   app handle created
+[OK]   app name matches
+NULL
+NULL
+[OK]   lf_app_free is idempotent
+[OK]   app use-after-free raises an error
+       error: lf_app_name: app is NULL
+NULL
+hint: Data handle pool "1" handles automatically freed.
+hint: automatically free handles api "test_api" parameter.
+NULL
+NULL
+[OK]   lf_is_loaded returns FALSE after unload
+
+============================================================
+ABI test summary
+============================================================
+  Passed : 18
+  Failed : 0
+============================================================
+
+STEP 2 ABI layer verified. The bridge can now speak to the
+real LingoFuse runtime.
+Next: STEP 3 will add JSON / string I/O and the full API.

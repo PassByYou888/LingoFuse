@@ -2,9 +2,16 @@
 % Please edit documentation in R/api.R
 \name{lf_register_notify}
 \alias{lf_register_notify}
-\title{Register a Notify API (one-way)}
+\title{Register a Notify API (one-way, App-bound)}
 \usage{
-lf_register_notify(app, api_name, description = "", handler, bin = FALSE)
+lf_register_notify(
+  app,
+  api_name,
+  description = "",
+  handler,
+  bin = FALSE,
+  with_context = FALSE
+)
 }
 \arguments{
 \item{app}{Application handle.}
@@ -13,16 +20,28 @@ lf_register_notify(app, api_name, description = "", handler, bin = FALSE)
 
 \item{description}{Human-readable description.}
 
-\item{handler}{Function called on each notification. Receives the
-input payload (a string by default, a raw vector when
-\code{bin = TRUE}). Its return value (if any) is discarded.}
+\item{handler}{Function called on each request. Receives the input
+payload (a string by default, a raw vector when \code{bin = TRUE}).
+When \code{with_context = TRUE} the handler also receives a second
+argument \code{ctx}, a named list with two elements:
+\describe{
+  \item{sender_uid}{Length-32 raw vector, or \code{NULL} if the
+    runtime did not populate side data for this request.}
+  \item{sender_p2p_name}{Length-1 character vector; empty string
+    when the sender did not set a P2P group name.}
+}}
 
 \item{bin}{When \code{TRUE}, the handler works with raw vectors
 instead of strings.}
+
+\item{with_context}{When \code{TRUE}, pass a context list as the
+second argument to the handler. Default \code{FALSE} preserves
+the historical single-argument signature.}
 }
 \value{
 \code{TRUE}, invisibly.
 }
 \description{
-Register a Notify API (one-way)
+See \code{lf_register_call} for the meaning of \code{bin} and
+\code{with_context}. The handler's return value is discarded.
 }

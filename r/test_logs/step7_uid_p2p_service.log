@@ -1,0 +1,32 @@
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[1] "D:/CoreLibrary/LingoFuse/Binary\\LingoFuse64.dll"
+Update LF_P2P_name = uid_p2p_server_group
+LF_PrepareService: Service("ipc:uid_p2p_test","ipc:uid_p2p_test",0,"LingoFuse@Tag=1")
+LF_PrepareClient: KeepAlive("ipc:uid_p2p_test",0,"LingoFuse@Tag=2")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+[IPC] Checking if queue "uid_p2p_test0" is already occupied...
+[IPC] Queue "uid_p2p_test0" does not exist – ready to create a new service
+[IPC] Creating new IPC service queue "uid_p2p_test0" ...
+[IPC] Server successfully started on queue "uid_p2p_test0"
+LingoFuse Service Listening: "ipc:uid_p2p_test" OK, Host: "ipc:uid_p2p_test"
+Connection ipc:uid_p2p_test:0 Succeeded
+ipc:uid_p2p_test:0 Disconnected
+Connection ipc:uid_p2p_test:0 Succeeded
+Ready Network: "ipc:uid_p2p_test"
+LingoFuse Service Link Succeeded IO "resp_14820_1_196c5c37daac-Virtual(1:1:1:1:1:1:1:1)"
+APP UidP2PService "UID/P2P test service" Ready OK, Connection "ipc:uid_p2p_test"
+  (call) (whoami) "return caller identity"
+  (call) (echo) "echo input verbatim"
+  (call) (service_id) "return service id"
+  (notify) (log) "log a message"
+LingoFuse Service Link Succeeded IO "resp_13128_1_196ca8d977a8-Virtual(1:1:1:1:1:1:1:1)"
+no found uid:86f301f5334fd391904ed83ec7d69de9164333ddd0e405f44634f193dc7f2760 api("__no_such_api__")
+no found p2pname:"__no_such_group__" api:"echo"
+LingoFuse Service User-out IO "resp_13128_1_196ca8d977a8-Virtual(1:1:1:1:1:1:1:1)"
+ipc:uid_p2p_test:0 Disconnected
+LingoFuse Service User-out IO "resp_14820_1_196c5c37daac-Virtual(1:1:1:1:1:1:1:1)"
+LingoFuse Service Listening: "ipc:uid_p2p_test:0" Stop
+LingoFuse Main Thread Exit

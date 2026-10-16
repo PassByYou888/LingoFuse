@@ -1,0 +1,31 @@
+=== LingoFuse echo_client ===
+Runtime: D:\CoreLibrary\LingoFuse\Binary
+[LF-DEBUG] TLF_App.Create: name="" owner_pool=no
+[LF-DEBUG] TLF_App.DoChange: name="___LF_P2P_APP___"
+[LF-DEBUG] Engine.Reg_Notify: app="___LF_P2P_APP___" api="Status"
+[LF-DEBUG] Init_P2P_APP done
+[OK] Loaded: D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll
+[OK] Symbols resolved
+LF_PrepareClient: KeepAlive("ipc:r_callee",0,"LingoFuse@Tag=1")
+Main Thread Begin, LingoFuse-v5.01 C4-v4.02,Net-v5.02,IOCP-v2.00,IPC-v1.05,Core-v18.1
+Connection ipc:r_callee:0 Succeeded
+ipc:r_callee:0 Disconnected
+Connection ipc:r_callee:0 Succeeded
+Ready Network: "ipc:r_callee"
+[OK] Connected to ipc:r_callee
+Waiting for RService to become visible...
+>> CALL RService.add  payload={"a":3,"b":4}
+   << RESP: {"result":7}
+>> CALL RService.add  payload={"a":-10,"b":25}
+   << RESP: {"result":15}
+>> CALL RService.echo  payload=hello from echo_client
+   << RESP: hello from echo_client
+>> NOTIFY RService.log
+[OK] Done. Press Enter to exit...
+ipc:r_callee:0 Disconnected
+hint: Data handle pool "7" handles automatically freed.
+...
+hint: automatically free handles result for app:RService api:echo
+hint: automatically free handles api "log" parameter.
+LingoFuse Main Thread Exit
+Bye.

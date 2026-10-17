@@ -1858,15 +1858,18 @@ begin
   if opt.Same('debug', 'debug_cmd', 'debug_command', 'debugcommand') then
     begin
       tmp := V;
-      DoStatus('execute %s', [tmp.Text]);
-      try
-        with TC40_Console_Help.Create do
-          begin
-            Run_HelpCmd(V.Text);
-            Free;
+      if Simulator_Main_Thread_Activted then
+        begin
+          DoStatus('execute %s', [tmp.Text]);
+          try
+            with TC40_Console_Help.Create do
+              begin
+                Run_HelpCmd(V.Text);
+                Free;
+              end;
+          except
           end;
-      except
-      end;
+        end;
     end
   else if opt.Same('LF_P2P_name', 'P2P_name', 'LF_P2P', 'P2P') then
     begin

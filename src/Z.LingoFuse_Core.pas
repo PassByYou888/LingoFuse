@@ -1027,7 +1027,8 @@ procedure TLF_App.DoTimer;
 begin
   if FUpdated then
     begin
-      MainThreadPost.PostM_NP(Do_LFRegEvent);
+      if Simulator_Main_Thread_Activted then
+          MainThreadPost.PostM_NP(Do_LFRegEvent);
       FUpdated := False;
     end;
 end;

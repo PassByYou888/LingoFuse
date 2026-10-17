@@ -17,9 +17,10 @@
 
 | 你的身份 | 建议阅读顺序 |
 |---|---|
-| **第一次听说 LingoFuse** | [这是什么](#这是什么) → [为什么需要它](#为什么需要它) → [快速开始](#快速开始) |
+| **第一次听说 LingoFuse** | [这是什么](#这是什么) → [为什么需要它](#为什么需要它) → [先记住七句话](#先记住七句话) → [快速开始](#快速开始) |
 | **想评估是否采用** | [语言支持](#语言支持) → [测试与验证](#测试与验证) → [项目状态与边界](#项目状态与边界) |
-| **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [代码生成器体系](#代码生成器体系) → [相关项目](#相关项目) |
+| **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [相关项目](#相关项目) |
+| **想理解核心机制** | [核心概念](#核心概念) → [内部机制知识库](Z.LingoFuse.md) → [Pascal 完整指南](LingoFuse_Pascal_Complete_Guide.md) |
 | **想自己编译核心库** | [构建核心动态库](#构建核心动态库) |
 | **想了解作者怎么做的** | [关于作者](#关于作者) → [十四语言实测手记](https://zpascal.net/imhuman.html) |
 | **想贡献 / 想 PR** | [项目状态与边界](#项目状态与边界) → [关于作者](#关于作者) → 直接提 Issue |
@@ -120,22 +121,22 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 | 语言 | 目录 | 状态 | 一句话说明 |
 |------|------|------|------------|
-| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源 |
-| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关 |
-| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销 |
-| C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | 58 项测试，P/Invoke + RAII + 统一 JSON I/O |
-| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | 127 项测试，支持 Node / Deno / Bun |
-| JavaScript | [`js/`](js/) | 🟢 生产就绪 | 127 项测试，CommonJS + ESM 双入口，与 TS 字节级互通 |
-| Rust | [`rust/`](rust/) | 🟢 生产就绪 | 67 项测试，安全 RAII 封装，FFI 边界 `catch_unwind` 隔离 |
-| Go | [`go/`](go/) | 🟢 生产就绪 | 18 项测试，purego 无 cgo，交叉编译友好 |
-| Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整 caller + server 能力，支持 Flutter 移动端 |
-| Java | [`java/`](java/) | 🟢 生产就绪 | FFM API（JDK 22+），纯 Java 无 JNI |
-| Swift | [`swift/`](swift/) | 🟢 生产就绪 | 128 项 XCTest，C++ ↔ Swift 双向字节级互调已验证 |
-| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 140 项测试，与 C++ / C# / Rust / Go / Python / JavaScript 逐字节兼容 |
-| Erlang | [`erlang/`](erlang/) | 🟢 生产就绪 | 37 个 C ABI 函数完整封装，NIF 跨平台构建，OTP 27+ 零运行时依赖 |
-| Ruby | [`ruby/`](ruby/) | 🟢 生产就绪 | 331 项测试，Fiddle + C 扩展，完整 caller / server 双向能力 |
-| Fortran | [`fortran/`](fortran/) | 🟢 生产就绪 | 173 项断言，`iso_c_binding` + C++ 桥接层，2008 标准 |
-| Julia | [`julia/`](julia/) | 🟢 生产就绪 | 118 项断言，C shim + `@threadcall` 跨线程回调隔离，需 `--threads=2` |
+| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源；完整指南见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md)（v7.0，95 条踩坑 ID） |
+| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关；知识库含 Handle 所有权 + 侧数据勘误 |
+| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销，异步模型 + 侧数据读取 |
+| C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | v5.1，116 项测试，P/Invoke + RAII + 统一 JSON I/O + `CallbackDispatcher` + 回调风格异步 |
+| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | v2.0，223 项测试，支持 Node / Deno / Bun，三风格 × 三寻址 |
+| JavaScript | [`js/`](js/) | 🟢 生产就绪 | v2.0，223 项测试，CommonJS + ESM 双入口，与 TS 字节级互通 |
+| Rust | [`rust/`](rust/) | 🟢 生产就绪 | v2.0，174 项测试，闭包式异步，`call_async_wait` 返回 `Vec<u8>` |
+| Go | [`go/`](go/) | 🟢 生产就绪 | purego 无 cgo，交叉编译友好；死锁看门狗补偿 runtime 误判 |
+| Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整 caller + server 能力，Flutter 移动端可用；C 桥接解决跨线程同步回调 |
+| Java | [`java/`](java/) | 🟢 生产就绪 | JDK 22+ FFM API，纯 Java 无 JNI；145 项测试，`ArenaReaper` 处理超时 stub |
+| Swift | [`swift/`](swift/) | 🟢 生产就绪 | v1.1，261 项 XCTest，`@convention(c)` 回调，C++ ↔ Swift 双向字节级互调已验证 |
+| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试 |
+| Erlang | [`erlang/`](erlang/) | 🟢 生产就绪 | OTP 27+，NIF 跨平台构建，37 个 C ABI 完整封装，零运行时依赖 |
+| Ruby | [`ruby/`](ruby/) | 🟢 生产就绪 | v2.0，331 项测试，Fiddle + C 扩展，完整 caller / server 双向能力 |
+| Fortran | [`fortran/`](fortran/) | 🟢 生产就绪 | 474 项断言，`iso_c_binding` + C++ 桥接层，Fortran 2008 |
+| Julia | [`julia/`](julia/) | 🟢 生产就绪 | C shim + `@threadcall` 跨线程回调隔离，**强制 `--threads=2`** |
 | R | [`r/`](r/) | 🟢 生产就绪 | 四层架构 + Job 队列跨线程回调；RAII 句柄；字符串 / 二进制双模式；R 4.6.1 + Rtools45 |
 | PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
 
@@ -148,6 +149,66 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | aarch64 / loongarch64 / RISC-V | 边缘设备移植计划 | 持续推进中，未生产就绪 |
 
 👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
+
+---
+
+## 核心概念
+
+> 本节综合 [`Z.LingoFuse.md`](Z.LingoFuse.md)（内部机制知识库 v3.2）与 [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) 的核心结论。深入细节见这两份文档。
+
+### 三套寻址与命中差异
+
+| 寻址 | 索引键 | 路由方式 | 本地优先 | 命中 App 注册 | 命中 P2P 注册 |
+|------|--------|---------|:--------:|:-------------:|:-------------:|
+| **App 名** | UTF-8 字符串 | 精确匹配 App 名 | ✅ | ✅ | ❌ |
+| **UID** | 32 字节二进制 | 按会话 UID 定位 | ✅ | ✅ | ✅ |
+| **P2PName** | UTF-8 字符串 | 组内负载均衡 / 粘性 | ❌ | ✅ | ✅ |
+
+**记忆要点**：
+- **UID / P2PName 是"客户端级"路由键** —— 先定位到"某个客户端"，再在它的本地 API 表里找。App 注册的和 P2P 注册的函数都在同一张本地表里。
+- **App 名是"应用级"路由键** —— 只在该 App 的注册表里找。P2P 注册函数挂在全局 `___LF_P2P_APP___` 下，不在业务 App 的表里，所以 App 名调用命不中。
+
+### Handle 所有权模型
+
+LingoFuse 有**两大调用家族**，它们的 handle 所有权**相反**：
+
+| 家族 | 函数 | 返回 handle 的所有者 | 释放方式 |
+|------|------|:-------------------:|---------|
+| **同步族** | `LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call` | **调用者** | 调用者显式 `LF_FreeData` |
+| **异步族** | `LF_Async_Call` / `LF_UID_Async_Call` / `LF_P2PNAME_Async_Call` | **框架** | 回调返回后**立即**由框架释放 |
+
+**铁律**：
+- 异步族 `Result_` handle **回调返回后立即失效**。禁止在回调外使用，禁止 `LF_FreeData`。
+- 需要跨线程使用时，**必须在回调内拷贝数据**。
+- 二分法要问对问题：**`int` vs `dict` 是伪分类；真变量是 payload 大小 → 内存复用时机**。
+- 注释是二手信息：遇到可疑行为，读源码，不读注释。
+
+### P2P 身份侧数据
+
+`LF_Get_P2P_UID` / `LF_Get_P2P_Name` 读的**不是句柄本身的业务数据**，而是**发送方在发送请求时自动写入的"侧数据"**：
+
+```
+[apiName: string]
+[FromUID: 32 bytes]         ← 发送方会话 UID
+[FromP2PName: string]       ← 发送方 P2P 组名
+[Param.Size: Int32]
+[Param: bytes]
+```
+
+**铁律**：
+- **只在"触发事件的回调 `Input` 参数"上有效**；对自建句柄或输出句柄调用返回 `Null_UID()` / 空串 + 警告。
+- `LF_Get_P2P_UID` 返回 **`PP2P_UID___` 指针**（不是值）；框架约 5 秒后自动释放；调用者只读拷贝，**不手动释放，不长期保存**。
+- `LF_LocalCall` / `LF_LocalNotify` **不注入发送方身份**；如需本地调用也携带身份，用 `LF_Call`（会命中本地短路，仍注入身份）。
+
+### 线程模型（简版）
+
+- **所有业务回调在 TCompute 工作线程或顺序线程执行**，**不在主线程**。
+- **回调中禁止调用** `LF_Call` / `LF_Notify` / `LF_LocalCall` / `LF_PrepareDone` / `LF_Shutdown`（自锁死）。
+- **回调异常被吞掉**，不传播给调用方。
+- **同步回调需要主线程调用 `LF_Sync`** 才能执行。
+- 网络事件回调的 `addr_` **回调返回后立即失效**，必须立即复制。
+
+> 完整线程全景、事件流、同步机制、难缠语言集成指南见 [`Z.LingoFuse.md`](Z.LingoFuse.md)。
 
 ---
 
@@ -173,6 +234,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 - **[zIPC](https://github.com/PassByYou888/zIPC)** —— LingoFuse 底层的同机 IPC 引擎。只需要同机 IPC 不需要完整 RPC 网格时，可直接使用。
 - **[ZNetV2](https://github.com/PassByYou888/ZNetV2)** —— PassByYou888 技术栈中面向大规模服务器端数据吞吐的通讯框架。
+- **[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)** —— 代码生成器体系，从 API 声明自动产出多语言绑定。
 
 ---
 
@@ -186,28 +248,29 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 1. **作者提供了竞态稳定性测试（最重要的机理层测试），但不是用户的 App 层测试。** 用户需要自己模拟自己的 App 层跑 PoC。
 2. **用户需要掌握构建编译 LF 的技能。** LingoFuse 由老张开发，如果长期不维护，用户需要自己动手编译，跟上最新的代际更新。
-3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 Pascal、C#、C++、JS、TS、Python、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia、R 都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+3. **各个语言原则上都会有自己的 test、CI 体系。** 目前 18 种语言都有各自能跑的 test，但 **GitHub 托管 CI 只有 C++ 的**。其他语言提供本地测试脚本或工程，例如：
+
    - C++：`cpp/test/`、`cpp/Stress/`、`cpp/Conc/`
-   - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`
-   - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（128 项 XCTest）
-   - Zig：`zig/test.ps1`、`zig/tests/`、`zig/examples/`（140 项）
+   - Java：`java/run_test_ci.ps1`、`java/run_test_ci.sh`（145 项）
+   - Swift：`swift/test.ps1`、`swift/Tests/LingoFuseTests/`（261 项 XCTest）
+   - Zig：`zig/test.ps1`、`zig/tests/`、`zig/examples/`（140+ 项）
    - Erlang：`erlang/test.ps1`、`erlang/test/`（四个 EUnit 套件）
    - Ruby：`ruby/run_test_ci.ps1`、`ruby/run_test_ci.sh`、`ruby/test/`（331 项 minitest）
-   - Fortran：`fortran/test.ps1`、`fortran/c_ext/`（173 项断言）
-   - Julia：`julia/test.ps1`、`julia/test/`（118 项断言，8 个测试文件）
-   - R：`r/c_ext/tests/`（五步测试链：`smoke_test.R` / `abi_test.R` / `caller_test.R` / `callee_test.R` / `cross_node.R`）
+   - Fortran：`fortran/test.ps1`、`fortran/c_ext/`（474 项断言）
+   - Julia：`julia/test.ps1`、`julia/test/`（431 项断言 + 4 场景）
+   - R：`r/c_ext/tests/`（五步测试链 + 211 项断言）
    - Go：`go/test.ps1`、`go/dev_test.ps1`
-   - Rust：`rust/test.ps1`
-   - C#：`csharp/build.ps1`、`csharp/test/`
-   - TypeScript：`ts/package.json`、`ts/test/`
-   - Python：`Py/lingofuse/test_lingofuse.py`、`Py/lingofuse/test_bridge.py`
-   - JavaScript：`js/test/test.js`
-   - Dart：`dart/test/`
+   - Rust：`rust/test.ps1`（174 项）
+   - C#：`csharp/build.ps1`、`csharp/test/`（116 项）
+   - TypeScript：`ts/package.json`、`ts/test/`（223 项）
+   - Python：`Py/lingofuse/test_lingofuse.py`、`Py/lingofuse/test_bridge.py`（155 项）
+   - JavaScript：`js/test/test.js`（223 项）
+   - Dart：`dart/test/`（完整套件）
    - Pascal：`pascal/` 下各 Demo 与测试工程
 
 ### 为什么 `test/` 是一堆文档和可执行文件
 
-GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——Pascal、Python、C++、C#、TypeScript、JavaScript、Rust、Go、Dart、Java、Swift、Zig、Erlang、Ruby、Fortran、Julia、R、PHP，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
+GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台**支持——18 种语言，加上 Windows / Linux / macOS，还要覆盖 IPC / TCP / 跨机等不同部署形态。把所有组合都塞进 GitHub 的托管 Runner 里，既不方便，也不现实。
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
@@ -228,22 +291,24 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 | 语言 | 测试框架 | 测试数 | 平台验证 | CI |
 |------|----------|:------:|----------|:--:|
 | Ruby | minitest | 331 | Windows x64；Linux / macOS 待测 | 本地 |
-| Fortran | 自研断言 | 173 | Windows x64；Linux / macOS 待测 | 本地 |
-| Zig | Zig test + 冒烟程序 | 140 | Windows x64；Linux / macOS / 32 位待测 | 本地 |
-| Swift | XCTest | 128 | Windows；macOS / Linux 待测 | 本地 |
-| TypeScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
-| JavaScript | Node 测试 | 127 | Windows / Linux / macOS | 本地 |
-| Julia | 自研断言 | 118 | Windows x64；Linux / macOS 待测 | 本地 |
+| Fortran | 自研断言 | 474 | Windows x64；Linux / macOS 待测 | 本地 |
+| Julia | 自研断言 | 431 + 4 场景 | Windows x64；Linux / macOS 待测 | 本地 |
+| Swift | XCTest | 261 | Windows；macOS / Linux 待测 | 本地 |
+| TypeScript | Node 测试 | 223 | Windows / Linux / macOS | 本地 |
+| JavaScript | Node 测试 | 223 | Windows / Linux / macOS | 本地 |
+| R | 自研断言 + 双进程 demo | 211 + 五步链 | Windows x64（R 4.6.1 + Rtools45） | 本地 |
+| Rust | cargo test | 174 | Windows / Linux / macOS | 本地 |
+| Python | pytest | 155 | Windows / Linux / macOS | 本地 |
+| Java | JUnit 5 | 145 | Windows / Linux | 本地 |
+| Zig | Zig test + 冒烟程序 | 140+ | Windows x64；Linux / macOS / 32 位待测 | 本地 |
+| C# | xUnit | 116 | Windows | 本地 |
 | C++ | 自研 CI | 82 + 压测 + 并发 | Windows / Linux | ✅ GitHub |
-| Rust | cargo test | 67 | Windows / Linux / macOS | 本地 |
-| C# | xUnit | 58 | Windows | 本地 |
-| R | 自研断言 + 双进程 demo | 五步链（39 项已实测） | Windows x64（R 4.6.1 + Rtools45） | 本地 |
 | Erlang | EUnit | 四个套件 | Windows；Linux / macOS 待测 | 本地 |
 | Go | go test | 18 | Windows / Linux / macOS | 本地 |
-| Java | JUnit 5 | 自动化测试 | Windows / Linux | 本地 |
 | Dart | Dart test | 完整套件 | Windows / Linux / macOS | 本地 |
-| Python | pytest | 完整链路 | Windows / Linux / macOS | 本地 |
 | Pascal | 自研 | 完整开发套件 | Windows / Linux | 本地 |
+
+> **口径说明**：上表的"测试数"为各语言测试项 / 套件数；各语言 README 中的"断言数"（如 Fortran 的 474 断言）可能高于此表的测试项数。详细数字见各语言目录。
 
 ---
 
@@ -304,26 +369,15 @@ flowchart LR
 | `CrossNode` | 🟢 工作节点 | 注册 `demo` 应用的 `add` / `inv_seri` 两个 API |
 | `CrossCall` | 🔵 负载测试客户端 | 32 线程 × 10 秒压测 `demo` 应用 |
 
-### 各语言 Cross Demo 位置
+**关键点**：所有语言的 Cross Demo **共享同一个线格式契约**：
 
-| 语言 | 位置 |
-|---|---|
-| Pascal | `pascal/cross_demo/` |
-| C++ | `cpp/CrossDemo/` |
-| C# | `csharp/CrossService/`、`csharp/CrossNode/`、`csharp/CrossCall/` |
-| Swift | `swift/Sources/CrossService/`、`swift/Sources/CrossNode/`、`swift/Sources/CrossCall/` |
-| Zig | `zig/examples/` |
-| Erlang | `erlang/cross/` |
-| Ruby | `ruby/cross/` |
-| Fortran | `fortran/cross_demo/` |
-| Julia | `julia/example/` |
-| R | `r/c_ext/tests/cross_node.R`（配套 `cross_client.cpp`） |
-| Rust | `rust/examples/` |
-| Go | `go/cross/` |
-| TypeScript | `ts/cross/` |
-| JavaScript | `js/cross/` |
-| Python | `Py/cross/` |
-| Java | `java/src/main/java/lingofuse/demo/cross/` |
+```
+add       (int32 a, int32 b)                       -> int32
+inv_seri  (uint8, uint16, uint32, uint64,
+           string(NUL), float)                     -> reversed types
+```
+
+所有语言的 `CrossNode` 写入的字节序列完全一致，所有语言的 `CrossCall` 读取的字节序列完全一致。这就是 LingoFuse 多语言互调的**基础**。
 
 ---
 
@@ -371,6 +425,9 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
+| **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v3.2，面向难缠语言 |
+| **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
+| **Pascal 完整指南** | ✅ 已完善 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) v7.0，95 条踩坑 ID |
 | **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 
@@ -391,6 +448,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 - **Fortran 绑定需要 Fortran 2008 + C++17 工具链，且 C++ 与 Fortran 编译器必须来自同一套发行版**（否则 `__gfortran_*` 符号缺失）；Linux / macOS 理论可行但未实测
 - **Julia 绑定强制 `--threads=2`**（回调 consumer 不能落在 main 线程，否则死锁）；`@threadcall` 并发上限受 libuv 线程池约束（默认 4，可用 `UV_THREADPOOL_SIZE` 提升）；Linux / macOS / Apple Silicon 尚未验证
 - **R 绑定需要 R 4.0+ 与 Rtools45（Windows）** 才能编译桥接层；`LF_Call` 不可重入，单进程自测需改用 `lf_local_call`；受外部二进制依赖限制，无法提交 CRAN
+- **Python 绑定**：同步族 handle 归调用者，异步族归框架（回调返回后立即释放）——混用会导致偶发 use-after-free
 
 ---
 
@@ -431,6 +489,9 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 | 你想做什么 | 去哪里 |
 |---|---|
 | 看作者怎么亲手跑通十四种语言 | [十四语言实测手记](https://zpascal.net/imhuman.html) |
+| 深入理解线程模型、回调上下文、Handle 所有权 | [`Z.LingoFuse.md`](Z.LingoFuse.md)（内部机制知识库 v3.2） |
+| 理解 P2P 分布式负载、路由优化、序列化数据流 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
+| 查阅 Pascal 完整指南 + 95 条踩坑 ID | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md)（v7.0） |
 | 自己编译 LingoFuse 核心库 | [`src/CONTRIBUTING.md`](src/CONTRIBUTING.md) / [`src/CONTRIBUTING_lazbuild.md`](src/CONTRIBUTING_lazbuild.md) |
 | 配置 FPC 3.3.1 环境 | [`src/FPC_3.3.1_Package_Info.md`](src/FPC_3.3.1_Package_Info.md) / [`src/Lazarus_Change_FPC.md`](src/Lazarus_Change_FPC.md) |
 | 用代码生成器自动产出多语言绑定 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) |

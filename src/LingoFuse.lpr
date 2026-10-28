@@ -3,6 +3,67 @@ library LingoFuse;
 {$I ..\pascal\zNetV2\source\Z.Define.inc}
 
 uses
+  // ==========================================================================
+  // mimalloc - compact general-purpose memory allocator, drop-in replacement
+  // for the C runtime malloc. Prebuilt binaries are published here:
+  //   https://github.com/microsoft/mimalloc/releases
+  //
+  // --------------------------------------------------------------------------
+  // Linux x64
+  // --------------------------------------------------------------------------
+  //  1. Download:
+  //       wget https://github.com/microsoft/mimalloc/releases/download/v1.15.2/mimalloc-v1.15.2-linux-x64.tar.gz
+  //  2. Extract:
+  //       tar -xzf mimalloc-v1.15.2-linux-x64.tar.gz
+  //       cd mimalloc-v1.15.2-linux-x64
+  //  3. Install the shared library system-wide so the linker can find it:
+  //       sudo cp -a lib/libmimalloc.so*              /usr/local/lib/
+  //       sudo cp -a lib/mimalloc-1.15/libmimalloc.a /usr/local/lib/     # optional, static linking only
+  //       sudo cp -a include/mimalloc-1.15            /usr/local/include/ # optional, C/C++ mi_* APIs only
+  //       sudo ldconfig
+  //  4. Verify:
+  //       ldconfig -p | grep mimalloc
+  //
+  //  If you do not want a system-wide install, skip step 3 and add
+  //  -Fl/path/to/mimalloc-v1.15.2-linux-x64/lib to the FPC command line.
+  //
+  // --------------------------------------------------------------------------
+  // Windows x86 / x64
+  // --------------------------------------------------------------------------
+  //  This project ships the mimalloc DLLs renamed by bitness, so the 32-bit
+  //  and 64-bit builds can co-exist in one deployment folder:
+  //
+  //      mimalloc32.dll  <-> 32-bit build of mimalloc.dll
+  //      mimalloc64.dll  <-> 64-bit build of mimalloc.dll
+  //
+  //  Deployment: copy the DLL that matches the bitness of your EXE next to
+  //  the executable. The Windows loader searches the EXE directory first, so
+  //  no PATH change is required.
+  //
+  //      :: 64-bit EXE
+  //      copy mimalloc64.dll  C:\path\to\myapp\
+  //
+  //      :: 32-bit EXE
+  //      copy mimalloc32.dll  C:\path\to\myapp\
+  //
+  //  Example deployment folder:
+  //
+  //      C:\path\to\myapp\
+  //        myapp.exe
+  //        mimalloc64.dll    (only if myapp.exe is 64-bit)
+  //        mimalloc32.dll    (only if myapp.exe is 32-bit)
+  //
+  //  The two redirect DLLs are only required when mimalloc is linked
+  //  statically together with the mimalloc-override mechanism (i.e. you
+  //  want mimalloc to replace the CRT's malloc at process startup):
+  //
+  //      mimalloc-redirect.dll     (64-bit)
+  //      mimalloc-redirect32.dll   (32-bit)
+  //
+  //  The standard "external 'mimalloc64.dll'" linkage used by mimalloc4p
+  //  does NOT require either redirect DLL, so for this unit you normally
+  //  only ship mimalloc32.dll or mimalloc64.dll.
+  // ==========================================================================
   mimalloc4p,
   {$IFDEF UNIX}
   cthreads,

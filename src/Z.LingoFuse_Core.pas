@@ -511,11 +511,11 @@ begin
         timeout_data.Next;
       until timeout_data.Num <= 0;
     end;
-  DisposeObject(timeout_data);
   if LF_Debug_Log_Enabled then
     begin
       LF_Debug_Log('DataPool.Progress: live=%d timeout_freed=%d', [Num, timeout_data.Num]);
     end;
+  DisposeObject(timeout_data);
 end;
 
 procedure TLF_DataPool.Free_All_Hnd;

@@ -34,6 +34,18 @@
 # Fiddle returns TYPE_VOIDP results as Fiddle::Pointer or as Integer 0.
 # Use null_ptr? to test both cases.
 #
+# ============================================================================
+# `raw` CONTRACT
+# ============================================================================
+# `raw` returns an Integer that can be passed directly to any of the
+# `LingoFuse::Native.lf_*` wrappers, which parse their handle argument
+# with NUM2ULL. Historically `raw` returned whatever the caller stored
+# (an Integer from NativeBridge, a Fiddle::Pointer from the Fiddle
+# fallback path), which made `LingoFuse::Native.lf_get_p2p_uid(raw)`
+# raise TypeError. The current implementation normalises to Integer so
+# that BOTH the Fiddle binding layer (binding.rb) and the C extension
+# (Native) accept the value.
+#
 
 require 'fiddle'
 
@@ -110,7 +122,14 @@ module LingoFuse
     # Identity and state
     # ------------------------------------------------------------------
 
-    def raw; @handle; end
+    # Returns the underlying native handle as an Integer, or nil when
+    # the handle is disposed or null. This value is accepted by both
+    # LingoFuse::Native.lf_* (C extension, NUM2ULL) and the Fiddle
+    # binding layer (binding.rb, TYPE_VOIDP).
+    def raw
+      return nil if @handle.nil?
+      @handle.respond_to?(:to_i) ? @handle.to_i : @handle
+    end
 
     def valid?
       !@disposed && !null_ptr?(@handle)
@@ -298,6 +317,52 @@ module LingoFuse
       ensure_not_disposed!
       return nil if position >= size
       read_string
+    end
+
+    # ------------------------------------------------------------------
+    # P2P side-data accessors (sender identity)
+    # ------------------------------------------------------------------
+    #
+    # The framework injects two identity fields (sender UID and sender
+    # P2P name) into every inbound request payload before transmission.
+    # These accessors read that side data. They are only meaningful on
+    # the INPUT handle of a registered Call / Notify callback, or on the
+    # input of a local call (LF_Call served by a local short-circuit).
+    #
+    # On an OUTPUT handle, or on a caller-created handle, the underlying
+    # library logs a warning and returns a zero-filled UID / empty string;
+    # these accessors therefore return nil / '' in that case, and never
+    # raise.
+    #
+    # The 32-byte UID is returned as a binary String; the caller may pass
+    # it directly to LingoFuse::Native.lf_uid_call.
+    #
+    # The p2p_name is returned as a UTF-8 String. It is the SENDER's P2P
+    # name, not this process's configured name; see Options.set_opt_p2p_name
+    # / Options.get_opt_p2p_name for the local configuration.
+
+    def p2p_uid
+      ensure_not_disposed!
+      return nil unless defined?(LingoFuse::Native)
+      return nil unless LingoFuse::Native.respond_to?(:lf_get_p2p_uid)
+      r = raw
+      return nil if r.nil?
+      r = r.to_i if r.respond_to?(:to_i)
+      LingoFuse::Native.lf_get_p2p_uid(r)
+    rescue StandardError
+      nil
+    end
+
+    def p2p_name
+      ensure_not_disposed!
+      return '' unless defined?(LingoFuse::Native)
+      return '' unless LingoFuse::Native.respond_to?(:lf_get_p2p_name)
+      r = raw
+      return '' if r.nil?
+      r = r.to_i if r.respond_to?(:to_i)
+      LingoFuse::Native.lf_get_p2p_name(r) || ''
+    rescue StandardError
+      ''
     end
 
     # ------------------------------------------------------------------

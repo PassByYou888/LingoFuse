@@ -45,6 +45,27 @@
 # address; no other code path releases a P2P ref.
 #
 # ============================================================================
+# DISPATCHER LIFECYCLE (IMPORTANT)
+# ============================================================================
+# P2P registration and App-level registration share the SAME native
+# dispatcher thread, which is started by LingoFuse::NativeBridge.start.
+# The App-level path (NativeBridge.register) already starts it; the P2P
+# path must do the same, otherwise a process that ONLY registers P2P
+# APIs (and never registers an App-level API) would leave the dispatcher
+# unstarted. In that case, every remote callback would be enqueued by
+# the C trampoline and never dequeued by Ruby, producing a silent hang
+# on the caller side.
+#
+# register_api therefore:
+#   1. Verifies lingofuse_ext is available (same guard as the App path),
+#      so the error message is actionable when the extension is missing.
+#   2. Calls NativeBridge.start before create_ref, so the dispatcher
+#      thread is running by the time the C side can fire a callback.
+#
+# start is idempotent (guarded by @start_lock in native_bridge.rb), so
+# concurrent registrations from multiple threads are safe.
+#
+# ============================================================================
 # CALLBACK SIGNATURES
 # ============================================================================
 # Call    : block { |input, output| ... }  — both are DataHandle objects
@@ -110,6 +131,7 @@ module LingoFuse
       # @yield             callback receiving (input, output) DataHandles
       # @return            [true]
       # @raise [ArgumentError]      if no block is given
+      # @raise [Error]              if lingofuse_ext is not available
       # @raise [RegistrationError]  if the name is already registered,
       #                             or if the native layer rejects it
       def register_call(name, description = '', &block)
@@ -191,6 +213,23 @@ module LingoFuse
             api_name: key
           )
         end
+
+        # Mirror NativeBridge.register (the App-level equivalent) so
+        # that the failure mode is identical and the error message is
+        # actionable when the C extension is missing.
+        unless LingoFuse::NativeBridge.available?
+          raise Error, 'lingofuse_ext is not available'
+        end
+
+        # Ensure the shared dispatcher thread is running before we
+        # hand the C extension a callback ref. Without this, a process
+        # that only registers P2P APIs would never start the
+        # dispatcher; every remote callback would be enqueued by the
+        # C trampoline and never dequeued by Ruby.
+        #
+        # start is idempotent (guarded by @start_lock in
+        # native_bridge.rb), so concurrent registrations are safe.
+        LingoFuse::NativeBridge.start
 
         wrapper         = build_wrapper(kind, key, user_block)
         ref_addr        = LingoFuse::NativeBridge.create_ref(wrapper, kind)

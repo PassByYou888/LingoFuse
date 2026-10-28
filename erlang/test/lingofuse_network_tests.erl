@@ -1,87 +1,11 @@
-%% test/lingofuse_network_tests.erl
-%%
-%% EUnit test suite for the LingoFuse Erlang binding: network layer.
-%%
-%% Scope
-%% -----
-%% This suite exercises the C ABI functions that participate in the
-%% LingoFuse C4 service mesh:
-%%
-%%   * Framework lifecycle: reset_prepare, prepare_service,
-%%     prepare_client, prepare_done, exit_main_thread, shutdown.
-%%   * Call-mode dispatch through the single-process mesh loopback.
-%%   * Notify-mode dispatch (one-way).
-%%   * Sequenced notify dispatch, including FIFO order verification.
-%%   * UID addressing: probe the caller's UID via whoami, then call
-%%     it back with uid_call / uid_notify.
-%%   * P2PName addressing: set this process's group name, wait for
-%%     the mesh broadcast, then call the group back with
-%%     p2pname_call / p2pname_notify.
-%%   * Process-wide P2P registration: register_p2p_call[_sync] /
-%%     register_p2p_notify / unregister_p2p.
-%%   * Diagnostics: check_main_thread, check_app, check_api,
-%%     check_uid, check_uid_api, check_p2pname, check_p2pname_api.
-%%   * Client binding: bind_app.
-%%
-%% The notify forwarder
-%% --------------------
-%% EUnit's {setup, Setup, Cleanup, Instantiator} group runs Setup in
-%% its own process and spawns each test in a fresh process. A notify
-%% callback registered with the Setup process's pid would therefore
-%% deliver its messages to a process that never reads them.
-%%
-%% The suite solves this by spawning a small forwarder process during
-%% setup. The `log' notify API is registered with the forwarder, and
-%% each notify test uses a Ref-tagged handshake to tell the forwarder
-%% where to route the next message. Because the handshake is
-%% synchronous, the test knows the forwarder has switched targets
-%% before it issues the notify.
-%%
-%% UID wire format
-%% ---------------
-%% The 32-byte UID is NOT valid UTF-8 in general, so it cannot be
-%% placed directly into a JSON value. The whoami handler therefore
-%% encodes it as a 64-character lowercase hex string, and the caller
-%% decodes it back with binary:decode_hex/1.
-%%
-%% Reply tolerance
-%% ---------------
-%% A sync callback can receive its reply after the C side has already
-%% timed out or the PendingSync has already been reclaimed. In that
-%% case reply/2 returns {error, unknown_ref}, which is a legal
-%% outcome. The test_server therefore does NOT treat the return value
-%% of reply/2 as a fatal error; it ignores whatever reply/2 returns.
-%%
-%% Why Wait_Connection_ReadyOk is set to False
-%% -------------------------------------------
-%% LF_PrepareDone's default behavior blocks for up to
-%% max(Wait_Connection_Timeout, 5000) + 1000 = 31000 milliseconds,
-%% waiting for every prepared client to become fully ready. Every
-%% group therefore runs in deployment mode: Wait_Connection_ReadyOk
-%% is set to False, LF_PrepareDone returns as soon as the event loop
-%% is up, and every test that depends on an App being reachable
-%% first waits for check_app to observe it.
-%%
-%% Local-first routing
-%% -------------------
-%% The C4 mesh checks for a local instance of the target App before
-%% attempting a network hop. Since this suite registers and calls the
-%% App in the same BEAM process, all "remote" calls in this suite
-%% execute on the local mesh loopback.
-
 -module(lingofuse_network_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
-%% EUnit per-test timeout, in seconds.
 -define(TEST_TIMEOUT_S, 30).
-
-%% Convenience macro that wraps a Fun in an EUnit timeout tuple.
 -define(T(Seconds, Fun), {timeout, Seconds, Fun}).
-
-%% =========================================================================
-%% Test descriptors
-%% =========================================================================
+-define(WAIT_UID_MS, 10000).
+-define(WAIT_P2P_MS, 10000).
 
 framework_lifecycle_test_() ->
     [
@@ -159,7 +83,7 @@ uid_addressing_test_() ->
     {setup,
      fun setup_uid_framework/0,
      fun cleanup_framework/1,
-     fun(Ctx) ->
+     fun(Ctx) when is_map(Ctx) ->
          [
              {"whoami returns the caller's 32-byte UID and P2P name",
               ?T(?TEST_TIMEOUT_S, fun() -> t_whoami_shape(Ctx) end)},
@@ -168,46 +92,68 @@ uid_addressing_test_() ->
              {"uid_notify reaches the target without a reply",
               ?T(?TEST_TIMEOUT_S, fun() -> t_uid_notify(Ctx) end)},
              {"check_uid and check_uid_api agree for a live UID",
-              ?T(?TEST_TIMEOUT_S, fun() -> t_check_uid(Ctx) end)}
-         ]
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_uid(Ctx) end)},
+             {"uid_call to an unknown UID returns an empty handle",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_uid_call_unknown(Ctx) end)},
+             {"check_uid returns false for an unknown UID",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_uid_absent(Ctx) end)},
+             {"uid_async_call delivers a non-empty result",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_uid_async_call(Ctx) end)},
+             {"uid_sequenced_notify delivers in FIFO order",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_uid_sequenced_notify(Ctx) end)}
+         ];
+        (_) -> []
      end}.
 
 p2pname_addressing_test_() ->
     {setup,
      fun setup_p2pname_framework/0,
      fun cleanup_framework/1,
-     fun(Ctx) ->
+     fun(Ctx) when is_map(Ctx) ->
          [
              {"p2pname_call round trips to the group",
               ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_call(Ctx) end)},
              {"p2pname_notify reaches the group without a reply",
               ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_notify(Ctx) end)},
              {"check_p2pname and check_p2pname_api agree",
-              ?T(?TEST_TIMEOUT_S, fun() -> t_check_p2pname(Ctx) end)}
-         ]
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_p2pname(Ctx) end)},
+             {"p2pname_call to an unknown group returns an empty handle",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_call_unknown(Ctx) end)},
+             {"check_p2pname returns false for an unknown group",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_check_p2pname_absent(Ctx) end)},
+             {"p2pname_async_call delivers a non-empty result",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_async_call(Ctx) end)},
+             {"p2pname_sequenced_notify delivers in FIFO order",
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2pname_sequenced_notify(Ctx) end)}
+         ];
+        (_) -> []
      end}.
 
 p2p_registration_test_() ->
     {setup,
      fun setup_p2pname_framework/0,
      fun cleanup_framework/1,
-     fun(Ctx) ->
+     fun(Ctx) when is_map(Ctx) ->
          [
              {"register_p2p_call then unregister_p2p is idempotent",
-              ?T(?TEST_TIMEOUT_S,
-                 fun() -> t_p2p_register_call(Ctx) end)},
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2p_register_call(Ctx) end)},
              {"register_p2p_notify then unregister_p2p is idempotent",
-              ?T(?TEST_TIMEOUT_S,
-                 fun() -> t_p2p_register_notify(Ctx) end)},
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2p_register_notify(Ctx) end)},
              {"register_p2p_call_sync then unregister_p2p is idempotent",
-              ?T(?TEST_TIMEOUT_S,
-                 fun() -> t_p2p_register_call_sync(Ctx) end)}
-         ]
+              ?T(?TEST_TIMEOUT_S, fun() -> t_p2p_register_call_sync(Ctx) end)}
+         ];
+        (_) -> []
      end}.
 
-%% =========================================================================
-%% Helpers
-%% =========================================================================
+validation_test_() ->
+    [
+        {"uid_call rejects a 16-byte UID with badarg",
+         fun t_uid_badarg_length/0},
+        {"uid_notify rejects a 16-byte UID with badarg",
+         fun t_uid_notify_badarg_length/0},
+        {"check_uid rejects a 16-byte UID with badarg",
+         fun t_check_uid_badarg_length/0}
+    ].
 
 ensure_native_or_skip() ->
     case lingofuse:ensure_loaded() of
@@ -243,19 +189,38 @@ unique_p2p_name() ->
     iolist_to_binary(
       io_lib:format("eunit_p2p_~s_~p", [os:getpid(), N])).
 
+unique_fake_uid() ->
+    crypto:strong_rand_bytes(32).
+
+unique_fake_group() ->
+    N = erlang:unique_integer([positive, monotonic]),
+    iolist_to_binary(
+      io_lib:format("no_such_group_~s_~p",
+                    [os:getpid(), N])).
+
+unique_api_suffix() ->
+    iolist_to_binary(
+      io_lib:format("~s_~p",
+                    [os:getpid(),
+                     erlang:unique_integer([positive, monotonic])])).
+
 flush_lf_messages() ->
     receive
-        {lf_call, _, _, _}      -> flush_lf_messages();
-        {lf_call, _, _}         -> flush_lf_messages();
-        {lf_notify, _, _}       -> flush_lf_messages();
-        {lf_notify, _}          -> flush_lf_messages();
-        {lf_p2p_call, _, _}     -> flush_lf_messages();
-        {lf_p2p_call, _, _, _}  -> flush_lf_messages();
-        {lf_p2p_notify, _, _}   -> flush_lf_messages();
-        {lf_p2p_notify, _}      -> flush_lf_messages();
-        {lf_async_result, _, _} -> flush_lf_messages();
-        {lf_connect, _}         -> flush_lf_messages();
-        {lf_disconnect, _}      -> flush_lf_messages()
+        {lf_call, _, _}              -> flush_lf_messages();
+        {lf_call, _, _, _}           -> flush_lf_messages();
+        {lf_call, _, _, _, _}        -> flush_lf_messages();
+        {lf_notify, _}               -> flush_lf_messages();
+        {lf_notify, _, _}            -> flush_lf_messages();
+        {lf_notify, _, _, _}         -> flush_lf_messages();
+        {lf_p2p_call, _, _}          -> flush_lf_messages();
+        {lf_p2p_call, _, _, _}       -> flush_lf_messages();
+        {lf_p2p_call, _, _, _, _}    -> flush_lf_messages();
+        {lf_p2p_notify, _}           -> flush_lf_messages();
+        {lf_p2p_notify, _, _}        -> flush_lf_messages();
+        {lf_p2p_notify, _, _, _}     -> flush_lf_messages();
+        {lf_async_result, _, _}      -> flush_lf_messages();
+        {lf_connect, _}              -> flush_lf_messages();
+        {lf_disconnect, _}           -> flush_lf_messages()
     after 0 -> ok
     end.
 
@@ -326,17 +291,6 @@ wait_until_loop(Fun, TimeoutMs, Interval) ->
             wait_until_loop(Fun, TimeoutMs - Interval, Interval)
     end.
 
-%% =========================================================================
-%% Notify forwarder
-%% =========================================================================
-%%
-%% A tiny relay process that the notify tests can point at themselves
-%% for the duration of one test. The forwarder starts with no target
-%% and drops every notify it receives until a target is set.
-%%
-%% The handshake is Ref-tagged so that a test can be certain the
-%% forwarder has switched targets before it issues the notify.
-
 notify_forwarder() ->
     notify_forwarder_loop(undefined).
 
@@ -346,23 +300,25 @@ notify_forwarder_loop(Current) ->
             From ! {listener_set, Ref},
             notify_forwarder_loop(From);
         {lf_notify, _, _} = Msg ->
-            case Current of
-                undefined -> ok;
-                Pid when is_pid(Pid) -> Pid ! Msg
-            end,
+            forward_msg(Current, Msg),
+            notify_forwarder_loop(Current);
+        {lf_notify, _, _, _} = Msg ->
+            forward_msg(Current, Msg),
             notify_forwarder_loop(Current);
         {lf_p2p_notify, _, _} = Msg ->
-            case Current of
-                undefined -> ok;
-                Pid when is_pid(Pid) -> Pid ! Msg
-            end,
+            forward_msg(Current, Msg),
+            notify_forwarder_loop(Current);
+        {lf_p2p_notify, _, _, _} = Msg ->
+            forward_msg(Current, Msg),
             notify_forwarder_loop(Current);
         _Other ->
             notify_forwarder_loop(Current)
     end.
 
-%% Point the forwarder at the calling process, and wait for the
-%% handshake to complete.
+forward_msg(undefined, _Msg) -> ok;
+forward_msg(Pid, Msg) when is_pid(Pid) -> Pid ! Msg;
+forward_msg(_, _) -> ok.
+
 set_forwarder_target(ForwarderPid) ->
     Ref = make_ref(),
     ForwarderPid ! {set_listener, self(), Ref},
@@ -372,18 +328,17 @@ set_forwarder_target(ForwarderPid) ->
         error({forwarder_handshake_timeout, ForwarderPid})
     end.
 
-%% =========================================================================
-%% Sync test server used by the UID and P2PName groups
-%% =========================================================================
-
 test_server() ->
     receive
         {lf_call, Ref, <<"echo">>, Payload} ->
             _ = lingofuse:reply(Ref, Payload),
             test_server();
-        {lf_call, Ref, <<"whoami">>, _, Identity} ->
-            UID  = maps:get(uid, Identity),
-            Name = maps:get(p2p_name, Identity),
+        {lf_call, Ref, <<"echo">>, Payload, _Identity} ->
+            _ = lingofuse:reply(Ref, Payload),
+            test_server();
+        {lf_call, Ref, <<"whoami">>, _Payload, Identity} ->
+            UID  = maps:get(uid, Identity, <<0:256>>),
+            Name = maps:get(p2p_name, Identity, <<>>),
             Reply = lingofuse_json:dumps(#{
                 <<"uid_hex">>  => binary:encode_hex(UID),
                 <<"p2p_name">> => Name
@@ -394,13 +349,13 @@ test_server() ->
             Reply = lingofuse_json:dumps(<<"pong">>),
             _ = lingofuse:reply(Ref, Reply),
             test_server();
+        {lf_call, Ref, <<"ping">>, _Payload, _Identity} ->
+            Reply = lingofuse_json:dumps(<<"pong">>),
+            _ = lingofuse:reply(Ref, Reply),
+            test_server();
         _Other ->
             test_server()
     end.
-
-%% =========================================================================
-%% Framework setup / cleanup shared by the UID and P2PName groups
-%% =========================================================================
 
 setup_uid_framework() ->
     common_framework_setup(<<"uid">>, undefined).
@@ -441,9 +396,6 @@ common_framework_setup(Tag, P2PNameOpt) ->
             ok = lingofuse:register_call_sync(
                    A, <<"ping">>,   <<"ping">>,   Server),
 
-            %% The notify API is registered with the forwarder, not
-            %% with the setup process, so that each test can take
-            %% ownership of the delivery stream for its own duration.
             ok = lingofuse:register_notify(
                    A, <<"log">>, <<"eunit log">>, Forwarder),
 
@@ -462,9 +414,24 @@ common_framework_setup(Tag, P2PNameOpt) ->
 
             UID = probe_uid(AppName),
 
+            true = wait_until(
+                     fun() ->
+                         case lingofuse:check_uid(UID) of
+                             {ok, true} -> true;
+                             _          -> false
+                         end
+                     end, ?WAIT_UID_MS),
+
             case P2PNameOpt of
                 undefined -> ok;
-                _         -> timer:sleep(3500)
+                Group2 ->
+                    true = wait_until(
+                             fun() ->
+                                 case lingofuse:check_p2pname(Group2) of
+                                     {ok, true} -> true;
+                                     _          -> false
+                                 end
+                             end, ?WAIT_P2P_MS)
             end,
 
             #{app       => A,
@@ -520,10 +487,6 @@ probe_uid(AppName) ->
     after
         lingofuse:free_data(Req)
     end.
-
-%% =========================================================================
-%% Framework lifecycle tests
-%% =========================================================================
 
 t_prepare_done_first() ->
     with_framework(fun(_A, _E, _N) ->
@@ -603,10 +566,6 @@ t_shutdown_idempotent() ->
             ?assertEqual(ok, lingofuse:shutdown())
     end.
 
-%% =========================================================================
-%% Local dispatch tests
-%% =========================================================================
-
 t_local_call_dispatch() ->
     with_framework(fun(A, _E, _N) ->
         flush_lf_messages(),
@@ -669,10 +628,6 @@ t_local_call_badarg() ->
             ?assertError(badarg,
                          lingofuse:local_call(not_an_app, not_a_data))
     end.
-
-%% =========================================================================
-%% Remote dispatch tests (single-process loopback)
-%% =========================================================================
 
 t_call_loopback() ->
     with_framework(fun(_A, _E, AppName) ->
@@ -788,10 +743,6 @@ t_sequenced_notify_fifo() ->
         ?assertEqual(Payloads, Received)
     end).
 
-%% =========================================================================
-%% Diagnostics tests
-%% =========================================================================
-
 t_check_app() ->
     with_framework(fun(_A, _E, AppName) ->
         Result = wait_until(
@@ -841,10 +792,6 @@ t_set_option_during_network() ->
         ?assertEqual(ok, lingofuse:set_option(<<"Quiet">>, <<"False">>))
     end).
 
-%% =========================================================================
-%% Client binding tests
-%% =========================================================================
-
 t_bind_app_no_free_client() ->
     with_framework(fun(A, _E, _N) ->
         {ok, N} = lingofuse:bind_app(A),
@@ -882,10 +829,6 @@ t_bind_app_success() ->
             ok
     end.
 
-%% =========================================================================
-%% UID addressing group tests
-%% =========================================================================
-
 t_whoami_shape(Ctx) ->
     AppName = maps:get(app_name, Ctx),
     {ok, Req} = lingofuse:create_data(<<"whoami">>),
@@ -896,14 +839,11 @@ t_whoami_shape(Ctx) ->
             ok = lingofuse:set_pos(Res, 0),
             Reply = lingofuse_json:read_json(Res),
             ?assert(is_map(Reply)),
-
             UIDHex = maps:get(<<"uid_hex">>, Reply),
             ?assert(is_binary(UIDHex)),
             ?assertEqual(64, byte_size(UIDHex)),
-
             UID = binary:decode_hex(UIDHex),
             ?assertEqual(32, byte_size(UID)),
-
             ?assert(maps:is_key(<<"p2p_name">>, Reply))
         after
             lingofuse:free_data(Res)
@@ -929,9 +869,6 @@ t_uid_call(Ctx) ->
         lingofuse:free_data(Req)
     end.
 
-%% uid_notify sends a one-way notification by UID. The `log' Notify
-%% API is registered with the forwarder; the test points the forwarder
-%% at itself before issuing the notify.
 t_uid_notify(Ctx) ->
     UID       = maps:get(uid, Ctx),
     Forwarder = maps:get(forwarder, Ctx),
@@ -943,7 +880,8 @@ t_uid_notify(Ctx) ->
                Req, #{<<"event">> => <<"uid_notify">>}),
         ?assertEqual(ok, lingofuse:uid_notify(UID, Req)),
         receive
-            {lf_notify, <<"log">>, _Payload} -> ok
+            {lf_notify, <<"log">>, _Payload} -> ok;
+            {lf_notify, <<"log">>, _Payload, _Identity} -> ok
         after 3000 ->
             ?assert(false)
         end
@@ -967,12 +905,81 @@ t_check_uid(Ctx) ->
                         {ok, true} -> true;
                         _          -> false
                     end
-                end, 5000),
+                end, ?WAIT_UID_MS),
     ?assert(Result2).
 
-%% =========================================================================
-%% P2PName addressing group tests
-%% =========================================================================
+t_uid_call_unknown(Ctx) ->
+    _ = Ctx,
+    FakeUid = unique_fake_uid(),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        case lingofuse:uid_call(FakeUid, Req, 800) of
+            {ok, Res} ->
+                {ok, Sz} = lingofuse:get_size(Res),
+                lingofuse:free_data(Res),
+                ?assertEqual(0, Sz);
+            {error, _} ->
+                ok
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_check_uid_absent(Ctx) ->
+    _ = Ctx,
+    FakeUid = unique_fake_uid(),
+    {ok, Result} = lingofuse:check_uid(FakeUid),
+    ?assertEqual(false, Result).
+
+t_uid_async_call(Ctx) ->
+    UID = maps:get(uid, Ctx),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        case lingofuse:async_uid_call_raw(UID, Req, self()) of
+            {ok, Ref} ->
+                receive
+                    {lf_async_result, Ref, {ok, Payload}} ->
+                        ?assert(is_binary(Payload)),
+                        ?assert(byte_size(Payload) > 0);
+                    {lf_async_result, Ref, {error, Err}} ->
+                        ?assert({async_error, Err})
+                after 8000 ->
+                    ?assert(false)
+                end;
+            {error, DispatchErr} ->
+                ?assert({dispatch_failed, DispatchErr})
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_uid_sequenced_notify(Ctx) ->
+    UID       = maps:get(uid, Ctx),
+    Forwarder = maps:get(forwarder, Ctx),
+    flush_lf_messages(),
+    ok = set_forwarder_target(Forwarder),
+    Payloads = [integer_to_binary(N) || N <- lists:seq(1, 3)],
+    lists:foreach(
+      fun(Payload) ->
+          {ok, Req} = lingofuse:create_data(<<"log">>),
+          try
+              ok = lingofuse_json:write_json(
+                     Req, #{<<"seq">> => Payload}),
+              ?assertEqual(ok,
+                           lingofuse:uid_sequenced_notify(UID, Req))
+          after
+              lingofuse:free_data(Req)
+          end
+      end, Payloads),
+    Received = [receive
+                    {lf_notify, <<"log">>, _} -> ok;
+                    {lf_notify, <<"log">>, _, _} -> ok
+                after 5000 ->
+                    ?assert(false)
+                end || _ <- Payloads],
+    ?assertEqual(length(Payloads), length(Received)).
 
 t_p2pname_call(Ctx) ->
     Group = maps:get(group, Ctx),
@@ -1002,7 +1009,8 @@ t_p2pname_notify(Ctx) ->
                Req, #{<<"event">> => <<"p2pname_notify">>}),
         ?assertEqual(ok, lingofuse:p2pname_notify(Group, Req)),
         receive
-            {lf_notify, <<"log">>, _Payload} -> ok
+            {lf_notify, <<"log">>, _} -> ok;
+            {lf_notify, <<"log">>, _, _} -> ok
         after 3000 ->
             ?assert(false)
         end
@@ -1026,31 +1034,141 @@ t_check_p2pname(Ctx) ->
                         {ok, true} -> true;
                         _          -> false
                     end
-                end, 5000),
+                end, ?WAIT_P2P_MS),
     ?assert(Result2).
 
-%% =========================================================================
-%% Process-wide P2P registration group tests
-%% =========================================================================
+t_p2pname_call_unknown(Ctx) ->
+    _ = Ctx,
+    FakeGroup = unique_fake_group(),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        case lingofuse:p2pname_call(FakeGroup, Req, 800) of
+            {ok, Res} ->
+                {ok, Sz} = lingofuse:get_size(Res),
+                lingofuse:free_data(Res),
+                ?assertEqual(0, Sz);
+            {error, _} ->
+                ok
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_check_p2pname_absent(Ctx) ->
+    _ = Ctx,
+    FakeGroup = unique_fake_group(),
+    {ok, Result} = lingofuse:check_p2pname(FakeGroup),
+    ?assertEqual(false, Result).
+
+t_p2pname_async_call(Ctx) ->
+    Group = maps:get(group, Ctx),
+    {ok, Req} = lingofuse:create_data(<<"ping">>),
+    try
+        ok = lingofuse_json:write_json(Req, #{}),
+        case lingofuse:async_p2pname_call_raw(Group, Req, self()) of
+            {ok, Ref} ->
+                receive
+                    {lf_async_result, Ref, {ok, Payload}} ->
+                        ?assert(is_binary(Payload)),
+                        ?assert(byte_size(Payload) > 0);
+                    {lf_async_result, Ref, {error, Err}} ->
+                        ?assert({async_error, Err})
+                after 8000 ->
+                    ?assert(false)
+                end;
+            {error, DispatchErr} ->
+                ?assert({dispatch_failed, DispatchErr})
+        end
+    after
+        lingofuse:free_data(Req)
+    end.
+
+t_p2pname_sequenced_notify(Ctx) ->
+    Group     = maps:get(group, Ctx),
+    Forwarder = maps:get(forwarder, Ctx),
+    flush_lf_messages(),
+    ok = set_forwarder_target(Forwarder),
+    Payloads = [integer_to_binary(N) || N <- lists:seq(1, 3)],
+    lists:foreach(
+      fun(Payload) ->
+          {ok, Req} = lingofuse:create_data(<<"log">>),
+          try
+              ok = lingofuse_json:write_json(
+                     Req, #{<<"seq">> => Payload}),
+              ?assertEqual(ok,
+                           lingofuse:p2pname_sequenced_notify(Group, Req))
+          after
+              lingofuse:free_data(Req)
+          end
+      end, Payloads),
+    Received = [receive
+                    {lf_notify, <<"log">>, _} -> ok;
+                    {lf_notify, <<"log">>, _, _} -> ok
+                after 5000 ->
+                    ?assert(false)
+                end || _ <- Payloads],
+    ?assertEqual(length(Payloads), length(Received)).
 
 t_p2p_register_call(Ctx) ->
     _ = Ctx,
-    Api = <<"eunit_p2p_call_api">>,
+    Api = <<"eunit_p2p_call_api_",
+            (unique_api_suffix())/binary>>,
     ok = lingofuse:register_p2p_call(Api, <<"eunit p2p call">>, self()),
     ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
     ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).
 
 t_p2p_register_notify(Ctx) ->
     _ = Ctx,
-    Api = <<"eunit_p2p_notify_api">>,
+    Api = <<"eunit_p2p_notify_api_",
+            (unique_api_suffix())/binary>>,
     ok = lingofuse:register_p2p_notify(Api, <<"eunit p2p notify">>, self()),
     ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
     ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).
 
 t_p2p_register_call_sync(Ctx) ->
     _ = Ctx,
-    Api = <<"eunit_p2p_call_sync_api">>,
+    Api = <<"eunit_p2p_call_sync_api_",
+            (unique_api_suffix())/binary>>,
     ok = lingofuse:register_p2p_call_sync(Api, <<"eunit p2p call sync">>,
                                           self()),
     ?assertEqual({ok, true},  lingofuse:unregister_p2p(Api)),
     ?assertEqual({ok, false}, lingofuse:unregister_p2p(Api)).
+
+t_uid_badarg_length() ->
+    case ensure_native_or_skip() of
+        skip -> ok;
+        ok ->
+            BadUid = <<0:128>>,
+            {ok, P} = lingofuse:create_data(<<"ping">>),
+            try
+                {ok, _} = lingofuse:write_buffer(P, <<>>),
+                ?assertError(badarg,
+                             lingofuse:uid_call(BadUid, P, 1000))
+            after
+                lingofuse:free_data(P)
+            end
+    end.
+
+t_uid_notify_badarg_length() ->
+    case ensure_native_or_skip() of
+        skip -> ok;
+        ok ->
+            BadUid = <<0:128>>,
+            {ok, P} = lingofuse:create_data(<<"ping">>),
+            try
+                {ok, _} = lingofuse:write_buffer(P, <<>>),
+                ?assertError(badarg,
+                             lingofuse:uid_notify(BadUid, P))
+            after
+                lingofuse:free_data(P)
+            end
+    end.
+
+t_check_uid_badarg_length() ->
+    case ensure_native_or_skip() of
+        skip -> ok;
+        ok ->
+            BadUid = <<0:128>>,
+            ?assertError(badarg, lingofuse:check_uid(BadUid))
+    end.

@@ -1,7 +1,3 @@
-// Phase 3: end-to-end server test.
-// Registers an "echo" Call API on the Dart side, then calls it from a
-// child isolate (to avoid blocking the main isolate's event loop).
-
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
@@ -25,33 +21,28 @@ Future<void> main() async {
 
   print('=== Phase 3 smoke test (server via C bridge) ===\n');
 
-  // ---- 1. Start bridge host ----
   print('[1] Starting bridge host...');
   await BridgeHost.start();
   check('BridgeHost started', true);
 
-  // ---- 2. Create app and register echo ----
   print('\n[2] Registering "echo" API...');
   final app = AppHandle('DartP3', 'Phase 3 test');
-  app.registerCall('echo', 'Echo bytes', (Uint8List input) {
-    // ignore: avoid_print
-    print('    [callback] echo received ${input.length} bytes');
-    return input;
+  app.registerCall('echo', 'Echo bytes', (CallContext ctx) {
+    print('    [callback] echo received ${ctx.payload.length} bytes');
+    return ctx.payload;
   });
   check('echo API registered', true);
 
-  // ---- 3. Prepare network ----
   print('\n[3] Preparing network...');
   Framework.setOption('Overlap_Connection', 'True');
   Framework.setOption('Wait_Connection_ReadyOk', 'False');
   Framework.setOption('Quiet', 'True');
   Framework.resetPrepare();
   Framework.prepareService('ipc:dart_p3', 'ipc:dart_p3');
-  Framework.prepareClient('ipc:dart_p3', app: app);   // <-- bind app
+  Framework.prepareClient('ipc:dart_p3', app: app);
   final started = Framework.prepareDone();
   check('prepareDone', started);
 
-  // ---- 4. Wait for app to be visible ----
   print('\n[4] Waiting for app visibility...');
   bool visible = false;
   for (int i = 0; i < 30; i++) {
@@ -63,7 +54,6 @@ Future<void> main() async {
   }
   check('app "DartP3" is visible', visible);
 
-  // ---- 5. Remote call from child isolate ----
   print('\n[5] Remote echo from child isolate...');
   final result = await Isolate.run(_remoteEcho);
   const expected = 'hello from child isolate';
@@ -72,7 +62,6 @@ Future<void> main() async {
       String.fromCharCodes(result) == expected,
       'got: ${String.fromCharCodes(result)}');
 
-  // ---- 6. Cleanup ----
   print('\n[6] Cleaning up...');
   app.dispose();
   Framework.exitMainThread();
@@ -80,15 +69,12 @@ Future<void> main() async {
   BridgeHost.instance.stop();
   check('shutdown clean', true);
 
-  // ---- Summary ----
   print('\n=== Summary ===');
   print('  passed: $passed');
   print('  failed: $failed');
   exit(failed == 0 ? 0 : 1);
 }
 
-// Child isolate entry: loads the DLL directly and does a synchronous
-// LF_Call.
 Uint8List _remoteEcho() {
   const dllPath = r'D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll';
   final dll = DynamicLibrary.open(dllPath);

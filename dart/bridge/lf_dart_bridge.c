@@ -46,9 +46,6 @@
  * The bridge constructs this struct on the stack and passes it BY
  * VALUE to LF_UID_Call and friends. Dart never sees the struct: it
  * only supplies a `const uint8_t*`.
- *
- * See the header for the fallback plan if this ABI assumption fails on
- * a future compiler or architecture.
  */
 
 #define LF_DART_BRIDGE_EXPORTS
@@ -63,14 +60,6 @@
 
 /* ===========================================================================
  * Section 0 -- Platform abstraction
- * ===========================================================================
- *
- * Windows uses Win32 primitives; everything else uses POSIX threads,
- * POSIX semaphores and GCC/Clang builtins for atomics.
- *
- * The abstraction is deliberately minimal: only the five primitives
- * the bridge actually needs (mutex, semaphore, atomic inc/dec, TLS,
- * dynamic loading).
  * ========================================================================= */
 
 #if defined(_WIN32)
@@ -79,58 +68,30 @@
 
 #  define LF_TLS __declspec(thread)
 
-typedef HMODULE        lf_lib_handle_t;
+typedef HMODULE          lf_lib_handle_t;
 typedef CRITICAL_SECTION lf_mutex_t;
-typedef HANDLE         lf_sem_t;
+typedef HANDLE           lf_sem_t;
 
 static void lf_mutex_init(lf_mutex_t* m)      { InitializeCriticalSection(m); }
 static void lf_mutex_lock(lf_mutex_t* m)      { EnterCriticalSection(m); }
 static void lf_mutex_unlock(lf_mutex_t* m)    { LeaveCriticalSection(m); }
 static void lf_mutex_destroy(lf_mutex_t* m)   { DeleteCriticalSection(m); }
 
-static int  lf_sem_init(lf_sem_t* s)
+static int lf_sem_init(lf_sem_t* s)
 {
-    /* Max count is 0x7FFFFFFF: plenty for any realistic request count. */
     *s = CreateSemaphoreA(NULL, 0, 0x7FFFFFFF, NULL);
     return (*s == NULL) ? -1 : 0;
 }
 
-static void lf_sem_wait(lf_sem_t* s)
-{
-    /* No spurious wakeups on Win32; INFINITE means "wait forever". */
-    WaitForSingleObject(*s, INFINITE);
-}
+static void lf_sem_wait(lf_sem_t* s)    { WaitForSingleObject(*s, INFINITE); }
+static void lf_sem_post(lf_sem_t* s)    { ReleaseSemaphore(*s, 1, NULL); }
+static void lf_sem_destroy(lf_sem_t* s) { if (*s != NULL) { CloseHandle(*s); *s = NULL; } }
 
-static void lf_sem_post(lf_sem_t* s)
-{
-    ReleaseSemaphore(*s, 1, NULL);
-}
+static lf_lib_handle_t lf_lib_load(const char* name) { return LoadLibraryA(name); }
+static void* lf_lib_sym(lf_lib_handle_t h, const char* name) { return (void*)GetProcAddress((HMODULE)h, name); }
+static void  lf_lib_free(lf_lib_handle_t h) { if (h != NULL) { FreeLibrary((HMODULE)h); } }
 
-static void lf_sem_destroy(lf_sem_t* s)
-{
-    if (*s != NULL) { CloseHandle(*s); *s = NULL; }
-}
-
-static lf_lib_handle_t lf_lib_load(const char* name)
-{
-    return LoadLibraryA(name);
-}
-
-static void* lf_lib_sym(lf_lib_handle_t h, const char* name)
-{
-    return (void*)GetProcAddress((HMODULE)h, name);
-}
-
-static void lf_lib_free(lf_lib_handle_t h)
-{
-    if (h != NULL) { FreeLibrary((HMODULE)h); }
-}
-
-/* InterlockedIncrement returns the new value, matching our contract. */
-static long lf_atomic_inc(volatile long* p)
-{
-    return InterlockedIncrement((volatile LONG*)p);
-}
+static long lf_atomic_inc(volatile long* p) { return InterlockedIncrement((volatile LONG*)p); }
 
 #else /* POSIX */
 
@@ -151,78 +112,24 @@ static void lf_mutex_lock(lf_mutex_t* m)    { pthread_mutex_lock(m); }
 static void lf_mutex_unlock(lf_mutex_t* m)  { pthread_mutex_unlock(m); }
 static void lf_mutex_destroy(lf_mutex_t* m) { pthread_mutex_destroy(m); }
 
-static int lf_sem_init(lf_sem_t* s)
-{
-    /* process-private, initial value 0 */
-    return sem_init(s, 0, 0);
-}
+static int lf_sem_init(lf_sem_t* s) { return sem_init(s, 0, 0); }
+static void lf_sem_wait(lf_sem_t* s) { int rc; do { rc = sem_wait(s); } while (rc != 0 && errno == EINTR); }
+static void lf_sem_post(lf_sem_t* s) { sem_post(s); }
+static void lf_sem_destroy(lf_sem_t* s) { sem_destroy(s); }
 
-static void lf_sem_wait(lf_sem_t* s)
-{
-    /* EINTR can occur if the worker thread receives a signal. Loop. */
-    int rc;
-    do {
-        rc = sem_wait(s);
-    } while (rc != 0 && errno == EINTR);
-}
+static lf_lib_handle_t lf_lib_load(const char* name) { return dlopen(name, RTLD_LAZY | RTLD_LOCAL); }
+static void* lf_lib_sym(lf_lib_handle_t h, const char* name) { return dlsym(h, name); }
+static void  lf_lib_free(lf_lib_handle_t h) { if (h != NULL) { dlclose(h); } }
 
-static void lf_sem_post(lf_sem_t* s)
-{
-    sem_post(s);
-}
-
-static void lf_sem_destroy(lf_sem_t* s)
-{
-    sem_destroy(s);
-}
-
-static lf_lib_handle_t lf_lib_load(const char* name)
-{
-    return dlopen(name, RTLD_LAZY | RTLD_LOCAL);
-}
-
-static void* lf_lib_sym(lf_lib_handle_t h, const char* name)
-{
-    return dlsym(h, name);
-}
-
-static void lf_lib_free(lf_lib_handle_t h)
-{
-    if (h != NULL) { dlclose(h); }
-}
-
-static long lf_atomic_inc(volatile long* p)
-{
-    return __sync_add_and_fetch(p, 1);
-}
+static long lf_atomic_inc(volatile long* p) { return __sync_add_and_fetch(p, 1); }
 
 #endif /* _WIN32 */
 
 /* ===========================================================================
  * Section 1 -- Global state
- * ===========================================================================
- *
- * Every field below is either write-once (at init) or protected by a
- * lock. The `initialized` flag is read without a lock in a few
- * fast-path checks; this is safe because it is only ever set to 1 by
- * lf_bridge_init (which runs single-threaded, before any other bridge
- * call can succeed) and never cleared except by lf_bridge_shutdown
- * (which is documented as "call from the main isolate only").
  * ========================================================================= */
 
-/* ---------------------------------------------------------------------------
- * LingoFuse symbol table
- * ---------------------------------------------------------------------------
- * We resolve the ~59 exported LingoFuse functions into one array,
- * indexed by an enum. This avoids 59 typedefs and keeps the loader
- * table small and readable.
- *
- * Each entry is used with an explicit cast at the call site. The cast
- * is the type contract; the enum name documents the intent.
- * ------------------------------------------------------------------------- */
-
 enum LF_Sym_Index {
-    /* Data handle */
     SYM_CreateData = 0,
     SYM_CreateData_Permanent,
     SYM_FreeData,
@@ -236,56 +143,47 @@ enum LF_Sym_Index {
     SYM_Get_P2P_UID,
     SYM_Get_P2P_Name,
 
-    /* Application */
     SYM_CreateApp,
     SYM_FreeApp,
     SYM_Generate_AppName,
     SYM_Get_AppName,
     SYM_BindApp,
 
-    /* Registration (app-bound) */
     SYM_RegisterCall,
     SYM_RegisterNotify,
     SYM_Unregister,
 
-    /* Registration (process-wide P2P) */
     SYM_Register_P2P_Call,
     SYM_Register_P2P_Notify,
     SYM_Unregister_P2P,
 
-    /* Local execution */
     SYM_LocalCall,
     SYM_LocalNotify,
 
-    /* Network preparation */
     SYM_ResetPrepare,
     SYM_PrepareService,
     SYM_PrepareClient,
     SYM_PrepareDone,
     SYM_ExitMainThread,
 
-    /* Invocation (App name) */
     SYM_Call,
     SYM_Async_Call,
     SYM_Async_Sequenced_Call,
     SYM_Notify,
     SYM_Sequenced_Notify,
 
-    /* Invocation (UID) */
     SYM_UID_Call,
     SYM_UID_Async_Call,
     SYM_UID_Async_Sequenced_Call,
     SYM_UID_Notify,
     SYM_UID_Sequenced_Notify,
 
-    /* Invocation (P2PName) */
     SYM_P2PNAME_Call,
     SYM_P2PNAME_Async_Call,
     SYM_P2PNAME_Async_Sequenced_Call,
     SYM_P2PNAME_Notify,
     SYM_P2PNAME_Sequenced_Notify,
 
-    /* Queries */
     SYM_CheckMainThread,
     SYM_CheckApp,
     SYM_CheckApi,
@@ -294,92 +192,60 @@ enum LF_Sym_Index {
     SYM_Check_P2PNAME,
     SYM_Check_P2PNAME_Api,
 
-    /* Options */
     SYM_SetOption,
     SYM_GetOption,
 
-    /* Status */
     SYM_GetStatusCount,
     SYM_GetStatus,
     SYM_PostStatus,
 
-    /* Network events */
     SYM_Set_Network_Event,
 
-    /* Shutdown */
     SYM_Shutdown,
 
     LF_SYM_COUNT
 };
 
-/* ---------------------------------------------------------------------------
- * Pending request (Protocol A)
- * ------------------------------------------------------------------------- */
-
 typedef struct PendingRequest {
     int64_t        request_id;
     lf_sem_t       sem;
-    uint8_t*       out_buf;       /* owned by this struct */
-    int64_t        out_size;      /* number of valid bytes in out_buf */
-    int64_t        out_capacity;  /* allocated size of out_buf */
-    volatile long  completed;     /* 0 -> waiting; 1 -> lf_bridge_complete ran */
-    struct PendingRequest* next;  /* singly linked list */
+    uint8_t*       out_buf;
+    int64_t        out_size;
+    int64_t        out_capacity;
+    volatile long  completed;
+    struct PendingRequest* next;
 } PendingRequest;
 
-/* ---------------------------------------------------------------------------
- * Global state struct
- * ------------------------------------------------------------------------- */
-
 typedef struct BridgeState {
-    /* Lifecycle */
     volatile long initialized;
     int64_t       dart_port_id;
 
-    /* LingoFuse library */
     lf_lib_handle_t lf_lib;
     void*           lf_syms[LF_SYM_COUNT];
 
-    /* Protocol A table */
-    lf_mutex_t       pending_lock;
-    PendingRequest*  pending_head;
-    volatile long    pending_count;
+    lf_mutex_t      pending_lock;
+    PendingRequest* pending_head;
+    volatile long   pending_count;
 
-    /* Request ID source (32-bit is plenty) */
-    volatile long    next_request_id;
+    volatile long   next_request_id;
 
-    /* Network event callback IDs (-1 means disabled) */
-    volatile long    connect_callback_id;
-    volatile long    disconnect_callback_id;
+    volatile long   connect_callback_id;
+    volatile long   disconnect_callback_id;
 
-    /* Statistics */
-    volatile long    dart_post_ok;
-    volatile long    dart_post_fail;
+    volatile long   dart_post_ok;
+    volatile long   dart_post_fail;
 } BridgeState;
 
 static BridgeState g_state;
 
-/* Two distinct callback trampolines are needed for connect/disconnect
- * because LF_NetworkEventFunc has no user-data parameter. The global
- * callback IDs above hold the current values. */
-
 static void LF_DART_CALL bridge_connect_trampoline(const char* addr);
 static void LF_DART_CALL bridge_disconnect_trampoline(const char* addr);
-
 static void LF_DART_CALL bridge_call_trampoline(void* trigger, void* input, void* output);
 static void LF_DART_CALL bridge_notify_trampoline(void* trigger, void* input);
 static void LF_DART_CALL bridge_async_on_result(void* data, void* result);
 
 /* ===========================================================================
  * Section 2 -- Thread-local error string
- * ===========================================================================
- *
- * Every int-returning bridge function that can fail stores a
- * human-readable description here before returning a non-zero code.
- * lf_bridge_last_error() returns a pointer into this buffer.
- *
- * The buffer is thread-local so that two threads cannot overwrite each
- * other's messages. On MSVC, LF_TLS is __declspec(thread); on
- * GCC/Clang it is __thread.
  * ========================================================================= */
 
 #define LF_ERROR_BUF_SIZE 512
@@ -400,13 +266,11 @@ static void lf_clear_error(void)
 
 /* ===========================================================================
  * Section 3 -- LingoFuse dynamic loading and symbol resolution
- * =========================================================================== */
+ * ========================================================================= */
 
 static const char* lf_platform_library_name(void)
 {
 #if defined(_WIN32)
-    /* 64-bit vs 32-bit chosen at runtime; the compiler cannot always
-     * be trusted to define _WIN64 correctly under cross-compilation. */
     return (sizeof(void*) == 8) ? "LingoFuse64.dll" : "LingoFuse32.dll";
 #elif defined(__APPLE__)
     return "liblingofuse.dylib";
@@ -415,7 +279,6 @@ static const char* lf_platform_library_name(void)
 #endif
 }
 
-/* Resolve one symbol; store NULL on failure and return 0. */
 static int lf_resolve_symbol(const char* short_name, int slot)
 {
     char full_name[128];
@@ -451,7 +314,6 @@ static int lf_load_and_resolve(void)
         return 0;
     }
 
-    /* Data handle */
     RESOLVE(CreateData);
     RESOLVE(CreateData_Permanent);
     RESOLVE(FreeData);
@@ -465,56 +327,47 @@ static int lf_load_and_resolve(void)
     RESOLVE(Get_P2P_UID);
     RESOLVE(Get_P2P_Name);
 
-    /* Application */
     RESOLVE(CreateApp);
     RESOLVE(FreeApp);
     RESOLVE(Generate_AppName);
     RESOLVE(Get_AppName);
     RESOLVE(BindApp);
 
-    /* Registration (app-bound) */
     RESOLVE(RegisterCall);
     RESOLVE(RegisterNotify);
     RESOLVE(Unregister);
 
-    /* Registration (process-wide P2P) */
     RESOLVE(Register_P2P_Call);
     RESOLVE(Register_P2P_Notify);
     RESOLVE(Unregister_P2P);
 
-    /* Local execution */
     RESOLVE(LocalCall);
     RESOLVE(LocalNotify);
 
-    /* Network preparation */
     RESOLVE(ResetPrepare);
     RESOLVE(PrepareService);
     RESOLVE(PrepareClient);
     RESOLVE(PrepareDone);
     RESOLVE(ExitMainThread);
 
-    /* Invocation (App name) */
     RESOLVE(Call);
     RESOLVE(Async_Call);
     RESOLVE(Async_Sequenced_Call);
     RESOLVE(Notify);
     RESOLVE(Sequenced_Notify);
 
-    /* Invocation (UID) */
     RESOLVE(UID_Call);
     RESOLVE(UID_Async_Call);
     RESOLVE(UID_Async_Sequenced_Call);
     RESOLVE(UID_Notify);
     RESOLVE(UID_Sequenced_Notify);
 
-    /* Invocation (P2PName) */
     RESOLVE(P2PNAME_Call);
     RESOLVE(P2PNAME_Async_Call);
     RESOLVE(P2PNAME_Async_Sequenced_Call);
     RESOLVE(P2PNAME_Notify);
     RESOLVE(P2PNAME_Sequenced_Notify);
 
-    /* Queries */
     RESOLVE(CheckMainThread);
     RESOLVE(CheckApp);
     RESOLVE(CheckApi);
@@ -523,25 +376,20 @@ static int lf_load_and_resolve(void)
     RESOLVE(Check_P2PNAME);
     RESOLVE(Check_P2PNAME_Api);
 
-    /* Options */
     RESOLVE(SetOption);
     RESOLVE(GetOption);
 
-    /* Status */
     RESOLVE(GetStatusCount);
     RESOLVE(GetStatus);
     RESOLVE(PostStatus);
 
-    /* Network events */
     RESOLVE(Set_Network_Event);
 
-    /* Shutdown */
     RESOLVE(Shutdown);
 
     return 1;
 }
 
-/* Convenience macro used at call sites. The cast is the type contract. */
 #define LF_GET(slot) (g_state.lf_syms[slot])
 
 /* ===========================================================================
@@ -550,14 +398,17 @@ static int lf_load_and_resolve(void)
  *
  * Two message shapes are posted:
  *
- *   Call / Notify (3-element):
- *     [ request_id : int64, callback_id : int64, input : Uint8List ]
+ *   Protocol A -- synchronous handshake (Call / Notify):
+ *     [ request_id : int64,
+ *       callback_id : int64,
+ *       input : Uint8List,
+ *       sender_uid : Uint8List(32),
+ *       sender_p2p_name : Uint8List(N) ]
  *
- *   Async / Network event (2-element):
+ *   Protocol B -- fire-and-forget (Async / Network event):
  *     [ op_id : int64, payload : Uint8List ]
  *
- * The Dart side dispatches on array length. The bridge never sees the
- * reply; it is Dart's responsibility to look up the right handler.
+ * The Dart side dispatches on array length.
  * ========================================================================= */
 
 static int lf_post_two(int64_t a, const uint8_t* bytes, intptr_t size)
@@ -570,8 +421,6 @@ static int lf_post_two(int64_t a, const uint8_t* bytes, intptr_t size)
     c_bytes.type = Dart_CObject_kTypedData;
     c_bytes.value.as_typed_data.type   = Dart_TypedData_kUint8;
     c_bytes.value.as_typed_data.length = size;
-    /* If size is zero, Dart accepts a NULL values pointer; providing a
-     * non-NULL dummy avoids a class of platform-specific edge cases. */
     static uint8_t dummy = 0;
     c_bytes.value.as_typed_data.values =
         (size > 0 && bytes != NULL) ? (uint8_t*)bytes : &dummy;
@@ -590,28 +439,43 @@ static int lf_post_two(int64_t a, const uint8_t* bytes, intptr_t size)
     return 1;
 }
 
-static int lf_post_three(int64_t a, int64_t b, const uint8_t* bytes, intptr_t size)
+static int lf_post_call_message(
+    int64_t request_id,
+    int64_t callback_id,
+    const uint8_t* input_bytes, intptr_t input_size,
+    const uint8_t* uid_32,
+    const uint8_t* p2p_bytes, intptr_t p2p_size)
 {
-    Dart_CObject c_a;
-    c_a.type = Dart_CObject_kInt64;
-    c_a.value.as_int64 = a;
-
-    Dart_CObject c_b;
-    c_b.type = Dart_CObject_kInt64;
-    c_b.value.as_int64 = b;
-
-    Dart_CObject c_bytes;
-    c_bytes.type = Dart_CObject_kTypedData;
-    c_bytes.value.as_typed_data.type   = Dart_TypedData_kUint8;
-    c_bytes.value.as_typed_data.length = size;
+    Dart_CObject c_req, c_cb, c_input, c_uid, c_p2p;
     static uint8_t dummy = 0;
-    c_bytes.value.as_typed_data.values =
-        (size > 0 && bytes != NULL) ? (uint8_t*)bytes : &dummy;
 
-    Dart_CObject* elems[3] = { &c_a, &c_b, &c_bytes };
+    c_req.type = Dart_CObject_kInt64;
+    c_req.value.as_int64 = request_id;
+
+    c_cb.type = Dart_CObject_kInt64;
+    c_cb.value.as_int64 = callback_id;
+
+    c_input.type = Dart_CObject_kTypedData;
+    c_input.value.as_typed_data.type = Dart_TypedData_kUint8;
+    c_input.value.as_typed_data.length = input_size;
+    c_input.value.as_typed_data.values =
+        (input_size > 0 && input_bytes != NULL) ? (uint8_t*)input_bytes : &dummy;
+
+    c_uid.type = Dart_CObject_kTypedData;
+    c_uid.value.as_typed_data.type = Dart_TypedData_kUint8;
+    c_uid.value.as_typed_data.length = 32;
+    c_uid.value.as_typed_data.values = (uint8_t*)uid_32;
+
+    c_p2p.type = Dart_CObject_kTypedData;
+    c_p2p.value.as_typed_data.type = Dart_TypedData_kUint8;
+    c_p2p.value.as_typed_data.length = p2p_size;
+    c_p2p.value.as_typed_data.values =
+        (p2p_size > 0 && p2p_bytes != NULL) ? (uint8_t*)p2p_bytes : &dummy;
+
+    Dart_CObject* elems[5] = { &c_req, &c_cb, &c_input, &c_uid, &c_p2p };
     Dart_CObject arr;
     arr.type = Dart_CObject_kArray;
-    arr.value.as_array.length = 3;
+    arr.value.as_array.length = 5;
     arr.value.as_array.values = elems;
 
     if (!Dart_PostCObject_DL(g_state.dart_port_id, &arr)) {
@@ -622,16 +486,12 @@ static int lf_post_three(int64_t a, int64_t b, const uint8_t* bytes, intptr_t si
     return 1;
 }
 
-/* Copy the entire contents of a LingoFuse data handle into a fresh
- * malloc'd buffer. Returns NULL on failure or for a zero-size handle;
- * sets *out_size accordingly. */
 static uint8_t* lf_snapshot_handle(void* hnd, int64_t* out_size)
 {
     *out_size = 0;
     if (hnd == NULL) { return NULL; }
 
-    int64_t size =
-        ((int64_t(*)(void*))LF_GET(SYM_GetSize))(hnd);
+    int64_t size = ((int64_t(*)(void*))LF_GET(SYM_GetSize))(hnd);
     if (size <= 0) { return NULL; }
 
     uint8_t* buf = (uint8_t*)malloc((size_t)size);
@@ -650,16 +510,6 @@ static uint8_t* lf_snapshot_handle(void* hnd, int64_t* out_size)
 
 /* ===========================================================================
  * Section 5 -- Protocol A: pending-request table and trampolines
- * ===========================================================================
- *
- * Protocol A is used by registered Call / Notify handlers and by the
- * local-execution entry points. The native worker THREAD BLOCKS until
- * Dart replies via lf_bridge_complete (for Call) or returns without
- * waiting (for Notify, which produces no output).
- *
- * The table is a simple singly linked list guarded by a mutex. Real
- * workloads have at most a few dozen concurrent requests, so the
- * linear search is not a bottleneck.
  * ========================================================================= */
 
 static PendingRequest* lf_pending_find_locked(int64_t request_id)
@@ -685,22 +535,15 @@ static void lf_pending_remove_locked(PendingRequest* req)
     while (*pp != NULL) {
         if (*pp == req) {
             *pp = req->next;
-            lf_atomic_inc(&g_state.pending_count); /* decrement below */
-            /* We use lf_atomic_inc as a generic "modify" op; a
-             * dedicated atomic decrement would be cleaner but this
-             * keeps the platform abstraction tiny. */
+            lf_atomic_inc(&g_state.pending_count);
             return;
         }
         pp = &(*pp)->next;
     }
 }
 
-/* Real decrement; the "inc" above is a bookkeeping hack that we undo
- * here to avoid adding a new platform primitive. */
 static void lf_pending_dec_count(void)
 {
-    /* We rely on the fact that pending_count is only read for stats. */
-    /* Decrement by simulating: pending_count -= 2 (undo the false +1). */
 #if defined(_WIN32)
     InterlockedExchangeAdd((volatile LONG*)&g_state.pending_count, -2);
 #else
@@ -708,9 +551,6 @@ static void lf_pending_dec_count(void)
 #endif
 }
 
-/* Actually, on reflection, the above is fragile. Replace it with a
- * clean implementation: pending_count is only updated at insert and
- * remove, and always by exactly +1 or -1. */
 #undef lf_pending_remove_locked
 
 static void lf_pending_remove_locked_clean(PendingRequest* req)
@@ -732,33 +572,67 @@ static void lf_pending_remove_locked_clean(PendingRequest* req)
 
 #define lf_pending_remove_locked lf_pending_remove_locked_clean
 
-/* ---- Protocol A trampolines ---- */
+static void lf_extract_sender_identity(
+    void* input_handle,
+    uint8_t out_uid[32],
+    char** out_p2p,
+    int32_t* out_p2p_len)
+{
+    memset(out_uid, 0, 32);
+    *out_p2p = NULL;
+    *out_p2p_len = 0;
+
+    if (input_handle == NULL) { return; }
+    if (!g_state.initialized) { return; }
+
+    const void* uid_ptr =
+        ((const void*(*)(void*))LF_GET(SYM_Get_P2P_UID))(input_handle);
+    if (uid_ptr != NULL) {
+        memcpy(out_uid, uid_ptr, 32);
+    }
+
+    const char* p2p =
+        ((const char*(*)(void*))LF_GET(SYM_Get_P2P_Name))(input_handle);
+    if (p2p != NULL && p2p[0] != '\0') {
+        size_t len = strlen(p2p);
+        char* copy = (char*)malloc(len);
+        if (copy != NULL) {
+            memcpy(copy, p2p, len);
+            *out_p2p = copy;
+            *out_p2p_len = (int32_t)len;
+        }
+    }
+}
 
 static void LF_DART_CALL bridge_call_trampoline(
     void* trigger, void* input, void* output)
 {
     int64_t callback_id = (int64_t)(intptr_t)trigger;
 
-    /* Snapshot the input bytes. */
     int64_t in_size = 0;
     uint8_t* in_buf = lf_snapshot_handle(input, &in_size);
 
-    /* Allocate a pending-request record. */
+    uint8_t sender_uid[32];
+    char* sender_p2p = NULL;
+    int32_t sender_p2p_len = 0;
+    lf_extract_sender_identity(input, sender_uid, &sender_p2p, &sender_p2p_len);
+
     PendingRequest* req = (PendingRequest*)calloc(1, sizeof(PendingRequest));
     if (req == NULL) {
         if (in_buf != NULL) { free(in_buf); }
+        if (sender_p2p != NULL) { free(sender_p2p); }
         return;
     }
 
     if (lf_sem_init(&req->sem) != 0) {
         free(req);
         if (in_buf != NULL) { free(in_buf); }
+        if (sender_p2p != NULL) { free(sender_p2p); }
         return;
     }
 
     req->request_id = (int64_t)lf_atomic_inc(&g_state.next_request_id);
     if (req->request_id == 0) {
-        /* Wrap-around protection: request_id 0 is reserved for Notify. */
         req->request_id = (int64_t)lf_atomic_inc(&g_state.next_request_id);
     }
 
@@ -766,13 +640,16 @@ static void LF_DART_CALL bridge_call_trampoline(
     lf_pending_insert_locked(req);
     lf_mutex_unlock(&g_state.pending_lock);
 
-    /* Post the message. Dart owns its copy of the bytes after the
-     * PostCObject call returns, so we can free our snapshot now. */
-    int ok = lf_post_three(req->request_id, callback_id, in_buf, (intptr_t)in_size);
+    int ok = lf_post_call_message(
+        req->request_id, callback_id,
+        in_buf, (intptr_t)in_size,
+        sender_uid,
+        (const uint8_t*)sender_p2p, (intptr_t)sender_p2p_len);
+
     if (in_buf != NULL) { free(in_buf); }
+    if (sender_p2p != NULL) { free(sender_p2p); }
 
     if (!ok) {
-        /* Post failed: unwind and return without writing output. */
         lf_mutex_lock(&g_state.pending_lock);
         lf_pending_remove_locked(req);
         lf_mutex_unlock(&g_state.pending_lock);
@@ -781,17 +658,13 @@ static void LF_DART_CALL bridge_call_trampoline(
         return;
     }
 
-    /* Block until Dart calls lf_bridge_complete with our request_id. */
     lf_sem_wait(&req->sem);
 
-    /* Copy the output bytes into the LingoFuse output handle. */
     if (req->out_size > 0 && req->out_buf != NULL && output != NULL) {
         ((int64_t(*)(void*, const void*, int64_t))LF_GET(SYM_WriteBuffer))
             (output, req->out_buf, req->out_size);
     }
 
-    /* Cleanup. The record is no longer reachable by request_id once we
-     * remove it under the lock. */
     lf_mutex_lock(&g_state.pending_lock);
     lf_pending_remove_locked(req);
     lf_mutex_unlock(&g_state.pending_lock);
@@ -809,51 +682,42 @@ static void LF_DART_CALL bridge_notify_trampoline(
     int64_t in_size = 0;
     uint8_t* in_buf = lf_snapshot_handle(input, &in_size);
 
-    /* request_id 0 signals "no reply expected". Dart will not call
-     * lf_bridge_complete for this message. */
-    (void)lf_post_three(0, callback_id, in_buf, (intptr_t)in_size);
+    uint8_t sender_uid[32];
+    char* sender_p2p = NULL;
+    int32_t sender_p2p_len = 0;
+    lf_extract_sender_identity(input, sender_uid, &sender_p2p, &sender_p2p_len);
+
+    /* request_id 0 signals "no reply expected". */
+    (void)lf_post_call_message(
+        0, callback_id,
+        in_buf, (intptr_t)in_size,
+        sender_uid,
+        (const uint8_t*)sender_p2p, (intptr_t)sender_p2p_len);
 
     if (in_buf != NULL) { free(in_buf); }
+    if (sender_p2p != NULL) { free(sender_p2p); }
 }
 
 /* ===========================================================================
  * Section 6 -- Protocol B: fire-and-forget trampolines
- * ===========================================================================
- *
- * The asynchronous call family and the network event handlers use this
- * protocol. The native worker posts a message to the Dart isolate and
- * returns IMMEDIATELY. Nothing blocks.
- *
- * Memory safety: Dart_PostCObject_DL synchronously copies typed-data
- * payloads into the Dart heap. This means the source buffer can be
- * freed as soon as the call returns, and in particular BEFORE the user
- * callback runs.
  * ========================================================================= */
 
 static void LF_DART_CALL bridge_async_on_result(void* data, void* result)
 {
     int64_t op_id = (int64_t)(intptr_t)data;
 
-    /* Snapshot the result handle. NOTE: the framework releases the
-     * result handle the instant this function returns, so this copy is
-     * mandatory and must complete before we return. */
     int64_t size = 0;
     uint8_t* buf = lf_snapshot_handle(result, &size);
 
     (void)lf_post_two(op_id, buf, (intptr_t)size);
 
     if (buf != NULL) { free(buf); }
-    /* Return immediately. Do not touch `result` again. */
 }
 
 static void lf_post_network_event(int64_t callback_id, const char* addr)
 {
     if (callback_id < 0) { return; }
 
-    /* The addr string is UTF-8, NUL-terminated, and only valid during
-     * the callback. We post a Uint8List rather than a Dart string so
-     * that the bridge does not have to reason about UTF-8 vs UTF-16
-     * at the C/Dart boundary. */
     const uint8_t* bytes = (const uint8_t*)(addr != NULL ? addr : "");
     intptr_t len = (intptr_t)(addr != NULL ? strlen(addr) : 0);
 
@@ -872,11 +736,6 @@ static void LF_DART_CALL bridge_disconnect_trampoline(const char* addr)
 
 /* ===========================================================================
  * Section 7 -- Option helpers
- * ===========================================================================
- *
- * Thin wrappers around LF_SetOption / LF_GetOption that handle the
- * stringly-typed marshalling once, so that every typed option entry
- * point below is a one-liner.
  * ========================================================================= */
 
 static void lf_set_option_str(const char* key, const char* value)
@@ -905,16 +764,13 @@ static void lf_set_option_u64(const char* key, uint64_t value)
 
 static const char* lf_get_option_str(const char* key)
 {
-    const char* v =
-        ((const char*(*)(const char*))LF_GET(SYM_GetOption))(key);
+    const char* v = ((const char*(*)(const char*))LF_GET(SYM_GetOption))(key);
     return v != NULL ? v : "";
 }
 
 static int lf_get_option_bool(const char* key)
 {
     const char* v = lf_get_option_str(key);
-    /* The Pascal side writes "True" / "False". We accept a few
-     * case-insensitive spellings for robustness. */
     if (v[0] == '\0') { return 0; }
     if ((v[0] == 'T' || v[0] == 't') && (v[1] == 'r' || v[1] == 'R')) { return 1; }
     if (v[0] == '1') { return 1; }
@@ -958,7 +814,6 @@ static int lf_copy_string_into(
     return LFB_OK;
 }
 
-/* Convenience macro for int-returning setters. */
 #define DEFINE_OPT_SETTER(fn, key, setter)                                     \
     int LF_DART_CALL fn(const char* value) {                                   \
         lf_clear_error();                                                      \
@@ -981,52 +836,8 @@ static int lf_copy_string_into(
         return lf_copy_string_into(lf_get_option_str(key), out_buf, buf_size); \
     }
 
-#define DEFINE_OPT_BOOL(fn_base, key)                                          \
-    int LF_DART_CALL fn_base##_set(int value) {                                \
-        lf_clear_error();                                                      \
-        if (!g_state.initialized) { return LFB_ERR_NOT_INITIALIZED; }          \
-        lf_set_option_bool(key, value);                                        \
-        return LFB_OK;                                                         \
-    }                                                                          \
-    int LF_DART_CALL fn_base##_get(void) {                                     \
-        if (!g_state.initialized) { return 0; }                                \
-        return lf_get_option_bool(key);                                        \
-    }
-
-#define DEFINE_OPT_INT(fn_base, key)                                           \
-    int LF_DART_CALL fn_base##_set(int value) {                                \
-        lf_clear_error();                                                      \
-        if (!g_state.initialized) { return LFB_ERR_NOT_INITIALIZED; }          \
-        lf_set_option_int(key, value);                                         \
-        return LFB_OK;                                                         \
-    }                                                                          \
-    int LF_DART_CALL fn_base##_get(void) {                                     \
-        if (!g_state.initialized) { return 0; }                                \
-        return lf_get_option_int(key);                                         \
-    }
-
-#define DEFINE_OPT_U64(fn_base, key)                                           \
-    int LF_DART_CALL fn_base##_set(uint64_t value) {                           \
-        lf_clear_error();                                                      \
-        if (!g_state.initialized) { return LFB_ERR_NOT_INITIALIZED; }          \
-        lf_set_option_u64(key, value);                                         \
-        return LFB_OK;                                                         \
-    }                                                                          \
-    int LF_DART_CALL fn_base##_get(void) {                                     \
-        if (!g_state.initialized) { return 0; }                                \
-        uint64_t v = lf_get_option_u64(key);                                   \
-        /* The header declares these getters as int; clamp to INT_MAX. */      \
-        if (v > 0x7FFFFFFFULL) { v = 0x7FFFFFFFULL; }                          \
-        return (int)v;                                                         \
-    }
-
 /* ===========================================================================
  * Section 8 -- Exported functions
- * ===========================================================================
- *
- * Order matches the header. Each function is a short, direct
- * implementation; the interesting logic (Protocol A / B, option
- * marshalling, string copying) lives in the helper sections above.
  * ========================================================================= */
 
 /* ---- Section 0: Lifecycle ---- */
@@ -1036,8 +847,6 @@ int LF_DART_CALL lf_bridge_init(int64_t dart_port_id, void* api_dl_data)
     lf_clear_error();
 
     if (g_state.initialized) {
-        /* Re-initialization with the same port is a no-op. A different
-         * port is a programming error. */
         if (g_state.dart_port_id != dart_port_id) {
             lf_set_error(
                 "bridge is already initialized with a different port ID");
@@ -1052,8 +861,6 @@ int LF_DART_CALL lf_bridge_init(int64_t dart_port_id, void* api_dl_data)
         return LFB_ERR_INVALID_ARGUMENT;
     }
 
-    /* Register the Dart API DL table first. This must happen before
-     * Dart_PostCObject_DL can be used from a non-Dart thread. */
     int rc = (int)Dart_InitializeApiDL(api_dl_data);
     if (rc != 0) {
         lf_set_error("Dart_InitializeApiDL failed with code %d", rc);
@@ -1084,14 +891,8 @@ void LF_DART_CALL lf_bridge_shutdown(void)
 {
     if (!g_state.initialized) { return; }
 
-    /* Mark not-initialized first so that any in-flight callback sees
-     * the change and bails out cleanly. */
     g_state.initialized = 0;
 
-    /* Release pending-request resources. There is no way to wake a
-     * blocked worker thread safely from here; the documented contract
-     * is that lf_bridge_shutdown is called only after all requests
-     * have completed. */
     lf_mutex_lock(&g_state.pending_lock);
     PendingRequest* p = g_state.pending_head;
     g_state.pending_head = NULL;
@@ -1196,11 +997,7 @@ int LF_DART_CALL lf_bridge_get_p2p_uid(void* hnd, uint8_t* out_uid_32)
         return LFB_ERR_INVALID_ARGUMENT;
     }
 
-    /* The Pascal side returns a pointer (PP2P_UID___). We dereference
-     * and copy immediately; we never return the pointer to Dart and
-     * never free it (the library does that on its own schedule). */
-    const void* ptr =
-        ((const void*(*)(void*))LF_GET(SYM_Get_P2P_UID))(hnd);
+    const void* ptr = ((const void*(*)(void*))LF_GET(SYM_Get_P2P_UID))(hnd);
     if (ptr == NULL) {
         memset(out_uid_32, 0, 32);
     } else {
@@ -1215,8 +1012,7 @@ int LF_DART_CALL lf_bridge_get_p2p_name(void* hnd, char* out_buf, int buf_size)
     if (!g_state.initialized) { lf_set_error("bridge not initialized"); return LFB_ERR_NOT_INITIALIZED; }
     if (hnd == NULL) { lf_set_error("null handle"); return LFB_ERR_INVALID_ARGUMENT; }
 
-    const char* p =
-        ((const char*(*)(void*))LF_GET(SYM_Get_P2P_Name))(hnd);
+    const char* p = ((const char*(*)(void*))LF_GET(SYM_Get_P2P_Name))(hnd);
     return lf_copy_string_into(p, out_buf, buf_size);
 }
 
@@ -1282,8 +1078,7 @@ int LF_DART_CALL lf_bridge_get_app_name(void* app_hnd, char* out_buf, int buf_si
     if (!g_state.initialized) { lf_set_error("bridge not initialized"); return LFB_ERR_NOT_INITIALIZED; }
     if (app_hnd == NULL) { lf_set_error("null app handle"); return LFB_ERR_INVALID_ARGUMENT; }
 
-    const char* p =
-        ((const char*(*)(void*))LF_GET(SYM_Get_AppName))(app_hnd);
+    const char* p = ((const char*(*)(void*))LF_GET(SYM_Get_AppName))(app_hnd);
     return lf_copy_string_into(p, out_buf, buf_size);
 }
 
@@ -1292,8 +1087,7 @@ int LF_DART_CALL lf_bridge_generate_app_name(char* out_buf, int buf_size)
     lf_clear_error();
     if (!g_state.initialized) { lf_set_error("bridge not initialized"); return LFB_ERR_NOT_INITIALIZED; }
 
-    const char* p =
-        ((const char*(*)())LF_GET(SYM_Generate_AppName))();
+    const char* p = ((const char*(*)())LF_GET(SYM_Generate_AppName))();
     return lf_copy_string_into(p, out_buf, buf_size);
 }
 
@@ -1380,7 +1174,6 @@ int LF_DART_CALL lf_bridge_complete(
         return LFB_ERR_INVALID_ARGUMENT;
     }
 
-    /* Grow the output buffer if needed. */
     if (size > req->out_capacity) {
         uint8_t* new_buf = (uint8_t*)realloc(req->out_buf, (size_t)size);
         if (new_buf == NULL) {
@@ -1400,7 +1193,6 @@ int LF_DART_CALL lf_bridge_complete(
 
     lf_mutex_unlock(&g_state.pending_lock);
 
-    /* Wake the blocked native worker. */
     lf_sem_post(&req->sem);
     return LFB_OK;
 }
@@ -1582,9 +1374,6 @@ int LF_DART_CALL lf_bridge_call_async_sequenced(
 
 /* ---- Section 8: Invocation (UID) ---- */
 
-/* The ARGUMENT-role UID: a 32-byte aggregate passed BY VALUE.
- * On x86-64 this matches Pascal's `array[0..31] of Byte` because both
- * are classified MEMORY by the psABI. */
 typedef struct {
     uint8_t bytes[32];
 } TP2P_UID_VAL;
@@ -1761,11 +1550,9 @@ int LF_DART_CALL lf_bridge_check_p2pname_api(
 
 /* ---- Section 11: Options ---- */
 
-/* 11.1 Authentication */
 DEFINE_OPT_SETTER(lf_bridge_set_opt_password, "password", lf_set_option_str)
 DEFINE_OPT_GETTER_STR(lf_bridge_get_opt_password, "password")
 
-/* 11.2 Logging and diagnostics */
 DEFINE_OPT_SETTER(lf_bridge_set_opt_debug, "debug", lf_set_option_str)
 DEFINE_OPT_GETTER_STR(lf_bridge_get_opt_debug, "debug")
 
@@ -1808,7 +1595,6 @@ int LF_DART_CALL lf_bridge_get_opt_console_output(void)
     return lf_get_option_bool("ConsoleOutput");
 }
 
-/* 11.3 Connection readiness */
 int LF_DART_CALL lf_bridge_set_opt_overlap_connection(int value)
 {
     lf_clear_error();
@@ -1850,7 +1636,6 @@ int LF_DART_CALL lf_bridge_get_opt_wait_connection_timeout(void)
     return (int)v;
 }
 
-/* 11.4 IPC */
 int LF_DART_CALL lf_bridge_set_opt_ipc_serv_thread_count(int value)
 {
     lf_clear_error();
@@ -1890,7 +1675,6 @@ int LF_DART_CALL lf_bridge_get_opt_ipc_serv_max_msg_size(void)
     return lf_get_option_int("IPC_Serv_MaxMsgSize");
 }
 
-/* 11.5 Sequenced notifications */
 int LF_DART_CALL lf_bridge_set_opt_fixed_sequenced_time(uint64_t value_ms)
 {
     lf_clear_error();
@@ -1906,11 +1690,9 @@ int LF_DART_CALL lf_bridge_get_opt_fixed_sequenced_time(void)
     return (int)v;
 }
 
-/* 11.6 P2P group name */
 DEFINE_OPT_SETTER(lf_bridge_set_opt_p2p_name, "LF_P2P_name", lf_set_option_str)
 DEFINE_OPT_GETTER_STR(lf_bridge_get_opt_p2p_name, "LF_P2P_name")
 
-/* 11.7 Data handle pool */
 int LF_DART_CALL lf_bridge_set_opt_data_handle_idle_timeout(uint64_t value_ms)
 {
     lf_clear_error();
@@ -1941,7 +1723,6 @@ int LF_DART_CALL lf_bridge_get_opt_data_handle_pool_scan_interval(void)
     return (int)v;
 }
 
-/* 11.8 Command flushing */
 int LF_DART_CALL lf_bridge_set_opt_no_reponse_cmd_null_flush_threshold(int value)
 {
     lf_clear_error();
@@ -1955,7 +1736,6 @@ int LF_DART_CALL lf_bridge_get_opt_no_reponse_cmd_null_flush_threshold(void)
     return lf_get_option_int("No_Reponse_Cmd_NULL_Flush_Threshold");
 }
 
-/* 11.9 Generic escape hatch */
 int LF_DART_CALL lf_bridge_set_option(const char* option, const char* value)
 {
     lf_clear_error();
@@ -2042,7 +1822,7 @@ const char* LF_DART_CALL lf_bridge_last_error(void)
 
 const char* LF_DART_CALL lf_bridge_version(void)
 {
-    return "lf_dart_bridge v1.0.0 (2026)";
+    return "lf_dart_bridge v1.1.0 (2026)";
 }
 
 int LF_DART_CALL lf_bridge_stats_json(char* out_buf, int buf_size)
@@ -2080,19 +1860,6 @@ int LF_DART_CALL lf_bridge_stats_json(char* out_buf, int buf_size)
 
 /* ===========================================================================
  * Section 9 -- Attach / detach entry points
- * ===========================================================================
- *
- * On Windows we do not need explicit DllMain; the default process
- * attach/detach is sufficient. On POSIX there is no equivalent, so we
- * leave it to the caller to invoke lf_bridge_init and
- * lf_bridge_shutdown.
- *
- * If the bridge is ever converted into a self-contained Windows DLL
- * that must be usable from any language without an explicit init call
- * (e.g. via GetProcAddress from a non-Dart host), a DllMain can be
- * added here to perform minimal setup. That is NOT the case today: the
- * bridge is designed to be driven from Dart, and lf_bridge_init is
- * mandatory.
  * ========================================================================= */
 
 #if defined(_WIN32)
@@ -2102,43 +1869,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
     (void)lpReserved;
 
     if (fdwReason == DLL_PROCESS_DETACH) {
-        /* Best-effort cleanup. The Dart side is expected to have called
-         * lf_bridge_shutdown already; this is only a safety net for
-         * the case where the host process terminates without a clean
-         * shutdown. */
         if (g_state.initialized) {
-            /* We deliberately do NOT call LF_Shutdown here: the Dart
-             * side owns the LingoFuse lifecycle. We only release the
-             * bridge's own resources. */
             lf_bridge_shutdown();
         }
     }
     return TRUE;
 }
 #endif
-
-/* ===========================================================================
- * End of lf_dart_bridge.c
- * ===========================================================================
- *
- * ABI COMPATIBILITY NOTE (UID as value)
- * -------------------------------------
- * The TP2P_UID_VAL struct (single uint8_t[32] member) is passed BY
- * VALUE to LF_UID_* and LF_Check_UID*. This is the bridge's central
- * ABI assumption:
- *
- *   - SysV AMD64  : struct > 16 bytes -> MEMORY class -> stack. FPC's
- *                   `array[0..31] of Byte` -> MEMORY class -> stack.
- *                   Compatible.
- *   - Windows x64 : struct > 8 bytes  -> hidden pointer. FPC's
- *                   `array[0..31] of Byte` -> same. Compatible.
- *
- * If a future compiler or architecture disagrees, the fallback is to
- * move the pack/forward step into a tiny FPC-compiled shim that takes
- * a `const uint8_t*` and constructs the array locally. That shim would
- * be linked into the bridge DLL and would eliminate the ABI assumption
- * entirely, at the cost of one extra DLL and one extra function call
- * per UID-addressed request.
- *
- * End of file.
- * ========================================================================= */

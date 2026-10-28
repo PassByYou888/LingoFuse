@@ -1,92 +1,3 @@
-/*
- * lingofuse_nif.c
- *
- * Erlang NIF bridge for the LingoFuse C ABI (59 exports).
- *
- * This file exposes all 59 C ABI exports as NIF functions, wraps
- * both handle kinds in Erlang resource objects, and provides a
- * callback dispatch bridge that forwards Call / Notify / Async /
- * Network events to registered Erlang processes.
- *
- * Callback modes
- * --------------
- *   ASYNC (register_call/4):
- *     The C callback sends {lf_call, Api, Payload} to the registered
- *     Erlang process and returns immediately. The LingoFuse output
- *     handle is left empty.
- *
- *   SYNC  (register_call_sync/4):
- *     The C callback sends {lf_call, Ref, Api, Payload} and then
- *     BLOCKS until either reply(Ref, Bin) is called or the sync
- *     timeout expires.
- *
- *   P2P   (register_p2p_call[_sync]/4, register_p2p_notify/4):
- *     Same shapes as the App-bound variants, but the message tag is
- *     {lf_p2p_call, ...} / {lf_p2p_notify, ...} and the API is
- *     registered into the process-wide P2P namespace.
- *
- *   IDENTITY (Options = #{with_identity => true}):
- *     The message gains one trailing element, an Erlang map
- *     #{uid => <<_:256>>, p2p_name => Binary}. The default (absent
- *     option) preserves the legacy message shapes exactly.
- *
- * Async invocation
- * ----------------
- *   Erlang: {ok, Ref} = async_call(App, Param, ReplyPid, Options)
- *   Result: {lf_async_result, Ref, {ok, Bin} | {error, Reason}}
- *
- *   The C side allocates an AsyncOp in a global registry, keyed by a
- *   monotonically increasing uint64_t ref. The ref is passed to the C
- *   ABI as (void*)(uintptr_t)ref. The single shared trampoline
- *   lf_async_result_cb looks up the op, builds the result message,
- *   enif_send's it to ReplyPid, and frees the op.
- *
- *   Dispatch failure (LF_Async_* returns non-1) aborts the op
- *   immediately, so the Erlang side never sees a stale op.
- *
- *   Stale ops whose callback never fires are lazily reclaimed on the
- *   next async_call, after a 10-minute idle window. The window is
- *   deliberately generous: the C4 mesh may hold a request for a long
- *   time on a slow link.
- *
- * Side data
- * ---------
- *   LF_Get_P2P_UID / LF_Get_P2P_Name are valid ONLY on the INPUT
- *   handle of a registered callback. The NIF extracts the identity
- *   once, copies it into a freshly allocated Erlang binary, and
- *   discards the transient C pointer immediately. The extraction is
- *   performed only when the callback was registered with
- *   with_identity = true.
- *
- * Binary construction rule
- * ------------------------
- * Every binary handed to the BEAM is built with the same three-step
- * sequence:
- *
- *     enif_alloc_binary(size, &bin);        // 1. allocate
- *     memcpy(bin.data, src, size);          // 2. fill
- *     term = enif_make_binary(env, &bin);   // 3. hand to BEAM
- *
- * After step 3, `bin` must not be touched again.
- *
- * Threading rules
- * ---------------
- *   - A NIF entry point runs on a BEAM scheduler thread.
- *   - A LingoFuse callback runs on a native worker thread owned by
- *     the LingoFuse library. The only thread-safe Erlang call
- *     available there is enif_send, called with a NULL first
- *     argument.
- *   - A resource destructor may run on any thread. It must not
- *     create terms.
- *
- * Portability
- * -----------
- * The file is compiled on Windows (MinGW, Clang, or MSVC), Linux,
- * macOS, and BSD. All platform-specific code is confined to the two
- * small sections below: the sleep primitive and the thread-local
- * storage keyword.
- */
-
 #if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
 #  define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -96,10 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ============================================================================
- * Platform-specific primitives
- * ============================================================================ */
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -113,7 +20,6 @@ static void lf_sleep_ms(unsigned int ms)
     ts.tv_sec  = (time_t)(ms / 1000U);
     ts.tv_nsec = (long)(ms % 1000U) * 1000000L;
     while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
-        /* resume after interruption */
     }
 }
 #  define LF_SLEEP_MS(ms) lf_sleep_ms((unsigned int)(ms))
@@ -130,32 +36,19 @@ static void lf_sleep_ms(unsigned int ms)
 #include "lf_loader.h"
 #include "lf_bindings.h"
 
-/* ============================================================================
- * Constants
- * ============================================================================ */
-
-/* Idle window after which an unreferenced AsyncOp is reclaimed on the
- * next async_call. Ten minutes matches the C4 data-handle idle window
- * and is deliberately generous for slow links. */
 #define LF_ASYNC_OP_IDLE_MS (10 * 60 * 1000)
-
-/* Poll interval used by sync_wait. Small enough to keep reply latency
- * low, large enough that concurrent waiters do not create mutex
- * contention. */
 #define LF_SYNC_POLL_INTERVAL_MS 5
-
-/* Default sync callback timeout, in milliseconds. Configurable via
- * set_sync_timeout/1. */
 #define LF_SYNC_DEFAULT_TIMEOUT_MS 30000
-
-/* Maximum length of a P2P name we copy from the C ABI. Names longer
- * than this are truncated. The framework does not impose a length
- * limit, but a name that long would be pathological. */
 #define LF_P2P_NAME_MAX 256
 
-/* ============================================================================
- * Pre-cached atom table
- * ============================================================================ */
+static int g_nif_debug = 0;
+
+static void init_nif_debug(void) {
+    const char* v = getenv("LINGOFUSE_NIF_DEBUG");
+    if (v != NULL && v[0] != '\0' && v[0] != '0') {
+        g_nif_debug = 1;
+    }
+}
 
 static ERL_NIF_TERM ATOM_OK;
 static ERL_NIF_TERM ATOM_ERROR;
@@ -163,6 +56,7 @@ static ERL_NIF_TERM ATOM_TRUE;
 static ERL_NIF_TERM ATOM_FALSE;
 static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_NOT_LOADED;
+static ERL_NIF_TERM ATOM_NOT_SUPPORTED;
 static ERL_NIF_TERM ATOM_BADARG;
 static ERL_NIF_TERM ATOM_CREATE_FAILED;
 static ERL_NIF_TERM ATOM_CALL_FAILED;
@@ -175,8 +69,6 @@ static ERL_NIF_TERM ATOM_LF_NOTIFY;
 static ERL_NIF_TERM ATOM_LF_CONNECT;
 static ERL_NIF_TERM ATOM_LF_DISCONNECT;
 static ERL_NIF_TERM ATOM_REPLY_UNKNOWN;
-
-/* New atoms for v2 ABI */
 static ERL_NIF_TERM ATOM_LF_P2P_CALL;
 static ERL_NIF_TERM ATOM_LF_P2P_NOTIFY;
 static ERL_NIF_TERM ATOM_LF_ASYNC_RESULT;
@@ -184,16 +76,6 @@ static ERL_NIF_TERM ATOM_ASYNC_DISPATCH_FAILED;
 static ERL_NIF_TERM ATOM_NO_RESULT;
 static ERL_NIF_TERM ATOM_UID;
 static ERL_NIF_TERM ATOM_P2P_NAME;
-
-/* ============================================================================
- * Sync callback bridge
- * ----------------------------------------------------------------------------
- * A pending sync Call is represented by a PendingSync struct that is
- * allocated on the C callback thread's stack. The struct is linked
- * into a global list protected by g_sync_mutex. The C callback polls
- * the struct with a short sleep between checks until either a reply
- * arrives or the timeout expires.
- * ============================================================================ */
 
 typedef struct PendingSync {
     uint64_t            ref;
@@ -303,10 +185,6 @@ static void sync_wake_all(void)
     enif_mutex_unlock(g_sync_mutex);
 }
 
-/* ============================================================================
- * Resource types
- * ============================================================================ */
-
 typedef struct {
     TDataHnd handle;
 } DataHandleRes;
@@ -342,18 +220,8 @@ static void app_handle_dtor(ErlNifEnv* env, void* obj) {
     }
 }
 
-/* ============================================================================
- * Callback registry
- * ----------------------------------------------------------------------------
- * A single table holds both App-bound and process-wide P2P callbacks.
- * The `is_p2p` flag distinguishes them at dispatch and unregister
- * time. The `with_identity` flag controls whether the callback
- * dispatch extracts the sender's side data and appends it to the
- * message.
- * ============================================================================ */
-
 typedef struct CallbackEntry {
-    void*  trigger;                 /* == this entry's address       */
+    void*  trigger;
     char*  api_name;
     ErlNifPid caller_pid;
     int    is_notify;
@@ -406,10 +274,6 @@ static CallbackEntry* callback_alloc(const char* api_name,
     return e;
 }
 
-/* Mark every callback with the given API name as dead. Used by both
- * unregister/2 and unregister_p2p/1. The `is_p2p` filter allows the
- * two namespaces to be cleaned up independently even when they share
- * an API name. */
 static void callback_mark_dead_by_name(const char* api_name, int is_p2p)
 {
     enif_mutex_lock(g_callbacks_mutex);
@@ -438,23 +302,6 @@ static void callback_free_all(void)
         e = next;
     }
 }
-
-/* ============================================================================
- * Async operation registry
- * ----------------------------------------------------------------------------
- * A global table maps a monotonically increasing uint64_t ref to an
- * AsyncOp. The ref is passed to the C ABI as (void*)(uintptr_t)ref;
- * the single shared trampoline lf_async_result_cb uses the ref to
- * look up the op when the callback fires.
- *
- * Lifetime:
- *   - async_op_register allocates and links a new op.
- *   - async_op_take removes and returns an op, or NULL.
- *   - async_op_abort is used by the dispatcher when the C ABI
- *     rejected the request; it aborts the op immediately.
- *   - async_op_gc_stale reclaims ops whose callback never fired.
- *     It is invoked lazily on every async_op_register.
- * ============================================================================ */
 
 typedef struct AsyncOp {
     uint64_t          ref;
@@ -494,7 +341,7 @@ static uint64_t async_op_register(const ErlNifPid* reply_pid)
     async_op_gc_stale_locked(now);
 
     op->ref           = g_async_next_ref++;
-    if (g_async_next_ref == 0) g_async_next_ref = 1;   /* wrap guard */
+    if (g_async_next_ref == 0) g_async_next_ref = 1;
     op->reply_pid     = *reply_pid;
     op->created_at_ms = now;
     op->next          = g_async_head;
@@ -543,14 +390,6 @@ static void async_op_free_all(void)
         op = next;
     }
 }
-
-/* ============================================================================
- * Identity extraction
- * ----------------------------------------------------------------------------
- * Side-data snapshot extracted from an INPUT handle. The uid and
- * p2p_name buffers are copied immediately; the transient C pointers
- * are never retained.
- * ============================================================================ */
 
 typedef struct {
     uint8_t uid[32];
@@ -618,39 +457,7 @@ static ERL_NIF_TERM make_identity_map(ErlNifEnv* env,
     return map_term;
 }
 
-/* ============================================================================
- * Callback trampolines
- * ============================================================================ */
-/* Read the full content of a data handle as an Erlang binary, with
- * ONE trailing NUL byte stripped if present.
- *
- * Why strip the NUL
- * -----------------
- * Every string producer in the LingoFuse toolchain appends a single
- * NUL byte as the wire framing (Pascal LF_WriteString, Python
- * lf_io.write_string, C++ io::write_string, JavaScript
- * lf-io.writeString). Every string reader strips that framing byte
- * before handing the payload to user code (Pascal LF_ReadString,
- * Python lf_io.read_string, C++ io::read_string, JavaScript
- * lf-io.readString).
- *
- * The Erlang callback messages are the ONE place in the toolchain
- * where a payload is delivered as a raw binary. If the framing NUL
- * were exposed here, a caller who passes the payload to a JSON
- * parser would trip on it, which is exactly the failure the
- * identity suite hit. Stripping one trailing NUL restores the
- * cross-language invariant: what the callback receives is the
- * payload, not the payload plus its framing byte.
- *
- * Stripping is one-shot: a payload that does not end in NUL is
- * returned unchanged, and a payload that is just the single NUL
- * byte becomes an empty binary.
- *
- * A NULL handle, or a handle with no bytes, yields an empty binary.
- *
- * Returns 1 on success, 0 on allocation failure. The result term is
- * stored in *out_term. */
-static int read_and_strip_nul(ErlNifEnv* env,
+static int read_input_payload(ErlNifEnv* env,
                               TDataHnd hnd,
                               ERL_NIF_TERM* out_term)
 {
@@ -695,26 +502,9 @@ static int read_and_strip_nul(ErlNifEnv* env,
         return 1;
     }
 
-    if (bin.data[size - 1] == 0) {
-        size_t new_size = (size_t)(size - 1);
-        ErlNifBinary trimmed;
-        if (!enif_alloc_binary(new_size, &trimmed)) {
-            enif_release_binary(&bin);
-            *out_term = ATOM_ENOMEM;
-            return 0;
-        }
-        if (new_size > 0) {
-            memcpy(trimmed.data, bin.data, new_size);
-        }
-        enif_release_binary(&bin);
-        *out_term = enif_make_binary(env, &trimmed);
-        return 1;
-    }
-
     *out_term = enif_make_binary(env, &bin);
     return 1;
 }
-
 
 static int write_to_output_handle(TDataHnd output,
                                   const void* data,
@@ -734,15 +524,6 @@ static int write_to_output_handle(TDataHnd output,
     return (written == size) ? 1 : 0;
 }
 
-/* Build the callback message. The shape depends on the entry:
- *
- *   async Call (App)     {lf_call, Api, Payload}          [+ Identity]
- *   sync  Call (App)     {lf_call, Ref, Api, Payload}     [+ Identity]
- *   async Call (P2P)     {lf_p2p_call, Api, Payload}      [+ Identity]
- *   sync  Call (P2P)     {lf_p2p_call, Ref, Api, Payload} [+ Identity]
- *   Notify (App)         {lf_notify, Api, Payload}        [+ Identity]
- *   Notify (P2P)         {lf_p2p_notify, Api, Payload}    [+ Identity]
- */
 static ERL_NIF_TERM build_callback_message(ErlNifEnv* env,
                                            const CallbackEntry* e,
                                            uint64_t ref,
@@ -769,10 +550,6 @@ static ERL_NIF_TERM build_callback_message(ErlNifEnv* env,
     return enif_make_tuple_from_array(env, terms, n);
 }
 
-/* Thread-local stash used to pass the sync reply payload from
- * dispatch_to_process back to lf_call_callback, which owns the output
- * handle. Every LingoFuse worker thread that enters lf_call_callback
- * does so for exactly one call at a time. */
 typedef struct {
     void*   data;
     int64_t size;
@@ -796,12 +573,13 @@ static void dispatch_to_process(CallbackEntry* e,
                                 TDataHnd input,
                                 int is_call)
 {
-    if (e == NULL || e->dead) return;
+    if (e == NULL || e->dead) {
+        return;
+    }
 
     ErlNifEnv* msg_env = enif_alloc_env();
     if (msg_env == NULL) return;
 
-    /* Extract identity only if requested. */
     LfIdentity id_snapshot;
     int use_id = e->with_identity;
     if (use_id) {
@@ -809,7 +587,7 @@ static void dispatch_to_process(CallbackEntry* e,
     }
 
     ERL_NIF_TERM payload;
-    if (!read_and_strip_nul(msg_env, input, &payload)) {
+    if (!read_input_payload(msg_env, input, &payload)) {
         enif_free_env(msg_env);
         return;
     }
@@ -880,10 +658,9 @@ static void LF_CDECL lf_call_callback(void* trigger,
     if (e != NULL && e->is_sync) {
         SyncStash s = lf_sync_take_result();
         if (s.data != NULL && s.size > 0) {
-            write_to_output_handle(output, s.data, s.size);
+            (void)write_to_output_handle(output, s.data, s.size);
             free(s.data);
         }
-        /* else: leave the output handle empty. */
     }
 }
 
@@ -892,12 +669,12 @@ static void LF_CDECL lf_notify_callback(void* trigger, TDataHnd input) {
     dispatch_to_process(e, input, 0);
 }
 
-/* Single shared trampoline for every asynchronous result callback.
- * `data` is the uint64_t ref cast to a void*. */
 static void LF_CDECL lf_async_result_cb(void* data, TDataHnd result) {
     uint64_t ref = (uint64_t)(uintptr_t)data;
     AsyncOp* op = async_op_take(ref);
-    if (op == NULL) return;   /* already aborted or GC'd */
+    if (op == NULL) {
+        return;
+    }
 
     const LF_Bindings* b = lf_loader_get();
     if (b == NULL) {
@@ -915,7 +692,7 @@ static void LF_CDECL lf_async_result_cb(void* data, TDataHnd result) {
 
     if (result != NULL) {
         ERL_NIF_TERM payload;
-        if (read_and_strip_nul(msg_env, result, &payload)) {
+        if (read_input_payload(msg_env, result, &payload)) {
             result_term = enif_make_tuple2(msg_env, ATOM_OK, payload);
         } else {
             result_term = enif_make_tuple2(msg_env, ATOM_ERROR, ATOM_ENOMEM);
@@ -934,8 +711,6 @@ static void LF_CDECL lf_async_result_cb(void* data, TDataHnd result) {
     enif_free_env(msg_env);
     free(op);
 }
-
-/* --- Network events ------------------------------------------------------- */
 
 static ErlNifPid  g_net_connect_pid;
 static ErlNifPid  g_net_disconnect_pid;
@@ -979,10 +754,6 @@ static void LF_CDECL lf_net_disconnect_cb(const char* addr) {
     (void)enif_send(NULL, &g_net_disconnect_pid, msg_env, msg);
     enif_free_env(msg_env);
 }
-
-/* ============================================================================
- * Helpers
- * ============================================================================ */
 
 static int get_c_string(ErlNifEnv* env, ERL_NIF_TERM term, char** out) {
     ErlNifBinary bin;
@@ -1057,8 +828,6 @@ static ERL_NIF_TERM make_app_handle_term(ErlNifEnv* env, TAppHnd hnd) {
     return term;
 }
 
-/* Read a 32-byte UID binary into a TP2P_UID struct. Returns 1 on
- * success, 0 on any shape mismatch. */
 static int get_uid_arg(ErlNifEnv* env,
                        ERL_NIF_TERM term,
                        TP2P_UID* out) {
@@ -1069,9 +838,6 @@ static int get_uid_arg(ErlNifEnv* env,
     return 1;
 }
 
-/* Read the with_identity flag from an Options map. The map may be the
- * atom `undefined` (no options) or a map. Missing key or non-true
- * value means false. */
 static int get_options_with_identity(ErlNifEnv* env, ERL_NIF_TERM opts) {
     if (enif_is_identical(opts, ATOM_UNDEFINED)) return 0;
     if (!enif_is_map(env, opts)) return 0;
@@ -1089,13 +855,11 @@ static int get_options_with_identity(ErlNifEnv* env, ERL_NIF_TERM opts) {
     }                                                                        \
     (void)b
 
-/* ============================================================================
- * NIF load / upgrade / unload
- * ============================================================================ */
-
 static int load_common(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
     (void)priv;
     (void)load_info;
+
+    init_nif_debug();
 
     ATOM_OK                  = enif_make_atom(env, "ok");
     ATOM_ERROR               = enif_make_atom(env, "error");
@@ -1103,6 +867,7 @@ static int load_common(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
     ATOM_FALSE               = enif_make_atom(env, "false");
     ATOM_UNDEFINED           = enif_make_atom(env, "undefined");
     ATOM_NOT_LOADED          = enif_make_atom(env, "lf_not_loaded");
+    ATOM_NOT_SUPPORTED       = enif_make_atom(env, "not_supported");
     ATOM_BADARG              = enif_make_atom(env, "badarg");
     ATOM_CREATE_FAILED       = enif_make_atom(env, "create_failed");
     ATOM_CALL_FAILED         = enif_make_atom(env, "call_failed");
@@ -1115,7 +880,6 @@ static int load_common(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
     ATOM_LF_CONNECT          = enif_make_atom(env, "lf_connect");
     ATOM_LF_DISCONNECT       = enif_make_atom(env, "lf_disconnect");
     ATOM_REPLY_UNKNOWN       = enif_make_atom(env, "unknown_ref");
-
     ATOM_LF_P2P_CALL         = enif_make_atom(env, "lf_p2p_call");
     ATOM_LF_P2P_NOTIFY       = enif_make_atom(env, "lf_p2p_notify");
     ATOM_LF_ASYNC_RESULT     = enif_make_atom(env, "lf_async_result");
@@ -1183,11 +947,20 @@ static int load_common(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info) {
                 lf_loader_expected_file_name(),
                 lf_loader_last_error());
     } else {
+        const LF_Bindings* b = lf_loader_get();
+        int has_self_uid = (b != NULL && b->LF_Get_Self_UID != NULL);
         fprintf(stderr,
                 "[lingofuse_nif] LingoFuse library loaded "
-                "(platform=%s, file=%s)\n",
+                "(platform=%s, file=%s, get_self_uid=%s)\n",
                 lf_loader_platform(),
-                lf_loader_expected_file_name());
+                lf_loader_expected_file_name(),
+                has_self_uid ? "yes" : "no (old dll)");
+    }
+
+    if (g_nif_debug) {
+        fprintf(stderr,
+                "[lingofuse_nif] diagnostic mode ENABLED "
+                "(LINGOFUSE_NIF_DEBUG=1)\n");
     }
 
     return 0;
@@ -1227,10 +1000,6 @@ static void nif_unload(ErlNifEnv* env, void* priv) {
         g_sync_mutex = NULL;
     }
 }
-
-/* ============================================================================
- * Data handle thunks (10, unchanged)
- * ============================================================================ */
 
 static ERL_NIF_TERM nif_create_data(ErlNifEnv* env, int argc,
                                     const ERL_NIF_TERM argv[]) {
@@ -1436,10 +1205,6 @@ static ERL_NIF_TERM nif_set_size(ErlNifEnv* env, int argc,
     return ATOM_OK;
 }
 
-/* ============================================================================
- * Application handle thunks (5, unchanged)
- * ============================================================================ */
-
 static ERL_NIF_TERM nif_create_app(ErlNifEnv* env, int argc,
                                    const ERL_NIF_TERM argv[]) {
     (void)argc;
@@ -1506,19 +1271,6 @@ static ERL_NIF_TERM nif_bind_app(ErlNifEnv* env, int argc,
     int n = b->LF_BindApp(r->handle);
     return enif_make_int(env, n);
 }
-
-/* ============================================================================
- * API registration thunks
- * ----------------------------------------------------------------------------
- * Generic implementation shared by App-bound and process-wide P2P
- * registrations, in both ASYNC and SYNC variants.
- *
- * Argument layout:
- *   App-bound:  App, Name, Desc, Pid, Options
- *   P2P:        Name, Desc, Pid, Options
- *
- * Options is a map, or the atom `undefined` for "no options".
- * ============================================================================ */
 
 static int register_common_ex(ErlNifEnv* env,
                               int argc,
@@ -1618,49 +1370,42 @@ static int register_common_ex(ErlNifEnv* env,
 static ERL_NIF_TERM nif_register_call(ErlNifEnv* env, int argc,
                                       const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       0 /* is_notify */, 0 /* is_sync */, 0 /* is_p2p */,
-                       &out);
+    register_common_ex(env, argc, argv, 0, 0, 0, &out);
     return out;
 }
 
 static ERL_NIF_TERM nif_register_call_sync(ErlNifEnv* env, int argc,
                                            const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       0, 1, 0, &out);
+    register_common_ex(env, argc, argv, 0, 1, 0, &out);
     return out;
 }
 
 static ERL_NIF_TERM nif_register_notify(ErlNifEnv* env, int argc,
                                         const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       1, 0, 0, &out);
+    register_common_ex(env, argc, argv, 1, 0, 0, &out);
     return out;
 }
 
 static ERL_NIF_TERM nif_register_p2p_call(ErlNifEnv* env, int argc,
                                           const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       0, 0, 1, &out);
+    register_common_ex(env, argc, argv, 0, 0, 1, &out);
     return out;
 }
 
 static ERL_NIF_TERM nif_register_p2p_call_sync(ErlNifEnv* env, int argc,
                                                const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       0, 1, 1, &out);
+    register_common_ex(env, argc, argv, 0, 1, 1, &out);
     return out;
 }
 
 static ERL_NIF_TERM nif_register_p2p_notify(ErlNifEnv* env, int argc,
                                             const ERL_NIF_TERM argv[]) {
     ERL_NIF_TERM out;
-    register_common_ex(env, argc, argv,
-                       1, 0, 1, &out);
+    register_common_ex(env, argc, argv, 1, 0, 1, &out);
     return out;
 }
 
@@ -1677,7 +1422,7 @@ static ERL_NIF_TERM nif_unregister(ErlNifEnv* env, int argc,
 
     int ret = b->LF_Unregister(app->handle, name);
     if (ret == 1) {
-        callback_mark_dead_by_name(name, 0 /* app-bound */);
+        callback_mark_dead_by_name(name, 0);
     }
     free(name);
 
@@ -1694,16 +1439,12 @@ static ERL_NIF_TERM nif_unregister_p2p(ErlNifEnv* env, int argc,
 
     int ret = b->LF_Unregister_P2P(name);
     if (ret == 1) {
-        callback_mark_dead_by_name(name, 1 /* P2P */);
+        callback_mark_dead_by_name(name, 1);
     }
     free(name);
 
     return (ret == 1) ? ATOM_TRUE : ATOM_FALSE;
 }
-
-/* ============================================================================
- * Sync reply thunk (2, unchanged)
- * ============================================================================ */
 
 static ERL_NIF_TERM nif_reply(ErlNifEnv* env, int argc,
                               const ERL_NIF_TERM argv[]) {
@@ -1744,10 +1485,6 @@ static ERL_NIF_TERM nif_get_sync_timeout(ErlNifEnv* env, int argc,
     return enif_make_uint64(env, (ErlNifUInt64)g_sync_timeout_ms);
 }
 
-/* ============================================================================
- * Local execution thunks (2, unchanged)
- * ============================================================================ */
-
 static ERL_NIF_TERM nif_local_call(ErlNifEnv* env, int argc,
                                    const ERL_NIF_TERM argv[]) {
     (void)argc;
@@ -1776,10 +1513,6 @@ static ERL_NIF_TERM nif_local_notify(ErlNifEnv* env, int argc,
     b->LF_LocalNotify(app->handle, prm->handle);
     return ATOM_OK;
 }
-
-/* ============================================================================
- * Network preparation thunks (5, unchanged)
- * ============================================================================ */
 
 static ERL_NIF_TERM nif_reset_prepare(ErlNifEnv* env, int argc,
                                       const ERL_NIF_TERM argv[]) {
@@ -1837,38 +1570,11 @@ static ERL_NIF_TERM nif_exit_main_thread(ErlNifEnv* env, int argc,
     (void)argc; (void)argv;
     LF_ENSURE_LOADED();
 
-    /* Wake every pending sync waiter BEFORE tearing the C4 loop down.
-     *
-     * Why this is required
-     * --------------------
-     * A sync callback that the C ABI delivered to a dirty scheduler
-     * thread may still be blocked in sync_wait, waiting for reply/2
-     * from the BEAM side. If LF_ExitMainThread starts releasing C4
-     * internal state while such a callback is still live, the next
-     * accessor call from the callback touches freed memory and the
-     * process dies with an ACCESS_VIOLATION.
-     *
-     * Setting every PendingSync's `cancelled` flag makes sync_wait
-     * return on its next poll tick (within LF_SYNC_POLL_INTERVAL_MS),
-     * so the callback unwinds cleanly before LF_ExitMainThread
-     * proceeds. The same wake is already performed by nif_shutdown;
-     * doing it here as well closes the window between the two calls.
-     *
-     * A caller whose sync reply arrives after this wake sees
-     * {error, unknown_ref}, which is the documented behaviour for a
-     * late reply.
-     */
     sync_wake_all();
 
     b->LF_ExitMainThread();
     return ATOM_OK;
 }
-
-/* ============================================================================
- * Remote invocation thunks
- * ============================================================================ */
-
-/* --- Synchronous, App name (3, unchanged) --- */
 
 static ERL_NIF_TERM nif_call(ErlNifEnv* env, int argc,
                              const ERL_NIF_TERM argv[]) {
@@ -1924,8 +1630,6 @@ static ERL_NIF_TERM nif_sequenced_notify(ErlNifEnv* env, int argc,
     return ATOM_OK;
 }
 
-/* --- Synchronous, UID (3, new) --- */
-
 static ERL_NIF_TERM nif_uid_call(ErlNifEnv* env, int argc,
                                  const ERL_NIF_TERM argv[]) {
     (void)argc;
@@ -1943,6 +1647,7 @@ static ERL_NIF_TERM nif_uid_call(ErlNifEnv* env, int argc,
     }
 
     TDataHnd res = b->LF_UID_Call(uid, prm->handle, (uint64_t)timeout);
+
     if (res == NULL) return make_error(env, ATOM_CALL_FAILED);
     ERL_NIF_TERM term = make_data_handle_term(env, res);
     if (enif_is_identical(term, ATOM_ENOMEM)) {
@@ -1975,8 +1680,6 @@ static ERL_NIF_TERM nif_uid_sequenced_notify(ErlNifEnv* env, int argc,
     b->LF_UID_Sequenced_Notify(uid, prm->handle);
     return ATOM_OK;
 }
-
-/* --- Synchronous, P2P name (3, new) --- */
 
 static ERL_NIF_TERM nif_p2pname_call(ErlNifEnv* env, int argc,
                                      const ERL_NIF_TERM argv[]) {
@@ -2033,8 +1736,6 @@ static ERL_NIF_TERM nif_p2pname_sequenced_notify(
     return ATOM_OK;
 }
 
-/* --- Asynchronous dispatcher (shared by 6 entry points) --- */
-
 typedef enum {
     ASYNC_KIND_APP,
     ASYNC_KIND_APP_SEQ,
@@ -2051,11 +1752,6 @@ static ERL_NIF_TERM do_async_call(ErlNifEnv* env,
 {
     (void)argc;
     LF_ENSURE_LOADED();
-
-    /* argv[0] = target  (binary; 32-byte binary for UID kinds)
-     * argv[1] = param   (data handle)
-     * argv[2] = reply_pid (local pid)
-     */
 
     TP2P_UID uid;
     char* target_cstr = NULL;
@@ -2165,10 +1861,6 @@ static ERL_NIF_TERM nif_p2pname_async_sequenced_call(
     return do_async_call(env, argc, argv, ASYNC_KIND_P2PNAME_SEQ);
 }
 
-/* ============================================================================
- * Query thunks
- * ============================================================================ */
-
 static ERL_NIF_TERM nif_check_main_thread(ErlNifEnv* env, int argc,
                                           const ERL_NIF_TERM argv[]) {
     (void)argc; (void)argv;
@@ -2251,10 +1943,6 @@ static ERL_NIF_TERM nif_check_p2pname_api(ErlNifEnv* env, int argc,
     return (r != 0) ? ATOM_TRUE : ATOM_FALSE;
 }
 
-/* ============================================================================
- * Option and diagnostic thunks
- * ============================================================================ */
-
 static ERL_NIF_TERM nif_set_option(ErlNifEnv* env, int argc,
                                    const ERL_NIF_TERM argv[]) {
     (void)argc;
@@ -2281,8 +1969,6 @@ static ERL_NIF_TERM nif_get_option(ErlNifEnv* env, int argc,
     const char* val = b->LF_GetOption(opt);
     free(opt);
 
-    /* The C pointer is transient (~5s). Copy immediately into an
-     * Erlang binary. An unknown option yields an empty string. */
     if (val == NULL) {
         ErlNifBinary bin;
         if (!enif_alloc_binary(0, &bin)) {
@@ -2319,27 +2005,39 @@ static ERL_NIF_TERM nif_post_status(ErlNifEnv* env, int argc,
     return ATOM_OK;
 }
 
-/* ============================================================================
- * Shutdown thunk (1, unchanged)
- * ============================================================================ */
+static ERL_NIF_TERM nif_get_self_uid(ErlNifEnv* env, int argc,
+                                     const ERL_NIF_TERM argv[]) {
+    (void)argc; (void)argv;
+    LF_ENSURE_LOADED();
+
+    if (b->LF_Get_Self_UID == NULL) {
+        return make_error(env, ATOM_NOT_SUPPORTED);
+    }
+
+    const TP2P_UID* uid_ptr = b->LF_Get_Self_UID();
+
+    ErlNifBinary bin;
+    if (!enif_alloc_binary(32, &bin)) {
+        return make_error(env, ATOM_ENOMEM);
+    }
+    if (uid_ptr == NULL) {
+        memset(bin.data, 0, 32);
+    } else {
+        memcpy(bin.data, uid_ptr->bytes, 32);
+    }
+    return enif_make_binary(env, &bin);
+}
 
 static ERL_NIF_TERM nif_shutdown(ErlNifEnv* env, int argc,
                                  const ERL_NIF_TERM argv[]) {
     (void)argc; (void)argv;
     LF_ENSURE_LOADED();
 
-    /* Unblock every sync waiter and abort every pending async op so
-     * that no Erlang process is left hanging when the library is torn
-     * down. */
     sync_wake_all();
 
     b->LF_Shutdown();
     return ATOM_OK;
 }
-
-/* ============================================================================
- * Network event thunk (1, unchanged)
- * ============================================================================ */
 
 static ERL_NIF_TERM nif_set_network_event(ErlNifEnv* env, int argc,
                                           const ERL_NIF_TERM argv[]) {
@@ -2377,22 +2075,7 @@ static ERL_NIF_TERM nif_set_network_event(ErlNifEnv* env, int argc,
     return ATOM_OK;
 }
 
-/* ============================================================================
- * NIF function table
- *
- * Entries are grouped and ordered to match lingofuse_nif.erl's export
- * list. Adding or renaming an entry here requires an identical change
- * in the Erlang module, or the NIF load will fail with a symbol
- * mismatch.
- *
- * The three registration entry points (register_call,
- * register_call_sync, register_notify) now take a trailing Options
- * argument. Their arity is therefore 5, not 4. The Erlang wrapper
- * supplies `undefined` for callers of the legacy 4-argument form.
- * ============================================================================ */
-
 static ErlNifFunc nif_funcs[] = {
-    /* Data handle (10) */
     {"create_data",           1, nif_create_data,           0},
     {"create_data_permanent", 1, nif_create_data_permanent, 0},
     {"free_data",             1, nif_free_data,             0},
@@ -2404,64 +2087,47 @@ static ErlNifFunc nif_funcs[] = {
     {"get_size",              1, nif_get_size,              0},
     {"set_size",              2, nif_set_size,              0},
 
-    /* App handle (5) */
     {"create_app",            2, nif_create_app,            0},
     {"free_app",              1, nif_free_app,              0},
     {"generate_app_name",     0, nif_generate_app_name,     0},
     {"get_app_name",          1, nif_get_app_name,          0},
     {"bind_app",              1, nif_bind_app,              0},
 
-    /* API registration, app-bound (4) */
     {"register_call",         5, nif_register_call,         0},
     {"register_call_sync",    5, nif_register_call_sync,    0},
     {"register_notify",       5, nif_register_notify,       0},
     {"unregister",            2, nif_unregister,            0},
 
-    /* API registration, process-wide P2P (4) */
     {"register_p2p_call",       4, nif_register_p2p_call,       0},
     {"register_p2p_call_sync",  4, nif_register_p2p_call_sync,  0},
     {"register_p2p_notify",     4, nif_register_p2p_notify,     0},
     {"unregister_p2p",          1, nif_unregister_p2p,          0},
 
-    /* Sync bridge (3) */
     {"reply",                 2, nif_reply,                 0},
     {"set_sync_timeout",      1, nif_set_sync_timeout,      0},
     {"get_sync_timeout",      0, nif_get_sync_timeout,      0},
 
-    /* Local execution (2) */
     {"local_call",            2, nif_local_call,            ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"local_notify",          2, nif_local_notify,          ERL_NIF_DIRTY_JOB_IO_BOUND},
 
-    /* Network preparation (5) */
     {"reset_prepare",         0, nif_reset_prepare,         0},
     {"prepare_service",       2, nif_prepare_service,       0},
     {"prepare_client",        2, nif_prepare_client,        0},
     {"prepare_done",          0, nif_prepare_done,          ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"exit_main_thread",      0, nif_exit_main_thread,      ERL_NIF_DIRTY_JOB_IO_BOUND},
 
-    /* Remote invocation, app name (3) */
     {"call",                  3, nif_call,                  ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"notify",                2, nif_notify,                0},
     {"sequenced_notify",      2, nif_sequenced_notify,      0},
 
-    /* Remote invocation, UID (3) */
     {"uid_call",              3, nif_uid_call,              ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"uid_notify",            2, nif_uid_notify,            0},
     {"uid_sequenced_notify",  2, nif_uid_sequenced_notify,  0},
 
-    /* Remote invocation, P2P name (3) */
     {"p2pname_call",             3, nif_p2pname_call,             ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"p2pname_notify",           2, nif_p2pname_notify,           0},
     {"p2pname_sequenced_notify", 2, nif_p2pname_sequenced_notify, 0},
 
-    /* Remote invocation, asynchronous (6)
-     *
-     * Every entry is marked DIRTY_JOB_IO_BOUND. LF_Async_Call may
-     * execute its callback synchronously on the calling thread when
-     * the target resolves locally (local-first routing). Without this
-     * flag, a sync-mode callback would block a normal BEAM scheduler
-     * thread and deadlock the caller.
-     */
     {"async_call",               3, nif_async_call,
      ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"async_sequenced_call",     3, nif_async_sequenced_call,
@@ -2476,7 +2142,6 @@ static ErlNifFunc nif_funcs[] = {
                                  3, nif_p2pname_async_sequenced_call,
      ERL_NIF_DIRTY_JOB_IO_BOUND},
 
-    /* Options and diagnostics (8) */
     {"set_option",            2, nif_set_option,            0},
     {"get_option",            1, nif_get_option,            0},
     {"get_status_count",      0, nif_get_status_count,      0},
@@ -2486,16 +2151,15 @@ static ErlNifFunc nif_funcs[] = {
     {"check_app",             1, nif_check_app,             0},
     {"check_api",             2, nif_check_api,             0},
 
-    /* Query, UID / P2P name (4) */
     {"check_uid",             1, nif_check_uid,             0},
     {"check_uid_api",         2, nif_check_uid_api,         0},
     {"check_p2pname",         1, nif_check_p2pname,         0},
     {"check_p2pname_api",     2, nif_check_p2pname_api,     0},
 
-    /* Shutdown (1) */
+    {"get_self_uid",          0, nif_get_self_uid,          0},
+
     {"shutdown",              0, nif_shutdown,              ERL_NIF_DIRTY_JOB_IO_BOUND},
 
-    /* Network events (1) */
     {"set_network_event",     2, nif_set_network_event,     0}
 };
 

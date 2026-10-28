@@ -1,101 +1,9 @@
-// =============================================================================
-//  test/test-v2.ts
-// -----------------------------------------------------------------------------
-//  v2.0 test suite for the LingoFuse TypeScript binding.
-//
-//  This file covers ONLY the v2.0 additions. The v1.0 baseline suite
-//  remains in test.ts and is expected to keep passing unchanged.
-//
-//  Coverage:
-//     1. errors-v2               the 2 new exception types
-//     2. CallPromise             Promise wrapper with abandoned flag
-//     3. AsyncBridge             singleton lifecycle and stats
-//     4. Targets                 AppTarget / UIDTarget / P2PNameTarget
-//     5. options                 the 16 typed setter/getter pairs
-//     6. framework.getOption     the raw option reader
-//     7. DataHandle UID methods  writeUid / readUid / getP2PUid / getP2PName
-//     8. p2p-registration        process-wide P2P registration helpers
-//     9. status UID checks       checkUid / checkUidApi / checkP2PName*
-//    10. Integration: call shapes       call / callAsync / callSync / tryCallSync
-//    11. Integration: UIDTarget         real UID-routed invocation
-//    12. Integration: side-data         getP2PUid / getP2PName inside callbacks
-//
-//  Runs on:
-//      Node.js 18+ : npx tsx test/test-v2.ts
-//      Bun 1.x+    : bun run test/test-v2.ts
-//      Deno 2.x    : deno run --allow-ffi --allow-read --allow-env \
-//                              --allow-net --allow-sys --allow-run \
-//                              test/test-v2.ts
-//
-//  ============================================================================
-//  THREE HARD CONSTRAINTS ENFORCED BY THIS SUITE
-//  ============================================================================
-//
-//  [C1] NO DYNAMIC REGISTRATION AT TEST TIME
-//       Every API is registered in the before() hook, before
-//       prepareClient(). See the section "DYNAMIC REGISTRATION IS
-//       INTENTIONALLY AVOIDED" below.
-//
-//  [C2] NO SIDE-EFFECTING debug COMMANDS
-//       The setOptDebug test uses a no-op command name. The "service"
-//       command creates a transient TC40_Console_Help object on the
-//       native side that performs a live query of the C4 service pool;
-//       that query can leave an asynchronous task pending when
-//       LF_ExitMainThread runs, which causes the native cleanup phase
-//       (C40Clean) to block forever, which in turn blocks the JS event
-//       loop and prevents ANY JavaScript timer from firing.
-//
-//  [C3] DETACHED WATCHDOG PROCESS
-//       Because a blocking native call freezes the entire JS event
-//       loop, no in-process timer can rescue the run. The only
-//       mechanism that survives a frozen event loop is an external
-//       process that sends SIGKILL after a deadline. This suite
-//       spawns such a watchdog when the runtime supports it.
-//
-//  ============================================================================
-//  DYNAMIC REGISTRATION IS INTENTIONALLY AVOIDED
-//  ============================================================================
-//  Every API used by the test suite is registered in the before() hook,
-//  which runs before LF_PrepareDone and before LF_PrepareClient. No test
-//  registers an API at test time.
-//
-//  Why this matters:
-//
-//      app.registerCall(...) fires APP.DoChange, which schedules a
-//      1-second timer. When the timer fires, Do_LFRegEvent is posted to
-//      the native simulated main thread, which dispatches an
-//      Init_App_Info broadcast to the service. If that broadcast is still
-//      in flight when the after() hook calls LF_ExitMainThread, the
-//      native main thread blocks inside C40Clean() waiting for the
-//      broadcast to complete.
-//
-//  All code and status output are in English.
-// =============================================================================
-
 import { spawn, type ChildProcess } from "node:child_process";
-
 import * as lf from "../src/index";
 import { DataHandle } from "../src/index";
 
-// =============================================================================
-//  Section 0 -- External watchdog
-// -----------------------------------------------------------------------------
-//  A detached child process that SIGKILLs this process if it has not
-//  exited within WATCHDOG_TIMEOUT_MS.
-//
-//  Why a child process, not a setTimeout:
-//      If LF_ExitMainThread blocks the JS event loop, no timer inside
-//      this process will ever fire. A child process has its own event
-//      loop and can send a signal to this process at any time, even
-//      while this process's event loop is completely frozen.
-//
-//  Set the environment variable LINGOFUSE_TEST_NO_WATCHDOG=1 to disable
-//  the watchdog (useful when debugging the native shutdown path).
-// =============================================================================
-
 const WATCHDOG_TIMEOUT_MS = 90000;
-const WATCHDOG_DISABLED =
-    readEnv("LINGOFUSE_TEST_NO_WATCHDOG") === "1";
+const WATCHDOG_DISABLED = readEnv("LINGOFUSE_TEST_NO_WATCHDOG") === "1";
 
 let _watchdog: ChildProcess | null = null;
 
@@ -108,22 +16,16 @@ function readEnv(name: string): string | undefined {
 
 function startWatchdog(): void {
     if (WATCHDOG_DISABLED) {
-        console.error(
-            "[watchdog] disabled by LINGOFUSE_TEST_NO_WATCHDOG=1");
+        console.error("[watchdog] disabled by LINGOFUSE_TEST_NO_WATCHDOG=1");
         return;
     }
-
     const proc = (globalThis as {
         process?: { pid?: number; execPath?: string };
     }).process;
     if (proc?.pid === undefined || typeof proc.execPath !== "string") {
-        // Deno and some embeddings do not expose a Node-shaped process.
-        // The watchdog is a diagnostic, not a correctness requirement,
-        // so skip it rather than fail the run.
         console.error("[watchdog] skipped: no compatible process object");
         return;
     }
-
     try {
         const script =
             `const ppid = ${proc.pid};` +
@@ -147,18 +49,10 @@ function startWatchdog(): void {
 
 function stopWatchdog(): void {
     if (_watchdog === null) return;
-    try {
-        _watchdog.kill();
-    } catch {
-        // ignore
-    }
+    try { _watchdog.kill(); } catch { /* ignore */ }
     _watchdog = null;
     console.error("[watchdog] disarmed");
 }
-
-// =============================================================================
-//  Section 1 -- Minimal test harness (mirrors test.ts)
-// =============================================================================
 
 interface TestCase {
     readonly name: string;
@@ -180,11 +74,8 @@ function describe(name: string, fn: () => void): void {
     SUITES.push(suite);
     const previous = currentSuite;
     currentSuite = suite;
-    try {
-        fn();
-    } finally {
-        currentSuite = previous;
-    }
+    try { fn(); }
+    finally { currentSuite = previous; }
 }
 
 function it(name: string, fn: () => void | Promise<void>): void {
@@ -207,10 +98,6 @@ function after(fn: () => void | Promise<void>): void {
     }
     afterAllFn = fn;
 }
-
-// =============================================================================
-//  Section 2 -- Minimal assertion library
-// =============================================================================
 
 class AssertionError extends Error {
     public constructor(message: string) {
@@ -282,7 +169,6 @@ const assert = {
                     `Expected a truthy value but received ${formatValue(value)}.`);
         }
     },
-
     equal(actual: unknown, expected: unknown, message?: string): void {
         if (!Object.is(actual, expected)) {
             throw new AssertionError(
@@ -290,7 +176,6 @@ const assert = {
                     `Expected ${formatValue(expected)} but received ${formatValue(actual)}.`);
         }
     },
-
     notEqual(actual: unknown, expected: unknown, message?: string): void {
         if (Object.is(actual, expected)) {
             throw new AssertionError(
@@ -298,7 +183,6 @@ const assert = {
                     `Expected a value different from ${formatValue(expected)}.`);
         }
     },
-
     deepEqual(actual: unknown, expected: unknown, message?: string): void {
         if (!deepEqual(actual, expected)) {
             throw new AssertionError(
@@ -308,16 +192,11 @@ const assert = {
                     `        expected: ${formatValue(expected)}`);
         }
     },
-
     throws(fn: () => void, expectedType?: Ctor, message?: string): void {
         let thrown: unknown = null;
         let didThrow = false;
-        try {
-            fn();
-        } catch (err) {
-            didThrow = true;
-            thrown = err;
-        }
+        try { fn(); }
+        catch (err) { didThrow = true; thrown = err; }
         if (!didThrow) {
             throw new AssertionError(
                 message ??
@@ -335,7 +214,6 @@ const assert = {
                     `${thrown && (thrown as Error).message}`);
         }
     },
-
     async rejects(
         promise: PromiseLike<unknown>,
         expectedType?: Ctor,
@@ -343,12 +221,8 @@ const assert = {
     ): Promise<void> {
         let thrown: unknown = null;
         let didReject = false;
-        try {
-            await promise;
-        } catch (err) {
-            didReject = true;
-            thrown = err;
-        }
+        try { await promise; }
+        catch (err) { didReject = true; thrown = err; }
         if (!didReject) {
             throw new AssertionError(
                 message ?? "Expected promise to reject, but it resolved.");
@@ -365,7 +239,6 @@ const assert = {
                     `${thrown && (thrown as Error).message}`);
         }
     },
-
     match(value: unknown, pattern: RegExp, message?: string): void {
         if (typeof value !== "string") {
             throw new AssertionError(
@@ -381,25 +254,13 @@ const assert = {
     },
 };
 
-// =============================================================================
-//  Section 3 -- Shared state
-// =============================================================================
-
 const ENDPOINT = "ipc:jstest2";
 const APP_NAME = "JsTest2";
 const P2P_GROUP = "jstest2_group";
 
 let app: lf.AppHandle | null = null;
 let frameworkReady = false;
-
-/** Set in before() via the whoami probe. */
 let selfUid: Uint8Array | null = null;
-
-const selfP2PName: string = P2P_GROUP;
-
-// =============================================================================
-//  Section 4 -- Helpers
-// =============================================================================
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -418,11 +279,27 @@ async function waitFor(
     return false;
 }
 
+async function withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+            () => reject(new Error(`test timed out after ${timeoutMs} ms`)),
+            timeoutMs,
+        );
+    });
+    try {
+        return await Promise.race([promise, timeoutPromise]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
 function uidToHex(uid: Uint8Array): string {
     let out = "";
-    for (const b of uid) {
-        out += b.toString(16).padStart(2, "0");
-    }
+    for (const b of uid) out += b.toString(16).padStart(2, "0");
     return out;
 }
 
@@ -438,55 +315,23 @@ function randomSuffix(): string {
     return Math.random().toString(36).slice(2, 10);
 }
 
-// =============================================================================
-//  Section 5 -- Global setup / teardown
-// =============================================================================
-
 before(async () => {
     console.error("[before] ENTER");
-
     lf.loadLibrary();
 
-    // ---------------------------------------------------------------------
-    // Enable the most verbose native logging available. This is done
-    // BEFORE any native call that could produce diagnostics, so that the
-    // before() and after() phases are fully traced.
-    //
-    // The three options map to the Pascal-side Z.Status flags:
-    //
-    //     Quiet=false          C40_QuietMode = False
-    //     ShowThreadID=true    status messages get a [tid] prefix
-    //     ConsoleOutput=true   status messages are written to the console
-    //
-    // LF_SetOption is asynchronous once the simulated main thread is
-    // running; at this point it is not yet running, so the calls are
-    // applied immediately.
-    // ---------------------------------------------------------------------
     console.error("[before] enabling verbose native logging...");
     lf.options.setOptQuiet(false);
     lf.options.setOptShowThreadID(true);
     lf.options.setOptConsoleOutput(true);
     console.error("[before] verbose native logging enabled");
 
-    // Per-request P2P name for this process.
     lf.options.setOptP2PName(P2P_GROUP);
-
-    // Deployment-friendly setup: do NOT block in prepareDone.
     lf.options.setOptWaitConnectionReadyOk(false);
     lf.options.setOptOverlapConnection(true);
-
-    // LF_SetOption is asynchronous once the main thread is running.
-    // Yield here so the two options above land before prepareDone
-    // starts the network.
     await sleep(150);
 
     console.error("[before] creating AppHandle...");
     const created = new lf.AppHandle(APP_NAME, "v2.0 test suite");
-
-    // ---------------------------------------------------------------------
-    // Register EVERY probe API up front, before prepareClient.
-    // See the file-level docstring section [C1] for why.
-    // ---------------------------------------------------------------------
 
     console.error("[before] registering API 'add'...");
     const ok1 = created.registerCall(
@@ -524,7 +369,7 @@ before(async () => {
         "log",
         "One-way log",
         (_input: DataHandle) => {
-            // Intentionally ignore the payload.
+            void _input;
         },
     );
     if (!ok3) throw new Error("failed to register 'log'");
@@ -569,9 +414,9 @@ before(async () => {
     }
 
     frameworkReady = true;
+    app = created;
     console.error("[before] EXIT");
 
-    // Learn our own UID via the whoami probe.
     console.error("[before] probing own UID via 'whoami'...");
     try {
         const param = new DataHandle("whoami");
@@ -591,9 +436,7 @@ before(async () => {
                     const bytes = new Uint8Array(32);
                     for (let i = 0; i < 32; i++) {
                         bytes[i] = parseInt(
-                            body.uid_hex.substr(i * 2, 2),
-                            16,
-                        );
+                            body.uid_hex.substr(i * 2, 2), 16);
                     }
                     selfUid = bytes;
                     console.error(`[before] own UID = ${body.uid_hex}`);
@@ -623,62 +466,51 @@ after(async () => {
     await sleep(500);
     console.error("[after] step 1 done");
 
-    console.error("[after] step 2: AsyncBridge.shutdownInstance()");
+    console.error("[after] step 2: network.clearNetworkEvent()");
     try {
-        lf.AsyncBridge.shutdownInstance();
+        lf.network.clearNetworkEvent();
         console.error("[after] step 2 done");
     } catch (e) {
         console.error("[after] step 2 threw:", e);
     }
 
-    // ---------------------------------------------------------------------
-    // step 3 is the critical step. If the native shutdown path blocks,
-    // it blocks here, and no JS timer can fire afterwards.
-    //
-    // The console.error markers before and after this call are the
-    // single most useful diagnostic for distinguishing:
-    //
-    //     "native shutdown is stuck"  -> we see "step 3 begin" but
-    //                                    never "step 3 done"
-    //     "JS is stuck somewhere else" -> we never see "step 3 begin"
-    // ---------------------------------------------------------------------
-    console.error("[after] step 3 begin: LF_ExitMainThread()");
+    console.error("[after] step 3: AsyncBridge.shutdownInstance()");
     try {
-        lf.framework.exitMainThread();
-        console.error("[after] step 3 done: LF_ExitMainThread() returned");
+        lf.AsyncBridge.shutdownInstance();
+        console.error("[after] step 3 done");
     } catch (e) {
         console.error("[after] step 3 threw:", e);
     }
 
-    console.error("[after] step 4: app.dispose()");
+    console.error("[after] step 4 begin: LF_ExitMainThread()");
+    try {
+        lf.framework.exitMainThread();
+        console.error("[after] step 4 done: LF_ExitMainThread() returned");
+    } catch (e) {
+        console.error("[after] step 4 threw:", e);
+    }
+
+    console.error("[after] step 5: app.dispose()");
     try {
         if (app !== null) {
             app.dispose();
         }
         app = null;
-        console.error("[after] step 4 done");
-    } catch (e) {
-        console.error("[after] step 4 threw:", e);
-    }
-
-    console.error("[after] step 5: LF_Shutdown()");
-    try {
-        lf.framework.shutdown();
         console.error("[after] step 5 done");
     } catch (e) {
         console.error("[after] step 5 threw:", e);
     }
 
+    console.error("[after] step 6: LF_Shutdown()");
+    try {
+        lf.framework.shutdown();
+        console.error("[after] step 6 done");
+    } catch (e) {
+        console.error("[after] step 6 threw:", e);
+    }
+
     console.error("[after] EXIT");
 });
-
-// =============================================================================
-//  Section 6 -- Test definitions
-// =============================================================================
-
-// -----------------------------------------------------------------------------
-//  1. errors-v2
-// -----------------------------------------------------------------------------
 
 describe("errors-v2", () => {
     it("LingoFuseTimeoutError extends LingoFuseError", () => {
@@ -732,10 +564,6 @@ describe("errors-v2", () => {
         }
     });
 });
-
-// -----------------------------------------------------------------------------
-//  2. CallPromise
-// -----------------------------------------------------------------------------
 
 describe("CallPromise", () => {
     it("is exported at the top level and from lf.async", () => {
@@ -795,10 +623,6 @@ describe("CallPromise", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  3. AsyncBridge
-// -----------------------------------------------------------------------------
-
 describe("AsyncBridge", () => {
     it("is exported at the top level and from lf.async", () => {
         assert.equal(lf.AsyncBridge, lf.async.AsyncBridge);
@@ -847,10 +671,6 @@ describe("AsyncBridge", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  4. Targets
-// -----------------------------------------------------------------------------
-
 describe("Targets", () => {
     it("all four Target classes are exported at the top level", () => {
         assert.equal(typeof lf.AppTarget, "function");
@@ -869,13 +689,6 @@ describe("Targets", () => {
         assert.throws(
             () => new lf.AppTarget(42 as unknown as string),
             TypeError,
-        );
-    });
-
-    it("AppTarget equality works across instances", () => {
-        assert.equal(
-            new lf.AppTarget("A").appName,
-            new lf.AppTarget("A").appName,
         );
     });
 
@@ -985,15 +798,9 @@ describe("Targets", () => {
         ];
         for (const t of targets) {
             for (const m of [
-                "call",
-                "callAsync",
-                "callSync",
-                "tryCallSync",
-                "sequencedCall",
-                "sequencedCallAsync",
-                "notify",
-                "sequencedNotify",
-                "hashKey",
+                "call", "callAsync", "callSync", "tryCallSync",
+                "sequencedCall", "sequencedCallAsync",
+                "notify", "sequencedNotify", "hashKey",
             ]) {
                 assert.equal(
                     typeof (t as unknown as Record<string, unknown>)[m],
@@ -1013,14 +820,7 @@ describe("Targets", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  5. options
-// -----------------------------------------------------------------------------
-
 describe("options", () => {
-    // LF_SetOption is asynchronous once the simulated main thread is
-    // running. Every set-then-read pair must yield long enough for the
-    // main thread to apply the change.
     const flushOption = (): Promise<void> => sleep(150);
 
     it("exports all 16 typed setter/getter pairs", () => {
@@ -1060,7 +860,6 @@ describe("options", () => {
             lf.options.setOptQuiet(true);
             await flushOption();
             assert.equal(lf.options.getOptQuiet(), true);
-
             lf.options.setOptQuiet(false);
             await flushOption();
             assert.equal(lf.options.getOptQuiet(), false);
@@ -1075,7 +874,6 @@ describe("options", () => {
             lf.options.setOptShowThreadID(false);
             await flushOption();
             assert.equal(lf.options.getOptShowThreadID(), false);
-
             lf.options.setOptShowThreadID(true);
             await flushOption();
             assert.equal(lf.options.getOptShowThreadID(), true);
@@ -1101,7 +899,6 @@ describe("options", () => {
             lf.options.setOptOverlapConnection(false);
             await flushOption();
             assert.equal(lf.options.getOptOverlapConnection(), false);
-
             lf.options.setOptOverlapConnection(true);
             await flushOption();
             assert.equal(lf.options.getOptOverlapConnection(), true);
@@ -1116,7 +913,6 @@ describe("options", () => {
             lf.options.setOptWaitConnectionReadyOk(false);
             await flushOption();
             assert.equal(lf.options.getOptWaitConnectionReadyOk(), false);
-
             lf.options.setOptWaitConnectionReadyOk(true);
             await flushOption();
             assert.equal(lf.options.getOptWaitConnectionReadyOk(), true);
@@ -1196,25 +992,19 @@ describe("options", () => {
         try {
             lf.options.setOptDataHandlePoolScanInterval(2000);
             await flushOption();
-            assert.equal(
-                lf.options.getOptDataHandlePoolScanInterval(),
-                2000,
-            );
+            assert.equal(lf.options.getOptDataHandlePoolScanInterval(), 2000);
         } finally {
             lf.options.setOptDataHandlePoolScanInterval(original);
         }
     });
 
     it("setOptNoReponseCmdNullFlushThreshold / getter round-trip", async () => {
-        const original =
-            lf.options.getOptNoReponseCmdNullFlushThreshold();
+        const original = lf.options.getOptNoReponseCmdNullFlushThreshold();
         try {
             lf.options.setOptNoReponseCmdNullFlushThreshold(1234);
             await flushOption();
             assert.equal(
-                lf.options.getOptNoReponseCmdNullFlushThreshold(),
-                1234,
-            );
+                lf.options.getOptNoReponseCmdNullFlushThreshold(), 1234);
         } finally {
             lf.options.setOptNoReponseCmdNullFlushThreshold(original);
         }
@@ -1243,29 +1033,6 @@ describe("options", () => {
     });
 
     it("setOptDebug / getOptDebug do not throw", () => {
-        // -----------------------------------------------------------------
-        // [C2] NO SIDE-EFFECTING debug COMMANDS
-        //
-        // The debug option is write-only and executes a C4 console
-        // command on the native side. Some commands have side effects:
-        //
-        //     "service"       queries the live service pool
-        //     "tunnel"        queries the live tunnel pool
-        //     "ZNet_Info"     walks the ZNet instance registry
-        //     ...
-        //
-        // Running such a command during the test suite can leave an
-        // asynchronous native task pending. If that task is still
-        // pending when LF_ExitMainThread runs, the native cleanup
-        // phase blocks forever, and the JS event loop (blocked on the
-        // synchronous LF_ExitMainThread call) can never run any JS
-        // timer again.
-        //
-        // The test below uses a deliberately non-existent command name
-        // so that the debug option path is exercised without triggering
-        // any live query. The native side logs "unknown command" and
-        // returns immediately.
-        // -----------------------------------------------------------------
         lf.options.setOptDebug("noop-for-test");
         const v = lf.options.getOptDebug();
         assert.equal(typeof v, "string");
@@ -1296,10 +1063,6 @@ describe("options", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  6. framework.getOption
-// -----------------------------------------------------------------------------
-
 describe("framework.getOption", () => {
     it("getOption('Quiet') agrees with options.getOptQuiet()", () => {
         const raw = lf.framework.getOption("Quiet");
@@ -1322,10 +1085,6 @@ describe("framework.getOption", () => {
         );
     });
 });
-
-// -----------------------------------------------------------------------------
-//  7. DataHandle UID methods
-// -----------------------------------------------------------------------------
 
 describe("DataHandle UID methods", () => {
     it("writeUid writes exactly 32 bytes", () => {
@@ -1369,7 +1128,6 @@ describe("DataHandle UID methods", () => {
             const uid = new Uint8Array(32);
             for (let i = 0; i < 32; i++) uid[i] = (i * 7) & 0xff;
             h.writeUid(uid);
-
             h.position = 0;
             const back = h.readUid();
             assert.deepEqual(back, uid);
@@ -1395,9 +1153,7 @@ describe("DataHandle UID methods", () => {
             const uid = h.getP2PUid();
             assert.equal(uid instanceof Uint8Array, true);
             assert.equal(uid.length, 32);
-            for (let i = 0; i < 32; i++) {
-                assert.equal(uid[i], 0);
-            }
+            for (let i = 0; i < 32; i++) assert.equal(uid[i], 0);
         } finally {
             h.dispose();
         }
@@ -1412,10 +1168,6 @@ describe("DataHandle UID methods", () => {
         }
     });
 });
-
-// -----------------------------------------------------------------------------
-//  8. p2p-registration
-// -----------------------------------------------------------------------------
 
 describe("p2p-registration", () => {
     it("exports three module-level functions", () => {
@@ -1445,9 +1197,7 @@ describe("p2p-registration", () => {
         try {
             lf.registerP2PNotify(
                 api,
-                (_input: DataHandle) => {
-                    // no-op
-                },
+                (_input: DataHandle) => { void _input; },
                 "test notify",
             );
             assert.equal(lf.unregisterP2P(api), true);
@@ -1507,10 +1257,6 @@ describe("p2p-registration", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  9. status UID checks
-// -----------------------------------------------------------------------------
-
 describe("status UID checks", () => {
     it("status exports checkUid / checkUidApi / checkP2PName / checkP2PNameApi", () => {
         assert.equal(typeof lf.status.checkUid, "function");
@@ -1521,9 +1267,7 @@ describe("status UID checks", () => {
 
     it("checkUid returns false for a random unregistered UID", () => {
         const uid = new Uint8Array(32);
-        for (let i = 0; i < 32; i++) {
-            uid[i] = (Math.random() * 256) & 0xff;
-        }
+        for (let i = 0; i < 32; i++) uid[i] = (Math.random() * 256) & 0xff;
         assert.equal(lf.status.checkUid(uid), false);
     });
 
@@ -1548,9 +1292,7 @@ describe("status UID checks", () => {
 
     it("checkUidApi returns false for a random unregistered pair", () => {
         const uid = new Uint8Array(32);
-        for (let i = 0; i < 32; i++) {
-            uid[i] = (Math.random() * 256) & 0xff;
-        }
+        for (let i = 0; i < 32; i++) uid[i] = (Math.random() * 256) & 0xff;
         assert.equal(lf.status.checkUidApi(uid, "no_such_api"), false);
     });
 
@@ -1576,10 +1318,6 @@ describe("status UID checks", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  10. Integration: call shapes
-// -----------------------------------------------------------------------------
-
 describe("Integration: call shapes", () => {
     it("AppTarget.callSync returns a deserialized result", () => {
         const target = new lf.AppTarget(APP_NAME);
@@ -1592,8 +1330,7 @@ describe("Integration: call shapes", () => {
 
     it("AppTarget.tryCallSync returns null on timeout / unreachable", () => {
         const ghost = new lf.AppTarget(
-            "DefinitelyNotAnApp_" + randomHex64(),
-        );
+            "DefinitelyNotAnApp_" + randomHex64());
         const result = ghost.tryCallSync<
             { a: number; b: number },
             { result: number }
@@ -1614,7 +1351,6 @@ describe("Integration: call shapes", () => {
 
     it("AppTarget.callAsync delivers to an inline callback with no await", async () => {
         const target = new lf.AppTarget(APP_NAME);
-
         const result = await new Promise<{ result: number }>(
             (resolve, reject) => {
                 target.callAsync<
@@ -1630,17 +1366,18 @@ describe("Integration: call shapes", () => {
                 );
             },
         );
-
         assert.deepEqual(result, { result: 11 });
     });
 
     it("AppTarget.callAsync passes userData through to the callback", async () => {
         const target = new lf.AppTarget(APP_NAME);
         const tag = { origin: "test" };
-
         const received = await new Promise<unknown>(
             (resolve, reject) => {
-                target.callAsync<{ a: number; b: number }, { result: number }>(
+                target.callAsync<
+                    { a: number; b: number },
+                    { result: number }
+                >(
                     "add",
                     { a: 1, b: 1 },
                     (_res, err, userData) => {
@@ -1651,7 +1388,6 @@ describe("Integration: call shapes", () => {
                 );
             },
         );
-
         assert.equal(received, tag);
     });
 
@@ -1667,10 +1403,6 @@ describe("Integration: call shapes", () => {
         assert.ok(true);
     });
 });
-
-// -----------------------------------------------------------------------------
-//  11. Integration: UIDTarget
-// -----------------------------------------------------------------------------
 
 describe("Integration: UIDTarget", () => {
     it("UIDTarget.callSync reaches the target by UID", () => {
@@ -1705,10 +1437,6 @@ describe("Integration: UIDTarget", () => {
     });
 });
 
-// -----------------------------------------------------------------------------
-//  12. Integration: side data
-// -----------------------------------------------------------------------------
-
 describe("Integration: side data", () => {
     it("getP2PUid inside a callback returns the sender's 32-byte UID", async () => {
         const target = new lf.AppTarget(APP_NAME);
@@ -1742,10 +1470,6 @@ describe("Integration: side data", () => {
         assert.equal(result.out_name_empty, true);
     });
 });
-
-// =============================================================================
-//  Section 7 -- Runner
-// =============================================================================
 
 function detectRuntimeLabel(): string {
     if (typeof (globalThis as { Deno?: unknown }).Deno !== "undefined") {
@@ -1804,22 +1528,10 @@ async function runAll(): Promise<number> {
                 continue;
             }
             try {
-                await Promise.race([
+                await withTimeout(
                     Promise.resolve().then(() => testCase.fn()),
-                    new Promise<never>((_, reject) => {
-                        const t = setTimeout(
-                            () =>
-                                reject(
-                                    new Error(
-                                        "test timed out after 15000 ms",
-                                    ),
-                                ),
-                            15000,
-                        );
-                        const th = t as { unref?: () => void };
-                        if (typeof th.unref === "function") th.unref();
-                    }),
-                ]);
+                    15000,
+                );
                 passed += 1;
                 console.error(`    \u2713 ${testCase.name}`);
             } catch (err) {
@@ -1856,10 +1568,6 @@ async function runAll(): Promise<number> {
     return failed === 0 ? 0 : 1;
 }
 
-// =============================================================================
-//  Section 8 -- Entry point
-// =============================================================================
-
 startWatchdog();
 
 runAll()
@@ -1871,16 +1579,6 @@ runAll()
 
         if (proc !== undefined) {
             proc.exitCode = code;
-
-            // Give the process up to 3 seconds to wind down. If anything
-            // is still holding the event loop alive (a stray Koffi
-            // handle, an unclosed native socket, ...), force-exit with
-            // the correct code.
-            //
-            // This short timer is safe even though the watchdog is
-            // armed: the watchdog only fires at 90 seconds, and the
-            // process will normally exit within milliseconds of this
-            // call.
             setTimeout(() => {
                 if (typeof proc.exit === "function") {
                     proc.exit(code);

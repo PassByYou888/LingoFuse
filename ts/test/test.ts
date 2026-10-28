@@ -1207,7 +1207,13 @@ describe("callbacks", () => {
         const param = new DataHandle("boom");
         try {
             const result = tmpApp.localCall(param);
-            assert.equal(result.size, 0);
+            assert.ok(
+                result.size > 0,
+                "expected non-empty error envelope (0xFF + message + NUL)");
+            result.position = 0;
+            assert.equal(
+                result.readUInt8(), 0xFF,
+                "expected error envelope status byte 0xFF");
             result.dispose();
         }
         finally {

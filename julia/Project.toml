@@ -1,0 +1,6 @@
+name = "LingoFuse"
+uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+version = "0.2.0"
+
+[deps]
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"

@@ -139,7 +139,7 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     // The binding module.
     // -------------------------------------------------------------------------
-    const lingofuse_mod = b.createModule(.{
+    const lingofuse_mod = b.addModule("lingofuse", .{
         .root_source_file = b.path("src/lingofuse.zig"),
         .target = target,
         .optimize = optimize,

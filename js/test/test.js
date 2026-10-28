@@ -1270,8 +1270,59 @@ describe("framework", () => {
         assert.equal(typeof name, "string");
         assert.ok(name.length > 0);
     });
+
+    it("callSequencedPromise is a function", () => {
+        assert.equal(typeof lf.framework.callSequencedPromise, "function");
+    });
+
+    it("uidCallSequencedPromise is a function", () => {
+        assert.equal(typeof lf.framework.uidCallSequencedPromise, "function");
+    });
+
+    it("p2pnameCallSequencedPromise is a function", () => {
+        assert.equal(typeof lf.framework.p2pnameCallSequencedPromise, "function");
+    });
+
+    it("callSequencedPromise rejects a non-string appName", () => {
+        const param = new lf.DataHandle("add");
+        try {
+            assert.throws(
+                () => lf.framework.callSequencedPromise(42, param, 100),
+                TypeError);
+        }
+        finally {
+            param.dispose();
+        }
+    });
+
+    it("callSequencedPromise rejects a non-DataHandle param", () => {
+        assert.throws(
+            () => lf.framework.callSequencedPromise("JsTest", {}, 100),
+            TypeError);
+    });
+
+    it("uidCallSequencedPromise rejects a non-DataHandle param", () => {
+        assert.throws(
+            () => lf.framework.uidCallSequencedPromise(new Uint8Array(32), {}, 100),
+            TypeError);
+    });
+
+    it("p2pnameCallSequencedPromise rejects a non-string p2pName", () => {
+        const param = new lf.DataHandle("add");
+        try {
+            assert.throws(
+                () => lf.framework.p2pnameCallSequencedPromise(42, param, 100),
+                TypeError);
+        }
+        finally {
+            param.dispose();
+        }
+    });
 });
 
+// -----------------------------------------------------------------------------
+//  7. status
+// -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 //  7. status
 // -----------------------------------------------------------------------------
@@ -1352,7 +1403,14 @@ describe("callbacks", () => {
             TypeError);
     });
 
-    it("a throwing callback does not crash the process", () => {
+    it("a throwing callback writes the wire-protocol error envelope", () => {
+        // The AppHandle.registerCall wrapper writes the standard
+        // wire-protocol error envelope (status 0xFF + UTF-8 message +
+        // NUL) into the output handle when the user callback throws.
+        // This matches the behaviour of the C++ / Pascal / C# / Rust /
+        // Java code generators, so a Node.js service and a C++ client
+        // interoperate on the failure path exactly as on the success
+        // path.
         const tmpApp = new lf.AppHandle("JsTestThrow", "throwing callback");
         tmpApp.registerCall("boom", "always throws", () => {
             throw new Error("intentional test failure");
@@ -1361,8 +1419,16 @@ describe("callbacks", () => {
         const param = new lf.DataHandle("boom");
         try {
             const result = tmpApp.localCall(param);
-            assert.equal(result.size, 0);
-            result.dispose();
+            try {
+                assert.ok(result.size > 0, "expected a non-empty error reply");
+                result.position = 0;
+                assert.equal(result.readUInt8(), 0xFF);
+                const msg = result.readString();
+                assert.match(msg, /intentional test failure/);
+            }
+            finally {
+                result.dispose();
+            }
         }
         finally {
             param.dispose();

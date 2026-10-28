@@ -74,9 +74,6 @@ static void ensure_capacity(mock_data_t* d, int64_t needed)
 
     d->buf = (char*)realloc(d->buf, (size_t)ncap);
     if (!d->buf) {
-        /* In a real library this would be a fatal allocation failure.
-         * In a mock, we simply lose the resize; callers will observe
-         * a short write. */
         d->cap  = 0;
         d->size = 0;
         d->pos  = 0;
@@ -185,6 +182,42 @@ void LF_SetSize(void* hnd, int64_t size)
     }
     d->size = size;
     if (d->pos > size) d->pos = size;
+}
+
+/* ================================================================= */
+/* Sender identity (v3)                                               */
+/* ================================================================= */
+/*
+ * The mock has no real sessions, so it returns a fixed sender
+ * identity. This lets the shim's snapshot logic be exercised end to
+ * end without a live mesh.
+ *
+ * The UID is filled with 0xAB so it cannot be confused with the
+ * all-zero "null UID". The P2P name is a fixed ASCII string.
+ *
+ * Both pointers reference static storage and stay valid for the
+ * lifetime of the process. The shim memcpys the data on the
+ * trampoline thread and never retains the pointers, so a longer
+ * lifetime than the real library is safe.
+ */
+
+static lf_shim_uid_t g_mock_sender_uid = {
+    { 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB,
+      0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB,
+      0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB,
+      0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB }
+};
+
+lf_shim_uid_t* LF_Get_P2P_UID(void* hnd)
+{
+    (void)hnd;
+    return &g_mock_sender_uid;
+}
+
+const char* LF_Get_P2P_Name(void* hnd)
+{
+    (void)hnd;
+    return "__mock_sender_p2p__";
 }
 
 /* ================================================================= */
@@ -710,9 +743,6 @@ void mock_lf_trigger_network_event(int is_connect, const char* addr)
     void (*cb)(const char*) = is_connect ? g_on_connect : g_on_disconnect;
     if (!cb) return;
 
-    /* The callback contract says the address pointer is valid only
-     * for the duration of the call. We copy it into a heap buffer so
-     * the mock thread does not depend on the caller's storage. */
     char* copy = NULL;
     if (addr) {
         size_t n = strlen(addr);
@@ -738,14 +768,9 @@ void mock_lf_trigger_async_result(
 {
     mock_async_t* entry = find_async(user_token);
     if (!entry) {
-        /* No pending operation. This is a legitimate scenario: tests
-         * use it to simulate a result that never arrives. Silence. */
         return;
     }
 
-    /* Build a result data handle carrying the payload. The trampoline
-     * will snapshot it on its own thread; after this function
-     * returns, the handle is freed. */
     void* result_hnd = LF_CreateData("__mock_async_result__");
     if (!result_hnd) return;
 

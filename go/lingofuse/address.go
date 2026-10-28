@@ -180,22 +180,65 @@ type targetCore struct {
 // construction time.
 func (c *targetCore) Describe() string { return c.describe }
 
-// encodePayload builds a DataHandle for apiName and writes the
-// JSON-encoded payload into it. A nil payload produces an empty
-// handle, which is the canonical "no arguments" call.
-func encodePayload(apiName string, payload any) (*DataHandle, error) {
-	h, err := NewDataHandle(apiName)
+// encodePayload builds or accepts a DataHandle for apiName.
+//
+// {!!!!!  TWO PAYLOAD FORMS ARE ACCEPTED  !!!!!}
+//
+//	Form A -- *DataHandle (caller-owned, passthrough)
+//	    The caller has already built the payload (possibly from a
+//	    template, a pool, or a previous call). encodePayload returns
+//	    it verbatim and reports owned = false, so the call sites do
+//	    NOT close it. The caller retains full lifetime control.
+//
+//	Form B -- any other value (JSON payload, built here)
+//	    A fresh auto-recycled DataHandle is created, the value is
+//	    serialized as UTF-8 JSON, and the handle is returned with
+//	    owned = true. The call sites close it with defer.
+//
+// A nil payload is treated as Form B with an empty body: a new
+// DataHandle is returned (owned = true) with no JSON written. This
+// is the canonical "no arguments" call.
+//
+// {!!!!!  WHY Form A EXISTS  !!!!!}
+// Without Form A, a caller that passes an already-built DataHandle
+// would trigger a JSON serialization of that handle. encoding/json
+// cannot serialize the sync.Mutex embedded in DataHandle, so every
+// such call would fail with ErrWriteFailed -- even though the
+// handle itself is perfectly valid. Form A fixes that: it treats
+// *DataHandle as a pre-built payload, not as a value to serialize.
+//
+// {!!!!!  WHY THE "owned" FLAG EXISTS  !!!!!}
+// Form B handles are created by this function and MUST be released
+// by the caller of encodePayload (via defer Close). Form A handles
+// are owned by the caller of the Target method (the user) and MUST
+// NOT be released by Target methods. Passing the ownership bit
+// explicitly is the only way to avoid a double-free on Form A and a
+// leak on Form B.
+func encodePayload(apiName string, payload any) (h *DataHandle, owned bool, err error) {
+	if hnd, ok := payload.(*DataHandle); ok {
+		if hnd == nil {
+			return nil, false, newErr(ErrInvalidArgument,
+				"encodePayload: payload is a nil *DataHandle")
+		}
+		if !hnd.IsValid() {
+			return nil, false, newErr(ErrNullHandle,
+				"encodePayload: payload *DataHandle is closed")
+		}
+		return hnd, false, nil
+	}
+
+	h, err = NewDataHandle(apiName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if payload == nil {
-		return h, nil
+		return h, true, nil
 	}
 	if err := WriteJSON(h, payload); err != nil {
 		h.Close()
-		return nil, err
+		return nil, false, err
 	}
-	return h, nil
+	return h, true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -217,11 +260,13 @@ func (c *targetCore) Call(api string, payload any, timeoutMs uint64) (*DataHandl
 		timeoutMs = 5000
 	}
 
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return nil, err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	raw := c.syncCall(api, hnd.Raw(), timeoutMs)
 	if raw == 0 {
@@ -310,11 +355,13 @@ func (c *targetCore) CallAsync(
 			"%s: CallAsync: cb must not be nil", c.describe)
 	}
 
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	return dispatchAsync(
 		func(dataID, cbPtr uintptr) int32 {
@@ -337,11 +384,13 @@ func (c *targetCore) CallAsyncWithTimeout(
 			"%s: CallAsyncWithTimeout: cb must not be nil", c.describe)
 	}
 
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	return dispatchAsyncWithTimeout(
 		func(dataID, cbPtr uintptr) int32 {
@@ -363,11 +412,13 @@ func (c *targetCore) SequencedCallAsync(
 			"%s: SequencedCallAsync: cb must not be nil", c.describe)
 	}
 
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	return dispatchAsync(
 		func(dataID, cbPtr uintptr) int32 {
@@ -390,11 +441,13 @@ func (c *targetCore) SequencedCallAsync(
 // from inside a callback. The callback should still return promptly
 // to avoid occupying the worker thread.
 func (c *targetCore) Notify(api string, payload any) error {
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	c.syncNotify(api, hnd.Raw())
 	return nil
@@ -402,11 +455,13 @@ func (c *targetCore) Notify(api string, payload any) error {
 
 // SequencedNotify is Notify with FIFO ordering per (target, api).
 func (c *targetCore) SequencedNotify(api string, payload any) error {
-	hnd, err := encodePayload(api, payload)
+	hnd, owned, err := encodePayload(api, payload)
 	if err != nil {
 		return err
 	}
-	defer hnd.Close()
+	if owned {
+		defer hnd.Close()
+	}
 
 	c.seqNotify(api, hnd.Raw())
 	return nil

@@ -1,44 +1,3 @@
-// Phase 6 probe: end-to-end verification of the v2 async API.
-//
-// WHY P2PNAME ROUTING
-// -------------------
-// The probe deliberately uses P2PNameTarget, NOT AppTarget, for the
-// end-to-end async calls. Here is why.
-//
-// LingoFuse's App-name and UID routing are both LOCAL-FIRST: when the
-// caller process itself hosts a matching App or client, the request is
-// dispatched to the local instance. For the synchronous family
-// (LF_Call, LF_UID_Call, ...) this is exactly the desired behaviour.
-//
-// For the asynchronous family (LF_Async_Call, LF_UID_Async_Call), the
-// local-first path is a hazard from the Dart main isolate:
-//
-//   1. Dart main isolate calls LF_Async_Call.
-//   2. The Pascal side sees the local match and runs the handler
-//      SYNCHRONOUSLY on the calling thread (i.e. on the Dart main
-//      isolate's OS thread).
-//   3. The handler is the bridge's Protocol A trampoline, which posts
-//      a message to the Dart main isolate via Dart_PostCObject and
-//      then BLOCKS on a semaphore until Dart replies.
-//   4. But the Dart main isolate is still inside step (1), blocked in
-//      the FFI call, and cannot process the posted message.
-//   -> Deadlock.
-//
-// P2PName routing is NOT local-first. The call is always forwarded to
-// the server, which dispatches it from an independent native thread.
-// That thread can block on the Protocol A semaphore without touching
-// the Dart main isolate, and the Dart main isolate remains free to
-// process the posted messages on its event loop.
-//
-// The synchronous family is not affected by this hazard when it is
-// invoked from a worker isolate (see server_test.dart, which routes
-// all of its remote calls through a child isolate).
-//
-// Run:
-//     dart run bin/phase6_async_probe.dart
-//
-// All output is in English.
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -61,9 +20,6 @@ Future<void> main() async {
 
   print('=== Phase 6 async API probe ===\n');
 
-  // -----------------------------------------------------------------
-  // Setup
-  // -----------------------------------------------------------------
   print('[Setup] Starting BridgeHost...');
   try {
     await BridgeHost.start();
@@ -81,7 +37,7 @@ Future<void> main() async {
 
   print('\n[Setup] Creating AppHandle and registering APIs...');
   final app = AppHandle(appName, 'Phase 6 async API test');
-  app.registerCall('echo', 'Echo bytes', (Uint8List input) => input);
+  app.registerCall('echo', 'Echo bytes', (CallContext ctx) => ctx.payload);
   check('registerCall("echo")', true);
 
   print('\n[Setup] Starting framework...');
@@ -93,7 +49,6 @@ Future<void> main() async {
   Framework.prepareClient('ipc:dart_p6', app: app);
   check('prepareDone', Framework.prepareDone());
 
-  // Wait for the app to be visible on the mesh.
   bool visible = false;
   for (int i = 0; i < 30; i++) {
     if (Framework.checkApp(appName)) {
@@ -104,20 +59,11 @@ Future<void> main() async {
   }
   check('app "$appName" visible on mesh', visible);
 
-  // Wait for the P2PName to propagate.
-  //
-  // The client reports its P2P name via the Update_UID command; the
-  // server then broadcasts it. This two-step propagation typically
-  // completes within a second, but we allow extra margin on a busy or
-  // cold system.
   print('\n[Setup] Waiting for P2PName to propagate...');
   await Future.delayed(const Duration(milliseconds: 2000));
 
   final target = P2PNameTarget(groupName);
 
-  // -----------------------------------------------------------------
-  // [1] Promise style
-  // -----------------------------------------------------------------
   print('\n[1] Promise style: await target.call(...)');
 
   try {
@@ -141,9 +87,6 @@ Future<void> main() async {
     print(st);
   }
 
-  // -----------------------------------------------------------------
-  // [2] JSON style
-  // -----------------------------------------------------------------
   print('\n[2] JSON style: await target.callJson<T>(...)');
 
   try {
@@ -166,9 +109,6 @@ Future<void> main() async {
     print(st);
   }
 
-  // -----------------------------------------------------------------
-  // [3] Callback style
-  // -----------------------------------------------------------------
   print('\n[3] Callback style: target.callAsync(...)');
 
   {
@@ -201,9 +141,6 @@ Future<void> main() async {
     }
   }
 
-  // -----------------------------------------------------------------
-  // [4] Short timeout
-  // -----------------------------------------------------------------
   print('\n[4] Short timeout (1ms)');
   print('         (the promise must settle, one way or the other)');
 
@@ -215,8 +152,6 @@ Future<void> main() async {
     } on TimeoutException {
       abandonedByException = true;
     } catch (_) {
-      // Any other error is also acceptable; the contract is "settled",
-      // not "settled in a particular way".
     }
 
     check('promise settled', promise.settled);
@@ -227,9 +162,6 @@ Future<void> main() async {
         '(promise.abandoned=${promise.abandoned})');
   }
 
-  // -----------------------------------------------------------------
-  // [5] Missing API
-  // -----------------------------------------------------------------
   print('\n[5] Missing API returns empty bytes or times out');
 
   try {
@@ -245,17 +177,6 @@ Future<void> main() async {
     check('missing API failed cleanly', true, '$e');
   }
 
-  // -----------------------------------------------------------------
-  // [6] Sequenced async (P2PName): FIFO ordering end-to-end
-  // -----------------------------------------------------------------
-  //
-  // This verifies that the sequenced variants of the async family
-  // (Framework.p2pnameCallAsyncSequenced / BridgeHost) route to the
-  // LF_Async_Sequenced_Call primitive and preserve FIFO order.
-  //
-  // Prior to v2.0 final, Framework.p2pnameCallAsyncSequenced silently
-  // fell back to the unsequenced variant. This test guards against a
-  // regression of that fix.
   print('\n[6] Sequenced async (P2PName): FIFO ordering');
 
   {
@@ -288,9 +209,6 @@ Future<void> main() async {
       await completer.future.timeout(const Duration(seconds: 8));
       check('sequenced async resolved all $kCount', results.length == kCount);
 
-      // Sequenced delivery guarantees FIFO order per (group, api) pair.
-      // The response for request i must therefore be the one that
-      // carries seq=i.
       bool orderOk = true;
       for (int i = 0; i < results.length; i++) {
         final text = utf8.decode(results[i] ?? Uint8List(0));
@@ -309,18 +227,6 @@ Future<void> main() async {
     }
   }
 
-  // -----------------------------------------------------------------
-  // [7] BridgeHost UID length validation consistency
-  // -----------------------------------------------------------------
-  //
-  // Framework._checkUidLength and BridgeHost._checkUidLength must
-  // throw the same exception type (RangeError) so that callers who
-  // catch RangeError see consistent behaviour regardless of which
-  // layer validates first.
-  //
-  // Prior to v2.0 final, BridgeHost threw ArgumentError while every
-  // other layer threw RangeError. This test guards against a
-  // regression of that fix.
   print('\n[7] BridgeHost UID length validation (must throw RangeError)');
 
   {
@@ -376,9 +282,6 @@ Future<void> main() async {
     }
   }
 
-  // -----------------------------------------------------------------
-  // Cleanup
-  // -----------------------------------------------------------------
   print('\n[Cleanup]');
   app.dispose();
   Framework.exitMainThread();

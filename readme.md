@@ -23,6 +23,7 @@
 | **想理解核心机制** | [核心概念](#核心概念) → [内部机制知识库](Z.LingoFuse.md) → [Pascal 完整指南](LingoFuse_Pascal_Complete_Guide.md) |
 | **想自己编译核心库** | [构建核心动态库](#构建核心动态库) |
 | **想用代码生成器铺开多语言绑定** | [代码生成器体系 · LingoFuse-Tools](#代码生成器体系--lingofuse-tools) |
+| **想用 AI 加速 LingoFuse 开发** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) 里的“AI 能做和不能做的事” → [代码生成器体系](#代码生成器体系--lingofuse-tools) |
 | **想了解作者怎么做的** | [关于作者](#关于作者) → [十四语言实测手记](https://zpascal.net/imhuman.html) |
 | **想贡献 / 想 PR** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [项目状态与边界](#项目状态与边界) → [关于作者](#关于作者) → 直接提 Issue |
 | **只是想 Star 催更** | 右上角点 Star，然后看 [关于作者](#关于作者) |
@@ -80,6 +81,33 @@ LingoFuse **不做**下面这些事：
 **如果上面任何一条的答案是“不能”或“不愿意”，请直接选 gRPC / REST / 同进程方案。** LingoFuse 不会替你解决这些问题——它只提供地基，建筑需要你来设计。
 
 **反过来**：如果上面四条你都能答“能”，而且你确实需要跨语言、跨进程、零 IDL、低延迟的原生 RPC，那 LingoFuse 是你能找到的最认真的实现之一。
+
+### AI 能做和不能做的事：慎用 “AI 驱动 LingoFuse”
+
+**先说结论：不要让 AI 从零开始“驱动” LingoFuse 构建你的项目。这条路的工期会比你想象的翻好几倍。**
+
+AI 在 LingoFuse 的生态里能做很多事——读生成器源码、读踩坑记录、通过 MCP 驱动 Tools 生成器、按契约写生成代码的 App 层、写测试断言。这些是 LingoFuse 明确设计给 AI 用的能力。
+
+**但 AI 做不了一件事：设计你的架构。**
+
+LingoFuse 本身没有规定你的 App 层怎么切分——服务怎么划分、mesh 拓扑怎么布局、Handle 生命周期由谁负责、回调线程池和你的业务线程池怎么隔离、P2P 组和 UID 路由什么时候用哪个、跨机器部署的防火墙 / 端口 / 证书怎么配。这些是 LingoFuse **有意留给你**的工程决策，不是它做不了，是它**只能由你的业务上下文决定**。
+
+AI 遇到这些问题时，它会——诚实地，按照训练数据里的“标准 RPC 架构”——**给你一个看似合理但漏掉关键约束的方案**。你可能在 48 小时后才发现它选错了拓扑（选了 P2P 组路由，但你的场景需要 UID 定向），或者漏掉了某条“回调里不能调阻塞 LF”的铁律，导致压测时死锁。
+
+**这就是 LingoFuse 的“黑科技”属性带来的独特困境：** 它解决的问题越底层，AI 的“常识”就越容易误导你——因为大多数训练数据里没有 LingoFuse 这种架构。
+
+**正确的做法是：**
+
+1. **你**先把 LingoFuse 跑通（参 [测试与验证](#测试与验证) 里的 PoC 路径）
+2. **你**先设计出第一版架构——哪怕只是个草稿，要能讲清楚“哪个进程是 service、哪个是 call、谁负责什么、路由用哪种寻址”
+3. **你**先用 C++ 或 Pascal 手写一个最小可用的跨语言调用，确认线格式、回调线程、Handle 所有权都在你的预期内
+4. **然后**再让 AI 进来——用 AI 加速 Tools 生成器的使用、用 AI 读踩坑记录、用 AI 补测试、用 AI 生成样板代码
+
+**这样 AI 是“加速器”，不是“司机”。** 架构对不对由你负责，代码快不快由 AI 负责。
+
+**反过来**：如果你还没跑通 LingoFuse，就试图让 AI “帮我搭个跨语言 RPC”，结果大概率是——AI 给你一堆看起来对、跑起来错的东西，你花在“修 AI 生成的东西”上的时间，会超过你从零手写一遍的时间。
+
+LingoFuse 的知识库是给 AI 读的——但读完了，AI 也只能接管**接口层**和**样板层**，接管不了**架构层**。这一点请务必在项目启动前就和团队对齐。
 
 ---
 
@@ -244,7 +272,7 @@ Tools 仓库同时承载了三类可读资产：
 - **输入契约**（`pascal_code_abi_rule.md` / `C_code_abi_rule.md` / `pascal_code_mcp_rule.md` / `C_code_mcp_rule.md`）：**哪些声明会被提取、哪些会被静默丢弃**，写得比大多数 IDL 文档都细。
 - **各语言踩坑记录**（`R_ABI_Generator_Knowledge_Base.md` / `Dart_ABI_Generators_Fix_Report.md` / `Fortran_ABI_Generator_Work_Report.md` / `LingoFuse_Ruby_ABI_Integration_Report.md` / `swift_abi_generator_development_log.md` / `TypeScript_ABI_Generator_Development_Report.md` / `LingoFuse_JS_Async_Generator_Fix_Knowledge_Base.md`）：记录了“我以为”被实测推翻的地方——线格式不对齐、回调线程挂死、`int64` 在 JS 丢精度、`bridge.py` 预检缓存延迟导致 `-3` 错误等。
 
-> **AI 可以直接读这些生成器源码和踩坑记录来接管工具链。** Tools 的设计目标之一就是让 Agent 不需要“猜”生成器的行为——文档和源码写在一起。
+> **AI 可以直接读这些生成器源码和踩坑记录来接管工具链的“使用”——但接管不了你的“架构”。** 详见 [使用门槛](#️-使用门槛这是黑科技不是开箱即用) 里的“AI 能做和不能做的事”。Tools 的设计目标之一就是让 Agent 不需要“猜”生成器的行为——文档和源码写在一起。
 
 ### 与第一方绑定的关系
 
@@ -405,7 +433,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **十八语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / Erlang / Ruby / Fortran / Julia / R / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)：三条工具线（ABI / JSON / MCP），20+ 种目标语言 |
-| **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管——生成代码需人工验证 |
+| **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管**接口层和样板层**——**接管不了架构层**，详见 [使用门槛](#️-使用门槛这是黑科技不是开箱即用) |
 | **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v3.2，面向难缠语言 |
 | **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
 | **Pascal 完整指南** | ✅ 已完善 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) v7.0，95 条踩坑 ID |
@@ -420,6 +448,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 - 纯 TS/JS 项目，所有逻辑都可以用 TS/JS 重写，引入 LF 只会增加复杂度和故障点
 - 需要 PHP 作为服务端的场景（PHP 只能作为调用者）
 - 对并发性能有硬性要求，且不愿自行做 App 层 PoC 验证的团队
+- **让 AI 从零“驱动” LingoFuse 构建项目**：AI 搞不定架构，只会按照训练数据里的“标准 RPC 架构”给你一个漏掉关键约束的方案；你花在修 AI 生成物上的时间会超过从零手写一遍。正确姿势见 [使用门槛 · AI 能做和不能做的事](#ai-能做和不能做的事慎用-ai-驱动-lingofuse)
 - **Flutter Web 项目**（Dart FFI 不可用）
 - **32 位 Windows 项目**（Dart 绑定未测试）
 - **Java 绑定需要 JDK 22+**，无法在 JDK 8 / 11 / 17 / 21 上直接运行

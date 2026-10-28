@@ -478,27 +478,6 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **预构建产物** | ✅ Windows 可用 | [release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)：生成器工具 + 动态库；Linux / macOS 需自行编译 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 
-### 明确不推荐的使用场景
-
-- 需要成熟社区支持、大量第三方教程、Stack Overflow 问答的项目
-- 无法接受单人维护风险，且没有自行编译、自行维护能力的团队
-- 纯 TS/JS 项目，所有逻辑都可以用 TS/JS 重写，引入 LF 只会增加复杂度和故障点
-- 需要 PHP 作为服务端的场景（PHP 只能作为调用者）
-- 对并发性能有硬性要求，且不愿自行做 App 层 PoC 验证的团队
-- **让 AI 从零“驱动” LingoFuse 构建项目**：AI 搞不定架构，只会按照训练数据里的“标准 RPC 架构”给你一个漏掉关键约束的方案；你花在修 AI 生成物上的时间会超过从零手写一遍。正确姿势见 [使用门槛 · AI 能做和不能做的事](#ai-能做和不能做的事慎用-ai-驱动-lingofuse)
-- **Flutter Web 项目**（Dart FFI 不可用）
-- **32 位 Windows 项目**（Dart 绑定未测试）
-- **Java 绑定需要 JDK 22+**，无法在 JDK 8 / 11 / 17 / 21 上直接运行
-- **Swift 绑定需要 Swift 5.9+**（推荐 6.4），macOS / Linux 部署路径尚未实测
-- **Zig 绑定锁定 Zig 0.17.0**，升级到 0.18+ 前需重新评估破坏性 API 变更；Linux / macOS / 32 位平台尚未验证
-- **Erlang 绑定需要 Erlang/OTP 27+**，NIF 崩溃会拖垮 BEAM 节点；回调中不得调用阻塞型 LingoFuse 函数
-- **Ruby 绑定需要 Ruby 4.0+（x64-mingw-ucrt）与 DevKit**，用于编译 C 扩展；Linux / macOS 路径待验证
-- **Fortran 绑定需要 Fortran 2008 + C++17 工具链，且 C++ 与 Fortran 编译器必须来自同一套发行版**（否则 `__gfortran_*` 符号缺失）；Linux / macOS 理论可行但未实测
-- **Julia 绑定强制 `--threads=2`**（回调 consumer 不能落在 main 线程，否则死锁）；`@threadcall` 并发上限受 libuv 线程池约束（默认 4，可用 `UV_THREADPOOL_SIZE` 提升）；Linux / macOS / Apple Silicon 尚未验证
-- **R 绑定需要 R 4.0+ 与 Rtools45（Windows）** 才能编译桥接层；`LF_Call` 不可重入，单进程自测需改用 `lf_local_call`；受外部二进制依赖限制，无法提交 CRAN
-- **Python 绑定**：同步族 handle 归调用者，异步族归框架（回调返回后立即释放）——混用会导致偶发 use-after-free
-- **代码生成器产物**（LingoFuse-Tools）需要人工验证：生成器覆盖 Pascal / Python / C++ / C# / Rust / Go / Java / Node.js / TypeScript / Erlang / Julia / Zig / Swift / Ruby / Fortran / Dart / R 等语言，但生成代码的 App 层行为需要你自己的测试兜底
-
 ---
 
 ## 许可证

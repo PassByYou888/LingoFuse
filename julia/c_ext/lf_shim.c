@@ -16,6 +16,13 @@
  * LingoFuse library from a different thread than the one that owns
  * the handle, and would deadlock on the library's per-handle locks.
  *
+ * Sender identity (v3)
+ * --------------------
+ * The Call and Notify trampolines additionally snapshot the sender's
+ * UID and P2P name into the event, using the same rule: copy the
+ * bytes on the trampoline thread, never let the consumer touch the
+ * native handle.
+ *
  * Shutdown contract
  * -----------------
  * lf_shim_shutdown() is asynchronous with respect to the
@@ -172,6 +179,16 @@ extern void    LF_SetPos(void* hnd, int64_t pos);
 extern int64_t LF_ReadBuffer(void* hnd, void* buff, int64_t size);
 extern int64_t LF_WriteBuffer(void* hnd, const void* buff, int64_t size);
 
+/* ---- Sender identity (v3) ----
+ *
+ * Both functions return pointers that the Pascal side schedules for
+ * release ~5 seconds after the call. The shim MUST copy the bytes
+ * immediately and MUST NOT free the pointers.
+ */
+
+extern lf_shim_uid_t* LF_Get_P2P_UID(void* hnd);
+extern const char*    LF_Get_P2P_Name(void* hnd);
+
 /* ---- Async dispatch ---- */
 
 extern int LF_Async_Call(
@@ -235,6 +252,10 @@ struct lf_shim_event {
     void*           result_data;
     size_t          result_len;
 
+    /* Sender identity (v3). Filled only for CALL / NOTIFY events. */
+    uint8_t         from_uid[32];
+    char*           from_p2p_name;
+
     /* Borrowed from LingoFuse. Valid only on the trampoline thread
      * for the duration of the callback. The consumer never touches
      * these. */
@@ -271,6 +292,7 @@ static lf_shim_event_t* event_alloc(int kind, int64_t user_id)
     e->output_len  = 0;
     e->result_data = NULL;
     e->result_len  = 0;
+    e->from_p2p_name = NULL;
     e->done        = 0;
     e->next        = NULL;
 
@@ -284,10 +306,11 @@ static void event_free(lf_shim_event_t* e)
     if (!e) return;
     lf_mutex_destroy(&e->mtx);
     lf_cond_destroy(&e->cv);
-    if (e->input_data)  free(e->input_data);
-    if (e->output_data) free(e->output_data);
-    if (e->result_data) free(e->result_data);
-    if (e->addr)        free(e->addr);
+    if (e->input_data)    free(e->input_data);
+    if (e->output_data)   free(e->output_data);
+    if (e->result_data)   free(e->result_data);
+    if (e->from_p2p_name) free(e->from_p2p_name);
+    if (e->addr)          free(e->addr);
     free(e);
 }
 
@@ -406,6 +429,32 @@ static void snapshot_result(lf_shim_event_t* e, void* result_hnd)
     snapshot_handle(result_hnd, &e->result_data, &e->result_len);
 }
 
+/* Snapshot the sender's UID and P2P name from a native input handle.
+ * Called only from the Call and Notify trampolines. The underlying
+ * Pascal-side functions return pointers with a ~5 second scheduled
+ * lifetime; the shim copies the bytes now and never touches the
+ * pointers again. */
+static void snapshot_sender(lf_shim_event_t* e, void* input_hnd)
+{
+    if (!e || !input_hnd) return;
+
+    lf_shim_uid_t* uid_ptr = LF_Get_P2P_UID(input_hnd);
+    if (uid_ptr) {
+        memcpy(e->from_uid, uid_ptr->bytes, 32);
+    }
+
+    const char* name_ptr = LF_Get_P2P_Name(input_hnd);
+    if (name_ptr && name_ptr[0] != '\0') {
+        size_t n = strlen(name_ptr);
+        e->from_p2p_name = (char*)malloc(n + 1);
+        if (e->from_p2p_name) {
+            memcpy(e->from_p2p_name, name_ptr, n + 1);
+        } else {
+            warn_alloc_failure("snapshot_sender(from_p2p_name)");
+        }
+    }
+}
+
 /* ================================================================= */
 /* Trampolines                                                        */
 /* ================================================================= */
@@ -433,6 +482,7 @@ static void shim_call_trampoline(void* trigger, void* input, void* output)
     e->output  = output;
 
     snapshot_input(e);
+    snapshot_sender(e, input);
 
     queue_push(e);
     wait_for_completion(e);
@@ -457,6 +507,7 @@ static void shim_notify_trampoline(void* trigger, void* input)
     e->output  = NULL;
 
     snapshot_input(e);
+    snapshot_sender(e, input);
 
     queue_push(e);
     wait_for_completion(e);
@@ -695,6 +746,16 @@ LF_SHIM_API const char* lf_shim_event_addr(const lf_shim_event_t* e)
     return e ? e->addr : NULL;
 }
 
+LF_SHIM_API const uint8_t* lf_shim_event_from_uid(const lf_shim_event_t* e)
+{
+    return e ? e->from_uid : NULL;
+}
+
+LF_SHIM_API const char* lf_shim_event_from_p2p_name(const lf_shim_event_t* e)
+{
+    return e ? e->from_p2p_name : NULL;
+}
+
 LF_SHIM_API const void* lf_shim_event_input_data(const lf_shim_event_t* e)
 {
     return e ? e->input_data : NULL;
@@ -832,7 +893,6 @@ static int lf_get_opt_bool(const char* name)
 {
     const char* v = LF_GetOption(name);
     if (!v || !*v) return 0;
-    /* Case-insensitive comparison with "True". */
     if (v[0] == 'T' || v[0] == 't') {
         if ((v[1] == 'r' || v[1] == 'R') &&
             (v[2] == 'u' || v[2] == 'U') &&
@@ -1024,8 +1084,6 @@ LF_SHIM_API uint64_t lf_shim_get_opt_data_handle_pool_scan_interval(void)
 
 LF_SHIM_API void lf_shim_set_opt_no_reponse_cmd_null_flush_threshold(int value)
 {
-    /* Historical spelling "Reponse" (no second 's') matches the
-     * Pascal-side option key verbatim. */
     lf_set_opt_int("No_Reponse_Cmd_NULL_Flush_Threshold", value);
 }
 

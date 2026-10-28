@@ -84,6 +84,42 @@ The dispatch shape (how the incoming JSON payload is turned into the
 user function's arguments) is IDENTICAL for both namespaces. Only the
 routing key differs. See `Server.expose` for the full contract.
 
+{!!!!!  `with_input=True` - SIDE DATA ACCESS  !!!!!}
+As of the current revision, `Server.expose()` supports a THIRD
+dispatch style, selected by the `with_input` flag. It gives the user
+function direct access to the raw INPUT `DataHandle`, which is the
+only way to read the sender's identity (UID and P2P name) that the
+framework injects as SIDE DATA.
+
+    # New style: read the sender's UID from the Input handle.
+    from lingofuse.core import DataHandle
+
+    @server.expose("create_session", with_input=True)
+    def create_session(data: dict, *, _inp: DataHandle) -> dict:
+        sender_uid = _inp.get_p2p_uid()   # 32-byte bytes object
+        ...
+
+The contract:
+
+    * `with_input=True` injects the raw INPUT handle as the
+      KEYWORD-ONLY argument ``_inp``.
+    * The keyword-only parameter MUST be named exactly ``_inp`` and
+      MUST be declared with a keyword-only marker (``*``) so that the
+      positional dispatch rules (see below) do not count it.
+    * When `with_input=True`, the "full form" (``def f(trigger, inp,
+      out)``) is NOT supported for the same function. Choose one style
+      per registration.
+    * `with_input=True` is orthogonal to `p2p` and `notify`. All
+      combinations are supported.
+
+For Notify registrations, `with_input=True` injects the same
+keyword-only ``_inp`` argument, but there is no ``out`` handle.
+
+This dispatch style is what enables the new UID-addressed streaming
+protocol: the server learns each client's UID by reading the sender's
+side data on the first inbound call, then routes subsequent stream
+messages with `LF_UID_Sequenced_Notify` instead of by app name.
+
 {!!!!!  WHAT `p2p=True` DOES NOT DO  !!!!!}
 - It does NOT require the Server's App to be alive. If you want to
   register ONLY process-wide P2P APIs, you may still construct a
@@ -109,8 +145,8 @@ payload header, and the receiver therefore sees them in the
 Data_Param of the INPUT handle it receives from the framework.
 
 Inside a Server callback, the user function receives the INPUT handle
-as a DataHandle (see `_make_call_adapter` / `_make_notify_adapter`).
-That handle exposes two side-data accessors:
+as a DataHandle when registered with ``with_input=True``. That handle
+exposes two side-data accessors:
 
     inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
     inp.get_p2p_name()  -> str   ('' if the sender did not set a name)
@@ -126,26 +162,21 @@ sender's UID). Example:
 
     from lingofuse.core import DataHandle
 
-    @server.expose("whoami")
-    def whoami(trigger, inp: DataHandle, out: DataHandle):
-        # inp is the INPUT handle carrying the sender's side data.
-        # get_p2p_uid() returns a fresh 32-byte bytes object.
-        caller_uid = inp.get_p2p_uid()
-        caller_name = inp.get_p2p_name()
-        out.write_json({
+    @server.expose("whoami", with_input=True)
+    def whoami(data: dict, *, _inp: DataHandle) -> dict:
+        caller_uid = _inp.get_p2p_uid()
+        caller_name = _inp.get_p2p_name()
+        return {
             "uid_hex": caller_uid.hex(),
             "p2p_name": caller_name,
-        })
+        }
 
 A client then calls ``whoami`` and caches the returned UID. Because
 the UID is regenerated on every TunnelLink, the client must re-probe
-after a link loss. See ``lingofuse.core.DataHandle.get_p2p_uid`` for
-the full side-data contract.
+after a link loss.
 
-Note: an adapter that wraps the raw ctypes handles (as this module's
-``_make_call_adapter`` does) must pass the INPUT handle through as a
-DataHandle so that the user function can call ``get_p2p_uid`` /
-``get_p2p_name`` on it. The adapters in this module already do so.
+See ``lingofuse.core.DataHandle.get_p2p_uid`` for the full side-data
+contract.
 """
 
 import base64
@@ -346,13 +377,14 @@ class Server:
     dicts. This makes binary payloads work transparently.
 
     {!!!!!  AUTO SENDER IDENTITY (SIDE DATA)  !!!!!}
-    User callbacks registered via ``expose`` receive the raw INPUT
-    handle as a DataHandle. That handle exposes the sender's identity
-    (which the framework injected as "side data" on the sender side)
-    through two accessors:
+    User callbacks registered via ``expose(with_input=True)`` receive
+    the raw INPUT handle as a keyword-only ``_inp`` argument. That
+    handle exposes the sender's identity (which the framework
+    injected as "side data" on the sender side) through two
+    accessors:
 
-        inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
-        inp.get_p2p_name()  -> str
+        _inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
+        _inp.get_p2p_name()  -> str
 
     These accessors work ONLY on INPUT handles. See the module
     docstring for the full side-data contract, and the "whoami"
@@ -383,23 +415,20 @@ class Server:
             print(f"[Server DEBUG] {msg}")
 
     # ------------------------------------------------------------------
-    # Argument dispatch helper (shared by all four registration paths)
+    # Argument dispatch helper (shared by all registration paths)
     # ------------------------------------------------------------------
     #
-    # The logic below is IDENTICAL to the argument-shape rules that the
-    # historical (pre-p2p) expose() decorator applied inline. It is
-    # extracted here so that:
+    # The logic below implements the argument-shape rules that
+    # `expose()` applies to incoming payloads. It is shared by:
     #
     #   * App-bound Call        (App.register_call)
     #   * App-bound Notify      (App.register_notify)
     #   * Process-wide P2P Call (register_p2p_call)
     #   * Process-wide P2P Notify (register_p2p_notify)
     #
-    # all share exactly one copy of the dispatch rules. This is a
-    # pure refactor: the observable behaviour of the legacy
-    # app-bound path is byte-for-byte unchanged.
-    #
-    # The dispatch rules, applied in order:
+    # The dispatch rules, applied in order (all evaluated after the
+    # optional `_inp` keyword-only argument has been excluded from
+    # the parameter count):
     #
     #   1. data is None              -> call func() with no arguments
     #   2. func takes exactly 1 arg:
@@ -410,35 +439,72 @@ class Server:
     #          - data is any other list             -> func(data)
     #          - data is a dict                     -> func(**data)
     #          - data is anything else              -> func(data)
+    #
+    # {!!!!!  `_inp` KEYWORD-ONLY INJECTION  !!!!!}
+    # When `with_input=True`, the adapter passes the raw INPUT handle
+    # as a keyword-only argument named ``_inp``. This argument is
+    # EXCLUDED from the parameter count so that the rules above see
+    # the same "effective" parameter list as the classic simple form.
+    #
+    # The user function MUST declare ``_inp`` as a keyword-only
+    # parameter (using the ``*`` marker). Declaring it as a positional
+    # parameter would change the parameter count and break the
+    # dispatch rules; the adapter does not attempt to detect this.
 
-    def _invoke_user_function(self, func: Callable, data: Any) -> Any:
+    def _invoke_user_function(
+        self,
+        func: Callable,
+        data: Any,
+        *,
+        with_input: bool = False,
+        inp: Optional[DataHandle] = None,
+    ) -> Any:
         """
         Dispatch an incoming JSON payload to the user function.
 
         Returns whatever the user function returns. The caller decides
         whether the return value is meaningful (Call mode) or ignored
         (Notify mode).
+
+        When ``with_input=True``, the raw INPUT handle is injected as
+        the keyword-only argument ``_inp``.
         """
+        if with_input:
+            inject_kwargs = {"_inp": inp}
+        else:
+            inject_kwargs = {}
+
         sig = inspect.signature(func)
-        params = list(sig.parameters.values())
+
+        # Count only the parameters that participate in positional
+        # dispatch. When `with_input=True`, the keyword-only ``_inp``
+        # parameter is injected by the adapter and must be excluded.
+        params = [
+            p for p in sig.parameters.values()
+            if not (
+                with_input
+                and p.kind == inspect.Parameter.KEYWORD_ONLY
+                and p.name == "_inp"
+            )
+        ]
 
         if data is None:
-            return func()
+            return func(**inject_kwargs)
 
         if len(params) == 1:
             if isinstance(data, list) and len(data) == 1:
-                return func(data[0])
-            return func(data)
+                return func(data[0], **inject_kwargs)
+            return func(data, **inject_kwargs)
 
         if isinstance(data, list):
             if len(data) == len(params):
-                return func(*data)
-            return func(data)
+                return func(*data, **inject_kwargs)
+            return func(data, **inject_kwargs)
 
         if isinstance(data, dict):
-            return func(**data)
+            return func(**data, **inject_kwargs)
 
-        return func(data)
+        return func(data, **inject_kwargs)
 
     # ------------------------------------------------------------------
     # Adapter factories
@@ -458,15 +524,16 @@ class Server:
     #   * Notify mode has no output handle; it logs only.
     #
     # {!!!!!  SIDE DATA IS PASSED THROUGH  !!!!!}
-    # Both adapters build the input DataHandle with owned=False and
-    # pass it to the user function unchanged. This means a user
-    # function that opted into the 4-argument form
-    # ``func(trigger, inp, out)`` can call ``inp.get_p2p_uid()`` and
-    # ``inp.get_p2p_name()`` to read the sender's identity. The
+    # When `with_input=True`, both adapters pass the raw INPUT handle
+    # to the user function as a keyword-only ``_inp`` argument. This
+    # lets the user function read the sender's identity (side data)
+    # via ``_inp.get_p2p_uid()`` and ``_inp.get_p2p_name()``. The
     # side-data contract is documented on
     # ``lingofuse.core.DataHandle.get_p2p_uid``.
 
-    def _make_notify_adapter(self, api_name: str, func: Callable) -> Callable:
+    def _make_notify_adapter(
+        self, api_name: str, func: Callable, with_input: bool = False,
+    ) -> Callable:
         """
         Build a native Notify callback adapter around ``func``.
 
@@ -474,11 +541,16 @@ class Server:
         ``(trigger, input) -> None``. Any exception raised by ``func``
         is caught and (in debug mode) printed; it is never allowed to
         propagate back into the C stack.
+
+        When ``with_input=True``, the raw INPUT handle is injected as
+        the keyword-only argument ``_inp``.
         """
         def _notify_adapter(trigger, inp: DataHandle):
             try:
                 data = _read_json(inp)
-                self._invoke_user_function(func, data)
+                self._invoke_user_function(
+                    func, data, with_input=with_input, inp=inp,
+                )
             except Exception as e:
                 # Adapter-level errors are logged but not propagated
                 # (the callback wrapper in core.py would catch them
@@ -490,7 +562,9 @@ class Server:
                     )
         return _notify_adapter
 
-    def _make_call_adapter(self, api_name: str, func: Callable) -> Callable:
+    def _make_call_adapter(
+        self, api_name: str, func: Callable, with_input: bool = False,
+    ) -> Callable:
         """
         Build a native Call callback adapter around ``func``.
 
@@ -501,11 +575,16 @@ class Server:
         is converted into a JSON error object written to the output
         handle, and is never allowed to propagate back into the C
         stack.
+
+        When ``with_input=True``, the raw INPUT handle is injected as
+        the keyword-only argument ``_inp``.
         """
         def _call_adapter(trigger, inp: DataHandle, out: DataHandle):
             try:
                 data = _read_json(inp)
-                result = self._invoke_user_function(func, data)
+                result = self._invoke_user_function(
+                    func, data, with_input=with_input, inp=inp,
+                )
                 _write_json(out, result)
             except Exception as e:
                 error_obj = {
@@ -525,7 +604,8 @@ class Server:
     # ------------------------------------------------------------------
 
     def expose(self, api_name: str, notify: bool = False,
-               description: str = "", p2p: bool = False):
+               description: str = "", p2p: bool = False,
+               with_input: bool = False):
         """
         Decorator: register a Python function as a remote API.
 
@@ -539,11 +619,16 @@ class Server:
                 into the process-wide P2P namespace, which is
                 independent of any App and reachable via UID or
                 P2PName addressing only.
+            with_input:
+                If True, inject the raw INPUT ``DataHandle`` into the
+                user function as a keyword-only argument named
+                ``_inp``. This is the only way to read the sender's
+                identity (UID / P2P name) from the callback. See the
+                "SIDE DATA ACCESS" section below.
 
         The decorated function is called with arguments reconstructed
         from the incoming JSON payload. The dispatch rules are the same
-        for both namespaces (and are unchanged from the historical
-        behaviour of this decorator):
+        for both namespaces:
 
             - ``None`` / empty payload   -> call with no arguments
             - JSON list                  -> positional args
@@ -552,34 +637,49 @@ class Server:
             - anything else              -> passed as the first argument
 
         {!!!!!  CALLBACK SIGNATURES  !!!!!}
-        For a Call API, the user function may be written in either of
-        two forms:
+        Three forms are supported:
 
-            # Simple form: only the decoded JSON payload.
+        1. Simple form (no access to the raw handles):
+
             @server.expose("add")
             def add(a, b):
                 return a + b
 
-            # Full form: also receives the raw INPUT/OUTPUT handles.
+        2. Full form (raw handles as positional args; no ``with_input``):
+
             @server.expose("whoami")
             def whoami(trigger, inp: DataHandle, out: DataHandle):
+                caller_uid = inp.get_p2p_uid()
+                out.write_json({"uid_hex": caller_uid.hex()})
+
+        3. Side-data form (raw INPUT handle injected as keyword-only
+           ``_inp``; requires ``with_input=True``):
+
+            @server.expose("create_session", with_input=True)
+            def create_session(data: dict, *, _inp: DataHandle) -> dict:
+                caller_uid = _inp.get_p2p_uid()
                 ...
 
-        The FULL form is required when the user function needs to
-        read the sender's identity (side data) from the INPUT handle,
-        or to write raw bytes directly to the OUTPUT handle. See the
-        "whoami" pattern below.
+        Form 3 is the RECOMMENDED style for handlers that need to read
+        the sender's identity. It keeps the JSON payload as a normal
+        positional argument (which is what most handlers actually
+        want) while making the side data available explicitly.
+
+        Forms 2 and 3 must NOT be mixed on the same registration. If
+        ``with_input=True`` is set, the user function MUST declare
+        ``_inp`` as a keyword-only parameter; the adapter does not
+        verify this at registration time, so a missing ``_inp`` will
+        raise ``TypeError`` at the first invocation.
 
         {!!!!!  THE whoami PATTERN (SIDE DATA)  !!!!!}
-        The INPUT handle passed to a full-form callback carries the
-        sender's identity as SIDE DATA, injected by the SENDER'S
-        transport layer before transmission (Pascal side:
-        TC40_LF_Client.Send_* ->
+        The INPUT handle carries the sender's identity as SIDE DATA,
+        injected by the SENDER'S transport layer before transmission
+        (Pascal side: TC40_LF_Client.Send_* ->
         TMemory_Param_Tool.Rebuild_UID_and_P2PName). The two fields
         are readable through:
 
-            inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
-            inp.get_p2p_name()  -> str
+            _inp.get_p2p_uid()   -> bytes (exactly 32 bytes)
+            _inp.get_p2p_name()  -> str
 
         Both accessors work ONLY on INPUT handles. Calling them on a
         self-created handle or on an OUTPUT handle yields a null UID
@@ -588,16 +688,13 @@ class Server:
         The canonical use is the "whoami" probe, which lets a client
         learn its OWN UID (which the server sees as the sender's):
 
-            from lingofuse.core import DataHandle
-
-            @server.expose("whoami")
-            def whoami(trigger, inp: DataHandle, out: DataHandle):
-                caller_uid = inp.get_p2p_uid()    # 32-byte bytes
-                caller_name = inp.get_p2p_name()  # str, '' if unset
-                out.write_json({
+            @server.expose("whoami", with_input=True)
+            def whoami(data: dict, *, _inp: DataHandle) -> dict:
+                caller_uid = _inp.get_p2p_uid()
+                return {
                     "uid_hex": caller_uid.hex(),
-                    "p2p_name": caller_name,
-                })
+                    "p2p_name": _inp.get_p2p_name(),
+                }
 
         A client then calls ``whoami`` and caches the returned UID.
         Because the UID is regenerated on every TunnelLink, the
@@ -616,8 +713,8 @@ class Server:
         side-data contract.
 
         {!!!!!  NAMESPACE CHOICE  !!!!!}
-        The two namespaces are orthogonal, and this flag is the ONLY
-        thing that distinguishes them at the call site:
+        The two namespaces are orthogonal, and the ``p2p`` flag is the
+        ONLY thing that distinguishes them at the call site:
 
             # App-bound namespace:
             #   reachable via `client.app(<this server's app>).call(...)`
@@ -631,24 +728,25 @@ class Server:
             #   NOT reachable via App-name addressing.
             #   Survives until the process exits, independent of the
             #   Server's App lifecycle.
-            @server.expose("whoami", p2p=True)
-            def whoami(): ...
+            @server.expose("whoami", p2p=True, with_input=True)
+            def whoami(data: dict, *, _inp: DataHandle) -> dict: ...
 
         {!!!!!  WHY `p2p=True` DOES NOT TOUCH `self._app`  !!!!!}
         The App-bound registration path goes through
         ``App.register_call`` / ``App.register_notify``, which require
         the underlying App handle to be alive. The P2P path goes
-        through the module-level ``register_p2p_call`` / ``register_p2p_notify``
-        functions, which are process-wide and do not depend on any App.
-        This means:
+        through the module-level ``register_p2p_call`` /
+        ``register_p2p_notify`` functions, which are process-wide and
+        do not depend on any App. This means:
 
-            * A ``p2p=True`` registration SUCCEEDS even if the Server's
-              App has already been freed via ``Server.stop()``. This is
-              intentional and matches the process-wide semantics of the
-              underlying P2P namespace.
-            * A ``p2p=True`` registration does NOT need to happen before
-              ``Server.start()``; it can be performed at any point in
-              the process lifetime, on or off a running Server.
+            * A ``p2p=True`` registration SUCCEEDS even if the
+              Server's App has already been freed via ``Server.stop()``.
+              This is intentional and matches the process-wide
+              semantics of the underlying P2P namespace.
+            * A ``p2p=True`` registration does NOT need to happen
+              before ``Server.start()``; it can be performed at any
+              point in the process lifetime, on or off a running
+              Server.
 
         {!!!!!  LOOP-IMPORT NOTE  !!!!!}
         The P2P registration functions live in the package's
@@ -661,9 +759,10 @@ class Server:
 
         {!!!!!  BYTES HANDLING  !!!!!}
         Every payload read by the adapter goes through
-        ``_read_json``, which restores base64-encoded ``bytes`` values
-        to their original form recursively. See the module docstring
-        section "BYTES ROUND-TRIP FIX" for the full contract.
+        ``_read_json``, which restores base64-encoded ``bytes``
+        values to their original form recursively. See the module
+        docstring section "BYTES ROUND-TRIP FIX" for the full
+        contract.
 
         The same ``_read_json`` uses ``DataHandle.read_json_strict()``,
         so a malformed JSON payload raises ``RuntimeError`` instead of
@@ -674,7 +773,9 @@ class Server:
         """
         def decorator(func: Callable):
             if notify:
-                adapter = self._make_notify_adapter(api_name, func)
+                adapter = self._make_notify_adapter(
+                    api_name, func, with_input=with_input,
+                )
                 if p2p:
                     from . import register_p2p_notify
                     register_p2p_notify(api_name, adapter, description)
@@ -683,7 +784,9 @@ class Server:
                         api_name, adapter, description
                     )
             else:
-                adapter = self._make_call_adapter(api_name, func)
+                adapter = self._make_call_adapter(
+                    api_name, func, with_input=with_input,
+                )
                 if p2p:
                     from . import register_p2p_call
                     register_p2p_call(api_name, adapter, description)

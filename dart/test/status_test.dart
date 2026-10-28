@@ -1,5 +1,3 @@
-// LingoFuseStatus tests. No framework state required.
-
 import 'package:lingofuse/lingofuse.dart';
 import 'package:test/test.dart';
 

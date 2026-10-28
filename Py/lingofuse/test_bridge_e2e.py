@@ -311,6 +311,13 @@ class BridgeE2EFixture:
             _BRIDGE_SCRIPT,
             "--endpoint", self.bridge_endpoint,
             "--bridge-app", f"__lf_e2e_{os.getpid()}__",
+            # Force the bridge to block in LF_PrepareDone until the
+            # handshake completes, so its broadcast cache is already
+            # populated when the first inbound HTTP request arrives.
+            # Without this flag the bridge starts the HTTP listener
+            # immediately and the first 1-3 seconds of requests can
+            # fail with a -3 pre-check error.
+            "--wait-connection",
             # Generous timeout: the backend is local, but CI can be
             # slow to spin up the IPC channel.
             "--wait-timeout", "20000",

@@ -1,97 +1,7 @@
-%% src/lingofuse.erl
-%%
-%% Public Erlang API for the LingoFuse binding (v2 ABI).
-%%
-%% Every function normalizes the NIF result to {ok, Value} or
-%% {error, Reason}, or to ok on success. Argument errors raise badarg.
-%%
-%% Layout
-%% ------
-%% The module is organized in the same order as the underlying C ABI:
-%%
-%%   1.  NIF availability
-%%   2.  Data handle
-%%   3.  Application handle
-%%   4.  API registration, app-bound
-%%   5.  API registration, process-wide P2P
-%%   6.  Sync callback bridge
-%%   7.  Local execution
-%%   8.  Network preparation
-%%   9.  Remote invocation, app-name addressing
-%%   10. Remote invocation, UID addressing
-%%   11. Remote invocation, P2P-name addressing
-%%   12. Asynchronous invocation (high-level, "no-friction" form)
-%%   13. Asynchronous invocation (low-level raw form)
-%%   14. Options (generic)
-%%   15. Options (typed shortcuts, 16 pairs)
-%%   16. Diagnostics and status
-%%   17. Queries (App name, UID, P2P name)
-%%   18. Shutdown
-%%   19. Network events
-%%
-%% Call callback modes
-%% -------------------
-%%   register_call/4        ASYNC. The registered pid receives
-%%                          {lf_call, ApiName, Payload}. The C
-%%                          callback returns immediately; the
-%%                          LingoFuse output handle is empty.
-%%
-%%   register_call_sync/4   SYNC. The registered pid receives
-%%                          {lf_call, Ref, ApiName, Payload}. The C
-%%                          callback BLOCKS until the pid calls
-%%                          reply(Ref, ResultBin).
-%%
-%% Both have a /5 variant that accepts an Options map:
-%%
-%%     #{with_identity => boolean()}
-%%
-%% When with_identity is true, the callback message carries one
-%% trailing element: an Erlang map
-%%
-%%     #{uid => <<_:256>>, p2p_name => binary()}
-%%
-%% describing the SENDER's identity, extracted from the INPUT handle
-%% by the NIF. The default (absent option) preserves the legacy
-%% message shapes exactly.
-%%
-%% Process-wide P2P registration
-%% -----------------------------
-%% register_p2p_call / register_p2p_call_sync / register_p2p_notify
-%% register the API into the process-wide LF_P2P_APP namespace. Those
-%% APIs are reachable via UID addressing and P2PName addressing only;
-%% they are NOT reachable via App-name addressing. The callback
-%% messages carry the tags {lf_p2p_call, ...} / {lf_p2p_notify, ...}.
-%%
-%% Asynchronous invocation
-%% -----------------------
-%% The high-level form lets the caller pass a business callback as the
-%% last argument, with no need to manage a pid, a Ref, or a monitor:
-%%
-%%     async_call(App, Api, Payload, fun(Result) -> ... end).
-%%
-%% The function returns `ok' immediately and spawns a worker process
-%% that runs the callback on the result when it arrives. The callback
-%% receives either {ok, Bin} or {error, Reason}.
-%%
-%% The low-level form (*_raw) exposes the underlying NIF directly. It
-%% returns {ok, Ref} and expects the caller to manage the reply pid
-%% and the {lf_async_result, Ref, Result} message.
-%%
-%% Typed option shortcuts
-%% ----------------------
-%% The 16 set_opt_* / get_opt_* pairs mirror, one for one, the
-%% Pascal-side LF_Set_Opt_* / LF_Get_Opt_* helpers and the Python-side
-%% set_opt_* / get_opt_* functions. Each pair carries the canonical
-%% option key internally, so the caller cannot misspell it. The
-%% generic set_option/2 / get_option/1 pair remains available for
-%% dynamic names and alias use.
-
 -module(lingofuse).
 
-%% NIF availability
 -export([ensure_loaded/0]).
 
-%% Data handle
 -export([
     create_data/1,
     create_data_permanent/1,
@@ -105,7 +15,24 @@
     set_size/2
 ]).
 
-%% Application handle
+-export([
+    write_int8/2, write_uint8/2,
+    write_int16/2, write_uint16/2,
+    write_int32/2, write_uint32/2,
+    write_int64/2, write_uint64/2,
+    write_single/2, write_double/2,
+    write_string/2, write_string_bytes/2
+]).
+
+-export([
+    read_int8/1, read_uint8/1,
+    read_int16/1, read_uint16/1,
+    read_int32/1, read_uint32/1,
+    read_int64/1, read_uint64/1,
+    read_single/1, read_double/1,
+    read_string/1, read_string_bytes/1
+]).
+
 -export([
     create_app/1,
     create_app/2,
@@ -115,7 +42,6 @@
     bind_app/1
 ]).
 
-%% API registration, app-bound
 -export([
     register_call/4,
     register_call/5,
@@ -126,7 +52,6 @@
     unregister/2
 ]).
 
-%% API registration, process-wide P2P
 -export([
     register_p2p_call/3,
     register_p2p_call/4,
@@ -137,20 +62,17 @@
     unregister_p2p/1
 ]).
 
-%% Sync callback bridge
 -export([
     reply/2,
     set_sync_timeout/1,
     get_sync_timeout/0
 ]).
 
-%% Local execution
 -export([
     local_call/2,
     local_notify/2
 ]).
 
-%% Network preparation
 -export([
     reset_prepare/0,
     prepare_service/2,
@@ -160,7 +82,6 @@
     exit_main_thread/0
 ]).
 
-%% Remote invocation, app-name addressing
 -export([
     call/2,
     call/3,
@@ -168,7 +89,6 @@
     sequenced_notify/2
 ]).
 
-%% Remote invocation, UID addressing
 -export([
     uid_call/2,
     uid_call/3,
@@ -176,7 +96,6 @@
     uid_sequenced_notify/2
 ]).
 
-%% Remote invocation, P2P-name addressing
 -export([
     p2pname_call/2,
     p2pname_call/3,
@@ -184,7 +103,6 @@
     p2pname_sequenced_notify/2
 ]).
 
-%% Asynchronous invocation, high-level
 -export([
     async_call/4,
     async_call/5,
@@ -200,7 +118,6 @@
     async_p2pname_call_seq/5
 ]).
 
-%% Asynchronous invocation, low-level raw form
 -export([
     async_call_raw/3,
     async_call_seq_raw/3,
@@ -210,13 +127,11 @@
     async_p2pname_call_seq_raw/3
 ]).
 
-%% Options, generic
 -export([
     set_option/2,
     get_option/1
 ]).
 
-%% Options, typed shortcuts
 -export([
     set_opt_password/1, get_opt_password/0,
     set_opt_debug/1, get_opt_debug/0,
@@ -239,14 +154,12 @@
     get_opt_no_reponse_cmd_null_flush_threshold/0
 ]).
 
-%% Diagnostics and status
 -export([
     post_status/1,
     get_status/0,
     get_status_count/0
 ]).
 
-%% Queries
 -export([
     check_main_thread/0,
     check_app/1,
@@ -257,15 +170,14 @@
     check_p2pname_api/2
 ]).
 
-%% Shutdown
+-export([
+    get_self_uid/0,
+    get_self_uid_hex/0
+]).
+
 -export([shutdown/0]).
 
-%% Network events
 -export([set_network_event/2]).
-
-%% =========================================================================
-%% Types
-%% =========================================================================
 
 -type data_handle()  :: reference().
 -type app_handle()   :: reference().
@@ -282,6 +194,13 @@
 -type async_callback() :: fun((async_result()) -> any()).
 -type register_options() :: #{with_identity => boolean()}.
 -type identity() :: #{uid := uid(), p2p_name := binary()}.
+-type abi_io_error() ::
+    {error, lf_not_loaded}
+    | {error, short_write}
+    | {error, truncated}
+    | {error, eof}
+    | {error, no_nul_terminator}
+    | {error, term()}.
 
 -export_type([
     data_handle/0,
@@ -292,21 +211,12 @@
     async_result/0,
     async_callback/0,
     register_options/0,
-    identity/0
+    identity/0,
+    abi_io_error/0
 ]).
 
-%% Default async callback timeout, in milliseconds. A callback that
-%% has not fired within this window receives {error, timeout} on the
-%% Erlang side. The C-side request is NOT cancelled; if it completes
-%% later, its result is silently discarded.
 -define(ASYNC_DEFAULT_TIMEOUT_MS, 30000).
-
-%% Default LF_Call timeout, in milliseconds.
 -define(CALL_DEFAULT_TIMEOUT_MS, 5000).
-
-%% =========================================================================
-%% 1. NIF availability
-%% =========================================================================
 
 -spec ensure_loaded() -> ok | {error, lf_not_loaded}.
 ensure_loaded() ->
@@ -316,10 +226,6 @@ ensure_loaded() ->
         error:{not_loaded, _} -> {error, lf_not_loaded};
         error:undef           -> {error, lf_not_loaded}
     end.
-
-%% =========================================================================
-%% 2. Data handle
-%% =========================================================================
 
 -spec create_data(api_name()) -> {ok, data_handle()} | {error, term()}.
 create_data(Name) when is_binary(Name) ->
@@ -388,9 +294,187 @@ set_size(Hnd, Size)
 set_size(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 3. Application handle
-%% =========================================================================
+-spec write_int8(data_handle(), integer()) -> ok | abi_io_error().
+write_int8(Hnd, V) when is_reference(Hnd), is_integer(V), V >= -128, V =< 127 ->
+    write_fixed(Hnd, <<V:8/little-signed>>);
+write_int8(_, _) ->
+    error(badarg).
+
+-spec write_uint8(data_handle(), integer()) -> ok | abi_io_error().
+write_uint8(Hnd, V) when is_reference(Hnd), is_integer(V), V >= 0, V =< 255 ->
+    write_fixed(Hnd, <<V:8/unsigned>>);
+write_uint8(_, _) ->
+    error(badarg).
+
+-spec write_int16(data_handle(), integer()) -> ok | abi_io_error().
+write_int16(Hnd, V) when is_reference(Hnd), is_integer(V),
+                         V >= -32768, V =< 32767 ->
+    write_fixed(Hnd, <<V:16/little-signed>>);
+write_int16(_, _) ->
+    error(badarg).
+
+-spec write_uint16(data_handle(), integer()) -> ok | abi_io_error().
+write_uint16(Hnd, V) when is_reference(Hnd), is_integer(V),
+                          V >= 0, V =< 65535 ->
+    write_fixed(Hnd, <<V:16/little-unsigned>>);
+write_uint16(_, _) ->
+    error(badarg).
+
+-spec write_int32(data_handle(), integer()) -> ok | abi_io_error().
+write_int32(Hnd, V) when is_reference(Hnd), is_integer(V),
+                         V >= -2147483648, V =< 2147483647 ->
+    write_fixed(Hnd, <<V:32/little-signed>>);
+write_int32(_, _) ->
+    error(badarg).
+
+-spec write_uint32(data_handle(), integer()) -> ok | abi_io_error().
+write_uint32(Hnd, V) when is_reference(Hnd), is_integer(V),
+                          V >= 0, V =< 4294967295 ->
+    write_fixed(Hnd, <<V:32/little-unsigned>>);
+write_uint32(_, _) ->
+    error(badarg).
+
+-spec write_int64(data_handle(), integer()) -> ok | abi_io_error().
+write_int64(Hnd, V) when is_reference(Hnd), is_integer(V),
+                         V >= -9223372036854775808,
+                         V =< 9223372036854775807 ->
+    write_fixed(Hnd, <<V:64/little-signed>>);
+write_int64(_, _) ->
+    error(badarg).
+
+-spec write_uint64(data_handle(), integer()) -> ok | abi_io_error().
+write_uint64(Hnd, V) when is_reference(Hnd), is_integer(V),
+                          V >= 0, V =< 18446744073709551615 ->
+    write_fixed(Hnd, <<V:64/little-unsigned>>);
+write_uint64(_, _) ->
+    error(badarg).
+
+-spec write_single(data_handle(), float() | integer()) -> ok | abi_io_error().
+write_single(Hnd, V) when is_reference(Hnd), is_number(V) ->
+    write_fixed(Hnd, <<(float(V)):32/little-float>>);
+write_single(_, _) ->
+    error(badarg).
+
+-spec write_double(data_handle(), float() | integer()) -> ok | abi_io_error().
+write_double(Hnd, V) when is_reference(Hnd), is_number(V) ->
+    write_fixed(Hnd, <<(float(V)):64/little-float>>);
+write_double(_, _) ->
+    error(badarg).
+
+-spec write_string(data_handle(), binary()) -> ok | abi_io_error().
+write_string(Hnd, Bin) when is_reference(Hnd), is_binary(Bin) ->
+    write_string_bytes(Hnd, Bin);
+write_string(_, _) ->
+    error(badarg).
+
+-spec write_string_bytes(data_handle(), binary()) -> ok | abi_io_error().
+write_string_bytes(Hnd, Bin) when is_reference(Hnd), is_binary(Bin) ->
+    Framed = <<Bin/binary, 0>>,
+    case write_buffer(Hnd, Framed) of
+        {ok, N} when N =:= byte_size(Framed) -> ok;
+        {ok, _}                              -> {error, short_write};
+        {error, _} = E                       -> E
+    end;
+write_string_bytes(_, _) ->
+    error(badarg).
+
+-spec read_int8(data_handle()) -> {ok, integer()} | abi_io_error().
+read_int8(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 1, fun(<<V:8/little-signed>>) -> {ok, V} end);
+read_int8(_) ->
+    error(badarg).
+
+-spec read_uint8(data_handle()) -> {ok, integer()} | abi_io_error().
+read_uint8(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 1, fun(<<V:8/unsigned>>) -> {ok, V} end);
+read_uint8(_) ->
+    error(badarg).
+
+-spec read_int16(data_handle()) -> {ok, integer()} | abi_io_error().
+read_int16(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 2, fun(<<V:16/little-signed>>) -> {ok, V} end);
+read_int16(_) ->
+    error(badarg).
+
+-spec read_uint16(data_handle()) -> {ok, integer()} | abi_io_error().
+read_uint16(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 2, fun(<<V:16/little-unsigned>>) -> {ok, V} end);
+read_uint16(_) ->
+    error(badarg).
+
+-spec read_int32(data_handle()) -> {ok, integer()} | abi_io_error().
+read_int32(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 4, fun(<<V:32/little-signed>>) -> {ok, V} end);
+read_int32(_) ->
+    error(badarg).
+
+-spec read_uint32(data_handle()) -> {ok, integer()} | abi_io_error().
+read_uint32(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 4, fun(<<V:32/little-unsigned>>) -> {ok, V} end);
+read_uint32(_) ->
+    error(badarg).
+
+-spec read_int64(data_handle()) -> {ok, integer()} | abi_io_error().
+read_int64(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 8, fun(<<V:64/little-signed>>) -> {ok, V} end);
+read_int64(_) ->
+    error(badarg).
+
+-spec read_uint64(data_handle()) -> {ok, integer()} | abi_io_error().
+read_uint64(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 8, fun(<<V:64/little-unsigned>>) -> {ok, V} end);
+read_uint64(_) ->
+    error(badarg).
+
+-spec read_single(data_handle()) -> {ok, float()} | abi_io_error().
+read_single(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 4, fun(<<V:32/little-float>>) -> {ok, V} end);
+read_single(_) ->
+    error(badarg).
+
+-spec read_double(data_handle()) -> {ok, float()} | abi_io_error().
+read_double(Hnd) when is_reference(Hnd) ->
+    read_fixed(Hnd, 8, fun(<<V:64/little-float>>) -> {ok, V} end);
+read_double(_) ->
+    error(badarg).
+
+-spec read_string(data_handle()) -> {ok, binary()} | abi_io_error().
+read_string(Hnd) when is_reference(Hnd) ->
+    read_string_bytes(Hnd);
+read_string(_) ->
+    error(badarg).
+
+-spec read_string_bytes(data_handle()) -> {ok, binary()} | abi_io_error().
+read_string_bytes(Hnd) when is_reference(Hnd) ->
+    case get_pos(Hnd) of
+        {ok, Pos} ->
+            case get_size(Hnd) of
+                {ok, Size} when Size > Pos ->
+                    Len = Size - Pos,
+                    case read_buffer(Hnd, Len) of
+                        {ok, Bin} ->
+                            case binary:match(Bin, <<0>>) of
+                                {NulPos, 1} ->
+                                    <<Str:NulPos/binary, _/binary>> = Bin,
+                                    ok = set_pos(Hnd, Pos + NulPos + 1),
+                                    {ok, Str};
+                                nomatch ->
+                                    ok = set_pos(Hnd, Size),
+                                    {ok, Bin}
+                            end;
+                        {error, _} = E ->
+                            E
+                    end;
+                {ok, _} ->
+                    {error, eof};
+                {error, _} = E ->
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end;
+read_string_bytes(_) ->
+    error(badarg).
 
 -spec create_app(app_name()) -> {ok, app_handle()} | {error, term()}.
 create_app(Name) ->
@@ -423,23 +507,6 @@ bind_app(Hnd) when is_reference(Hnd) ->
     normalize_ok(lingofuse_nif:bind_app(Hnd));
 bind_app(_) ->
     error(badarg).
-
-%% =========================================================================
-%% 4. API registration, app-bound
-%% =========================================================================
-%%
-%% register_call/4 and register_call_sync/4 preserve the legacy API
-%% exactly. Their /5 variants accept an Options map:
-%%
-%%     #{with_identity => true}
-%%
-%% When with_identity is true, the callback message carries one
-%% trailing element, a map describing the SENDER's identity:
-%%
-%%     #{uid => <<_:256>>, p2p_name => binary()}
-%%
-%% The default (empty map or the atom `undefined') preserves the
-%% legacy message shapes exactly.
 
 -spec register_call(app_handle(), api_name(), binary(), pid()) ->
     ok | {error, term()}.
@@ -515,10 +582,6 @@ unregister(App, Name) when is_reference(App), is_binary(Name) ->
 unregister(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 5. API registration, process-wide P2P
-%% =========================================================================
-
 -spec register_p2p_call(api_name(), binary(), pid()) ->
     ok | {error, term()}.
 register_p2p_call(Name, Desc, Pid) ->
@@ -589,10 +652,6 @@ unregister_p2p(Name) when is_binary(Name) ->
 unregister_p2p(_) ->
     error(badarg).
 
-%% =========================================================================
-%% 6. Sync callback bridge
-%% =========================================================================
-
 -spec reply(sync_ref(), binary()) -> ok | {error, term()}.
 reply(Ref, ResultBin)
         when is_integer(Ref), Ref >= 0, is_binary(ResultBin) ->
@@ -610,10 +669,6 @@ set_sync_timeout(_) ->
 get_sync_timeout() ->
     normalize_ok(lingofuse_nif:get_sync_timeout()).
 
-%% =========================================================================
-%% 7. Local execution
-%% =========================================================================
-
 -spec local_call(app_handle(), data_handle()) ->
     {ok, data_handle()} | {error, term()}.
 local_call(App, Param) when is_reference(App), is_reference(Param) ->
@@ -626,10 +681,6 @@ local_notify(App, Param) when is_reference(App), is_reference(Param) ->
     normalize_ok(lingofuse_nif:local_notify(App, Param));
 local_notify(_, _) ->
     error(badarg).
-
-%% =========================================================================
-%% 8. Network preparation
-%% =========================================================================
 
 -spec reset_prepare() -> ok | {error, term()}.
 reset_prepare() ->
@@ -665,10 +716,6 @@ prepare_done() ->
 exit_main_thread() ->
     normalize_ok(lingofuse_nif:exit_main_thread()).
 
-%% =========================================================================
-%% 9. Remote invocation, app-name addressing
-%% =========================================================================
-
 -spec call(app_name(), data_handle()) ->
     {ok, data_handle()} | {error, term()}.
 call(App, Param) ->
@@ -695,10 +742,6 @@ sequenced_notify(App, Param) when is_binary(App), is_reference(Param) ->
     normalize_ok(lingofuse_nif:sequenced_notify(App, Param));
 sequenced_notify(_, _) ->
     error(badarg).
-
-%% =========================================================================
-%% 10. Remote invocation, UID addressing
-%% =========================================================================
 
 -spec uid_call(uid(), data_handle()) ->
     {ok, data_handle()} | {error, term()}.
@@ -728,10 +771,6 @@ uid_sequenced_notify(Uid, Param)
 uid_sequenced_notify(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 11. Remote invocation, P2P-name addressing
-%% =========================================================================
-
 -spec p2pname_call(p2p_name(), data_handle()) ->
     {ok, data_handle()} | {error, term()}.
 p2pname_call(Name, Param) ->
@@ -760,48 +799,6 @@ p2pname_sequenced_notify(Name, Param)
 p2pname_sequenced_notify(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 12. Asynchronous invocation, high-level
-%% =========================================================================
-%%
-%% These functions let the caller express "call and handle the result"
-%% in one expression, with no need to manage a pid, a Ref, or a
-%% monitor:
-%%
-%%     async_call(App, Api, Payload, fun(Result) -> ... end).
-%%
-%% The function returns `ok' immediately and spawns a worker process
-%% that:
-%%
-%%   1. Builds the request DataHandle and serializes Payload as JSON.
-%%   2. Calls the underlying asynchronous NIF, using the worker's own
-%%      pid as the reply target.
-%%   3. Waits for {lf_async_result, Ref, Result}.
-%%   4. Invokes the user callback with the result:
-%%          {ok, Bin}       -- the peer returned a payload.
-%%          {error, Reason} -- dispatch failure, timeout, or internal
-%%                             error.
-%%   5. Releases the DataHandle.
-%%
-%% The callback runs in the worker process, NOT in the caller's
-%% process. Any state that the callback mutates must be either local
-%% to the callback or passed in via a shared structure (ETS, a named
-%% process, etc.). Exceptions raised by the callback are caught and
-%% swallowed, matching the behaviour of the C core.
-%%
-%% Timeout
-%% -------
-%% The default timeout is 30 seconds. A callback that has not fired
-%% within the window receives {error, timeout}. The C-side request is
-%% NOT cancelled; if it completes later, its result is silently
-%% discarded. Pass `infinity' to disable the timeout entirely.
-%%
-%% Payload
-%% -------
-%% Payload is any term that lingofuse_json:dumps/1 accepts. It is
-%% serialized by the worker process, so the caller may free it
-%% immediately after this function returns.
-
 -spec async_call(app_name(), api_name(), term(), async_callback()) -> ok.
 async_call(Target, Api, Payload, Fun) ->
     async_call(Target, Api, Payload, Fun, ?ASYNC_DEFAULT_TIMEOUT_MS).
@@ -813,9 +810,13 @@ async_call(Target, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:async_call(Target, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:async_call(Target, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -835,9 +836,13 @@ async_call_seq(Target, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:async_sequenced_call(Target, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:async_sequenced_call(Target, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -857,9 +862,13 @@ async_uid_call(Uid, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:uid_async_call(Uid, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:uid_async_call(Uid, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -879,9 +888,13 @@ async_uid_call_seq(Uid, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:uid_async_sequenced_call(Uid, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:uid_async_sequenced_call(Uid, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -903,9 +916,13 @@ async_p2pname_call(Name, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:p2pname_async_call(Name, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:p2pname_async_call(Name, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -927,10 +944,14 @@ async_p2pname_call_seq(Name, Api, Payload, Fun, Timeout)
     _ = spawn(fun() ->
         run_async_worker(
           fun(Pid) ->
-              Hnd = as_data_handle(Api, Payload),
-              R = lingofuse_nif:p2pname_async_sequenced_call(
-                    Name, Hnd, Pid),
-              {R, Hnd}
+              case as_data_handle(Api, Payload) of
+                  {ok, Hnd} ->
+                      R = lingofuse_nif:p2pname_async_sequenced_call(
+                            Name, Hnd, Pid),
+                      {R, Hnd};
+                  {error, E} ->
+                      {{error, E}, undefined}
+              end
           end,
           Fun,
           Timeout)
@@ -938,16 +959,6 @@ async_p2pname_call_seq(Name, Api, Payload, Fun, Timeout)
     ok;
 async_p2pname_call_seq(_, _, _, _, _) ->
     error(badarg).
-
-%% =========================================================================
-%% 13. Asynchronous invocation, low-level raw form
-%% =========================================================================
-%%
-%% These expose the underlying NIF directly. The caller provides the
-%% reply pid and is responsible for receiving
-%% {lf_async_result, Ref, Result} and for releasing the DataHandle.
-%%
-%% Most code should use the high-level form above.
 
 -spec async_call_raw(app_name(), data_handle(), pid()) ->
     {ok, async_ref()} | {error, term()}.
@@ -1003,10 +1014,6 @@ async_p2pname_call_seq_raw(Name, Param, ReplyPid)
 async_p2pname_call_seq_raw(_, _, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 14. Options, generic
-%% =========================================================================
-
 -spec set_option(binary(), binary()) -> ok | {error, term()}.
 set_option(Opt, Val) when is_binary(Opt), is_binary(Val) ->
     normalize_ok(lingofuse_nif:set_option(Opt, Val));
@@ -1019,31 +1026,6 @@ get_option(Opt) when is_binary(Opt) ->
 get_option(_) ->
     error(badarg).
 
-%% =========================================================================
-%% 15. Options, typed shortcuts (16 pairs)
-%% =========================================================================
-%%
-%% Each setter returns ok on success and raises badarg on a malformed
-%% argument. Each getter returns the value in its natural Erlang type.
-%% The underlying option key is fixed and cannot be misspelled.
-%%
-%% Booleans are written using the canonical wire form "True" / "False",
-%% matching the Pascal-side umlBoolToStr helper and the Python binding.
-%%
-%% Numeric getters return 0 when the underlying string cannot be
-%% parsed. This mirrors the tolerant behaviour of the Pascal and
-%% Python bindings; it should not happen in practice.
-%%
-%% Note on get_opt_password/0: the native library deliberately returns
-%% a fixed mask, "********", rather than the real value. The mask is
-%% produced by the underlying option reader, not by this wrapper.
-%%
-%% Note on get_opt_debug/0: the debug option is write-only; the native
-%% library returns a placeholder string. This getter exists for
-%% symmetry.
-
-%% --- Authentication ------------------------------------------------------
-
 -spec set_opt_password(binary() | string()) -> ok.
 set_opt_password(V) when is_binary(V) ->
     set_option(<<"password">>, V);
@@ -1055,8 +1037,6 @@ set_opt_password(_) ->
 -spec get_opt_password() -> binary().
 get_opt_password() ->
     raw_get_option(<<"password">>).
-
-%% --- Logging and diagnostics --------------------------------------------
 
 -spec set_opt_debug(binary() | string()) -> ok.
 set_opt_debug(V) when is_binary(V) ->
@@ -1103,8 +1083,6 @@ set_opt_console_output(_) ->
 get_opt_console_output() ->
     raw_get_bool(<<"ConsoleOutput">>).
 
-%% --- Connection readiness ------------------------------------------------
-
 -spec set_opt_overlap_connection(boolean()) -> ok.
 set_opt_overlap_connection(true)  ->
     set_option(<<"Overlap_Connection">>, <<"True">>);
@@ -1139,8 +1117,6 @@ set_opt_wait_connection_timeout(_) ->
 get_opt_wait_connection_timeout() ->
     raw_get_u64(<<"Wait_Connection_Timeout">>).
 
-%% --- IPC -----------------------------------------------------------------
-
 -spec set_opt_ipc_serv_thread_count(integer()) -> ok.
 set_opt_ipc_serv_thread_count(V) when is_integer(V) ->
     set_option(<<"IPC_Serv_ThreadCount">>, integer_to_binary(V));
@@ -1171,8 +1147,6 @@ set_opt_ipc_serv_max_msg_size(_) ->
 get_opt_ipc_serv_max_msg_size() ->
     raw_get_int(<<"IPC_Serv_MaxMsgSize">>).
 
-%% --- Sequenced notifications --------------------------------------------
-
 -spec set_opt_fixed_sequenced_time(non_neg_integer()) -> ok.
 set_opt_fixed_sequenced_time(V) when is_integer(V), V >= 0 ->
     set_option(<<"Fixed_Sequenced_Time">>, integer_to_binary(V));
@@ -1182,8 +1156,6 @@ set_opt_fixed_sequenced_time(_) ->
 -spec get_opt_fixed_sequenced_time() -> non_neg_integer().
 get_opt_fixed_sequenced_time() ->
     raw_get_u64(<<"Fixed_Sequenced_Time">>).
-
-%% --- P2P group name ------------------------------------------------------
 
 -spec set_opt_p2p_name(binary() | string()) -> ok.
 set_opt_p2p_name(V) when is_binary(V) ->
@@ -1196,8 +1168,6 @@ set_opt_p2p_name(_) ->
 -spec get_opt_p2p_name() -> binary().
 get_opt_p2p_name() ->
     raw_get_option(<<"LF_P2P_name">>).
-
-%% --- Data handle pool ----------------------------------------------------
 
 -spec set_opt_data_handle_idle_timeout(non_neg_integer()) -> ok.
 set_opt_data_handle_idle_timeout(V) when is_integer(V), V >= 0 ->
@@ -1221,8 +1191,6 @@ set_opt_data_handle_pool_scan_interval(_) ->
 get_opt_data_handle_pool_scan_interval() ->
     raw_get_u64(<<"DataHandle_Pool_Scan_Interval">>).
 
-%% --- Command flushing ----------------------------------------------------
-
 -spec set_opt_no_reponse_cmd_null_flush_threshold(integer()) -> ok.
 set_opt_no_reponse_cmd_null_flush_threshold(V)
         when is_integer(V) ->
@@ -1234,10 +1202,6 @@ set_opt_no_reponse_cmd_null_flush_threshold(_) ->
 -spec get_opt_no_reponse_cmd_null_flush_threshold() -> integer().
 get_opt_no_reponse_cmd_null_flush_threshold() ->
     raw_get_int(<<"No_Reponse_Cmd_NULL_Flush_Threshold">>).
-
-%% =========================================================================
-%% 16. Diagnostics and status
-%% =========================================================================
 
 -spec post_status(binary()) -> ok | {error, term()}.
 post_status(Status) when is_binary(Status) ->
@@ -1252,10 +1216,6 @@ get_status() ->
 -spec get_status_count() -> {ok, integer()} | {error, term()}.
 get_status_count() ->
     normalize_ok(lingofuse_nif:get_status_count()).
-
-%% =========================================================================
-%% 17. Queries
-%% =========================================================================
 
 -spec check_main_thread() -> {ok, boolean()} | {error, term()}.
 check_main_thread() ->
@@ -1299,17 +1259,35 @@ check_p2pname_api(Name, Api) when is_binary(Name), is_binary(Api) ->
 check_p2pname_api(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% 18. Shutdown
-%% =========================================================================
+-spec get_self_uid() ->
+    {ok, uid()} | {error, no_client | not_supported | lf_not_loaded | term()}.
+get_self_uid() ->
+    try lingofuse_nif:get_self_uid() of
+        Bin when is_binary(Bin), byte_size(Bin) =:= 32 ->
+            case is_all_zero(Bin) of
+                true  -> {error, no_client};
+                false -> {ok, Bin}
+            end;
+        {error, _} = Err ->
+            Err;
+        Other ->
+            {error, {unexpected_return, Other}}
+    catch
+        error:{not_loaded, _} -> {error, lf_not_loaded};
+        error:undef           -> {error, lf_not_loaded}
+    end.
+
+-spec get_self_uid_hex() ->
+    {ok, binary()} | {error, no_client | not_supported | lf_not_loaded | term()}.
+get_self_uid_hex() ->
+    case get_self_uid() of
+        {ok, Bin}      -> {ok, binary:encode_hex(Bin)};
+        {error, _} = E -> E
+    end.
 
 -spec shutdown() -> ok | {error, term()}.
 shutdown() ->
     normalize_ok(lingofuse_nif:shutdown()).
-
-%% =========================================================================
-%% 19. Network events
-%% =========================================================================
 
 -spec set_network_event(pid() | undefined, pid() | undefined) ->
     ok | {error, term()}.
@@ -1329,11 +1307,24 @@ set_network_event(undefined, undefined) ->
 set_network_event(_, _) ->
     error(badarg).
 
-%% =========================================================================
-%% Internal helpers
-%% =========================================================================
+write_fixed(Hnd, Bin) ->
+    Expected = byte_size(Bin),
+    case write_buffer(Hnd, Bin) of
+        {ok, N} when N =:= Expected -> ok;
+        {ok, _}                     -> {error, short_write};
+        {error, _} = E              -> E
+    end.
 
-%% Wrap a NIF return value into {ok, V} / {error, R}.
+read_fixed(Hnd, Count, Decoder) ->
+    case read_buffer(Hnd, Count) of
+        {ok, Bin} when byte_size(Bin) =:= Count ->
+            Decoder(Bin);
+        {ok, _} ->
+            {error, truncated};
+        {error, _} = E ->
+            E
+    end.
+
 wrap_handle(Value) ->
     try
         case Value of
@@ -1345,8 +1336,6 @@ wrap_handle(Value) ->
         error:{not_loaded, _} -> {error, lf_not_loaded}
     end.
 
-%% Normalize a NIF return value: `ok' stays `ok'; {error, _} stays
-%% {error, _}; anything else is wrapped in {ok, _}.
 normalize_ok(Value) ->
     try
         case Value of
@@ -1358,8 +1347,6 @@ normalize_ok(Value) ->
         error:{not_loaded, _} -> {error, lf_not_loaded}
     end.
 
-%% Normalize a raw async NIF return: a positive integer ref becomes
-%% {ok, Ref}; {error, _} stays as-is.
 normalize_async_ref(Value) ->
     try
         case Value of
@@ -1371,8 +1358,6 @@ normalize_async_ref(Value) ->
         error:{not_loaded, _} -> {error, lf_not_loaded}
     end.
 
-%% Read a raw option value as a binary. An unknown option yields an
-%% empty binary, matching the C ABI contract.
 raw_get_option(Name) ->
     case lingofuse_nif:get_option(Name) of
         Bin when is_binary(Bin) -> Bin;
@@ -1380,8 +1365,6 @@ raw_get_option(Name) ->
         _                       -> <<>>
     end.
 
-%% Parse a raw option value as a boolean, matching the C side's
-%% case-insensitive comparison against "True".
 raw_get_bool(Name) ->
     case raw_get_option(Name) of
         <<"True">>  -> true;
@@ -1395,11 +1378,9 @@ raw_get_bool(Name) ->
         _           -> false
     end.
 
-%% Parse a raw option value as a non-negative integer.
 raw_get_u64(Name) ->
     raw_get_integer(Name, 0).
 
-%% Parse a raw option value as a signed integer.
 raw_get_int(Name) ->
     raw_get_integer(Name, 0).
 
@@ -1411,52 +1392,24 @@ raw_get_integer(Name, Default) ->
         _:_ -> Default
     end.
 
-%% Build a DataHandle for async_call's high-level form. Returns the
-%% resource directly (not {ok, H}) on success, or throws a tagged
-%% value that run_async_worker turns into {error, Reason}.
-%%
-%% The handle created here is owned by the calling worker; the worker
-%% is responsible for freeing it. This is enforced by the design of
-%% run_async_worker/3: the closure passed to it returns {NifResult,
-%% Hnd}, and the worker frees Hnd in an `after' block.
 as_data_handle(Api, Payload) ->
     case create_data(Api) of
         {ok, Hnd} ->
             case lingofuse_json:write_json(Hnd, Payload) of
                 ok ->
-                    Hnd;
+                    {ok, Hnd};
                 {error, Reason} ->
                     _ = free_data(Hnd),
-                    throw({async_payload_failed, Reason})
+                    {error, {payload_failed, Reason}}
             end;
         {error, Reason} ->
-            throw({async_handle_failed, Reason})
+            {error, {handle_failed, Reason}}
     end.
 
-%% Worker that runs a single async call and the user callback.
-%%
-%% Issue is a closure of the form:
-%%
-%%     fun(Pid) -> {NifResult, Hnd}
-%%
-%% where:
-%%   Pid        is the worker's own pid, used as the async reply
-%%              target;
-%%   NifResult  is a positive integer ref on successful dispatch,
-%%              or {error, Reason} on dispatch failure;
-%%   Hnd        is the DataHandle created by the closure, or
-%%              `undefined' if the closure raised before creating one.
-%%
-%% The worker frees Hnd in an `after' block, so no handle is leaked
-%% even if the user callback raises or the wait times out.
 run_async_worker(Issue, Fun, Timeout) ->
     {NifResult, Hnd} =
         try Issue(self())
         catch
-            throw:{async_payload_failed, R} ->
-                {{error, {payload_failed, R}}, undefined};
-            throw:{async_handle_failed, R} ->
-                {{error, {handle_failed, R}}, undefined};
             C:R ->
                 {{error, {C, R}}, undefined}
         end,
@@ -1469,9 +1422,6 @@ run_async_worker(Issue, Fun, Timeout) ->
         end
     end.
 
-%% Deliver the outcome of one async call to the user callback. Only
-%% the caller-side wait lives here; the C-side request is never
-%% cancelled.
 dispatch_async_result(Ref, Fun, Timeout) when is_integer(Ref), Ref > 0 ->
     receive
         {lf_async_result, Ref, Result} ->
@@ -1486,12 +1436,20 @@ dispatch_async_result({error, Reason}, Fun, _Timeout) ->
 dispatch_async_result(Other, Fun, _Timeout) ->
     safe_call(Fun, {error, {unexpected_return, Other}}).
 
-%% Call a user-supplied async callback, swallowing all exceptions.
 safe_call(Fun, Result) ->
     try Fun(Result) catch _:_ -> ok end.
 
-%% Normalize a timeout value to milliseconds. `infinity' means "wait
-%% forever".
 timeout_to_ms(infinity) -> infinity;
 timeout_to_ms(N) when is_integer(N), N >= 0 -> N;
 timeout_to_ms(_) -> ?ASYNC_DEFAULT_TIMEOUT_MS.
+
+is_all_zero(Bin) when is_binary(Bin) ->
+    is_all_zero_loop(Bin, 0).
+
+is_all_zero_loop(Bin, Pos) when Pos >= byte_size(Bin) ->
+    true;
+is_all_zero_loop(Bin, Pos) ->
+    case binary:at(Bin, Pos) of
+        0 -> is_all_zero_loop(Bin, Pos + 1);
+        _ -> false
+    end.

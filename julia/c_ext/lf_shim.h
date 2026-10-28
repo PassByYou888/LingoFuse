@@ -45,8 +45,30 @@
  *   - New event kind LF_SHIM_EVENT_ASYNC_RESULT, with matching
  *     payload accessors lf_shim_event_result_data / _len.
  *
- * Backward compatibility: every pre-existing declaration keeps its
- * exact signature. Existing callers need no change.
+ * ============================================================================
+ * REVISION NOTE (v3) - SENDER IDENTITY
+ * ============================================================================
+ * This revision adds sender-identity snapshots to CALL and NOTIFY
+ * events. The shim now reads the sender's UID and P2P group name
+ * from the native input handle inside the trampoline, BEFORE the
+ * event is queued, and exposes them via:
+ *
+ *     lf_shim_event_from_uid       -> const uint8_t* (32 bytes)
+ *     lf_shim_event_from_p2p_name  -> const char*    (UTF-8, NUL-terminated)
+ *
+ * Both pointers are owned by the event. They remain valid until the
+ * consumer calls lf_shim_complete_event, at which point the event
+ * (and the pointers) are freed by the trampoline. Callers MUST copy
+ * the data before completing the event.
+ *
+ * The underlying Pascal functions (LF_Get_P2P_UID / LF_Get_P2P_Name)
+ * return pointers that the Pascal side schedules for release ~5
+ * seconds later. The shim copies the bytes immediately and never
+ * retains the pointers, so the 5-second release does not affect it.
+ *
+ * On any event kind other than CALL / NOTIFY, the two accessors
+ * return NULL / a zero-filled UID. This is not an error; it simply
+ * means the event carries no sender identity.
  *
  * ============================================================================
  * EVENT KINDS
@@ -274,6 +296,30 @@ LF_SHIM_API int64_t     lf_shim_event_user_id(const lf_shim_event_t* e);
 LF_SHIM_API void*       lf_shim_event_input  (const lf_shim_event_t* e);
 LF_SHIM_API void*       lf_shim_event_output (const lf_shim_event_t* e);
 LF_SHIM_API const char* lf_shim_event_addr   (const lf_shim_event_t* e);
+
+/* ====================================================================== */
+/* Sender identity accessors (v3)                                         */
+/* ====================================================================== */
+/*
+ * These accessors expose the sender's UID and P2P name, snapshotted
+ * by the Call and Notify trampolines from the native input handle
+ * BEFORE the event is queued. They are meaningful only for
+ * LF_SHIM_EVENT_CALL and LF_SHIM_EVENT_NOTIFY events. For any other
+ * kind they return NULL / a zero-filled UID.
+ *
+ * Lifetime: the pointers are owned by the event, valid until
+ * lf_shim_complete_event is called. Callers MUST copy the data
+ * before completing the event.
+ *
+ * The shim copies the bytes from the native input handle immediately
+ * after the Pascal-side LF_Get_P2P_UID / LF_Get_P2P_Name calls, and
+ * never retains the pointers that those two functions return.
+ * Therefore the 5-second release schedule on the Pascal side has no
+ * effect on the lifetime of the data exposed here.
+ */
+
+LF_SHIM_API const uint8_t* lf_shim_event_from_uid(const lf_shim_event_t* e);
+LF_SHIM_API const char*    lf_shim_event_from_p2p_name(const lf_shim_event_t* e);
 
 /* ====================================================================== */
 /* Input payload snapshot                                                  */

@@ -1,117 +1,8 @@
-/**
- * @file async-support.js
- * @brief Safe lifetime management and modern async bridging for
- *        LingoFuse's asynchronous call primitives.
- *
- * This module is the JavaScript counterpart of lingofuse.async_support
- * (Python) and AsyncSupport.cs (C#). It sits between the ctypes-level
- * async callback mechanism (LF_Async_Call and its UID_* / P2PName_*
- * variants) and modern JavaScript async programming.
- *
- * ============================================================================
- * WHY THIS SUBSYSTEM EXISTS
- * ============================================================================
- * The native library holds a RAW FUNCTION POINTER to the callback you
- * register. It does NOT hold a JavaScript reference to the Koffi
- * callback object. Three distinct hazards arise from this:
- *
- *   1. PREMATURE RELEASE ON TIMEOUT
- *      A timed-out request is NOT cancelled by the native library. The
- *      framework will still invoke the callback when (or if) the
- *      response eventually arrives. If we drop the Koffi callback
- *      object when our JS-side timeout fires, the native side is left
- *      holding a dangling pointer, and the next invocation crashes.
- *
- *   2. LEAK ON DISPATCH FAILURE
- *      If the native library rejects the request before dispatching it
- *      (returns a value other than 1), the callback will NEVER fire. A
- *      naive "wait for the callback to release the object" policy leaks
- *      the Koffi callback forever.
- *
- *   3. DOUBLE-RELEASE RACES
- *      The JS thread (on timeout) and the native worker thread (on
- *      callback) can race to release the same object. Without a state
- *      machine, this leads to a use-after-free.
- *
- * AsyncBridge addresses all three hazards through an explicit op state
- * machine (PENDING -> FIRED | ABANDONED | NOT_QUEUED).
- *
- * ============================================================================
- * ARCHITECTURE
- * ============================================================================
- *   CallPromise  -- a Promise wrapper with an `abandoned` flag.
- *   AsyncOp      -- per-operation state holder. Owns the Koffi callback.
- *   AsyncBridge  -- process-wide singleton. Holds every live op; runs
- *                   a periodic reclamation loop via setInterval.
- *
- *   makeFutureOp        -- build an op + CallPromise pair.
- *   makeLegacyOp        -- build an op for the callback style.
- *   runAsyncWithPromise -- one-stop helper: build op+promise, issue the
- *                          native request, arm the timeout, return the
- *                          CallPromise.
- *   runLegacyOp         -- one-stop helper for the callback style.
- *
- * ============================================================================
- * KOFFI CALLBACK LIFETIME
- * ============================================================================
- * Every koffi.register(fn, proto) call creates a native N-API thread-
- * safe function backed by a libuv handle. By default that handle is
- * ref'ed, so it keeps the Node event loop alive and prevents the
- * process from exiting.
- *
- * The ONLY way to release the handle is koffi.unregister(ptr). This
- * module therefore releases every op's callback as soon as the op's
- * state machine permits:
- *
- *   - FIRED      : the callback already returned; release immediately.
- *   - NOT_QUEUED : dispatch never happened; release immediately.
- *   - ABANDONED  : JS-side timeout fired. Release after a grace
- *                  period, so a late native callback that is still in
- *                  flight reaches a valid (no-op) trampoline rather
- *                  than freed memory.
- *
- * On shutdown(), every still-tracked op has its callback released
- * unconditionally, AND every pending grace-period timer is flushed
- * immediately. Without that, a caller who never awaits an async call
- * would keep the process alive, and a caller who shuts the bridge down
- * while a grace timer is armed would leave an orphan setTimeout
- * running against a torn-down Koffi registration table.
- *
- * ============================================================================
- * THREADING MODEL
- * ============================================================================
- * JavaScript is single-threaded per event loop. Koffi callbacks are
- * serialised onto the JS thread by the Koffi runtime, so no locking is
- * needed. The reclamation loop is a setInterval timer that runs on the
- * same event loop.
- *
- * ============================================================================
- * CONFIGURATION
- * ============================================================================
- * Two environment variables are read ONCE at module load:
- *
- *   LINGOFUSE_ASYNC_RECLAIM_GRACE  -- seconds to keep an abandoned op
- *                                     alive after its timeout fires,
- *                                     giving any in-flight native
- *                                     callback a chance to arrive on a
- *                                     still-valid JS object.
- *                                     Default: 60. Must be >= 0.
- *
- *   LINGOFUSE_ASYNC_RECLAIM_PERIOD -- seconds between reclamation sweeps.
- *                                     Default: 1.0. Must be > 0.05.
- *
- * All comments and status output are in English.
- */
-
 "use strict";
 
 const koffi = require("koffi");
 const { getBinding, LfAsyncCallOnResult } = require("./binding");
 const { LingoFuseError, LingoFuseTimeoutError } = require("./errors");
-
-// ============================================================================
-// Configuration
-// ============================================================================
 
 function _envFloat(name, def, minimum) {
     const raw = process.env[name];
@@ -134,43 +25,17 @@ const _DEFAULT_PERIOD_SECONDS = _envFloat(
     0.05
 );
 
-/**
- * Delay between abandoning an op and releasing its Koffi callback, in
- * milliseconds. This gives any straggling native callback that was
- * already in flight when the JS-side timeout fired a chance to reach a
- * still-valid trampoline. The trampoline itself is a no-op because the
- * op state is ABANDONED.
- *
- * The pending timer is tracked on the AsyncBridge instance (see
- * _pendingUnregisters) so that shutdown() can flush it immediately if
- * the bridge is torn down before the grace period elapses.
- */
-const _ABANDONED_RELEASE_DELAY_MS = 5000;
+const _ABANDONED_RELEASE_DELAY_MS = 30000;
 
-// ============================================================================
-// CallPromise
-// ============================================================================
+const _DEBUG = typeof process !== "undefined" && process.env.LF_DEBUG === "1";
 
-/**
- * A Promise wrapper with an `abandoned` flag.
- *
- * The `abandoned` flag distinguishes two ways the promise can end up
- * without a result:
- *
- *   - The caller explicitly cancelled it (not supported by this
- *     wrapper; future extension).
- *   - The JS-side timeout expired before the native callback arrived.
- *     `abandoned` becomes true.
- *
- * The native request is NOT cancelled when the timeout fires. The
- * framework keeps the callback alive for a grace period, and any late
- * result is silently discarded.
- *
- * CallPromise is a thenable: `await callPromise` works.
- */
+function _dbg(...args) {
+    if (!_DEBUG) return;
+    try { console.log("[AsyncBridge]", ...args); } catch (_) {}
+}
+
 class CallPromise {
     constructor() {
-        /** @type {Promise<*>} */
         this._promise = new Promise((resolve, reject) => {
             this._resolve = resolve;
             this._reject = reject;
@@ -179,69 +44,54 @@ class CallPromise {
         this._settled = false;
     }
 
-    /** True if the timeout fired before the result arrived. */
     get abandoned() {
         return this._abandoned;
     }
 
-    /** True once the underlying promise has been resolved or rejected. */
     get settled() {
         return this._settled;
     }
 
-    // -- Thenable interface (enables `await callPromise`) --
     then(onFulfilled, onRejected) {
         return this._promise.then(onFulfilled, onRejected);
     }
+
     catch(onRejected) {
         return this._promise.catch(onRejected);
     }
+
     finally(onFinally) {
         return this._promise.finally(onFinally);
     }
 
-    // -- Internal transitions (not part of the public API) --
     _settleResolve(value) {
         if (this._settled) return;
         this._settled = true;
         this._resolve(value);
     }
+
     _settleReject(err) {
         if (this._settled) return;
         this._settled = true;
         this._reject(err);
     }
+
     _markAbandoned() {
         this._abandoned = true;
     }
 }
-
-// ============================================================================
-// AsyncOp
-// ============================================================================
 
 const STATE_PENDING = "pending";
 const STATE_FIRED = "fired";
 const STATE_ABANDONED = "abandoned";
 const STATE_NOT_QUEUED = "not_queued";
 
-/**
- * A single outstanding asynchronous operation.
- *
- * Owns the Koffi callback object and, optionally, the CallPromise that
- * receives the result.
- *
- * State machine:
- *
- *   PENDING  --(callback fires)-->   FIRED
- *   PENDING  --(timeout fires)-->    ABANDONED --(callback fires)--> FIRED
- *   PENDING  --(dispatch fails)-->   NOT_QUEUED
- */
 class AsyncOp {
-    constructor(deliver, cCallback, promise) {
+    constructor(deliver, cCallback, promise, dataPtr) {
         this._deliver = deliver;
         this._cCallback = cCallback;
         this._promise = promise;
+        this._dataPtr = dataPtr;
         this._state = STATE_PENDING;
         this._key = null;
         this._createdAt = Date.now();
@@ -250,32 +100,35 @@ class AsyncOp {
     get cCallback() {
         return this._cCallback;
     }
+
     get promise() {
         return this._promise;
     }
+
     get state() {
         return this._state;
     }
 
-    /**
-     * Transition to NOT_QUEUED and schedule immediate release.
-     * Called when the native dispatch returns a value other than 1.
-     * Idempotent.
-     */
+    get dataPtr() {
+        return this._dataPtr;
+    }
+
+    _freeDataPtr() {
+        if (this._dataPtr) {
+            try { koffi.free(this._dataPtr); } catch (_) {}
+            this._dataPtr = null;
+        }
+    }
+
     markNotQueued() {
         if (this._state !== STATE_PENDING) return;
         this._state = STATE_NOT_QUEUED;
         AsyncBridge.instance()._scheduleReleaseNow(this);
     }
 
-    /**
-     * Called by the Koffi callback wrapper on the JS thread.
-     * Transitions to FIRED (or, if already ABANDONED, still transitions
-     * to FIRED but drops the result), then invokes the deliver function
-     * exactly once.
-     */
     _invokeFromNative(result, error) {
         const current = this._state;
+        _dbg("op#" + this._key + " invokeFromNative, prevState=" + current);
         if (current === STATE_FIRED) return;
         if (current === STATE_NOT_QUEUED) return;
         if (current === STATE_ABANDONED) {
@@ -287,17 +140,17 @@ class AsyncOp {
         try {
             this._deliver(result, error);
         } catch (err) {
-            // A failure here means the caller's callback or our
-            // internal promise-resolution helper raised. We must never
-            // let that escape into the native stack.
-            // eslint-disable-next-line no-console
-            console.error("[LingoFuse] AsyncOp delivery callback raised:", err);
+            try {
+                console.error(
+                    "[LingoFuse] AsyncOp delivery callback raised:",
+                    err
+                );
+            } catch (_) {}
         } finally {
             AsyncBridge.instance()._scheduleReleaseNow(this);
         }
     }
 
-    /** Transition to ABANDONED. Returns true if the transition happened. */
     _abandon() {
         if (this._state !== STATE_PENDING) return false;
         this._state = STATE_ABANDONED;
@@ -305,55 +158,19 @@ class AsyncOp {
     }
 }
 
-// ============================================================================
-// AsyncBridge
-// ============================================================================
-
-/**
- * Process-wide manager for every outstanding AsyncOp.
- *
- * The bridge is a singleton. It holds the only strong reference to each
- * op's Koffi callback object for as long as the native library might
- * invoke it, and releases that reference once the op's state machine
- * permits.
- */
 class AsyncBridge {
     constructor() {
         this._handles = new Map();
         this._counter = 0;
         this._releaseCount = 0;
-        this._timeoutQueue = [];   // [{ deadline: number, op: AsyncOp }]
-        this._releaseQueue = [];   // [{ deadline: number, op: AsyncOp }]
-
-        /**
-         * Grace-period timers that defer the release of an ABANDONED
-         * op's Koffi callback. Map<TimeoutHandle, KoffiCallbackObject>.
-         *
-         * Tracking these on the instance lets shutdown() flush them
-         * immediately, instead of leaving an orphan setTimeout running
-         * against a torn-down Koffi registration table. Without this
-         * tracking, calling shutdownInstance() and then creating a new
-         * AsyncBridge would leave the old bridge's timers racing the
-         * new bridge's unregister calls on Koffi's global registry.
-         *
-         * @type {Map<*, object>}
-         */
+        this._timeoutQueue = [];
+        this._releaseQueue = [];
         this._pendingUnregisters = new Map();
-
         this._shutdown = false;
-
-        // Exposed as attributes so tests can override them per-instance.
         this.graceSeconds = _DEFAULT_GRACE_SECONDS;
         this.periodSeconds = _DEFAULT_PERIOD_SECONDS;
 
-        this._timer = setInterval(
-            () => this._reclaim(),
-            Math.max(10, this.periodSeconds * 1000)
-        );
-        // Do not block process exit on this timer.
-        if (this._timer && typeof this._timer.unref === "function") {
-            this._timer.unref();
-        }
+        this._timer = null;
     }
 
     static instance() {
@@ -370,41 +187,57 @@ class AsyncBridge {
         }
     }
 
-    /**
-     * Register an op with the bridge. Must be called BEFORE the op's
-     * Koffi callback is handed to the native library.
-     */
+    _ensureTimer() {
+        if (this._shutdown) return;
+        if (this._timer !== null) return;
+        this._timer = setInterval(
+            () => this._reclaim(),
+            Math.max(10, this.periodSeconds * 1000)
+        );
+    }
+
+    _stopTimer() {
+        if (this._timer !== null) {
+            clearInterval(this._timer);
+            this._timer = null;
+        }
+    }
+
+    _hasActiveWork() {
+        return this._handles.size > 0
+            || this._timeoutQueue.length > 0
+            || this._releaseQueue.length > 0;
+    }
+
     register(op) {
         this._counter += 1;
         op._key = this._counter;
         this._handles.set(op._key, op);
+        this._ensureTimer();
     }
 
-    /**
-     * Arm a JS-side timeout on the given op. When the timeout fires, the
-     * op is transitioned to ABANDONED, the CallPromise is resolved with
-     * LingoFuseTimeoutError, and the op is held alive for graceSeconds.
-     */
     scheduleTimeout(op, timeoutMs) {
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
         const deadline = Date.now() + timeoutMs;
         this._timeoutQueue.push({ deadline, op });
+        this._ensureTimer();
     }
 
     _scheduleReleaseNow(op) {
         this._releaseQueue.push({ deadline: Date.now(), op });
+        this._ensureTimer();
     }
 
     _scheduleReleaseAfterGrace(op) {
         const deadline = Date.now() + this.graceSeconds * 1000;
         this._releaseQueue.push({ deadline, op });
+        this._ensureTimer();
     }
 
     _reclaim() {
         if (this._shutdown) return;
         const now = Date.now();
 
-        // Timeouts
         if (this._timeoutQueue.length > 0) {
             const remaining = [];
             for (const entry of this._timeoutQueue) {
@@ -417,7 +250,6 @@ class AsyncBridge {
             this._timeoutQueue = remaining;
         }
 
-        // Releases
         if (this._releaseQueue.length > 0) {
             const remaining = [];
             for (const entry of this._releaseQueue) {
@@ -428,6 +260,10 @@ class AsyncBridge {
                 }
             }
             this._releaseQueue = remaining;
+        }
+
+        if (!this._hasActiveWork()) {
+            this._stopTimer();
         }
     }
 
@@ -449,64 +285,40 @@ class AsyncBridge {
         this._scheduleReleaseAfterGrace(op);
     }
 
-    /**
-     * Release the Koffi callback for an op whose state machine permits
-     * it. Called from _reclaim() once the release deadline has passed.
-     *
-     * For FIRED / NOT_QUEUED ops the release is immediate.
-     *
-     * For ABANDONED ops the release is deferred by
-     * _ABANDONED_RELEASE_DELAY_MS so that a straggling native callback
-     * reaches a still-valid trampoline. The deferring timer is
-     * recorded on the instance so shutdown() can flush it.
-     *
-     * @param {AsyncOp} op
-     */
     _releaseOp(op) {
         if (op._key === null) return;
         if (!this._handles.has(op._key)) return;
 
-        const wasAbandoned = (op._state === STATE_ABANDONED);
-
         this._handles.delete(op._key);
         this._releaseCount += 1;
 
-        const callback = op.cCallback;
+        const state = op.state;
+        _dbg("release op#" + op._key + " state=" + state);
 
-        if (wasAbandoned) {
-            // Defer the release by the grace window. The timer handle
-            // is kept in _pendingUnregisters so that shutdown() can
-            // flush it if the bridge is torn down before the timer
-            // fires.
-            let timer;
-            timer = setTimeout(() => {
-                this._pendingUnregisters.delete(timer);
-                this._unregisterCallback(callback);
-            }, _ABANDONED_RELEASE_DELAY_MS);
-
-            // Do not block process exit on this timer.
-            if (timer && typeof timer.unref === "function") {
-                timer.unref();
-            }
-
-            this._pendingUnregisters.set(timer, callback);
-        } else {
-            this._unregisterCallback(callback);
+        if (state === STATE_FIRED || state === STATE_NOT_QUEUED) {
+            this._unregisterCallback(op.cCallback);
+            op._freeDataPtr();
+            return;
         }
+
+        let timer;
+        timer = setTimeout(() => {
+            this._pendingUnregisters.delete(timer);
+            this._unregisterCallback(op.cCallback);
+            op._freeDataPtr();
+        }, _ABANDONED_RELEASE_DELAY_MS);
+
+        if (timer && typeof timer.unref === "function") {
+            timer.unref();
+        }
+
+        this._pendingUnregisters.set(timer, op);
     }
 
-    /**
-     * Best-effort release of a single Koffi callback object.
-     *
-     * Never throws: a failure here must not abort the release path.
-     *
-     * @param {object} callback
-     */
     _unregisterCallback(callback) {
         try {
             koffi.unregister(callback);
         } catch (_e) {
-            // Best-effort.
         }
     }
 
@@ -538,42 +350,21 @@ class AsyncBridge {
         if (this._shutdown) return;
         this._shutdown = true;
 
-        // Stop the reclamation loop.
-        if (this._timer) {
-            clearInterval(this._timer);
-            this._timer = null;
-        }
+        this._stopTimer();
 
-        // Flush every pending grace-period release immediately.
-        //
-        // Clearing the timers alone would be wrong: the Koffi callback
-        // objects those timers were supposed to release would then
-        // leak, and their libuv handles would keep the event loop
-        // alive. Release the callbacks first, then drop the timers.
-        //
-        // We iterate a snapshot because _unregisterCallback does not
-        // touch the map, but this keeps the code robust against future
-        // changes that might.
         if (this._pendingUnregisters.size > 0) {
             const pending = Array.from(this._pendingUnregisters.entries());
             this._pendingUnregisters.clear();
-            for (const [timer, callback] of pending) {
-                try {
-                    clearTimeout(timer);
-                } catch (_e) {
-                    // Best-effort.
-                }
-                this._unregisterCallback(callback);
+            for (const [timer, op] of pending) {
+                try { clearTimeout(timer); } catch (_e) {}
+                this._unregisterCallback(op.cCallback);
+                op._freeDataPtr();
             }
         }
 
-        // Release every outstanding op's Koffi callback.
-        //
-        // Without this, each still-pending op leaves behind a native
-        // thread-safe function handle that keeps the Node event loop
-        // alive and prevents a clean process exit.
         for (const op of this._handles.values()) {
             this._unregisterCallback(op.cCallback);
+            op._freeDataPtr();
         }
 
         this._handles.clear();
@@ -584,68 +375,81 @@ class AsyncBridge {
 
 AsyncBridge._instance = null;
 
-// ============================================================================
-// Factory helpers
-// ============================================================================
-
 function _createAsyncOp(deliver, deserialize, promise) {
+    let dataPtr;
+    try {
+        dataPtr = koffi.alloc("uint8", 1);
+    } catch (err) {
+        throw new LingoFuseError(
+            "AsyncOp: failed to allocate native data pointer: " +
+            (err && err.message ? err.message : String(err))
+        );
+    }
+    if (!dataPtr) {
+        throw new LingoFuseError(
+            "AsyncOp: native data pointer allocation returned null."
+        );
+    }
+
     const cell = { op: null };
 
-    const cCallback = koffi.register(
-        function (_rawData, rawResult) {
-            const op = cell.op;
-            if (!op) return;
+    let cCallback;
+    try {
+        cCallback = koffi.register(
+            function (_rawData, rawResult) {
+                const op = cell.op;
+                if (!op) return;
 
-            let result = null;
-            let error = null;
+                let result = null;
+                let error = null;
 
-            if (rawResult) {
-                try {
-                    result = deserialize(rawResult);
-                } catch (err) {
-                    error = err;
+                if (rawResult) {
+                    try {
+                        result = deserialize(rawResult);
+                    } catch (err) {
+                        error = err;
+                    }
                 }
-            }
 
-            op._invokeFromNative(result, error);
-        },
-        koffi.pointer(LfAsyncCallOnResult)
-    );
+                op._invokeFromNative(result, error);
+            },
+            koffi.pointer(LfAsyncCallOnResult)
+        );
+    } catch (err) {
+        try { koffi.free(dataPtr); } catch (_) {}
+        throw err;
+    }
 
-    const op = new AsyncOp(deliver, cCallback, promise);
-    cell.op = op;
-    AsyncBridge.instance().register(op);
+    let op;
+    try {
+        op = new AsyncOp(deliver, cCallback, promise, dataPtr);
+        cell.op = op;
+        AsyncBridge.instance().register(op);
+    } catch (err) {
+        try { koffi.unregister(cCallback); } catch (_) {}
+        try { koffi.free(dataPtr); } catch (_) {}
+        throw err;
+    }
+
     return op;
 }
 
-/**
- * Build an AsyncOp for the traditional "user provides a callback" style.
- *
- * The user callback is invoked as onResult(result, error, userData) on
- * the JS thread (delivered from the native worker thread by the Koffi
- * bridge). It MUST NOT block.
- */
 function makeLegacyOp(onResult, userData, deserialize) {
     function deliver(result, error) {
         try {
             onResult(result, error, userData);
         } catch (err) {
-            // eslint-disable-next-line no-console
-            console.error(
-                "[LingoFuse] User async on_result callback raised:",
-                err
-            );
+            try {
+                console.error(
+                    "[LingoFuse] User async on_result callback raised:",
+                    err
+                );
+            } catch (_) {}
         }
     }
     return _createAsyncOp(deliver, deserialize, null);
 }
 
-/**
- * Build an AsyncOp + CallPromise pair.
- *
- * No timeout is armed here; call AsyncBridge.instance().scheduleTimeout()
- * after successful dispatch. The runAsyncWithPromise helper does this.
- */
 function makeFutureOp(deserialize) {
     const callPromise = new CallPromise();
 
@@ -662,27 +466,12 @@ function makeFutureOp(deserialize) {
     return { op, promise: callPromise };
 }
 
-/**
- * One-stop helper: build op+promise, issue the native request, arm the
- * timeout on success, and return the CallPromise.
- *
- * @param {(cb: any) => number} issueFn
- *   A callable that takes the Koffi callback object and issues the
- *   native request. Returns 1 on successful dispatch, anything else on
- *   failure.
- * @param {(rawResult: any) => *} deserialize
- *   Converts the raw result handle into a JavaScript value. Called on
- *   the JS thread, inside the native callback window.
- * @param {number} [timeoutMs]
- *   Optional JS-side timeout in milliseconds.
- * @returns {CallPromise}
- */
 function runAsyncWithPromise(issueFn, deserialize, timeoutMs) {
     const { op, promise } = makeFutureOp(deserialize);
 
     let ret;
     try {
-        ret = issueFn(op.cCallback);
+        ret = issueFn(op.cCallback, op);
     } catch (err) {
         op.markNotQueued();
         throw err;
@@ -693,8 +482,7 @@ function runAsyncWithPromise(issueFn, deserialize, timeoutMs) {
         if (!promise.settled) {
             promise._settleReject(
                 new LingoFuseError(
-                    `async request was not queued ` +
-                    `(dispatch returned ${ret})`
+                    "async request was not queued (dispatch returned " + ret + ")"
                 )
             );
         }
@@ -713,18 +501,12 @@ function runAsyncWithPromise(issueFn, deserialize, timeoutMs) {
     return promise;
 }
 
-/**
- * One-stop helper for the callback style. Issues the native request,
- * delivers the result to onResult, and returns the dispatch code.
- *
- * @returns {number}  The dispatch return code (1 = queued).
- */
 function runLegacyOp(issueFn, onResult, userData, deserialize) {
     const op = makeLegacyOp(onResult, userData, deserialize);
 
     let ret;
     try {
-        ret = issueFn(op.cCallback);
+        ret = issueFn(op.cCallback, op);
     } catch (err) {
         op.markNotQueued();
         throw err;
@@ -732,27 +514,19 @@ function runLegacyOp(issueFn, onResult, userData, deserialize) {
 
     if (ret !== 1) {
         op.markNotQueued();
-        // Deliver dispatch failure to the callback so the caller is not
-        // left waiting forever.
         try {
             onResult(
                 null,
                 new LingoFuseError(
-                    `async request was not queued ` +
-                    `(dispatch returned ${ret})`
+                    "async request was not queued (dispatch returned " + ret + ")"
                 ),
                 userData
             );
         } catch (_err) {
-            // swallow
         }
     }
     return ret;
 }
-
-// ============================================================================
-// Public exports
-// ============================================================================
 
 module.exports = {
     AsyncBridge,

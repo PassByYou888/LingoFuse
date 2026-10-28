@@ -55,8 +55,16 @@
  * callback would cross into the C stack and could destabilise the
  * process. The wrapper therefore catches every exception and reports
  * it through the shared callback error reporter (see callback-error.js).
- * The native layer sees a callback that completed without producing
- * output.
+ *
+ * For Call-mode APIs, the wrapper additionally writes the standard
+ * wire-protocol error envelope into the output handle:
+ *
+ *     [0xFF][error message][NUL]
+ *
+ * This matches the behaviour of the C++ / Pascal / C# / Rust / Java
+ * code generators and lets the caller distinguish a remote-side crash
+ * from an empty response. For Notify-mode APIs, there is no output
+ * handle and the exception is only logged.
  *
  * THREAD SAFETY
  * -------------
@@ -254,6 +262,19 @@ class AppHandle {
      * Registers a Call (request-response) API whose handler runs on a
      * native worker thread.
      *
+     * Exception policy: if the handler throws, the wrapper reports the
+     * exception through the shared callback error reporter AND writes
+     * the standard wire-protocol error envelope into the output handle:
+     *
+     *     [0xFF][error message][NUL]
+     *
+     * The caller of the API therefore sees a well-formed error reply
+     * (status byte 0xFF followed by a UTF-8 message) instead of an
+     * empty response. This is the same behaviour as the C++ / Pascal /
+     * C# / Rust / Java code generators, so a Node.js service and a
+     * C++ client interoperate on the failure path exactly as on the
+     * success path.
+     *
      * @param {string} apiName
      *   API name. Must be a string. Case-insensitive matching applies
      *   at lookup time.
@@ -293,6 +314,21 @@ class AppHandle {
                         `AppHandle.registerCall[${apiName}]`,
                         err
                     );
+                    try {
+                        // Reset the buffer to discard any partial write
+                        // the handler may have performed before throwing,
+                        // then emit the wire-protocol error envelope.
+                        outH.size = 0;
+                        outH.position = 0;
+                        outH.writeUInt8(0xFF);
+                        outH.writeString(
+                            err instanceof Error ? err.message : String(err)
+                        );
+                    } catch (_) {
+                        // If we cannot even write the error envelope,
+                        // there is nothing more we can do. The exception
+                        // has already been reported through the logger.
+                    }
                 }
             },
             koffi.pointer(LfCallFunc)
@@ -338,6 +374,12 @@ class AppHandle {
     /**
      * Registers a Notify (one-way) API whose handler runs on a native
      * worker thread.
+     *
+     * Exception policy: if the handler throws, the wrapper reports the
+     * exception through the shared callback error reporter. There is no
+     * output handle in Notify mode, so no wire-protocol reply is
+     * written; the exception is only logged. This matches the C++ /
+     * Pascal / C# / Rust / Java generators.
      *
      * @param {string} apiName
      * @param {string} [description=""]

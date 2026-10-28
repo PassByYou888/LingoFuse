@@ -26,6 +26,10 @@
  *   Runtime options - a fixed-size key/value store. LF_SetOption
  *                     updates or inserts an entry; LF_GetOption
  *                     returns the stored value or "" when absent.
+ *   Sender identity - a fixed 32-byte UID and a fixed NUL-terminated
+ *                     P2P name string, returned by LF_Get_P2P_UID /
+ *                     LF_Get_P2P_Name. The mock has no real sessions,
+ *                     so the values are constant across calls.
  *
  * What is NOT mocked
  * ------------------
@@ -51,6 +55,12 @@
  *   - The trigger / data pointer of every registration and async
  *     dispatch call is passed through verbatim; the mock never
  *     inspects it. The real library behaves identically.
+ *
+ *   - LF_Get_P2P_UID and LF_Get_P2P_Name return pointers to mock-owned
+ *     static storage. The real library returns pointers that it
+ *     releases ~5 seconds after the call. The shim memcpys the bytes
+ *     immediately and never retains the pointers, so both behaviours
+ *     are safe for the shim.
  *
  * Test drivers
  * ------------
@@ -114,6 +124,25 @@ MOCK_LF_API int64_t LF_GetPos(void* hnd);
 MOCK_LF_API void    LF_SetPos(void* hnd, int64_t pos);
 MOCK_LF_API int64_t LF_GetSize(void* hnd);
 MOCK_LF_API void    LF_SetSize(void* hnd, int64_t size);
+
+/* ====================================================================== */
+/* Sender identity (v3)                                                    */
+/* ====================================================================== */
+/*
+ * LF_Get_P2P_UID returns a pointer to a mock-owned 32-byte UID; the
+ * mock fills it with 0xAB to distinguish it from the all-zero "null
+ * UID".
+ *
+ * LF_Get_P2P_Name returns a pointer to a mock-owned NUL-terminated
+ * string ("__mock_sender_p2p__").
+ *
+ * Both pointers stay valid for the lifetime of the process. The shim
+ * memcpys the data on the trampoline thread and never retains the
+ * pointers, so the static lifetime is safe.
+ */
+
+MOCK_LF_API lf_shim_uid_t* LF_Get_P2P_UID(void* hnd);
+MOCK_LF_API const char*    LF_Get_P2P_Name(void* hnd);
 
 /* ====================================================================== */
 /* App handle                                                              */
@@ -210,8 +239,8 @@ MOCK_LF_API int LF_P2PNAME_Async_Sequenced_Call(
  *
  * The returned pointer is valid until the next LF_SetOption call for
  * the same name. Callers that need to retain the value should copy
- * it immediately; lf_shim.c already does so via its thread-local
- * buffer.
+ * it immediately; lf_shim.c already does so via its per-option
+ * static buffers.
  */
 
 MOCK_LF_API void        LF_SetOption(const char* name, const char* value);

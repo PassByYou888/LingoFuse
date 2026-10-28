@@ -1,33 +1,6 @@
 # frozen_string_literal: true
 #
 # framework.rb — Process-wide facade over the LingoFuse C ABI.
-#
-# Uses Fiddle (not FFI). All native calls go through Fiddle::Function
-# objects created in binding.rb.
-#
-# ============================================================================
-# CONTRACTS
-# ============================================================================
-#   - prepare_done returns true only once per process. A second call
-#     without an intervening shutdown returns false, which is NOT a
-#     failure.
-#
-#   - call never returns nil. On timeout or unreachable target, the
-#     native layer returns a size-0 handle. Use try_call for a
-#     nil-on-failure contract.
-#
-#   - shutdown is idempotent.
-#
-# ============================================================================
-# TIMEOUT UNITS
-# ============================================================================
-# All timeouts are in MILLISECONDS.
-#
-# ============================================================================
-# DEADLOCK WARNING
-# ============================================================================
-# Do not call call / notify / sequenced_notify from inside a callback.
-#
 
 require 'fiddle'
 
@@ -39,10 +12,6 @@ require_relative 'app_handle'
 module LingoFuse
   module Framework
     class << self
-      # -----------------------------------------------------------------
-      # Network preparation
-      # -----------------------------------------------------------------
-
       def reset_prepare
         LingoFuse::LF_ResetPrepare.call
         nil
@@ -91,20 +60,12 @@ module LingoFuse
         nil
       end
 
-      # -----------------------------------------------------------------
-      # Runtime options
-      # -----------------------------------------------------------------
-
       def set_option(option, value)
         opt_ptr = LingoFuse.cstr_ptr(option)
         val_ptr = LingoFuse.cstr_ptr(value)
         LingoFuse::LF_SetOption.call(opt_ptr, val_ptr)
         nil
       end
-
-      # -----------------------------------------------------------------
-      # App name generation and query
-      # -----------------------------------------------------------------
 
       def generate_app_name
         ptr = LingoFuse::LF_Generate_AppName.call
@@ -118,10 +79,6 @@ module LingoFuse
         ptr = LingoFuse::LF_Get_AppName.call(app.raw)
         LingoFuse.read_cstr(ptr)
       end
-
-      # -----------------------------------------------------------------
-      # Remote invocation
-      # -----------------------------------------------------------------
 
       def call(app_name, param, timeout_ms = 5000)
         raise ArgumentError, 'param must be a LingoFuse::DataHandle' unless param.is_a?(DataHandle)
@@ -169,9 +126,16 @@ module LingoFuse
         nil
       end
 
-      # -----------------------------------------------------------------
-      # Shutdown
-      # -----------------------------------------------------------------
+      def check_app(app_name)
+        ptr = LingoFuse.cstr_ptr(app_name)
+        LingoFuse::LF_CheckApp.call(ptr) != 0
+      end
+
+      def check_api(app_name, api_name)
+        app_ptr = LingoFuse.cstr_ptr(app_name)
+        api_ptr = LingoFuse.cstr_ptr(api_name)
+        LingoFuse::LF_CheckApi.call(app_ptr, api_ptr) != 0
+      end
 
       def shutdown
         LingoFuse::LF_Shutdown.call

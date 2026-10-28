@@ -1,0 +1,76 @@
+# .github/workflows/ci.yml
+#
+# Continuous integration for the LingoFuse Erlang binding.
+#
+# Strategy
+# --------
+# - Linux and macOS runners have a C toolchain on PATH, so they build
+#   the full NIF and run every test.
+# - The Windows runner does not ship with a C compiler, so it sets
+#   LINGOFUSE_SKIP_NIF=1 to skip the NIF build. Only the Erlang side
+#   is compiled and linted on that platform.
+#
+# The LingoFuse native runtime is not available in any CI runner, so
+# the tests fall back to their SKIP behaviour. The job therefore
+# verifies that the project compiles cleanly and that every test file
+# is syntactically valid, but it does not exercise the live mesh.
+
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / OTP ${{ matrix.otp }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        otp: ['27']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and rebar3
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: '3.23'
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Xcode command-line tools ship clang; verify it is present.
+          clang --version
+
+      - name: Build (full, with NIF) on Linux and macOS
+        if: runner.os != 'Windows'
+        run: rebar3 compile
+
+      - name: Build (Erlang only) on Windows
+        if: runner.os == 'Windows'
+        env:
+          LINGOFUSE_SKIP_NIF: '1'
+        run: rebar3 compile
+
+      - name: Run tests (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: rebar3 eunit
+
+      - name: Run tests (Windows, Erlang only)
+        if: runner.os == 'Windows'
+        env:
+          LINGOFUSE_SKIP_NIF: '1'
+        run: rebar3 eunit

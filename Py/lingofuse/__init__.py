@@ -14,6 +14,9 @@ This package exposes the following high-level components:
   handling (since LingoFuse v3.0).
 - CallFuture / AsyncBridge / await_future: modern async support
   (see the "MODERN ASYNC SUPPORT" section below).
+- normalize_uid / to_tp2p_uid: UID conversion utilities for callers
+  that need to emit UID-addressed traffic (see the
+  "UID NORMALIZATION UTILITIES" section below).
 
 Additionally, module-level convenience functions:
 
@@ -121,6 +124,34 @@ Example::
     asyncio.run(main())
 
 The subsystem is documented in full in lingofuse/async_support.py.
+
+{!!!!!  UID NORMALIZATION UTILITIES  !!!!!}
+The two functions below are the supported way for a caller to prepare
+a 32-byte UID for the first argument of ``LF_UID_Sequenced_Notify``,
+``LF_UID_Call``, and their siblings:
+
+    normalize_uid(uid) -> bytes
+        Accept a UID as bytes / bytearray / memoryview / 64-char hex
+        string, and return it as a 32-byte bytes object. Raises
+        ValueError / TypeError on malformed input.
+
+    to_tp2p_uid(uid_bytes) -> TP2P_UID
+        Convert the 32-byte bytes object into the ``TP2P_UID`` ctypes
+        array (``c_ubyte * 32``) that the LF_UID_* C ABI functions
+        expect as their first argument.
+
+Both were previously private names inside ``lingofuse.address``.
+They were promoted to public because the UID-addressed streaming
+protocol requires EVERY service that emits a stream event to prepare
+the target session's UID before calling ``LF_UID_Sequenced_Notify``.
+Reaching into a private name from another package is fragile; the
+public names make the dependency explicit and stable.
+
+The private aliases ``_normalize_uid`` and ``_to_tp2p_uid`` are
+retained inside ``lingofuse.address`` for backward compatibility
+with code that predates this promotion (notably ``lingofuse/bridge.py``)
+and are considered implementation detail. New code MUST use the
+public names re-exported here.
 
 {!!!!!  PROCESS-WIDE P2P REGISTRATION  !!!!!}
 The module-level functions register_p2p_call / register_p2p_notify
@@ -333,6 +364,8 @@ from .address import (
     UIDTarget,
     P2PNameTarget,
     AsyncResultHandler,
+    normalize_uid,
+    to_tp2p_uid,
 )
 from .async_support import (
     AsyncBridge,
@@ -703,10 +736,11 @@ def _normalize_uid_for_check(uid) -> "Any":
 
     Raises ValueError / TypeError for anything else.
     """
-    # Imported lazily so that the module-level import list stays
-    # focused on what every user needs.
-    from .address import _normalize_uid, _to_tp2p_uid
-    return _to_tp2p_uid(_normalize_uid(uid))
+    # The public UID utilities are re-exported at package level and
+    # also available directly from lingofuse.address. We use the
+    # public names here to keep the read path aligned with the rest
+    # of the package.
+    return to_tp2p_uid(normalize_uid(uid))
 
 
 def check_uid(uid) -> bool:
@@ -1006,6 +1040,8 @@ __all__ = [
     # Addressing targets (three modes)
     "Target", "AppTarget", "UIDTarget", "P2PNameTarget",
     "AsyncResultHandler",
+    # UID conversion utilities (public as of the current revision)
+    "normalize_uid", "to_tp2p_uid",
     # Modern async support
     "AsyncBridge", "AsyncOp", "CallFuture",
     "await_future", "run_async_with_future",

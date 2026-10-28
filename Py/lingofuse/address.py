@@ -102,12 +102,10 @@ reads the caller's UID from its INPUT handle:
 
     from lingofuse.core import DataHandle
 
-    @server.expose("whoami")
-    def whoami(trigger, inp: DataHandle, out: DataHandle):
-        # inp is an INPUT handle carrying the sender's side data.
-        # get_p2p_uid() returns a fresh 32-byte bytes object.
-        caller_uid = inp.get_p2p_uid()
-        out.write_bytes(caller_uid)
+    @server.expose("whoami", with_input=True)
+    def whoami(data, *, _inp: DataHandle):
+        caller_uid = _inp.get_p2p_uid()
+        return {"uid_hex": caller_uid.hex()}
 
 The client then calls ``whoami`` and caches the returned UID. When
 the link is re-established, the client MUST re-probe, because the
@@ -188,6 +186,35 @@ The modern ``call_future`` / ``call_async`` methods are safe to call
 concurrently from any thread and from any asyncio task. The returned
 ``CallFuture`` is a standard ``concurrent.futures.Future`` and follows
 its thread-safety contract.
+
+=========================== UID NORMALIZATION UTILITIES ====================
+This module exposes two small utilities for converting a UID value
+between its textual and C-ABI representations:
+
+    normalize_uid(uid) -> bytes
+        Accept a UID as bytes / bytearray / memoryview / 64-char hex
+        string, and return it as a 32-byte bytes object.
+
+    to_tp2p_uid(uid_bytes) -> TP2P_UID
+        Convert the 32-byte bytes object into the ``TP2P_UID`` ctypes
+        array (``c_ubyte * 32``) that the ``LF_UID_*`` C ABI functions
+        expect as their first argument.
+
+Both are PUBLIC as of the current revision. They are the only
+supported way for a caller outside this module to prepare a UID for
+``LF_UID_Sequenced_Notify`` and its siblings. The private aliases
+``_normalize_uid`` and ``_to_tp2p_uid`` are retained for backward
+compatibility with code that predates the public names (for example,
+``lingofuse/bridge.py``) and are considered implementation detail.
+New code MUST use the public names.
+
+{!!!!!  THE UID AS AN ARGUMENT IS A VALUE, NOT SIDE DATA  !!!!!}
+The utilities above prepare a UID value that the CALLER already
+possesses (typically obtained from a prior whoami probe) for use as
+an argument to an ``LF_UID_*`` function. This is a DIFFERENT role
+from the ``LF_Get_P2P_UID`` RETURN value, which is a POINTER to a
+32-byte UID and is read from the INPUT handle of a callback. See
+``lingofuse._lf_native`` for the full explanation of the two roles.
 """
 
 from __future__ import annotations
@@ -247,11 +274,11 @@ AsyncResultHandler = Callable[[Any, Optional[Exception], Any], None]
 
 
 # ======================================================================
-# UID normalization helpers
+# UID normalization utilities (PUBLIC)
 # ======================================================================
 #
 # {!!!!!  THE UID AS AN ARGUMENT IS A VALUE, NOT SIDE DATA  !!!!!}
-# The functions below take a Python-level UID value (bytes / hex
+# The two functions below take a Python-level UID value (bytes / hex
 # string) and prepare it for use as an ARGUMENT to one of the
 # LF_UID_* call primitives. The C ABI represents such an argument as
 # a 32-byte array (Pascal: TP2P_UID___ = array[0..31] of Byte), and
@@ -263,9 +290,24 @@ AsyncResultHandler = Callable[[Any, Optional[Exception], Any], None]
 # See ``lingofuse._lf_native`` and ``lingofuse.core.DataHandle`` for
 # the return-role contract. The two roles use different ctypes
 # representations and must not be conflated.
-# ======================================================================
+#
+# PUBLIC API PROMOTION (current revision)
+# ---------------------------------------
+# These two functions were previously private (``_normalize_uid`` and
+# ``_to_tp2p_uid``). They are promoted to public names because the
+# new UID-addressed streaming protocol requires every LingoFuse
+# service that emits a stream event to prepare the target session's
+# 32-byte UID for use as the first argument of
+# ``LF_UID_Sequenced_Notify``. Reaching into a private name from
+# another package is fragile; the public names make the dependency
+# explicit and stable.
+#
+# The private names are retained as aliases so that existing callers
+# (notably ``lingofuse/bridge.py``) do not need to be updated in this
+# revision. They are implementation detail; new code MUST use the
+# public names.
 
-def _normalize_uid(uid) -> bytes:
+def normalize_uid(uid) -> bytes:
     """
     Normalize a UID value into a 32-byte ``bytes`` object.
 
@@ -310,7 +352,7 @@ def _normalize_uid(uid) -> bytes:
     )
 
 
-def _to_tp2p_uid(uid_bytes: bytes) -> Any:
+def to_tp2p_uid(uid_bytes: bytes) -> Any:
     """
     Convert a 32-byte ``bytes`` object into a ``TP2P_UID`` array.
 
@@ -318,9 +360,13 @@ def _to_tp2p_uid(uid_bytes: bytes) -> Any:
     straight element-wise copy; no reinterpretation is performed.
 
     This produces an ARGUMENT-role value suitable for the first
-    parameter of ``LF_UID_Call`` and its siblings. The C ABI declares
-    that parameter as ``TP2P_UID___`` (a 32-byte Pascal array), which
-    ctypes passes by value in a cdecl call.
+    parameter of ``LF_UID_Call``, ``LF_UID_Sequenced_Notify``, and
+    their siblings. The C ABI declares that parameter as
+    ``TP2P_UID___`` (a 32-byte Pascal array), which ctypes passes by
+    value in a cdecl call.
+
+    The input length is NOT validated here; callers should obtain the
+    bytes from :func:`normalize_uid`, which enforces the exact length.
 
     The return type is annotated as ``Any`` because ``TP2P_UID`` is
     a runtime object produced by ``ctypes`` (a fixed-size array
@@ -332,6 +378,14 @@ def _to_tp2p_uid(uid_bytes: bytes) -> Any:
     for i, b in enumerate(uid_bytes):
         arr[i] = b
     return arr
+
+
+# Backward-compatible aliases. See the "PUBLIC API PROMOTION" comment
+# above for the rationale. These are considered implementation detail
+# and may be removed in a future revision once every caller has been
+# updated to the public names.
+_normalize_uid = normalize_uid
+_to_tp2p_uid = to_tp2p_uid
 
 
 # ======================================================================
@@ -879,8 +933,8 @@ class UIDTarget(Target):
             deserializer=deserializer,
             default_timeout_ms=default_timeout_ms,
         )
-        self._uid_bytes = _normalize_uid(uid)
-        self._uid_for_c = _to_tp2p_uid(self._uid_bytes)
+        self._uid_bytes = normalize_uid(uid)
+        self._uid_for_c = to_tp2p_uid(self._uid_bytes)
 
     @property
     def uid_bytes(self) -> bytes:
@@ -953,7 +1007,7 @@ class P2PNameTarget(Target):
     from the P2P name that a RECEIVER reads from a callback's INPUT
     handle via ``DataHandle.get_p2p_name()``: the latter is SIDE DATA
     injected by the SENDER'S transport layer, identifying the sender.
-    Both are 32-byte-agnostic strings, but they serve different
+    Both are strings of the same wire type, but they serve different
     purposes and are obtained through different mechanisms.
     """
 
@@ -1023,4 +1077,6 @@ __all__ = [
     "UIDTarget",
     "P2PNameTarget",
     "AsyncResultHandler",
+    "normalize_uid",
+    "to_tp2p_uid",
 ]

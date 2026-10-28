@@ -2,7 +2,7 @@
 ========================================================================
   LingoFuse Erlang Binding - Environment Report
 ========================================================================
-         Generated       : 2026-10-14 22:22:59
+         Generated       : 2026-10-26 01:00:32
          Script path     : D:\CoreLibrary\LingoFuse\erlang\check_env.ps1
          Script dir      : D:\CoreLibrary\LingoFuse\erlang
          Report file     : D:\CoreLibrary\LingoFuse\erlang\check_env_report.txt
@@ -66,15 +66,13 @@
 ========================================================================
   6. LingoFuse runtime library
 ========================================================================
-  [OK]   3 runtime library file(s) found on PATH
-         C:\Ruby40-x64\bin\LingoFuse64.dll  (2924032 bytes, 2026-10-14 00:44:27)
-         D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll  (2924032 bytes, 2026-10-14 00:44:27)
-         D:\CoreLibrary\LingoFuse\Binary\LingoFuse32.dll  (2275328 bytes, 2026-10-14 00:44:13)
-  [OK]   3 IPC dependency file(s) found on PATH
-         C:\Ruby40-x64\bin\z_ipc_64.dll  (258048 bytes, 2026-08-26 22:40:32)
+  [OK]   2 runtime library file(s) found on PATH
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll  (2925056 bytes, 2026-10-25 21:48:12)
+         D:\CoreLibrary\LingoFuse\Binary\LingoFuse32.dll  (2276352 bytes, 2026-10-25 21:47:56)
+  [OK]   2 IPC dependency file(s) found on PATH
          D:\CoreLibrary\LingoFuse\Binary\z_ipc_64.dll  (258048 bytes, 2026-08-26 22:40:32)
          D:\CoreLibrary\LingoFuse\Binary\z_ipc_32.dll  (235520 bytes, 2026-08-26 22:42:44)
-         3 mimalloc file(s) found on PATH (optional)
+         2 mimalloc file(s) found on PATH (optional)
 
 ========================================================================
   7. Project layout
@@ -87,8 +85,8 @@
   [OK]   test/ present
   [OK]   c_src/ present
   [OK]   cross/ present
-  [SKIP] priv/ not present (optional)
-  [SKIP] _build/ not present (optional)
+  [OK]   priv/ present
+  [OK]   _build/ present
 
 ========================================================================
   8. Source files
@@ -99,10 +97,13 @@
                              lingofuse_nif.erl
                              lingofuse_sup.erl
                              lingofuse.erl
-         test/*.erl       : 4
+         test/*.erl       : 7
                              lingofuse_abi_tests.erl
+                             lingofuse_async_tests.erl
+                             lingofuse_identity_tests.erl
                              lingofuse_json_tests.erl
                              lingofuse_network_tests.erl
+                             lingofuse_options_tests.erl
                              lingofuse_sync_tests.erl
          c_src/*.c        : 2
                              lf_loader.c
@@ -119,9 +120,8 @@
 ========================================================================
   9. NIF build state
 ========================================================================
-  [WARN] No NIF binary found under priv/
-         Run ".\build.ps1" (or ".\rebar3.cmd compile") to build it.
-  [SKIP] _build ebin not present (project has not been compiled yet)
+  [OK]   NIF present: D:\CoreLibrary\LingoFuse\erlang\priv\lingofuse_nif.dll  (83005 bytes, 2026-10-25 17:57:41)
+  [OK]   _build ebin present with 5 .beam file(s)
          Dialyzer PLT    : not built yet
 
 ========================================================================
@@ -129,25 +129,24 @@
 ========================================================================
          (no LingoFuse-specific environment variables set)
          
-         PATH entries    : 80
+         PATH entries    : 78
            [0] C:\Program Files\PowerShell\7
-           [1] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\debugCommand
-           [2] c:\Users\Administrator\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\copilotCli
-           [3] c:\Users\Administrator\.vscode\extensions\vadimcn.vscode-lldb-1.12.2\bin
-           [4] C:\Ruby40-x64\bin
-           ... and 75 more
+           [1] C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\bin
+           [2] C:\VulkanSDK\1.4.335.0\Bin
+           [3] C:\Python314\Scripts\
+           [4] C:\Python314\
+           ... and 73 more
 
 ========================================================================
   11. Summary
 ========================================================================
 
-  Checks passed   : 17
-  Warnings        : 1
+  Checks passed   : 21
+  Warnings        : 0
   Failures        : 0
-  Skipped         : 4
+  Skipped         : 1
 
-  Result: environment is usable, with warnings.
-          Review the [WARN] lines above.
+  Result: environment is ready.
 
 ========================================================================
   12. How to share this report

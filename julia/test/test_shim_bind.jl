@@ -9,6 +9,7 @@
 #   - Process-wide P2P registration.
 #   - All 6 async dispatch primitives return the expected value.
 #   - Event accessors tolerate NULL (empty queue) safely.
+#   - Sender identity accessors tolerate NULL (v3).
 #
 # This file loads the shim library (mock or real, whichever is found
 # first) and the real LingoFuse runtime. It does NOT prepare a
@@ -123,12 +124,13 @@ ck(LF_SHIM_EVENT_ASYNC_RESULT       == 4, "LF_SHIM_EVENT_ASYNC_RESULT == 4")
 #   Async dispatch:      6
 #   Consumer:            1
 #   Event accessors:     9
+#   Sender identity:     2
 #   Julia payload copy:  2
 #   Event completion:    2
 #   Typed options:      32  (16 pairs)
 #   Generic options:     2
 #   -----------------------
-#   Total:              66
+#   Total:              68
 
 const EXPECTED_SHIM_FUNCTIONS = Symbol[
     # Lifecycle
@@ -175,6 +177,10 @@ const EXPECTED_SHIM_FUNCTIONS = Symbol[
     :shim_event_result_data,
     :shim_event_result_len,
 
+    # Sender identity (v3, added by the Julia ABI binding stage C fix)
+    :shim_read_from_uid,
+    :shim_read_from_p2p_name,
+
     # Julia-owned payload copies
     :shim_read_input,
     :shim_read_result,
@@ -207,7 +213,7 @@ const EXPECTED_SHIM_FUNCTIONS = Symbol[
     :shim_get_option,
 ]
 
-const EXPECTED_SHIM_FUNCTION_COUNT = 66
+const EXPECTED_SHIM_FUNCTION_COUNT = 68
 
 ck(length(EXPECTED_SHIM_FUNCTIONS) == EXPECTED_SHIM_FUNCTION_COUNT,
    "EXPECTED_SHIM_FUNCTIONS contains " *
@@ -587,6 +593,15 @@ let null = Ptr{Cvoid}(0)
     # touching the event.
     ck(shim_set_output(null, UInt8[]) == true,
        "shim_set_output(NULL, empty) returns true")
+
+    # shim_read_from_uid / shim_read_from_p2p_name on NULL must
+    # return the documented defaults, not crash. Both accessors
+    # forward to the C-side NULL guard, which returns NULL, which
+    # the Julia wrapper maps to zero_uid() / "".
+    ck(shim_read_from_uid(null) == zero_uid(),
+       "shim_read_from_uid(NULL) returns zero_uid()")
+    ck(shim_read_from_p2p_name(null) == "",
+       "shim_read_from_p2p_name(NULL) returns an empty String")
 end
 
 # -------------------------------------------------------------------- #

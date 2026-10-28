@@ -25,6 +25,10 @@
  *       LF_ReadBuffer
  *       LF_WriteBuffer
  *
+ *   Sender identity (v3)
+ *       LF_Get_P2P_UID
+ *       LF_Get_P2P_Name
+ *
  *   Async dispatch (six primitives)
  *       LF_Async_Call
  *       LF_Async_Sequenced_Call
@@ -40,6 +44,15 @@
  * The handle I/O group is needed by the shim's trampolines, which
  * snapshot the input (or async result) payload and write the
  * consumer's response on the C4 worker thread.
+ *
+ * Sender identity
+ * ---------------
+ * LF_Get_P2P_UID returns a pointer to a 32-byte UID; LF_Get_P2P_Name
+ * returns a NUL-terminated UTF-8 string. Both pointers are allocated
+ * by the Pascal side and scheduled for release ~5 seconds after the
+ * call. The shim memcpys the bytes on the trampoline thread and
+ * never retains the pointers, so the release has no effect on the
+ * caller.
  *
  * Why dynamic resolution instead of linking against an import library
  * ------------------------------------------------------------------
@@ -98,14 +111,6 @@
 /* ------------------------------------------------------------------ */
 /* Callback type aliases                                              */
 /* ------------------------------------------------------------------ */
-/*
- * The four LingoFuse callback signatures are declared as standalone
- * typedefs first, then referenced by name in the function-pointer
- * typedefs below. This makes each typedef a single level of
- * indirection, which the C parser in the editor handles cleanly;
- * nesting a function-pointer type inside another one triggers a
- * "function returning function" mis-diagnosis in some configurations.
- */
 
 typedef void (*lf_call_cb_t)(void* trigger, void* input, void* output);
 typedef void (*lf_notify_cb_t)(void* trigger, void* input);
@@ -130,6 +135,14 @@ typedef int64_t (*fn_GetSize)(void*);
 typedef void    (*fn_SetPos)(void*, int64_t);
 typedef int64_t (*fn_ReadBuffer)(void*, void*, int64_t);
 typedef int64_t (*fn_WriteBuffer)(void*, const void*, int64_t);
+
+/* Sender identity (v3). The Pascal side declares these as
+ *     function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
+ *     function LF_Get_P2P_Name(Hnd: TDataHnd___): pansichar;
+ * and both are cdecl. lf_shim_uid_t is layout-compatible with
+ * TP2P_UID___, so the pointer types match. */
+typedef lf_shim_uid_t* (*fn_Get_P2P_UID)(void*);
+typedef const char*    (*fn_Get_P2P_Name)(void*);
 
 /*
  * The six async dispatch primitives. LF_UID_Async_Call and
@@ -204,12 +217,6 @@ static void* resolve_symbol(void* h, const char* name)
 /* ------------------------------------------------------------------ */
 /* Resolved API table                                                 */
 /* ------------------------------------------------------------------ */
-/*
- * Every symbol the shim needs is cached in one struct. A single
- * ensure_api() call resolves them all; if any one fails, the load is
- * marked failed and no forwarder ever calls into a half-loaded
- * library.
- */
 
 typedef struct {
     fn_RegisterCall                RegisterCall;
@@ -222,6 +229,8 @@ typedef struct {
     fn_SetPos                      SetPos;
     fn_ReadBuffer                  ReadBuffer;
     fn_WriteBuffer                 WriteBuffer;
+    fn_Get_P2P_UID                 Get_P2P_UID;
+    fn_Get_P2P_Name                Get_P2P_Name;
     fn_Async_Call                  Async_Call;
     fn_Async_Sequenced_Call        Async_Sequenced_Call;
     fn_UID_Async_Call              UID_Async_Call;
@@ -276,6 +285,10 @@ static int ensure_api(void)
     RESOLVE(SetPos,                      "LF_SetPos");
     RESOLVE(ReadBuffer,                  "LF_ReadBuffer");
     RESOLVE(WriteBuffer,                 "LF_WriteBuffer");
+
+    /* Sender identity (v3) */
+    RESOLVE(Get_P2P_UID,                 "LF_Get_P2P_UID");
+    RESOLVE(Get_P2P_Name,                "LF_Get_P2P_Name");
 
     /* Async dispatch */
     RESOLVE(Async_Call,                  "LF_Async_Call");
@@ -395,6 +408,20 @@ int64_t LF_WriteBuffer(void* hnd, const void* buff, int64_t size)
 {
     if (!ensure_api() || hnd == NULL) return 0;
     return g_api.WriteBuffer(hnd, buff, size);
+}
+
+/* ---- Sender identity (v3) ---- */
+
+lf_shim_uid_t* LF_Get_P2P_UID(void* hnd)
+{
+    if (!ensure_api() || hnd == NULL) return NULL;
+    return g_api.Get_P2P_UID(hnd);
+}
+
+const char* LF_Get_P2P_Name(void* hnd)
+{
+    if (!ensure_api() || hnd == NULL) return NULL;
+    return g_api.Get_P2P_Name(hnd);
 }
 
 /* ---- Async dispatch ---- */

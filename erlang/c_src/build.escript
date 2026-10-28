@@ -1,56 +1,9 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
 %%! -noshell -noinput
-%%
-%% c_src/build.escript
-%%
-%% Portable build script for the LingoFuse NIF.
-%%
-%% Compiles the C sources in this directory into a shared library in
-%% ../priv/. Runs on Windows, Linux, and macOS without any path
-%% hardcoding. Invoked by rebar3 as a pre_hook, and also usable by
-%% hand:
-%%
-%%     escript c_src/build.escript
-%%
-%% Environment variables
-%% ---------------------
-%% LINGOFUSE_SKIP_NIF
-%%   When set to a non-empty value, the script exits successfully
-%%   without compiling anything. Use this in CI jobs that only need
-%%   to verify the Erlang side.
-%%
-%% Compiler detection
-%% ------------------
-%% The script searches PATH for a C compiler, in this order:
-%%
-%%     1. gcc     (MinGW-w64 on Windows, native on Linux/macOS/BSD)
-%%     2. clang   (LLVM, all platforms)
-%%     3. cc      (POSIX generic alias)
-%%     4. cl      (MSVC, Windows only, used as a fallback)
-%%
-%% gcc and clang are preferred because they produce NIFs that load on
-%% every OTP build without additional configuration. MSVC is used as
-%% a fallback when neither is available, and it produces a DLL with
-%% the same runtime behaviour.
-%%
-%% Detection rules:
-%%   - The project root is inferred from the script's own path.
-%%   - The erts include directory is obtained from the running VM
-%%     (code:root_dir() / erlang:system_info(version)), never from an
-%%     environment variable.
-%%   - Linker flags are chosen from os:type() and the compiler family:
-%%         gcc/clang, {win32, _}      -> -shared
-%%         gcc/clang, {unix, darwin}  -> -bundle -undefined dynamic_lookup
-%%         gcc/clang, {unix, _}       -> -shared
-%%         cl,        {win32, _}      -> /LD /Fe:<target>
-%%
-%% Exit codes:
-%%   0 - success (or skipped)
-%%   1 - a required tool or header is missing
-%%   2 - the compiler failed
-
 -mode(compile).
+
+-include_lib("kernel/include/file.hrl").
 
 -define(SRC_FILES, ["lingofuse_nif.c", "lf_loader.c"]).
 -define(LIB_NAME, "lingofuse_nif").
@@ -58,7 +11,7 @@
 main(_Args) ->
     case skip_requested() of
         true ->
-            io:format("[build] LINGOFUSE_SKIP_NIF is set; "
+            io:format("[build] LINGOFUSE_SKIP_NIF is truthy; "
                       "skipping the NIF build.~n"),
             halt(0);
         false ->
@@ -69,12 +22,15 @@ skip_requested() ->
     case os:getenv("LINGOFUSE_SKIP_NIF") of
         false -> false;
         ""    -> false;
-        _     -> true
+        Val   ->
+            case string:lowercase(string:trim(Val)) of
+                "0"     -> false;
+                "false" -> false;
+                "no"    -> false;
+                "off"   -> false;
+                _       -> true
+            end
     end.
-
-%% =========================================================================
-%% Top-level build flow
-%% =========================================================================
 
 build_nif() ->
     ScriptPath = filename:absname(escript:script_name()),
@@ -87,7 +43,6 @@ build_nif() ->
 
     ok = ensure_dir(PrivDir),
 
-    %% --- erts include directory (from the running VM) -------------------
     ErlRoot     = code:root_dir(),
     ErtsVer     = erlang:system_info(version),
     ErtsInclude = filename:join([ErlRoot, "erts-" ++ ErtsVer, "include"]),
@@ -102,16 +57,13 @@ build_nif() ->
         true -> ok
     end,
 
-    %% --- C compiler ------------------------------------------------------
     {CC, CCName} = find_cc(),
     info("compiler", CC ++ " (" ++ CCName ++ ")"),
 
-    %% --- output library --------------------------------------------------
     Ext    = lib_extension(),
     Target = filename:join(PrivDir, ?LIB_NAME ++ Ext),
     info("output", Target),
 
-    %% --- dispatch on compiler family -------------------------------------
     case is_msvc(CCName) of
         true ->
             build_with_msvc(CC, CSrcDir, ErtsInclude, ErlRoot, ErtsVer,
@@ -120,23 +72,101 @@ build_nif() ->
             build_with_gcc(CC, CSrcDir, ErtsInclude, PrivDir, Target)
     end,
 
+    case filelib:file_size(Target) of
+        0 ->
+            err("post-build check: ~s is 0 bytes", [Target]),
+            halt(3);
+        _ -> ok
+    end,
+
+    copy_to_build_dir(RootDir, Target),
+
+    case filelib:file_size(Target) of
+        0 ->
+            err("post-copy check: ~s is 0 bytes (copy truncated it)",
+                [Target]),
+            halt(4);
+        _ -> ok
+    end,
+
     io:format("[build] OK~n"),
     halt(0).
 
-%% =========================================================================
-%% GCC / Clang build path
-%% =========================================================================
+copy_to_build_dir(RootDir, Target) ->
+    BaseName = filename:basename(Target),
+    Candidates = [
+        filename:join([RootDir, "_build", "default", "lib",
+                       "lingofuse", "priv", BaseName]),
+        filename:join([RootDir, "_build", "test", "lib",
+                       "lingofuse", "priv", BaseName])
+    ],
+    lists:foreach(fun(Dest) -> maybe_copy(Target, Dest) end, Candidates).
+
+maybe_copy(Target, Dest) ->
+    case filelib:is_dir(filename:dirname(Dest)) of
+        false ->
+            info("skip (no dir)", filename:dirname(Dest));
+        true ->
+            case same_stat(Target, Dest) of
+                true ->
+                    info("skip (same file)", Dest);
+                false ->
+                    case file:copy(Target, Dest) of
+                        {ok, _} ->
+                            info("copied to", Dest);
+                        {error, R} ->
+                            io:format(standard_error,
+                                      "[build] WARN: cannot copy to ~s: ~p~n",
+                                      [Dest, R])
+                    end
+            end
+    end.
+
+same_stat(P1, P2) ->
+    case {file:read_file_info(P1), file:read_file_info(P2)} of
+        {{ok, I1}, {ok, I2}} ->
+            I1#file_info.size =:= I2#file_info.size andalso
+            I1#file_info.mtime =:= I2#file_info.mtime;
+        _ -> false
+    end.
 
 build_with_gcc(CC, CSrcDir, ErtsInclude, PrivDir, Target) ->
     _ = PrivDir,
-    Objects = [compile_one_gcc(CC, CSrcDir, ErtsInclude, Src)
-               || Src <- ?SRC_FILES],
-    link_gcc(CC, Objects, Target),
-    [file:delete(filename:join(CSrcDir, O)) || O <- Objects],
+    RootDir = filename:dirname(CSrcDir),
+    Objs = [compile_one_gcc(CC, RootDir, CSrcDir, ErtsInclude, Src)
+            || Src <- ?SRC_FILES],
+
+    io:format("~n[build] object file sizes:~n"),
+    lists:foreach(fun report_size/1, Objs),
+
+    link_gcc(CC, Objs, Target),
+
+    io:format("~n[build] output file size:~n"),
+    report_size(Target),
+
+    case filelib:file_size(Target) of
+        0 ->
+            err("gcc produced a 0-byte DLL: ~s", [Target]),
+            err("object files are: ~p", [Objs]),
+            halt(2);
+        _ -> ok
+    end,
     ok.
 
-compile_one_gcc(CC, CSrcDir, ErtsInclude, Src) ->
-    Obj     = filename:basename(Src, ".c") ++ ".o",
+report_size(Path) ->
+    case filelib:is_file(Path) of
+        false ->
+            io:format("         ~-60s MISSING~n", [Path]);
+        true ->
+            case filelib:file_size(Path) of
+                0 -> io:format("         ~-60s 0 bytes (EMPTY!)~n", [Path]);
+                N -> io:format("         ~-60s ~p bytes~n", [Path, N])
+            end
+    end.
+
+compile_one_gcc(CC, RootDir, CSrcDir, ErtsInclude, Src) ->
+    ObjName = filename:basename(Src, ".c") ++ ".o",
+    Obj     = filename:join(RootDir, ObjName),
     SrcPath = filename:join(CSrcDir, Src),
     case filelib:is_file(SrcPath) of
         false ->
@@ -144,14 +174,25 @@ compile_one_gcc(CC, CSrcDir, ErtsInclude, Src) ->
             halt(1);
         true -> ok
     end,
-    Args = ["-O2", "-Wall", "-Wextra", "-std=c11", "-fPIC",
-            "-I" ++ ErtsInclude,
-            "-c", "-o", Obj, SrcPath],
+    BaseArgs = ["-O2", "-Wall", "-Wextra", "-std=c11",
+                "-I", ErtsInclude,
+                "-c", "-o", Obj, SrcPath],
+    Args = case os:type() of
+               {win32, _} -> BaseArgs;
+               _          -> ["-fPIC" | BaseArgs]
+           end,
     run(CC, Args),
+    case filelib:file_size(Obj) of
+        0 ->
+            err("gcc produced a 0-byte object: ~s", [Obj]),
+            halt(2);
+        _ -> ok
+    end,
     Obj.
 
-link_gcc(CC, Objects, Target) ->
-    Args = link_flags_gcc() ++ ["-o", Target | Objects],
+link_gcc(CC, Objs, Target) ->
+    _ = file:delete(Target),
+    Args = link_flags_gcc() ++ ["-o", Target | Objs],
     run(CC, Args).
 
 link_flags_gcc() ->
@@ -160,21 +201,6 @@ link_flags_gcc() ->
         {unix, darwin} -> ["-bundle", "-undefined", "dynamic_lookup"];
         _              -> ["-shared"]
     end.
-
-%% =========================================================================
-%% MSVC build path
-%% =========================================================================
-%%
-%% cl.exe performs compilation and linking in a single invocation when
-%% the /LD flag is given. The resulting DLL is written to the path
-%% specified by /Fe.
-%%
-%% If the OTP installation provides erts-<ver>/lib/erl_nif.lib, it is
-%% appended to the command line so that the erl_nif_* and enif_*
-%% symbols are resolved by the linker. On installations that do not
-%% ship that import library, the build relies on the BEAM to resolve
-%% the symbols at load time, which is the same behaviour as the
-%% gcc/clang path.
 
 build_with_msvc(CC, CSrcDir, ErtsInclude, ErlRoot, ErtsVer,
                 PrivDir, Target) ->
@@ -187,6 +213,8 @@ build_with_msvc(CC, CSrcDir, ErtsInclude, ErlRoot, ErtsVer,
          true -> ok
      end || P <- SrcPaths],
 
+    _ = file:delete(Target),
+
     BaseArgs = ["/nologo", "/O2", "/W3", "/std:c11", "/MD",
                 "/LD",
                 "/I" ++ ErtsInclude,
@@ -197,7 +225,8 @@ build_with_msvc(CC, CSrcDir, ErtsInclude, ErlRoot, ErtsVer,
                    info("import lib", LibPath),
                    BaseArgs ++ SrcPaths ++ [LibPath];
                not_found ->
-                   info("import lib", "(not found; relying on runtime resolution)"),
+                   info("import lib",
+                        "(not found; relying on runtime resolution)"),
                    BaseArgs ++ SrcPaths
            end,
 
@@ -219,11 +248,23 @@ find_first_existing([P | Rest]) ->
         false -> find_first_existing(Rest)
     end.
 
-%% =========================================================================
-%% Compiler detection
-%% =========================================================================
-
 find_cc() ->
+    case os:getenv("LINGOFUSE_CC") of
+        false -> find_cc_auto();
+        ""    -> find_cc_auto();
+        Requested ->
+            case os:find_executable(Requested) of
+                false ->
+                    err("LINGOFUSE_CC=~s not found on PATH",
+                        [Requested]),
+                    halt(1);
+                AbsPath ->
+                    info("LINGOFUSE_CC", Requested),
+                    {ok, {AbsPath, filename:basename(Requested)}}
+            end
+    end.
+
+find_cc_auto() ->
     Primary = ["gcc", "clang", "cc"],
     case try_cc_list(Primary) of
         {ok, Result} -> Result;
@@ -255,10 +296,6 @@ is_msvc(Name) ->
     L = string:lowercase(Name),
     L =:= "cl" orelse lists:suffix("cl.exe", L).
 
-%% =========================================================================
-%% Helpers
-%% =========================================================================
-
 ensure_dir(Dir) ->
     case filelib:is_dir(Dir) of
         true -> ok;
@@ -281,30 +318,19 @@ lib_extension() ->
 
 run(Exe, Args) ->
     display_command(Exe, Args),
-    Port = open_port(
-             {spawn_executable, Exe},
-             [{args, Args},
-              exit_status,
-              stderr_to_stdout,
-              {line, 4096},
-              hide,
-              binary]),
-    collect(Port).
-
-collect(Port) ->
-    receive
-        {Port, {data, {eol, Line}}} ->
-            io:format("         ~s~n", [Line]),
-            collect(Port);
-        {Port, {data, {noeol, Line}}} ->
-            io:format("         ~s", [Line]),
-            collect(Port);
-        {Port, {exit_status, 0}} ->
-            ok;
-        {Port, {exit_status, Status}} ->
-            err("compiler exited with status ~p", [Status]),
-            halt(2)
-    end.
+    Q = fun(S) ->
+        case lists:any(fun(C) -> C =:= $\s orelse C =:= $" end, S) of
+            true  -> [$", S, $"];
+            false -> S
+        end
+    end,
+    Cmd = Q(Exe) ++ " " ++ lists:join(" ", [Q(A) || A <- Args]) ++ " 2>&1",
+    Output = os:cmd(Cmd),
+    case Output of
+        "" -> ok;
+        _  -> io:format("         ~s", [Output])
+    end,
+    ok.
 
 display_command(Exe, Args) ->
     Quoted = [quote(A) || A <- Args],

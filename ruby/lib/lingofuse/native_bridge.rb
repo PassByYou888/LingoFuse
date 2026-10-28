@@ -1,60 +1,6 @@
 # frozen_string_literal: true
 #
 # native_bridge.rb — Ruby wrapper around the lingofuse_ext C extension.
-#
-# ============================================================================
-# PURPOSE
-# ============================================================================
-# Ruby-side half of the native bridge:
-#
-#   1. Loads the lingofuse_ext C extension.
-#   2. Starts and owns the dispatcher thread.
-#   3. Provides register / unregister primitives for Call / Notify APIs
-#      and for the process-wide network event handlers.
-#
-# ============================================================================
-# C EXTENSION LOADING
-# ============================================================================
-# The C extension `lingofuse_ext.so` is loaded with `require_relative`,
-# which resolves the file path relative to THIS source file. That makes
-# the binding fully relocatable: move the whole ruby/ tree anywhere and
-# the extension is still found, without depending on $LOAD_PATH, on the
-# current working directory, or on any environment variable.
-#
-# The extension is not mandatory for pure-local usage. When it is
-# missing, the binding falls back to the Fiddle callback path, which is
-# safe only for LocalCall / LocalNotify. Remote callbacks require the
-# extension (see BUILD_EXTENSION.md for the rationale).
-#
-# ============================================================================
-# CALLBACK KINDS (must match the C constants)
-# ============================================================================
-#   0 = Call
-#   1 = Notify
-#   2 = Network connect
-#   3 = Network disconnect
-#
-# ============================================================================
-# EXCEPTION ROUTING
-# ============================================================================
-# Call / Notify wrappers catch exceptions and forward them to
-# CallbackErrorReporter, making the NativeBridge path behave identically
-# to the Fiddle fallback from the user's point of view.
-#
-# Network event wrappers do the same.
-#
-# ============================================================================
-# REF OWNERSHIP
-# ============================================================================
-# `register*` returns an opaque Integer `ref_addr`. The CALLER owns that
-# value and must pass it back to `unregister` when the API is removed.
-# This module keeps no global registry of API refs.
-#
-# Network event refs are the exception: they live in C-side globals
-# because LF_Set_Network_Event has no `trigger` argument. This module
-# therefore keeps one pair of refs for the process.
-#
-# ============================================================================
 
 require 'fiddle'
 
@@ -64,8 +10,6 @@ require_relative 'data_handle'
 require_relative 'callback_error_reporter'
 
 begin
-  # Resolved relative to THIS file: lib/lingofuse_ext.so.
-  # Ruby's require machinery tries .so, .dll, .bundle, and .rb suffixes.
   require_relative '../lingofuse_ext'
   LINGOFUSE_EXT_LOADED = true
 rescue LoadError => e
@@ -83,6 +27,8 @@ module LingoFuse
 
     @started = false
     @start_lock = Mutex.new
+    @stop_requested = false
+    @thread = nil
 
     @net_connect_ref    = nil
     @net_disconnect_ref = nil
@@ -102,7 +48,6 @@ module LingoFuse
           respond_to?(:wait_for_work)
       end
 
-      # Idempotent. Spawns the dispatcher thread on first call.
       def start
         return if @started
         raise Error, 'lingofuse_ext is not available' unless available?
@@ -110,14 +55,17 @@ module LingoFuse
         @start_lock.synchronize do
           return if @started
           @started = true
+          @stop_requested = false
 
-          Thread.new do
+          @thread = Thread.new do
             if Thread.current.respond_to?(:name=)
               Thread.current.name = 'lingofuse-native-dispatcher'
             end
             loop do
+              break if @stop_requested
               begin
                 wait_for_work(100)
+                break if @stop_requested
                 process_all
               rescue StandardError => e
                 warn "[NativeBridge] dispatcher error: #{e.class}: #{e.message}"
@@ -125,11 +73,25 @@ module LingoFuse
             end
           end
         end
+        nil
       end
 
-      # -----------------------------------------------------------------
-      # Call / Notify registration
-      # -----------------------------------------------------------------
+      def stop
+        @stop_requested = true if defined?(@stop_requested)
+        if defined?(@thread) && @thread
+          @thread.join(2.0)
+          if @thread.alive?
+            begin
+              @thread.kill
+            rescue StandardError
+            end
+            @thread.join(0.5)
+          end
+          @thread = nil
+        end
+        @started = false
+        nil
+      end
 
       def register_call(app_handle, api_name, description = '', &block)
         register(app_handle, api_name, description, KIND_CALL, &block)
@@ -193,27 +155,11 @@ module LingoFuse
         nil
       end
 
-      # -----------------------------------------------------------------
-      # Network event registration
-      # -----------------------------------------------------------------
-      #
-      # LF_Set_Network_Event has no `trigger` argument, so the extension
-      # holds the process-wide refs in C globals. This method:
-      #
-      #   1. Frees any previous refs.
-      #   2. Installs the new refs into the C globals.
-      #   3. Calls LF_Set_Network_Event with the corresponding trampoline
-      #      addresses (or 0 to disable a slot).
-      #
-      # Passing nil for both handlers uninstalls everything.
-
       def install_network_event(on_connect, on_disconnect)
         raise Error, 'lingofuse_ext is not available' unless available?
 
         start
 
-        # Uninstall first, so the native side cannot fire through a ref
-        # we are about to free.
         uninstall_network_event
 
         connect_ref    = nil
@@ -229,9 +175,6 @@ module LingoFuse
           KIND_NETWORK_DISCONNECT
         ) if on_disconnect
 
-        # Publish the refs to the C side before registering the
-        # trampolines with LingoFuse; otherwise a callback could fire
-        # between LF_Set_Network_Event and the ref assignment.
         set_network_refs(connect_ref, disconnect_ref)
 
         connect_tramp =
@@ -249,13 +192,10 @@ module LingoFuse
       def uninstall_network_event
         return unless available?
 
-        # Tell LingoFuse to stop calling the trampolines first.
         LingoFuse::LF_Set_Network_Event.call(0, 0)
 
-        # Then clear the C-side globals.
         set_network_refs(nil, nil)
 
-        # Finally release the Ruby-side refs.
         free_ref(@net_connect_ref)    if @net_connect_ref
         free_ref(@net_disconnect_ref) if @net_disconnect_ref
         @net_connect_ref    = nil
@@ -269,10 +209,6 @@ module LingoFuse
 
       private
 
-      # -----------------------------------------------------------------
-      # Wrapper construction
-      # -----------------------------------------------------------------
-
       def build_wrapper(kind, source_label, user_block)
         if kind == KIND_NOTIFY
           lambda do |input_addr|
@@ -281,7 +217,7 @@ module LingoFuse
             )
             begin
               user_block.call(input)
-            rescue Exception => e # rubocop:disable Lint/RescueException
+            rescue Exception => e
               CallbackErrorReporter.report(source_label, e)
             end
           end
@@ -295,7 +231,7 @@ module LingoFuse
             )
             begin
               user_block.call(input, output)
-            rescue Exception => e # rubocop:disable Lint/RescueException
+            rescue Exception => e
               CallbackErrorReporter.report(source_label, e)
             end
           end
@@ -313,7 +249,7 @@ module LingoFuse
         lambda do |addr|
           begin
             user_block.call(addr)
-          rescue Exception => e # rubocop:disable Lint/RescueException
+          rescue Exception => e
             CallbackErrorReporter.report(label, e)
           end
         end

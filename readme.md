@@ -21,6 +21,8 @@
 | **想评估是否采用** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [语言支持](#语言支持) → [测试与验证](#测试与验证) → [项目状态与边界](#项目状态与边界) |
 | **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [相关项目](#相关项目) |
 | **想理解核心机制** | [核心概念](#核心概念) → [内部机制知识库](Z.LingoFuse.md) → [Pascal 完整指南](LingoFuse_Pascal_Complete_Guide.md) |
+| **想读简短机制短文** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按兴趣挑 |
+| **想学应用最佳实践** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按场景挑 |
 | **想自己编译核心库** | [构建核心动态库](#构建核心动态库) |
 | **想用代码生成器铺开多语言绑定** | [代码生成器体系 · LingoFuse-Tools](#代码生成器体系--lingofuse-tools) |
 | **想用 AI 加速 LingoFuse 开发** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) 里的“AI 能做和不能做的事” → [代码生成器体系](#代码生成器体系--lingofuse-tools) |
@@ -289,6 +291,40 @@ Tools 仓库同时承载了三类可读资产：
 
 ---
 
+## 技术短文 · 内核与应用
+
+十六篇短文，每篇讲一个机制或一个应用决策。不重复完整文档里的细节——只讲清楚“为什么这样设计”和“踩坑在哪”。每篇都有一张精炼流程图和一张契约表。
+
+### LF 内核：机制是怎么实现的
+
+| 短文 | 一句话 |
+|------|--------|
+| [LF_Handle_Ownership.md](LF_Handle_Ownership.md) | 同步族句柄归你，异步族句柄归框架，混用必炸 |
+| [LF_Simulated_Main_Thread.md](LF_Simulated_Main_Thread.md) | LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync` |
+| [LF_WaitOnResult.md](LF_WaitOnResult.md) | 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响 |
+| [LF_Sequenced_FIFO.md](LF_Sequenced_FIFO.md) | FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱 |
+| [LF_ZeroCopy_Decode.md](LF_ZeroCopy_Decode.md) | 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝 |
+| [LF_SwapUnderLock.md](LF_SwapUnderLock.md) | LF 从不在锁里遍历，总是锁内换容器、锁外干活 |
+| [LF_TBigList_Iterator.md](LF_TBigList_Iterator.md) | `Next` 是先移动再判断，`while Next` 会漏首节点 |
+| [LF_ThreadPool_Pick.md](LF_ThreadPool_Pick.md) | 任务来了先让空闲 worker 消化，实在不够才扩容 |
+| [LF_TCritical_Reuse.md](LF_TCritical_Reuse.md) | 创建十万个 `TCritical`，句柄数几乎不涨，因为有回收池 |
+| [LF_P2P_Identity.md](LF_P2P_Identity.md) | UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的 |
+
+### LF 应用：用这些机制做决策
+
+| 短文 | 一句话 |
+|------|--------|
+| [LF_Cmd_Model_Choice.md](LF_Cmd_Model_Choice.md) | 先问“要不要响应”，再问“吞吐够不够”，模型就定了 |
+| [LF_Route_Choice.md](LF_Route_Choice.md) | App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏 |
+| [LF_Startup_Order.md](LF_Startup_Order.md) | 启动顺序不能乱，乱了是静默失败（连接建了但调不通） |
+| [LF_Error_In_Callback.md](LF_Error_In_Callback.md) | 回调抛异常等于没抛，错误要在协议层传 |
+| [LF_Reconnect_Strategy.md](LF_Reconnect_Strategy.md) | LF 只给断线信号，重连行为是应用自己的事 |
+| [LF_Concurrent_Send.md](LF_Concurrent_Send.md) | `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放 |
+
+> **怎么读**：如果只是“想用起来”，先读**应用**那六篇——它们直接对应架构决策；如果想“想知道底下发生了什么”，读**内核**那十篇——它们解释了应用层那些“看起来反直觉的约束”从哪来。
+
+---
+
 ## 智能体运行时
 
 LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建筑可以有很多种。
@@ -437,6 +473,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v3.2，面向难缠语言 |
 | **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
 | **Pascal 完整指南** | ✅ 已完善 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) v7.0，95 条踩坑 ID |
+| **技术短文（内核 + 应用）** | ✅ 已完善 | 16 篇短文，见 [技术短文 · 内核与应用](#技术短文--内核与应用) |
 | **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
 | **预构建产物** | ✅ Windows 可用 | [release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)：生成器工具 + 动态库；Linux / macOS 需自行编译 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |

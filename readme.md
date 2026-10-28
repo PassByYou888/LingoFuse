@@ -1,12 +1,3 @@
-以下是修正后的 `readme.md`。主要改动：
-
-1. **`快速开始`** — 在“克隆仓库”之外，新增了 **`release pre_build` 预构建资源**的引用，Windows 用户可以直接下载生成器工具和动态库，不必从源码构建。
-2. **`依赖库`** — 补充了预构建动态库的下载入口，并明确了 `Binary/` 与 `release pre_build` 的关系。
-3. **`构建核心动态库`** — 补充了“如果不想自己编译，可直接用 `pre_build` 的预构建产物”的说明。
-4. **链接检查** — 保留了所有指向仓库内文件的相对路径链接（GitHub 可正确解析），删除了极少数无法确认有效且非必要的锚点引用。
-
----
-
 # LingoFuse
 
 > **跨语言通讯地基。不写 IDL，不生成桩代码，不搭 HTTP 服务。**
@@ -160,7 +151,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 每个语言目录都有独立的 README、独立的测试体系、独立的示例。点击语言名进入对应目录。
 
 | 语言 | 目录 | 状态 | 一句话说明 |
-|------|------|------|------------|
+|------|-----|------|-------------|
 | Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源；完整指南见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md)（v7.0，95 条踩坑 ID） |
 | Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关；知识库含 Handle 所有权 + 侧数据勘误 |
 | C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销，异步模型 + 侧数据读取 |
@@ -206,33 +197,6 @@ Tools 不是单一生成器，而是**三条并行的工具线**，共享同一�
 ### 生成器覆盖的目标语言
 
 Tools 当前覆盖 **20+ 种目标语言**，每种都含 service 侧、call 侧、测试程序和一套 `setup_*_tests.ps1` 环境脚本。生成器的后端为**无限扩展**设计——加一种语言是机械的 8 步流程，不是架构变更。
-
-#### 覆盖矩阵（生成能力）
-
-| 目标语言 | `code_decl_to_abi` | `code_decl_to_json_abi` | `code_decl_to_mcp` |
-|----------|:---:|:---:|:---:|
-| Pascal | ✅ | ✅ | ✅ |
-| Python | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ |
-| C# | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | — |
-| Go | ✅ | ✅ | — |
-| Java | ✅ | ✅ | — |
-| Node.js | ✅ | ✅ | — |
-| TypeScript | ✅ | ✅ | — |
-| Erlang | ✅ | ✅ | — |
-| Julia | ✅ | ✅ | — |
-| Zig | ✅ | ✅ | — |
-| Swift | ✅ | ✅ | — |
-| Ruby | ✅ | ✅ | — |
-| Fortran | ✅ | ✅ | — |
-| Dart | ✅ | ✅ | — |
-| R | ✅ | ✅ | — |
-| JavaScript（浏览器） | —（仅 call） | ✅ | — |
-| PHP | —（仅 call） | ✅ | — |
-| Delphi | —（仅 call） | ✅ | — |
-
-> **JavaScript（浏览器）、PHP、Delphi** 只生成 **call 侧**，没有 service 侧。Service 侧请用 Node.js / Python / Pascal / C++ 等语言承载。
 
 #### 平台与运行时矩阵
 

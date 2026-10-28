@@ -106,8 +106,6 @@ type
     APP_Process_Info: TLF_String;
     api_info_data: THashList;
     p2p_api_info_data: THashList;
-    Host_Running_Thread_Num: Integer;
-    Wait_Reponse_Thread_Num: Integer;
     Is_Local: Boolean;
     constructor Create(Owner_: TPeerIO); override;
     destructor Destroy; override;
@@ -121,8 +119,6 @@ type
     APP_Desc: TLF_String;
     APP_Process_Info: TLF_String;
     api_info_data: THashList;
-    Host_Running_Thread_Num: Integer;
-    Wait_Reponse_Thread_Num: Integer;
     Is_Local: Boolean;
     constructor Create;
     destructor Destroy; override;
@@ -179,7 +175,6 @@ type
     procedure cmd_Update_UID(Sender: TPeerIO; InData: TDFE);
     procedure cmd_Init_APP_Info(Sender: TCommandCompleteBuffer_NoWait_Bridge; InData, OutData: TDFE);
     procedure cmd_No_App_Info(Sender: TPeerIO; InData: SystemString);
-    procedure cmd_Thread_State(Sender: TPeerIO; InData: TDFE);
 
     procedure Run_Notify_Worker(thSender: THPC_StreamNotify; ThInData: TDFE);
     procedure cmd_Notify(Sender: TPeerIO; InData: TDFE);
@@ -232,7 +227,6 @@ type
     FHost_Running_Thread_Num: TAtomInt32;
     FWait_Reponse_Thread_Num: TAtomInt32;
     FSent_No_Response_Cmd_Num: TAtomInt32;
-    FLast_Update_Thread_State_TimeTick: TTimeTick;
     FLast_Check_UID_TimeTick: TTimeTick;
     FAPP: TLF_App;
     FAPI_APP_Is_Online: Boolean;
@@ -288,7 +282,6 @@ type
     procedure DoNetworkOffline; override;
 
     property Service_Info: TLF_ServiceInfoPool read FService_Info;
-    procedure Update_LocalThread_State_To_Service;
     procedure Update_UID_Info;
     procedure Init_App_Info;
     procedure Do_Init_App_Info_Result(Sender: TPeerIO; Result_: TDFE);
@@ -1051,8 +1044,6 @@ begin
   APP_Process_Info := '';
   api_info_data := THashList.Create;
   p2p_api_info_data := THashList.Create;
-  Host_Running_Thread_Num := 0;
-  Wait_Reponse_Thread_Num := 0;
   Is_Local := False;
   if LF_Debug_Log_Enabled then
     begin
@@ -1081,8 +1072,6 @@ begin
   APP_Desc := '';
   APP_Process_Info := '';
   api_info_data := THashList.Create;
-  Host_Running_Thread_Num := 0;
-  Wait_Reponse_Thread_Num := 0;
   Is_Local := False;
 end;
 
@@ -1098,8 +1087,6 @@ begin
   APP_Desc := source.APP_Desc;
   APP_Process_Info := source.APP_Process_Info;
   api_info_data.Assign(source.api_info_data);
-  Host_Running_Thread_Num := source.Host_Running_Thread_Num;
-  Wait_Reponse_Thread_Num := source.Wait_Reponse_Thread_Num;
   Is_Local := source.Is_Local;
 end;
 
@@ -1116,8 +1103,6 @@ begin
   api_info_data.GetNameList(pl);
   d.WritePascalStrings(pl);
   DisposeObject(pl);
-  d.WriteInteger(Host_Running_Thread_Num);
-  d.WriteInteger(Wait_Reponse_Thread_Num);
   d.WriteBool(Is_Local);
   d.FastEncodeTo(stream);
   DisposeObject(d);
@@ -1140,8 +1125,6 @@ begin
   for i := 0 to pl.Count - 1 do
       api_info_data.Add(pl[i], nil, False);
   DisposeObject(pl);
-  Host_Running_Thread_Num := d.R.ReadInteger;
-  Wait_Reponse_Thread_Num := d.R.ReadInteger;
   Is_Local := d.R.ReadBool;
   DisposeObject(d);
 end;
@@ -1734,8 +1717,6 @@ begin
   user_io.APP_Desc := '';
   user_io.APP_Process_Info := InData;
   user_io.api_info_data.Clear;
-  user_io.Host_Running_Thread_Num := 0;
-  user_io.Wait_Reponse_Thread_Num := 0;
   user_io.Is_Local := False;
 
   if FAPI_Lookup_Cache <> nil then
@@ -1748,22 +1729,6 @@ begin
     end;
 
   Schedule_API_Info_Broadcast();
-end;
-
-procedure TC40_LF_Service.cmd_Thread_State(Sender: TPeerIO; InData: TDFE);
-var
-  user_io: TC40_LF_RecvTunnel;
-begin
-  user_io := DTNoAuthService.GetUserDefineRecvTunnel(Sender) as TC40_LF_RecvTunnel;
-  if user_io = nil then exit;
-  user_io.Host_Running_Thread_Num := InData.R.ReadInteger;
-  user_io.Wait_Reponse_Thread_Num := InData.R.ReadInteger;
-
-  if LF_Debug_Log_Enabled then
-    begin
-      LF_Debug_Log('SVC.cmd_Thread_State: host=%d wait=%d',
-        [user_io.Host_Running_Thread_Num, user_io.Wait_Reponse_Thread_Num]);
-    end;
 end;
 
 procedure TC40_LF_Service.Run_Notify_Worker(thSender: THPC_StreamNotify; ThInData: TDFE);
@@ -2660,7 +2625,6 @@ begin
   DTNoAuth.RecvTunnel.RegisterCompleteBuffer_StreamNotify('Update_UID').OnExecute := cmd_Update_UID;
   DTNoAuth.RecvTunnel.RegisterCompleteBuffer_NoWait_Bridge_Stream('Init_APP_Info').OnExecute := cmd_Init_APP_Info;
   DTNoAuth.RecvTunnel.RegisterConsoleNotify('No_App_Info').OnExecute := cmd_No_App_Info;
-  DTNoAuth.RecvTunnel.RegisterCompleteBuffer_StreamNotify('Thread_State').OnExecute := cmd_Thread_State;
 
   DTNoAuth.RecvTunnel.RegisterCompleteBuffer_StreamNotify('Notify').OnExecute := cmd_Notify;
   DTNoAuth.RecvTunnel.RegisterCompleteBuffer_StreamNotify('Sequenced_Notify').OnExecute := cmd_Sequenced_Notify;
@@ -2681,7 +2645,6 @@ begin
   DTNoAuth.RecvTunnel.PrintParams.Add('update_service_api_info', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Init_APP_Info', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('No_App_Info', False, True);
-  DTNoAuth.RecvTunnel.PrintParams.Add('Thread_State', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Notify', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Sequenced_Notify', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Call', False, True);
@@ -2699,7 +2662,6 @@ begin
   DTNoAuth.SendTunnel.PrintParams.Add('update_service_api_info', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Init_APP_Info', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('No_App_Info', False, True);
-  DTNoAuth.SendTunnel.PrintParams.Add('Thread_State', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Notify', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Sequenced_Notify', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Call', False, True);
@@ -2902,7 +2864,7 @@ begin
   if P = nil then exit;
   if P^.recv_io = nil then exit;
   if P^.send_io = nil then exit;
-  if P^.recv_io.p2p_api_info_data.Exists(api_Name__.Text) then
+  if P^.recv_io.api_info_data.Exists(api_Name__.Text) or P^.recv_io.p2p_api_info_data.Exists(api_Name__.Text) then
       Result := P^.recv_io;
 end;
 
@@ -4029,7 +3991,6 @@ begin
   FHost_Running_Thread_Num := TAtomInt32.Create(0);
   FWait_Reponse_Thread_Num := TAtomInt32.Create(0);
   FSent_No_Response_Cmd_Num := TAtomInt32.Create(0);
-  FLast_Update_Thread_State_TimeTick := 0;
   FLast_Check_UID_TimeTick := 0;
 
   FAPP := nil;
@@ -4063,7 +4024,6 @@ begin
   DTNoAuth.RecvTunnel.PrintParams.Add('update_service_api_info', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Init_APP_Info', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('No_App_Info', False, True);
-  DTNoAuth.RecvTunnel.PrintParams.Add('Thread_State', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Notify', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Sequenced_Notify', False, True);
   DTNoAuth.RecvTunnel.PrintParams.Add('Call', False, True);
@@ -4081,7 +4041,6 @@ begin
   DTNoAuth.SendTunnel.PrintParams.Add('update_service_api_info', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Init_APP_Info', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('No_App_Info', False, True);
-  DTNoAuth.SendTunnel.PrintParams.Add('Thread_State', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Notify', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Sequenced_Notify', False, True);
   DTNoAuth.SendTunnel.PrintParams.Add('Call', False, True);
@@ -4106,48 +4065,60 @@ var
   free_timeout_: Boolean;
 begin
   if LF_Debug_Log_Enabled then
-    begin
-      LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d begin', [Tag]);
-    end;
-  LF_P2P_APP.Remove_Update(Self);
-
-  if FAPP <> nil then
-      FAPP.Remove_Update(Self);
-
-  free_timeout_ := False;
-  tk := GetTimeTick() + 2000;
-  while (FHost_Running_Thread_Num.V + FWait_Reponse_Thread_Num.V > 0) do
-    begin
-      if GetTimeTick() > tk then
-        begin
-          free_timeout_ := True;
-          Break;
-        end
-      else
-        begin
-          TCompute.Sleep(10);
-        end;
-    end;
-
-  if not free_timeout_ then
-    begin
-      DisposeObjectAndNil(FHost_Running_Thread_Num);
-      DisposeObjectAndNil(FWait_Reponse_Thread_Num);
-      DisposeObjectAndNil(FSent_No_Response_Cmd_Num);
-      DisposeObjectAndNil(FUID_Info_Tool);
-      DisposeObjectAndNil(FService_Info);
-      DisposeObjectAndNil(Cycle_Int64_Anchor_Tool);
-      DisposeObjectAndNil(Fixed_Sequenced_Pool);
-    end;
-
+    LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d begin', [Tag]);
   try
-      inherited Destroy;
+    try
+      LF_P2P_APP.Remove_Update(Self);
+    except
+      on E: Exception do
+        DoStatus('TC40_LF_Client.Destroy remove P2P update error: %s', [E.Message]);
+    end;
+    try
+      if FAPP <> nil then
+        FAPP.Remove_Update(Self);
+    except
+      on E: Exception do
+        DoStatus('TC40_LF_Client.Destroy remove app update error: %s', [E.Message]);
+    end;
+    free_timeout_ := False;
+    tk := GetTimeTick() + 2000;
+    while (FHost_Running_Thread_Num.V + FWait_Reponse_Thread_Num.V > 0) do
+      begin
+        if GetTimeTick() > tk then
+          begin
+            free_timeout_ := True;
+            Break;
+          end
+        else
+          TCompute.Sleep(10);
+      end;
+    if not free_timeout_ then
+      begin
+        try DisposeObjectAndNil(FHost_Running_Thread_Num); except end;
+        try DisposeObjectAndNil(FWait_Reponse_Thread_Num); except end;
+        try DisposeObjectAndNil(FSent_No_Response_Cmd_Num); except end;
+        try DisposeObjectAndNil(FUID_Info_Tool); except end;
+        try DisposeObjectAndNil(FService_Info); except end;
+        try DisposeObjectAndNil(Cycle_Int64_Anchor_Tool); except end;
+        try DisposeObjectAndNil(Fixed_Sequenced_Pool); except end;
+      end;
+  finally
+    try
+      if C40_ClientPool <> nil then
+        C40_ClientPool.Remove(Self);
+    except
+      on E: Exception do
+        DoStatus('TC40_LF_Client.Destroy remove from pool error: %s', [E.Message]);
+    end;
+  end;
+  try
+    inherited Destroy;
   except
+    on E: Exception do
+      DoStatus('TC40_LF_Client.Destroy inherited error: %s', [E.Message]);
   end;
   if LF_Debug_Log_Enabled then
-    begin
-      LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d done timeout=%s', [Tag, if_(free_timeout_, 'yes', 'no')]);
-    end;
+    LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d done timeout=%s', [Tag, if_(free_timeout_, 'yes', 'no')]);
 end;
 
 procedure TC40_LF_Client.SafeCheck;
@@ -4162,12 +4133,6 @@ begin
   if LF_AppIsOnline then
     begin
       tk := GetTimeTick();
-      if tk - FLast_Update_Thread_State_TimeTick > 1000 then
-        begin
-          if not DTNoAuth.SendTunnel.IOBusy then
-              Update_LocalThread_State_To_Service;
-          FLast_Update_Thread_State_TimeTick := tk;
-        end;
       if tk - FLast_Check_UID_TimeTick > 1000 then
         begin
           if not FLast_P2PName.Same(LF_P2P_name.V) then
@@ -4210,14 +4175,6 @@ begin
   else
       addr_ := Build_Host_URL(C40PhysicsTunnel.PhysicsAddr, C40PhysicsTunnel.PhysicsPort);
   Do_LF_Network_Disconnect(addr_);
-end;
-
-procedure TC40_LF_Client.Update_LocalThread_State_To_Service;
-begin
-  if not LF_AppIsOnline then
-      exit;
-  DTNoAuth.SendTunnel.SendCompleteBuffer_StreamNotify('Thread_State',
-    TDFE.Create.WriteInteger(FHost_Running_Thread_Num.V).WriteInteger(FWait_Reponse_Thread_Num.V).DelayFree);
 end;
 
 procedure TC40_LF_Client.Update_UID_Info;

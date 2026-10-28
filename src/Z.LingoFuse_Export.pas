@@ -13,7 +13,7 @@ uses SysUtils,
   Z.FP.Net.CrossSocket, Z.IPC.API, Z.Net.Server.IPC;
 
 const
-  C_LingoFuse_Edition = '5.01';
+  C_LingoFuse_Edition = '5.04';
 
 type
   TDataHnd___ = Pointer;
@@ -400,7 +400,7 @@ begin
   Desc__ := DS(Desc);
   if LF_Debug_Log_Enabled then
     begin
-      LF_Debug_Log('LF_RegisterCall: hnd=%p name="%s"', [appHnd, MethodName__.Text]);
+      LF_Debug_Log('LF_RegisterCall: hnd=%p name="%s" trigger=%s', [appHnd, MethodName__.Text, umlPointerToStr(Trigger).Text]);
     end;
   Result := if_(app.Engine.Reg_Call(MethodName__, Desc__, Trigger, OnCall), 1, 0);
 end;
@@ -418,7 +418,7 @@ begin
   Desc__ := DS(Desc);
   if LF_Debug_Log_Enabled then
     begin
-      LF_Debug_Log('LF_RegisterNotify: hnd=%p name="%s"', [appHnd, MethodName__.Text]);
+      LF_Debug_Log('LF_RegisterNotify: hnd=%p name="%s" trigger=%s', [appHnd, MethodName__.Text, umlPointerToStr(Trigger).Text]);
     end;
   Result := if_(app.Engine.Reg_Notify(MethodName__, Desc__, Trigger, OnNotify), 1, 0);
 end;
@@ -448,7 +448,7 @@ begin
   Desc__ := DS(Desc);
   if LF_Debug_Log_Enabled then
     begin
-      LF_Debug_Log('LF_Register_P2P_Call: name="%s"', [MethodName__.Text]);
+      LF_Debug_Log('LF_Register_P2P_Call: name="%s" trigger=%s', [MethodName__.Text, umlPointerToStr(Trigger).Text]);
     end;
   Result := if_(LF_P2P_APP.Engine.Reg_Call(MethodName__, Desc__, Trigger, OnCall), 1, 0);
 end;
@@ -462,7 +462,7 @@ begin
   Desc__ := DS(Desc);
   if LF_Debug_Log_Enabled then
     begin
-      LF_Debug_Log('LF_Register_P2P_Notify: name="%s"', [MethodName__.Text]);
+      LF_Debug_Log('LF_Register_P2P_Notify: name="%s" trigger=%s', [MethodName__.Text, umlPointerToStr(Trigger).Text]);
     end;
   Result := if_(LF_P2P_APP.Engine.Reg_Notify(MethodName__, Desc__, Trigger, OnNotify), 1, 0);
 end;

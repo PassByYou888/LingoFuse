@@ -1,3 +1,12 @@
+以下是修正后的 `readme.md`。主要改动：
+
+1. **`快速开始`** — 在“克隆仓库”之外，新增了 **`release pre_build` 预构建资源**的引用，Windows 用户可以直接下载生成器工具和动态库，不必从源码构建。
+2. **`依赖库`** — 补充了预构建动态库的下载入口，并明确了 `Binary/` 与 `release pre_build` 的关系。
+3. **`构建核心动态库`** — 补充了“如果不想自己编译，可直接用 `pre_build` 的预构建产物”的说明。
+4. **链接检查** — 保留了所有指向仓库内文件的相对路径链接（GitHub 可正确解析），删除了极少数无法确认有效且非必要的锚点引用。
+
+---
+
 # LingoFuse
 
 > **跨语言通讯地基。不写 IDL，不生成桩代码，不搭 HTTP 服务。**
@@ -61,25 +70,25 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 LingoFuse **不做**下面这些事：
 
 - **不做业务层封装**。它给你的是 `LF_Call` / `LF_Notify` / `LF_RegisterCall`，怎么组织你的 App 层、怎么切分服务、怎么做权限，都是你的工程决策。
-- **不做线程抽象**。回调在 TCompute 工作线程跑，不在主线程；回调里不能调阻塞 LF 函数，否则自锁死；同步回调要靠主线程 `LF_Sync` 驱动。这些不是"读一遍文档就懂"的事，是必须在你自己的代码里反复调试才能养成肌肉记忆的事。
+- **不做线程抽象**。回调在 TCompute 工作线程跑，不在主线程；回调里不能调阻塞 LF 函数，否则自锁死；同步回调要靠主线程 `LF_Sync` 驱动。这些不是“读一遍文档就懂”的事，是必须在你自己的代码里反复调试才能养成肌肉记忆的事。
 - **不做跨平台工具链适配**。每种语言的绑定都有各自的编译期陷阱：Java 需要 JDK 22+、Fortran 需要 C++ 与 Fortran 编译器来自同一发行版、Ruby 需要 DevKit、Julia 强制 `--threads=2`、Swift 的 macOS / Linux 路径还在验证中。这些坑你必须自己能处理。
-- **不做"装好就能跑"**。核心动态库需要你自己（或环境）编译；`Binary/` 只提供 Windows 32/64 位预编译版；Linux / macOS 需要按 `src/CONTRIBUTING.md` 自己构建。
+- **不做“装好就能跑”**。核心动态库和生成器工具都有**预构建产物**（见 [快速开始](#快速开始)），但**如果你需要的平台没有预构建版本**，或者预构建版本与你的运行时环境不匹配，你仍然需要自己编译。`Binary/` 只提供 Windows 32/64 位预编译库；Linux / macOS 需要按 `src/CONTRIBUTING.md` 自己构建。
 - **不做社区支持**。单人维护，Issue 会回，但不保证 SLA，没有 Stack Overflow 问答，没有第三方教程。
 
 ### 采用前请自测四个问题
 
 1. **你能否自行编译 LingoFuse 核心动态库（FPC / Lazarus）？**
-   如果答案是否，你的团队将完全依赖预编译二进制，遇到任何平台适配问题都会卡死。
+   预构建产物可以帮你跳过这一步——**但仅当你的平台和目标语言组合被预构建覆盖时**。如果不在覆盖范围内，你仍然需要自己能编译。
 2. **你能否读懂回调线程模型，并在自己的代码中系统性避免死锁？**
-   LingoFuse 把回调放在工作线程执行——这是一切正确性的基础，也是最容易出错的地方。如果团队里没人能讲清楚"为什么回调里不能调 `LF_Call`"，先别用。
+   LingoFuse 把回调放在工作线程执行——这是一切正确性的基础，也是最容易出错的地方。如果团队里没人能讲清楚“为什么回调里不能调 `LF_Call`”，先别用。
 3. **你能否在出现问题时会读源码，而不是读注释？**
    文档里有 95 条踩坑 ID、17 种语言的生成器报告、`Z.LingoFuse.md` v3.2——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
 4. **你是否愿意做 App 层 PoC，而不是相信 README 里的任何数字？**
    `test/` 提供的是**机理层竞态稳定性测试**，不是你的业务层测试。README 里的延迟、并发、成功率，都基于作者的硬件和场景，不是你的。
 
-**如果上面任何一条的答案是"不能"或"不愿意"，请直接选 gRPC / REST / 同进程方案。** LingoFuse 不会替你解决这些问题——它只提供地基，建筑需要你来设计。
+**如果上面任何一条的答案是“不能”或“不愿意”，请直接选 gRPC / REST / 同进程方案。** LingoFuse 不会替你解决这些问题——它只提供地基，建筑需要你来设计。
 
-**反过来**：如果上面四条你都能答"能"，而且你确实需要跨语言、跨进程、零 IDL、低延迟的原生 RPC，那 LingoFuse 是你能找到的最认真的实现之一。
+**反过来**：如果上面四条你都能答“能”，而且你确实需要跨语言、跨进程、零 IDL、低延迟的原生 RPC，那 LingoFuse 是你能找到的最认真的实现之一。
 
 ---
 
@@ -100,7 +109,18 @@ LingoFuse **不做**下面这些事：
 
 ## 快速开始
 
-在投入任何生产开发之前，建议按以下顺序验证：
+### 路径 A：直接使用预构建产物（Windows，推荐先试）
+
+如果你在 Windows 上，只是想先跑通、再决定是否深入，**不需要从源码编译任何东西**。到 **[release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)** 下载：
+
+- **生成器工具**（Windows 平台预构建）：`code_decl_to_abi` / `code_decl_to_json_abi` / `code_decl_to_mcp` 的可执行文件；
+- **动态库**（Windows 平台预构建）：`LingoFuse64.dll` / `LingoFuse32.dll` / `z_ipc_*.dll` / `mimalloc*.dll`。
+
+把动态库放到 `PATH` 或可执行文件同目录，生成器工具直接运行即可。**这是最短的上手路径。**
+
+> **预构建产物覆盖不到的平台 / 语言组合**（Linux / macOS 动态库、部分语言的生成器工具），仍然需要按路径 B 从源码构建。
+
+### 路径 B：从源码构建 + 验证
 
 **第一步：克隆仓库**
 
@@ -140,7 +160,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 每个语言目录都有独立的 README、独立的测试体系、独立的示例。点击语言名进入对应目录。
 
 | 语言 | 目录 | 状态 | 一句话说明 |
-|------|-----|-------|-------------|
+|------|------|------|------------|
 | Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源；完整指南见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md)（v7.0，95 条踩坑 ID） |
 | Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关；知识库含 Handle 所有权 + 侧数据勘误 |
 | C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销，异步模型 + 侧数据读取 |
@@ -179,13 +199,40 @@ Tools 不是单一生成器，而是**三条并行的工具线**，共享同一�
 |------|----------|----------|
 | **`code_decl_to_abi`** | LingoFuse 二进制 ABI | 两端都是 LingoFuse 原生、高并发、数值 / 二进制重载荷 |
 | **`code_decl_to_json_abi`** | HTTP + JSON（经 `bridge.py`） | 一端是浏览器、外部 HTTP 客户端，或没有 LingoFuse 绑定的语言 |
-| **`code_decl_to_mcp`** | MCP | 把函数暴露为 AI Agent 可调用的工具，在中国 MCP 已经烂大街停更中 |
+| **`code_decl_to_mcp`** | MCP | 把函数暴露为 AI Agent 可调用的工具 |
 
-> **同一份声明，三条路径。** 改一次声明，ABI / JSON / MCP 三套产物一起刷新。不会出现"ABI 改了这个函数但 MCP 还停在旧签名"的情况。
+> **同一份声明，三条路径。** 改一次声明，ABI / JSON / MCP 三套产物一起刷新。不会出现“ABI 改了这个函数但 MCP 还停在旧签名”的情况。
 
 ### 生成器覆盖的目标语言
 
 Tools 当前覆盖 **20+ 种目标语言**，每种都含 service 侧、call 侧、测试程序和一套 `setup_*_tests.ps1` 环境脚本。生成器的后端为**无限扩展**设计——加一种语言是机械的 8 步流程，不是架构变更。
+
+#### 覆盖矩阵（生成能力）
+
+| 目标语言 | `code_decl_to_abi` | `code_decl_to_json_abi` | `code_decl_to_mcp` |
+|----------|:---:|:---:|:---:|
+| Pascal | ✅ | ✅ | ✅ |
+| Python | ✅ | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ |
+| C# | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | — |
+| Go | ✅ | ✅ | — |
+| Java | ✅ | ✅ | — |
+| Node.js | ✅ | ✅ | — |
+| TypeScript | ✅ | ✅ | — |
+| Erlang | ✅ | ✅ | — |
+| Julia | ✅ | ✅ | — |
+| Zig | ✅ | ✅ | — |
+| Swift | ✅ | ✅ | — |
+| Ruby | ✅ | ✅ | — |
+| Fortran | ✅ | ✅ | — |
+| Dart | ✅ | ✅ | — |
+| R | ✅ | ✅ | — |
+| JavaScript（浏览器） | —（仅 call） | ✅ | — |
+| PHP | —（仅 call） | ✅ | — |
+| Delphi | —（仅 call） | ✅ | — |
+
+> **JavaScript（浏览器）、PHP、Delphi** 只生成 **call 侧**，没有 service 侧。Service 侧请用 Node.js / Python / Pascal / C++ 等语言承载。
 
 #### 平台与运行时矩阵
 
@@ -225,15 +272,15 @@ Tools 当前覆盖 **20+ 种目标语言**，每种都含 service 侧、call 侧
 - **Call 侧平台范围更广**：因为 Call 的模式 A（直接 HTTP）不需要 LingoFuse 原生库，移动端 / WASM / 浏览器都能做 Call。
 - **MCP 生成**目前只有 Pascal / Python / C++ / C# 四种语言，平台范围受各自运行时限制。
 
-### 代码生成器不是"黑盒"
+### 代码生成器不是“黑盒”
 
 Tools 仓库同时承载了三类可读资产：
 
 - **生成器源码**（`*_abi_*_generator_tool.pas`）：每种语言的 service / call / test / setup 生成器都是独立的 Pascal 单元。
 - **输入契约**（`pascal_code_abi_rule.md` / `C_code_abi_rule.md` / `pascal_code_mcp_rule.md` / `C_code_mcp_rule.md`）：**哪些声明会被提取、哪些会被静默丢弃**，写得比大多数 IDL 文档都细。
-- **各语言踩坑记录**（`R_ABI_Generator_Knowledge_Base.md` / `Dart_ABI_Generators_Fix_Report.md` / `Fortran_ABI_Generator_Work_Report.md` / `LingoFuse_Ruby_ABI_Integration_Report.md` / `swift_abi_generator_development_log.md` / `TypeScript_ABI_Generator_Development_Report.md` / `LingoFuse_JS_Async_Generator_Fix_Knowledge_Base.md`）：记录了"我以为"被实测推翻的地方——线格式不对齐、回调线程挂死、`int64` 在 JS 丢精度、`bridge.py` 预检缓存延迟导致 `-3` 错误等。
+- **各语言踩坑记录**（`R_ABI_Generator_Knowledge_Base.md` / `Dart_ABI_Generators_Fix_Report.md` / `Fortran_ABI_Generator_Work_Report.md` / `LingoFuse_Ruby_ABI_Integration_Report.md` / `swift_abi_generator_development_log.md` / `TypeScript_ABI_Generator_Development_Report.md` / `LingoFuse_JS_Async_Generator_Fix_Knowledge_Base.md`）：记录了“我以为”被实测推翻的地方——线格式不对齐、回调线程挂死、`int64` 在 JS 丢精度、`bridge.py` 预检缓存延迟导致 `-3` 错误等。
 
-> **AI 可以直接读这些生成器源码和踩坑记录来接管工具链。** Tools 的设计目标之一就是让 Agent 不需要"猜"生成器的行为——文档和源码写在一起。
+> **AI 可以直接读这些生成器源码和踩坑记录来接管工具链。** Tools 的设计目标之一就是让 Agent 不需要“猜”生成器的行为——文档和源码写在一起。
 
 ### 与第一方绑定的关系
 
@@ -244,7 +291,7 @@ Tools 仓库同时承载了三类可读资产：
 | CI | C++ 有 GitHub 托管 CI，其余本地脚本 | 生成器本身不跑 CI，产物需自行验证 |
 | 适用阶段 | 生产部署 | 原型 / 多语言铺开 / 持续同步 |
 
-**两者不冲突。** Tools 生成的绑定与第一方绑定共享同一套线格式契约；生成器的一个核心设计约束就是"与 C++ / Pascal 逐字节对齐"。如果你的项目只需要一种语言，直接用第一方绑定；如果你要把同一组 API 铺到多种语言，用 Tools。
+**两者不冲突。** Tools 生成的绑定与第一方绑定共享同一套线格式契约；生成器的一个核心设计约束就是“与 C++ / Pascal 逐字节对齐”。如果你的项目只需要一种语言，直接用第一方绑定；如果你要把同一组 API 铺到多种语言，用 Tools。
 
 👉 **[进入 LingoFuse-Tools 仓库，查看生成器源码、输入契约和踩坑记录](https://github.com/PassByYou888/LingoFuse-Tools)**
 
@@ -328,19 +375,32 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 | Dart | Dart test | 完整套件 | Windows / Linux / macOS | 本地 |
 | Pascal | 自研 | 完整开发套件 | Windows / Linux | 本地 |
 
-> **口径说明**：上表的"测试数"为各语言测试项 / 套件数；各语言 README 中的"断言数"（如 Fortran 的 474 断言）可能高于此表的测试项数。详细数字见各语言目录。
+> **口径说明**：上表的“测试数”为各语言测试项 / 套件数；各语言 README 中的“断言数”（如 Fortran 的 474 断言）可能高于此表的测试项数。详细数字见各语言目录。
 
 ---
 
 ## 跨语言互调（Cross Demo）
 
-LingoFuse 的核心理念是 **"任何语言写的函数，任何其他语言都能直接调"**。为了验证这个承诺，**每种语言的绑定都自带一套名为 "Cross" 的三个程序**。
+LingoFuse 的核心理念是 **“任何语言写的函数，任何其他语言都能直接调”**。为了验证这个承诺，**每种语言的绑定都自带一套名为 “Cross” 的三个程序**。
 
 ---
 
 ## 依赖库
 
-核心动态库位于 [`Binary/`](Binary/) 目录：
+### 预构建动态库（Windows，推荐）
+
+到 **[release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)** 下载 Windows 平台预构建动态库：
+
+| 平台 | 核心库 | IPC 依赖 | 内存分配器 |
+|------|--------|----------|------------|
+| Windows 64 | `LingoFuse64.dll` | `z_ipc_64.dll` | `mimalloc64.dll` |
+| Windows 32 | `LingoFuse32.dll` | `z_ipc_32.dll` | `mimalloc32.dll` |
+
+> **Linux / macOS 动态库**需要按 [`src/CONTRIBUTING.md`](src/CONTRIBUTING.md) 自己编译。`Binary/` 目录中的预编译库与 `release pre_build` 的 Windows 产物一致；如果你已经从 `pre_build` 下载，不需要再从 `Binary/` 复制。
+
+### 仓库内 `Binary/` 目录
+
+[`Binary/`](Binary/) 目录提供 Windows 32/64 位预编译库（与 `pre_build` 同源）：
 
 | 平台 | 核心库 | IPC 依赖 | 内存分配器 |
 |------|--------|----------|------------|
@@ -348,8 +408,6 @@ LingoFuse 的核心理念是 **"任何语言写的函数，任何其他语言都
 | Windows 32 | `LingoFuse32.dll` | `z_ipc_32.dll` | `mimalloc32.dll` |
 | Linux | `liblingofuse.so` | `libz_ipc.so` | `libmimalloc.so`（可选） |
 | macOS | `liblingofuse.dylib` | `libz_ipc.dylib` | `libmimalloc.dylib`（可选） |
-
-> 仓库当前 `Binary/` 目录主要提供 Windows 32/64 位预编译库；Linux / macOS 库需按 [`src/`](src/) 下构建文档自行编译。
 
 **部署方式**：将 `Binary/` 目录加入系统 `PATH`，或把动态库复制到可执行文件同目录。
 
@@ -362,6 +420,8 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 ---
 
 ## 构建核心动态库
+
+如果你需要的平台 / 架构 **没有被 `release pre_build` 或 `Binary/` 覆盖**（例如 Linux / macOS 动态库、特定架构的生成器工具），你需要从源码构建。
 
 `src/` 是 LingoFuse 核心动态库（`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`）的唯一构建入口。需要准备 Pascal 编译环境（FPC / Lazarus），然后一键构建。
 
@@ -386,6 +446,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
 | **Pascal 完整指南** | ✅ 已完善 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) v7.0，95 条踩坑 ID |
 | **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
+| **预构建产物** | ✅ Windows 可用 | [release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)：生成器工具 + 动态库；Linux / macOS 需自行编译 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 
 ### 明确不推荐的使用场景

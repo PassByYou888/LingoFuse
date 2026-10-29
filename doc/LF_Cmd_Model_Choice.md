@@ -2,7 +2,7 @@
 
 > 做 LF 应用第一天就要面对的选择：**Notify 还是 Call**。
 >
-> 这两者不是"同步/异步"的差别，是**协议模型的差别**。`Call` 是请求-响应，一个 IO 同时只能有一个在飞（`FWaitOnResult` 卡住队列）；`Notify` 是单向通知，发完就走，完全不受这个标志影响。所以架构层面的推论是：**用 Call 你的吞吐上限 = 单个连接的最慢往返；用 Notify 才能把连接用满**。而第三条路——`CompleteBuffer_NoWait_Stream`——是 LF 为"既要响应又要高吞吐"准备的优化，代价是必须开双隧道。
+> 这两者不是"同步/异步"的差别，是**协议模型的差别**。`Call` 是请求-响应，一个 IO 同时只能有一个在飞（内部 `FWaitOnResult` 标志卡住队列）；`Notify` 是单向通知，发完就走，完全不受这个标志影响。所以架构层面的推论是：**用 Call 你的吞吐上限 = 单个连接的最慢往返；用 Notify 才能把连接用满**。而第三条路——`CompleteBuffer_NoWait_Stream`——是 LF 为"既要响应又要高吞吐"准备的优化，代价是必须开双隧道。
 
 ---
 
@@ -28,7 +28,7 @@ flowchart TD
 | **Call** | ✅ | ✅ | ❌ | 查询、配置拉取、低频 RPC |
 | **CompleteBuffer_NoWait** | ✅ | ❌ | ✅ | 高频 RPC、游戏帧同步、实时指令 |
 
-**关键差异在于"阻塞队列"这一列**。`Call` 发出的那一刻，整个 `FSend_Queue_Pool` 就停摆了，直到响应回来。`Notify` 和 `NoWait` 都不会碰 `FWaitOnResult`，队列能一直流动。
+**关键差异在于"阻塞队列"这一列**。`Call` 发出的那一刻，整个发送队列就停摆了，直到响应回来。`Notify` 和 `NoWait` 都不会碰 `FWaitOnResult`，队列能一直流动。
 
 ---
 
@@ -37,6 +37,20 @@ flowchart TD
 `Notify` 不阻塞队列是因为它**不保证送达**。发出去就忘了，对端崩了、网络断了、处理失败了，发送方一概不知道。
 
 所以 `Notify` 只适合"丢了也不影响正确性"的场景——日志、指标、事件。任何"必须确认"的业务逻辑都不能用 `Notify`。需要顺序的话用 `Sequenced_Notify`（走顺序线程池，FIFO 保证），但仍然没有确认。
+
+**各语言入口**：
+
+```cpp
+// C++
+lingofuse::notify("Logger", payload);           // 无顺序
+lingofuse::sequencedNotify("Logger", payload);  // FIFO
+```
+
+```python
+# Python
+lf.notify("Logger", payload)
+lf.sequenced_notify("Logger", payload)
+```
 
 ---
 
@@ -72,6 +86,31 @@ flowchart LR
 `Call` 超时之后，`FWaitOnResult` **不会自动复位**。这意味着一次超时，后续所有 `Call` 都发不出去，这条连接就废了。所以用 `Call` 的应用必须做**超时后的重连**——不是"再试一次"，是"断开连接重建"。
 
 `Notify` 和 `NoWait` 没有这个问题，因为它们不设置 `FWaitOnResult`。
+
+各语言绑定层的处理方式一致：把 `size == 0` 的返回句柄视为"本次 Call 失败"，然后在应用层做连接重建。
+
+```cpp
+// C++ 侧的超时后重连伪代码
+auto resp = lingofuse::call("App", param, 3000);
+if (!resp || resp.size() == 0) {
+    // 1. 本地清理：dispose resp
+    // 2. 应用层决策：是重试（会卡），还是先 Shutdown + 重建？
+    framework::shutdown();
+    framework::resetPrepare();
+    framework::prepareClient("ipc:app");
+    framework::prepareDone();
+}
+```
+
+```python
+# Python 侧同理
+resp = lf.call("App", param, 3000)
+if resp is None or resp.size == 0:
+    lf.shutdown()
+    lf.reset_prepare()
+    lf.prepare_client("ipc:app")
+    lf.prepare_done()
+```
 
 ---
 

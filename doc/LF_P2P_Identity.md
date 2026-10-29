@@ -13,12 +13,12 @@
 ```mermaid
 flowchart LR
     subgraph Send["发送侧"]
-        A1["FLast_UID<br/>LF_P2P_name.V"] --> A2["Rebuild_UID_and_P2PName"]
+        A1["本会话 UID<br/>本进程 P2P 名"] --> A2["Rebuild / 注入"]
     end
     A2 --> B["请求载荷前部"]
     subgraph Recv["接收侧"]
-        B --> C1["LF_Get_P2P_UID(Input)"]
-        B --> C2["LF_Get_P2P_Name(Input)"]
+        B --> C1["读取输入句柄的 UID"]
+        B --> C2["读取输入句柄的 P2P 名"]
     end
 
     style A2 fill:#e8f4ff,stroke:#444
@@ -36,44 +36,53 @@ flowchart LR
 
 ```
 [apiName: string]
-[FromUID: 32 bytes]         ← FLast_UID
-[FromP2PName: string]       ← LF_P2P_name.V
+[FromUID: 32 bytes]         ← 发送方会话 UID
+[FromP2PName: string]       ← 发送方 P2P 组名
 [Param.Size: Int32]
 [Param: bytes]              ← 真正的业务数据
 ```
 
-这段是 `TMemory_Param_Tool.EncryptToMem` 干的活。所有 `Send_*` 系列方法都会调一次 `Rebuild_UID_and_P2PName`，把 `FLast_UID` 和 `LF_P2P_name.V` 塞到业务参数前面。
+这段是发送侧传输层（`Send*` 系列函数）在把载荷推入网络之前**自动完成**的。调用方不需要手动传这两个字段。
 
-所以只要请求走的是 `Send_*`，就一定带身份。不走 `Send_*` 的，就没带。
+**所以只要请求走的是 `Send*` 路径，就一定带身份。不走 `Send*` 的，就没带。**
+
+### 哪些路径会注入
+
+| 调用路径 | 是否注入身份 |
+|---------|:-----------:|
+| `call` / `notify` / `sequenced_*` | ✅ |
+| `uid_call` / `uid_notify` | ✅ |
+| `p2pname_call` / `p2pname_notify` | ✅ |
+| `call` 命中本地短路（本进程有同名 App） | ✅ |
+| **`local_call` / `local_notify`** | ❌ |
+
+**最后一行是坑**——见下面"为什么本地调用读不到"。
 
 ---
 
 ## 读的时候有一层陷阱
 
-`LF_Get_P2P_UID` 的返回值不是 32 字节的数组，是**指向 32 字节的指针**。这是个改动过的接口，旧文档可能还写着"返回值"，那种描述是错的。
+`LF_Get_P2P_UID` 的返回值不是 32 字节的数组，是**指向 32 字节的指针**。这是一个历史变更过的接口，旧文档可能还写着"返回值"，那种描述是错的。
 
-源码是这样的：
+C ABI 层面长这样：
 
-```pascal
-function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
-begin
-  New(Result);                                  // ← 在堆上分配
-  if (Hnd <> nil) and (PLF_Data(Hnd)^.Data_Param <> nil) then
-      Result^ := PLF_Data(Hnd)^.Get_P2P_UID()
-  else Result^ := Null_UID();
-  DelayFreeMem(5.0, Result);                    // ← 5 秒后自动释放
-end;
+```c
+/* 返回指针（指向 32 字节 UID） */
+const uint8_t* LF_Get_P2P_UID(void* input_handle);
+
+/* 返回 UTF-8 字符串指针 */
+const char* LF_Get_P2P_Name(void* input_handle);
 ```
 
-这意味着：
+指针由框架分配，**调用后约 5 秒自动释放**。这意味着：
 
 ```mermaid
 flowchart TD
-    A["uid_ptr := LF_Get_P2P_UID(Input)"] --> B["uid_ptr 指向堆上的 32 字节"]
-    B --> C["立即 uid := uid_ptr^"]
+    A["uid_ptr := get_p2p_uid(Input)"] --> B["uid_ptr 指向堆上的 32 字节"]
+    B --> C["立即拷贝到本地数组"]
     C --> D["安全，随便用"]
 
-    B -. "保存指针不拷贝" .-> E["5 秒后 DelayFreeMem"]
+    B -. "保存指针不拷贝" .-> E["5 秒后框架释放"]
     E --> F["悬空，读到垃圾"]
 
     style D fill:#e8ffe8,stroke:#0a0
@@ -82,7 +91,33 @@ flowchart TD
 
 **调用者只做一件事**：解引用，拷贝，完事。不手动释放，不长期保存。
 
-Name 那边也是同样的 5 秒规则，只是返回的是 `PAnsiChar`，拷贝方式更直白——大多数语言里对应一个字符串赋值就够了。
+Name 那边也是同样的规则——返回的是 `const char*`，约 5 秒后失效。各语言的绑定层都帮你把这层封装了：你拿到的已经是**拷贝后的值**，不需要操心 5 秒的事。
+
+### C++ 绑定层的行为
+
+```cpp
+lingofuse::DataHandle in_h(raw_input, /*owned=*/false);
+
+// 立即拷贝为 std::array<uint8_t,32>，原始指针从不暴露给你
+std::array<uint8_t, 32> uid = in_h.getP2PUid();
+
+// 立即拷贝为 std::string
+std::string p2p = in_h.getP2PName();
+
+// uid 和 p2p 是完全脱离框架内存的本地对象，可以任意持有
+```
+
+### Python 绑定层的行为
+
+```python
+# 立即拷贝为 32 字节 bytes
+uid = inp.get_p2p_uid()
+
+# 立即拷贝为 Python str
+name = inp.get_p2p_name()
+
+# uid 和 name 已经和 native 缓冲脱离，可以任意持有
+```
 
 ---
 
@@ -93,8 +128,8 @@ Name 那边也是同样的 5 秒规则，只是返回的是 `PAnsiChar`，拷贝
 ```mermaid
 flowchart TD
     A["触发位置"] --> B{"是回调的<br/>Input 参数吗？"}
-    B -- 否 --> Z["读不到<br/>返回 Null_UID / 空串 + 警告"]
-    B -- 是 --> C{"是 LF_LocalCall /<br/>LF_LocalNotify 吗？"}
+    B -- 否 --> Z["读不到<br/>返回全零 UID / 空串 + 警告"]
+    B -- 是 --> C{"是 local_call /<br/>local_notify 吗？"}
     C -- 是 --> Z
     C -- 否 --> D["能读到"]
 
@@ -104,17 +139,17 @@ flowchart TD
 
 | 位置 | 能读？ | 为什么 |
 |------|:------:|--------|
-| `On_Call(Trigger, Input, Output)` 的 `Input` | ✅ | 从网络接收，带侧数据 |
-| `On_Notify(Trigger, Input)` 的 `Input` | ✅ | 同上 |
-| `LF_Call` 命中本地短路的回调 `Input` | ✅ | 走了 `Send_*` 路径 |
-| `LF_LocalCall` / `LF_LocalNotify` 的回调 `Input` | ❌ | **没走 `Send_*`，没注入** |
-| `OnResult` 回调的 `Result_` | ❌ | 是输出句柄，没有 `Data_Param` |
-| 自己 `LF_CreateData` 创建的句柄 | ❌ | 没有发送方 |
+| `registerCall` 回调的 `input` | ✅ | 从网络接收，带侧数据 |
+| `registerNotify` 回调的 `input` | ✅ | 同上 |
+| `call` 命中本地短路的回调 `input` | ✅ | 走了 `Send*` 路径 |
+| `local_call` / `local_notify` 的回调 `input` | ❌ | **没走 `Send*`，没注入** |
+| 异步回调的 `result` | ❌ | 是输出句柄，没有侧数据 |
+| 自己 `new DataHandle(...)` 创建的句柄 | ❌ | 没有发送方 |
 
 读到不该读的地方时，LF 不是静默返回空值，它会在日志里打一行警告：
 
 ```
-[warning] Get_P2P_UID(): P2P Info only backcall "input" parameter.
+[warning] getP2PUID(): P2P info is only available on the callback "input" parameter.
 ```
 
 看到这行警告，就说明读错了位置。
@@ -125,30 +160,38 @@ flowchart TD
 
 这一条最反直觉，单独说一下。
 
-`LF_LocalCall` 的源码走的是：
+`local_call` 走的是**直接本地派发**：
 
-```pascal
-function LF_LocalCall(appHnd, Param): TDataHnd___;
-begin
-  tmp := TMem64.Create;
-  PLF_Data(Param).Data_Param.EncryptToMem(tmp);   // ← 直接编码，没有 Rebuild
-  PLF_Data(Param).Begin_Call;
-  Result := TLF_Data.New_Result_From(app.Engine.Execute_Call(tmp), True);
-  ...
-end;
+```cpp
+// 简化语义
+auto local_call(App* app, DataHandle* param) {
+    // ① 把 param 直接编码为内存流
+    encode_to_memory_stream(param);
+    // ② 直接调 Engine::Execute_Call —— 没有经过 Rebuild 注入
+    return app->engine()->execute_call(stream);
+}
 ```
 
-注意这里调的是 `EncryptToMem`，不是 `Rebuild_UID_and_P2PName`。`EncryptToMem` 只是把当前句柄里已有的 `FromUID` / `FromP2PName` 编进去——而你自己用 `LF_CreateData` 创建的句柄，这两个字段是空的（`Null_UID()` / 空串）。
+注意这里**没有走 Rebuild 注入**。你自己用 `new DataHandle` 创建的请求句柄，其 `FromUID` 是全零、`FromP2PName` 是空串——因为**根本没有发送方**。
 
-对比一下，`LF_Call` 走的是：
+对比一下 `call` 走的路：
 
-```pascal
-tmp_param := TMemory_Param_Tool.Rebuild_UID_and_P2PName(Param, FLast_UID, LF_P2P_name.V);
+```cpp
+// 简化语义
+auto call(const char* appName, DataHandle* param) {
+    // ① 用当前会话的 UID 和 P2PName 重写载荷头部
+    auto rebuilt = rebuild_with_identity(param, current_uid, current_p2p);
+    // ② 查本地：如果本进程有同名 App，直接本地执行
+    if (auto local = find_local_api(appName, apiName(rebuilt))) {
+        local->execute(rebuilt);   // 本地执行，但身份已注入
+        return nullptr;
+    }
+    // ③ 否则走网络
+    return send_to_network(rebuilt);
+}
 ```
 
-`Rebuild_UID_and_P2PName` 会**用当前客户端的 UID 和 P2PName 覆盖**句柄里的字段。所以走 `LF_Call` 的请求，无论最后是本地短路还是走网络，身份都是对的。
-
-这也是一个取舍。`LF_LocalCall` 被设计成"纯进程内调用"，不掺和任何网络身份的概念——如果要身份，用 `LF_Call`，反正会本地短路，成本一样。
+这也是一个取舍。`local_call` 被设计成"纯进程内调用"，不掺和任何网络身份的概念——如果要身份，用 `call`，反正会本地短路，成本一样。
 
 ---
 
@@ -158,14 +201,22 @@ tmp_param := TMemory_Param_Tool.Rebuild_UID_and_P2PName(Param, FLast_UID, LF_P2P
 
 | 语言 | UID | P2PName |
 |------|-----|---------|
-| Pascal | `uid := LF_Get_P2P_UID(Input)^` | `name := LF_Get_P2P_NameEx(Input)` |
-| Python | `uid = inp.get_p2p_uid()`（内部已拷贝成 `bytes`） | `name = inp.get_p2p_name()` |
-| C++ | `auto uid = inp.getP2PUid()`（返回 `std::array<uint8_t,32>`） | `auto name = inp.getP2PName()` |
-| C# | `var uid = input.P2PUid` | `var name = input.P2PName` |
-| Rust | `let uid = input.p2p_uid()` | `let name = input.p2p_name()` |
-| Go | `uid, _ := inp.GetP2PUID()` | `name, _ := inp.GetP2PName()` |
-| Java | `byte[] uid = in.getP2pUid()` | `String name = in.getP2pName()` |
-| Node.js / TS | `const uid = inp.getP2PUid()` | `const name = inp.getP2PName()` |
+| **C++** | `inp.getP2PUid()` → `std::array<uint8_t,32>` | `inp.getP2PName()` → `std::string` |
+| **Python** | `inp.get_p2p_uid()` → `bytes` | `inp.get_p2p_name()` → `str` |
+| C# | `input.P2PUid` | `input.P2PName` |
+| Rust | `input.p2p_uid()` | `input.p2p_name()` |
+| Go | `inp.GetP2PUID()` | `inp.GetP2PName()` |
+| Java | `in.getP2pUid()` | `in.getP2pName()` |
+| Node.js / TS | `inp.getP2PUid()` | `inp.getP2PName()` |
+| Swift | `input.p2pUid()` | `input.p2pName()` |
+| Ruby | `input.p2p_uid` | `input.p2p_name` |
+| Erlang | 通过 `with_identity` 的 `Identity` map | 同上 |
+| Julia | `input.uid` / `input.p2p_name` | — |
+| Zig | `input.p2pUid()` | `input.p2pName()` |
+| Fortran | `lf_data_get_p2p_uid(input, uid)` | `lf_data_get_p2p_name(input, name)` |
+| Dart | `ctx.senderUid` | `ctx.senderP2PName` |
+| R | `ctx$sender_uid` | `ctx$sender_p2p_name` |
+| Pascal | `LF_Get_P2P_UID(Input)^` | `LF_Get_P2P_NameEx(Input)` |
 
 绑定层都已经帮你把指针解引用、拷贝这一步做完了。你拿到的就是原生对象，不需要操心 5 秒的事。
 
@@ -173,17 +224,98 @@ tmp_param := TMemory_Param_Tool.Rebuild_UID_and_P2PName(Param, FLast_UID, LF_P2P
 
 ---
 
+## whoami 模式：一个完整例子
+
+最常见的用法是：**服务端注册一个 `whoami`，把 caller 的身份回写给客户端**，客户端因此学会自己的 UID。
+
+### C++ 服务端
+
+```cpp
+app.registerCall("whoami", "echo caller identity",
+    [](lingofuse::DataHandle& in, lingofuse::DataHandle& out) {
+        // 从 Input 句柄读发送方身份
+        auto uid  = in.getP2PUid();          // std::array<uint8_t,32>
+        auto name = in.getP2PName();         // std::string
+
+        // 十六进制化
+        char hex[65] = {0};
+        for (int i = 0; i < 32; ++i) {
+            std::sprintf(hex + i * 2, "%02x", uid[i]);
+        }
+
+        // 回写给客户端
+        out.write<uint8_t>(0x00);            // status: OK
+        out.write_string(hex);
+        out.write_string(name);
+    });
+```
+
+### C++ 客户端
+
+```cpp
+lingofuse::DataHandle req("whoami");
+auto resp = lingofuse::call("IdentitySvc", req, 3000);
+if (!resp || resp.size() == 0) { /* 处理失败 */ }
+
+resp.position = 0;
+uint8_t status = resp.read<uint8_t>();
+if (status != 0x00) { /* 服务端报了错 */ }
+
+std::string uid_hex  = resp.read_string();   // 64 字符 hex
+std::string p2p_name = resp.read_string();
+
+// uid_hex 现在可以转成 32 字节数组，用于 UID 定向调用
+```
+
+### Python 服务端
+
+```python
+def whoami_handler(inp, out):
+    uid  = inp.get_p2p_uid()       # bytes，长度 32
+    name = inp.get_p2p_name()      # str
+
+    out.write_uint8(0x00)          # status: OK
+    out.write_string(uid.hex())    # 64 字符 hex
+    out.write_string(name)
+
+app.register_call("whoami", "echo caller identity", whoami_handler)
+```
+
+### Python 客户端
+
+```python
+req = lf.DataHandle("whoami")
+try:
+    resp = lf.call("IdentitySvc", req, 3000)
+    if resp is None or resp.size == 0:
+        raise RuntimeError("whoami failed")
+
+    resp.position = 0
+    if resp.read_uint8() != 0x00:
+        raise RuntimeError("server-side error")
+
+    uid_hex  = resp.read_string()      # 64 字符 hex
+    p2p_name = resp.read_string()
+
+    my_uid_bytes = bytes.fromhex(uid_hex)   # 转回 32 字节
+finally:
+    req.dispose()
+    resp.dispose()
+```
+
+---
+
 ## 陷阱速查
 
 | 症状 | 根因 | 修复 |
 |------|------|------|
-| 身份读出来全是 0 | 在 `Output` 或自建句柄上调用 | 只在回调的 `Input` 上读 |
-| 日志里出现 `P2P Info only backcall "input" parameter` | 同上 | 同上 |
-| `LF_LocalCall` 里读不到身份 | 不走 `Rebuild_UID_and_P2PName` | 需要身份时改用 `LF_Call` |
-| 拿到的 UID 是乱码 | 把指针当成数组用了 | `uid := uid_ptr^` 再拷贝 |
+| 身份读出来全是 0 | 在 `output` 或自建句柄上调用 | 只在回调的 `input` 上读 |
+| 日志里出现 `P2P info is only available on input` | 同上 | 同上 |
+| `local_call` 里读不到身份 | 不走注入路径 | 需要身份时改用 `call` |
+| 拿到的 UID 是乱码 | 把指针当成数组用了 | 解引用 + 立即拷贝 |
 | 5 秒后 UID 变成垃圾 | 保存了指针没拷贝 | 立即拷贝，别存指针 |
-| 发送方设置了 `LF_P2P_name` 但接收方拿到的还是空 | 设置之后没等 `Update_UID_Info` 上报 | 设置完至少等一个 `Progress` 周期 |
-| 高频调用后内存慢涨 | 每次 `LF_Get_P2P_UID` 都 `New` + `DelayFreeMem` | 回调内调一次，缓存值 |
+| 发送方设了 P2P 名，接收方拿到空 | 设置之后没等上报周期 | 设置完至少等一个 Progress 周期 |
+| 高频调用后内存慢涨 | 每次读都分配临时指针 | 回调内读一次，本地缓存 |
 
 ---
 

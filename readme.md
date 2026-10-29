@@ -299,27 +299,27 @@ Tools 仓库同时承载了三类可读资产：
 
 | 短文 | 一句话 |
 |------|--------|
-| [LF_Handle_Ownership.md](LF_Handle_Ownership.md) | 同步族句柄归你，异步族句柄归框架，混用必炸 |
-| [LF_Simulated_Main_Thread.md](LF_Simulated_Main_Thread.md) | LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync` |
-| [LF_WaitOnResult.md](LF_WaitOnResult.md) | 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响 |
-| [LF_Sequenced_FIFO.md](LF_Sequenced_FIFO.md) | FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱 |
-| [LF_ZeroCopy_Decode.md](LF_ZeroCopy_Decode.md) | 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝 |
-| [LF_SwapUnderLock.md](LF_SwapUnderLock.md) | LF 从不在锁里遍历，总是锁内换容器、锁外干活 |
-| [LF_TBigList_Iterator.md](LF_TBigList_Iterator.md) | `Next` 是先移动再判断，`while Next` 会漏首节点 |
-| [LF_ThreadPool_Pick.md](LF_ThreadPool_Pick.md) | 任务来了先让空闲 worker 消化，实在不够才扩容 |
-| [LF_TCritical_Reuse.md](LF_TCritical_Reuse.md) | 创建十万个 `TCritical`，句柄数几乎不涨，因为有回收池 |
-| [LF_P2P_Identity.md](LF_P2P_Identity.md) | UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的 |
+| [LF_Handle_Ownership.md](doc/LF_Handle_Ownership.md) | 同步族句柄归你，异步族句柄归框架，混用必炸 |
+| [LF_Simulated_Main_Thread.md](doc/LF_Simulated_Main_Thread.md) | LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync` |
+| [LF_WaitOnResult.md](doc/LF_WaitOnResult.md) | 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响 |
+| [LF_Sequenced_FIFO.md](doc/LF_Sequenced_FIFO.md) | FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱 |
+| [LF_ZeroCopy_Decode.md](doc/LF_ZeroCopy_Decode.md) | 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝 |
+| [LF_SwapUnderLock.md](doc/LF_SwapUnderLock.md) | LF 从不在锁里遍历，总是锁内换容器、锁外干活 |
+| [LF_TBigList_Iterator.md](doc/LF_TBigList_Iterator.md) | `Next` 是先移动再判断，`while Next` 会漏首节点 |
+| [LF_ThreadPool_Pick.md](doc/LF_ThreadPool_Pick.md) | 任务来了先让空闲 worker 消化，实在不够才扩容 |
+| [LF_TCritical_Reuse.md](doc/LF_TCritical_Reuse.md) | 创建十万个 `TCritical`，句柄数几乎不涨，因为有回收池 |
+| [LF_P2P_Identity.md](doc/LF_P2P_Identity.md) | UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的 |
 
 ### LF 应用：用这些机制做决策
 
 | 短文 | 一句话 |
 |------|--------|
-| [LF_Cmd_Model_Choice.md](LF_Cmd_Model_Choice.md) | 先问“要不要响应”，再问“吞吐够不够”，模型就定了 |
-| [LF_Route_Choice.md](LF_Route_Choice.md) | App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏 |
-| [LF_Startup_Order.md](LF_Startup_Order.md) | 启动顺序不能乱，乱了是静默失败（连接建了但调不通） |
-| [LF_Error_In_Callback.md](LF_Error_In_Callback.md) | 回调抛异常等于没抛，错误要在协议层传 |
-| [LF_Reconnect_Strategy.md](LF_Reconnect_Strategy.md) | LF 只给断线信号，重连行为是应用自己的事 |
-| [LF_Concurrent_Send.md](LF_Concurrent_Send.md) | `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放 |
+| [LF_Cmd_Model_Choice.md](doc/LF_Cmd_Model_Choice.md) | 先问“要不要响应”，再问“吞吐够不够”，模型就定了 |
+| [LF_Route_Choice.md](doc/LF_Route_Choice.md) | App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏 |
+| [LF_Startup_Order.md](doc/LF_Startup_Order.md) | 启动顺序不能乱，乱了是静默失败（连接建了但调不通） |
+| [LF_Error_In_Callback.md](doc/LF_Error_In_Callback.md) | 回调抛异常等于没抛，错误要在协议层传 |
+| [LF_Reconnect_Strategy.md](doc/LF_Reconnect_Strategy.md) | LF 只给断线信号，重连行为是应用自己的事 |
+| [LF_Concurrent_Send.md](doc/LF_Concurrent_Send.md) | `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放 |
 
 > **怎么读**：如果只是“想用起来”，先读**应用**那六篇——它们直接对应架构决策；如果想“想知道底下发生了什么”，读**内核**那十篇——它们解释了应用层那些“看起来反直觉的约束”从哪来。
 

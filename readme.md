@@ -20,7 +20,7 @@
 | **第一次听说 LingoFuse** | [这是什么](#这是什么) → [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [为什么需要它](#为什么需要它) → [快速开始](#快速开始) |
 | **想评估是否采用** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [语言支持](#语言支持) → [测试与验证](#测试与验证) → [项目状态与边界](#项目状态与边界) |
 | **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [相关项目](#相关项目) |
-| **想理解核心机制** | [核心概念](#核心概念) → [内部机制知识库](Z.LingoFuse.md) → [Pascal 完整指南](LingoFuse_Pascal_Complete_Guide.md) |
+| **想理解核心机制** | [内部机制知识库](Z.LingoFuse.md) → [多语言完整指南](LingoFuse_MultiLanguage_Complete_Guide.md) → [C++ 知识库](cpp/LingoFuse_Cpp_Knowledge_Base.md) |
 | **想读简短机制短文** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按兴趣挑 |
 | **想学应用最佳实践** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按场景挑 |
 | **想自己编译核心库** | [构建核心动态库](#构建核心动态库) |
@@ -55,7 +55,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 ### 它把最难的问题解决了
 
 - **线格式语言无关**：任何语言的 CrossNode 写出的字节流，任何语言的 CrossCall 都能原样读出来。
-- **零 IDL 的强类型调用**：Pascal 声明 `function Add(a, b: Integer): Integer;`，C++ / Rust / Swift / Java 都能直接 `Add(1, 2)`，不需要 `.proto`、不需要生成桩。
+- **零 IDL 的强类型调用**：C++ 声明 `int Add(int a, int b)`，C# / Rust / Swift / Java 都能直接 `Add(1, 2)`，不需要 `.proto`、不需要生成桩。
 - **真·服务发现 + 负载均衡 + FIFO + 断线重连**：不用 etcd、不用 Nginx、不用自己写重试。
 - **18 种语言的绑定**：从 ASM 级 C ABI 到 Dart / Julia / R，每种都跑通了自己的测试体系。
 
@@ -71,12 +71,12 @@ LingoFuse **不做**下面这些事：
 
 ### 采用前请自测四个问题
 
-1. **你能否自行编译 LingoFuse 核心动态库（FPC / Lazarus）？**
+1. **你能否自行编译 LingoFuse 核心动态库？**
    预构建产物可以帮你跳过这一步——**但仅当你的平台和目标语言组合被预构建覆盖时**。如果不在覆盖范围内，你仍然需要自己能编译。
 2. **你能否读懂回调线程模型，并在自己的代码中系统性避免死锁？**
    LingoFuse 把回调放在工作线程执行——这是一切正确性的基础，也是最容易出错的地方。如果团队里没人能讲清楚“为什么回调里不能调 `LF_Call`”，先别用。
 3. **你能否在出现问题时会读源码，而不是读注释？**
-   文档里有 95 条踩坑 ID、17 种语言的生成器报告、`Z.LingoFuse.md` v3.2——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
+   文档里有 194 条踩坑 ID、20+ 种语言的生成器报告、`Z.LingoFuse.md` v3.2——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
 4. **你是否愿意做 App 层 PoC，而不是相信 README 里的任何数字？**
    `test/` 提供的是**机理层竞态稳定性测试**，不是你的业务层测试。README 里的延迟、并发、成功率，都基于作者的硬件和场景，不是你的。
 
@@ -102,7 +102,7 @@ AI 遇到这些问题时，它会——诚实地，按照训练数据里的“�
 
 1. **你**先把 LingoFuse 跑通（参 [测试与验证](#测试与验证) 里的 PoC 路径）
 2. **你**先设计出第一版架构——哪怕只是个草稿，要能讲清楚“哪个进程是 service、哪个是 call、谁负责什么、路由用哪种寻址”
-3. **你**先用 C++ 或 Pascal 手写一个最小可用的跨语言调用，确认线格式、回调线程、Handle 所有权都在你的预期内
+3. **你**先用自己最熟悉的语言手写一个最小可用的跨语言调用，确认线格式、回调线程、Handle 所有权都在你的预期内
 4. **然后**再让 AI 进来——用 AI 加速 Tools 生成器的使用、用 AI 读踩坑记录、用 AI 补测试、用 AI 生成样板代码
 
 **这样 AI 是“加速器”，不是“司机”。** 架构对不对由你负责，代码快不快由 AI 负责。
@@ -182,23 +182,23 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 | 语言 | 目录 | 状态 | 一句话说明 |
 |------|-----|------|-------------|
-| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，核心引擎来源；完整指南见 [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md)（v7.0，95 条踩坑 ID） |
-| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关；知识库含 Handle 所有权 + 侧数据勘误 |
-| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销，异步模型 + 侧数据读取 |
 | C# / .NET | [`csharp/`](csharp/) | 🟢 生产就绪 | v5.1，116 项测试，P/Invoke + RAII + 统一 JSON I/O + `CallbackDispatcher` + 回调风格异步 |
-| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | v2.0，223 项测试，支持 Node / Deno / Bun，三风格 × 三寻址 |
-| JavaScript | [`js/`](js/) | 🟢 生产就绪 | v2.0，223 项测试，CommonJS + ESM 双入口，与 TS 字节级互通 |
-| Rust | [`rust/`](rust/) | 🟢 生产就绪 | v2.0，174 项测试，闭包式异步，`call_async_wait` 返回 `Vec<u8>` |
-| Go | [`go/`](go/) | 🟢 生产就绪 | purego 无 cgo，交叉编译友好；死锁看门狗补偿 runtime 误判 |
+| C++ | [`cpp/`](cpp/) | 🟢 生产就绪 | 唯一有 GitHub CI，原生 C ABI 零开销，异步模型 + 侧数据读取 |
 | Dart | [`dart/`](dart/) | 🟢 生产就绪 | 完整 caller + server 能力，Flutter 移动端可用；C 桥接解决跨线程同步回调 |
-| Java | [`java/`](java/) | 🟢 生产就绪 | JDK 22+ FFM API，纯 Java 无 JNI；145 项测试，`ArenaReaper` 处理超时 stub |
-| Swift | [`swift/`](swift/) | 🟢 生产就绪 | v1.1，261 项 XCTest，`@convention(c)` 回调，C++ ↔ Swift 双向字节级互调已验证 |
-| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试 |
 | Erlang | [`erlang/`](erlang/) | 🟢 生产就绪 | OTP 27+，NIF 跨平台构建，37 个 C ABI 完整封装，零运行时依赖 |
-| Ruby | [`ruby/`](ruby/) | 🟢 生产就绪 | v2.0，331 项测试，Fiddle + C 扩展，完整 caller / server 双向能力 |
 | Fortran | [`fortran/`](fortran/) | 🟢 生产就绪 | 474 项断言，`iso_c_binding` + C++ 桥接层，Fortran 2008 |
+| Go | [`go/`](go/) | 🟢 生产就绪 | purego 无 cgo，交叉编译友好；死锁看门狗补偿 runtime 误判 |
+| Java | [`java/`](java/) | 🟢 生产就绪 | JDK 22+ FFM API，纯 Java 无 JNI；145 项测试，`ArenaReaper` 处理超时 stub |
+| JavaScript | [`js/`](js/) | 🟢 生产就绪 | v2.0，223 项测试，CommonJS + ESM 双入口，与 TS 字节级互通 |
 | Julia | [`julia/`](julia/) | 🟢 生产就绪 | C shim + `@threadcall` 跨线程回调隔离，**强制 `--threads=2`** |
+| Pascal | [`pascal/`](pascal/) | 🟢 生产就绪 | 原生 FFI，完整指南见 [`pascal/LingoFuse_Pascal_Complete_Guide.md`](pascal/LingoFuse_Pascal_Complete_Guide.md) |
+| Python | [`Py/`](Py/) | 🟢 生产就绪 | `pip install -e .` 即用，含 `@expose` 装饰器与 HTTP 网关；知识库含 Handle 所有权 + 侧数据勘误 |
 | R | [`r/`](r/) | 🟢 生产就绪 | 四层架构 + Job 队列跨线程回调；RAII 句柄；字符串 / 二进制双模式；R 4.6.1 + Rtools45 |
+| Ruby | [`ruby/`](ruby/) | 🟢 生产就绪 | v2.0，331 项测试，Fiddle + C 扩展，完整 caller / server 双向能力 |
+| Rust | [`rust/`](rust/) | 🟢 生产就绪 | v2.0，174 项测试，闭包式异步，`call_async_wait` 返回 `Vec<u8>` |
+| Swift | [`swift/`](swift/) | 🟢 生产就绪 | v1.1，261 项 XCTest，`@convention(c)` 回调，C++ ↔ Swift 双向字节级互调已验证 |
+| TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | v2.0，223 项测试，支持 Node / Deno / Bun，三风格 × 三寻址 |
+| Zig | [`zig/`](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试 |
 | PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
 
 
@@ -210,7 +210,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 
 LingoFuse 的第一方绑定是**手写**的。当你要把同一组 API 铺到十几种语言时，手写绑定会变成重复劳动——而且每种语言的线格式只要差一个字节，跨语言互调就会静默失败。
 
-[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 解决的就是这个问题：**从一份 Pascal 单元或 C 头文件出发，自动产出多语言的 service / call 代码、测试程序和构建脚本**。
+[LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools) 解决的就是这个问题：**从一份 API 声明（Pascal 单元或 C 头文件）出发，自动产出多语言的 service / call 代码、测试程序和构建脚本**。
 
 ### 三条工具线，三种协议
 
@@ -228,40 +228,83 @@ Tools 不是单一生成器，而是**三条并行的工具线**，共享同一�
 
 Tools 当前覆盖 **20+ 种目标语言**，每种都含 service 侧、call 侧、测试程序和一套 `setup_*_tests.ps1` 环境脚本。生成器的后端为**无限扩展**设计——加一种语言是机械的 8 步流程，不是架构变更。
 
-#### 平台与运行时矩阵
+#### 生成能力与运行时
 
-下表列出每种目标语言**能运行生成代码**的平台与运行时要求。表格同时给出该语言是否支持 **service 侧**（被动响应方）与 **call 侧**（主动发起方）——某些语言只能做 call（无 service 生成），平台覆盖也各有边界。
+| 目标语言 | Service | Call | 编译器 / 运行时 |
+|----------|:-------:|:----:|----------------|
+| C# | ✅ | ✅ | .NET 8.0+ |
+| C++ | ✅ | ✅ | C++17 编译器 |
+| Dart | ✅ | ✅ | Dart 3.0+ |
+| Erlang | ✅ | ✅ | Erlang/OTP 25+ |
+| Fortran | ✅ | ✅ | gfortran 9+ / ifort / flang |
+| Go | ✅ | ✅ | Go 1.21+（Service 需 cgo） |
+| Java | ✅ | ✅ | JDK 11+（FFM 需 22+） |
+| JavaScript | ❌ | ✅ | 现代浏览器（Chrome / Edge / Firefox / Safari） |
+| Julia | ✅ | ✅ | Julia 1.9+（**必须 `--threads=2`**） |
+| Node.js | ✅ | ✅ | Node.js 18+ |
+| Pascal | ✅ | ✅ | FPC 3.2+ / Delphi 10.4+ |
+| PHP | ❌ | ✅ | PHP 7.4+ |
+| Python | ✅ | ✅ | CPython 3.7+ |
+| R | ✅ | ✅ | R 4.0+ |
+| Ruby | ✅ | ✅ | Ruby 2.7+ / 3.0+ |
+| Rust | ✅ | ✅ | Rust 1.70+（2021 edition） |
+| Swift | ✅ | ✅ | Swift 5.9+（推荐 6.4） |
+| TypeScript | ✅ | ✅ | TypeScript 5.0+、Node 18+、`tsx` |
+| Zig | ✅ | ✅ | Zig 0.13+ |
+| Delphi | ❌ | ✅ | Delphi 10.3+ |
 
-| 目标语言 | Service | Call | 编译器 / 运行时 | Windows | Linux | macOS | 其他平台 | 备注 |
-|----------|:-------:|:----:|----------------|:-------:|:-----:|:-----:|---------|------|
-| Pascal | ✅ | ✅ | FPC 3.2+ / Delphi 10.4+ | ✅ | ✅ | ✅ | — | 需 `lingofuse_import.pas` + `Z.Core` |
-| Python | ✅ | ✅ | CPython 3.7+ | ✅ | ✅ | ✅ | FreeBSD 等 | 需 `py-lingofuse` |
-| C++ | ✅ | ✅ | C++17 编译器 | ✅ | ✅ | ✅ | — | 需 `LingoFuse.hpp` + `LingoFuse.c` |
-| C# | ✅ | ✅ | .NET 8.0+ | ✅ | ✅ | ✅ | — | 需 `lingofuse` 命名空间 |
-| Rust | ✅ | ✅ | Rust 1.70+（2021 edition） | ✅ | ✅ | ✅ | FreeBSD、WASM、嵌入式（仅 Call） | 需 `lingofuse` crate |
-| Go | ✅ | ✅ | Go 1.21+（Service 需 `CGO_ENABLED=1`） | ✅ | ✅ | ✅ | FreeBSD、OpenBSD、NetBSD、Plan 9、Android、iOS、WASM（仅 Call） | 需 `lingofuse/go` module；Service 侧依赖 cgo |
-| Java | ✅ | ✅ | JDK 11+（推荐 17+）；FFM API 需 JDK 22+ | ✅ | ✅ | ✅ | Solaris、AIX（仅 Call） | 需 `lingofuse.jar` + Jackson |
-| Node.js | ✅ | ✅ | Node.js 18+ | ✅ | ✅ | ✅ | FreeBSD、OpenBSD（仅 Call） | 需 `lingofuse-js` + `koffi` |
-| TypeScript | ✅ | ✅ | TypeScript 5.0+、Node 18+、`tsx` | ✅ | ✅ | ✅ | — | 需 `lingofuse-ts` |
-| Erlang | ✅ | ✅ | Erlang/OTP 25+ | ✅ | ✅ | ✅ | FreeBSD 等 | 需 `lingofuse` Erlang binding |
-| Julia | ✅ | ✅ | Julia 1.9+（**必须 `--threads=2`**） | ✅ | ✅ | ✅ | FreeBSD | 异步依赖多线程；单线程死锁 |
-| Zig | ✅ | ✅ | Zig 0.13+ | ✅ | ✅ | ✅ | — | 需 `lingofuse` Zig 绑定 |
-| Swift | ✅ | ✅ | Swift 5.9+（推荐 6.4） | ⚠️ 5.9+ 有工具链 | ⚠️ 社区验证 | ✅ 主要支持 | iOS（仅 Call，异步需 macOS 12+ / iOS 15+） | Windows 路径未实测 |
-| Ruby | ✅ | ✅ | Ruby 2.7+ / 3.0+ | ✅ | ✅ | ✅ | FreeBSD 等 | 需 `lingofuse` gem + C 扩展工具链 |
-| Fortran | ✅ | ✅ | gfortran 9+ / ifort / flang | ✅ | ✅ | ✅ | — | 需 `lf_fortran_mod` + C++17 工具链；C++ 与 Fortran 编译器须同发行版 |
-| Dart | ✅ | ✅ | Dart 3.0+ | ✅ | ✅ | ✅ | iOS、Android、Web（仅 Call） | 需 `lingofuse` Dart 包 + `lf_dart_bridge.dll` |
-| R | ✅ | ✅ | R 4.0+ | ✅ | ✅ | ✅ | FreeBSD | 需 `lingofuse` R 包；`int64` / `uint64` 需 `bit64` |
-| JavaScript | ❌ | ✅ | 现代浏览器（Chrome / Edge / Firefox / Safari） | ✅ | ✅ | ✅ | iOS、Android、ChromeOS | 浏览器仅能做 call；浏览器内 `fetch` |
-| PHP | ❌ | ✅ | PHP 7.4+ | ✅ | ✅ | ✅ | FreeBSD 等 | 经 `bridge.py` HTTP 网关，只能做 call |
-| Delphi | ❌ | ✅ | Delphi 10.3+ | ✅ | ✅ | ✅ | iOS、Android | 受 Delphi 版本限制，只能做 call |
+#### 平台支持
 
-**图例**：
-- ✅ — 该平台生产就绪
-- ⚠️ — 有工具链但未充分验证，生产使用需谨慎
-- ❌ — 该侧无生成能力（语言本身可能仍有该平台，但无 LingoFuse 绑定）
-- — — 不适用
+| 目标语言 | Windows | Linux | macOS | 其他平台 |
+|----------|:-------:|:-----:|:-----:|---------|
+| C# | ✅ | ✅ | ✅ | — |
+| C++ | ✅ | ✅ | ✅ | — |
+| Dart | ✅ | ✅ | ✅ | iOS / Android / Web（仅 Call） |
+| Erlang | ✅ | ✅ | ✅ | BSD |
+| Fortran | ✅ | ✅ | ✅ | — |
+| Go | ✅ | ✅ | ✅ | BSD / 移动 / WASM（仅 Call） |
+| Java | ✅ | ✅ | ✅ | Solaris / AIX（仅 Call） |
+| JavaScript | ✅ | ✅ | ✅ | 移动 / ChromeOS |
+| Julia | ✅ | ✅ | ✅ | BSD |
+| Node.js | ✅ | ✅ | ✅ | BSD（仅 Call） |
+| Pascal | ✅ | ✅ | ✅ | — |
+| PHP | ✅ | ✅ | ✅ | BSD |
+| Python | ✅ | ✅ | ✅ | BSD |
+| R | ✅ | ✅ | ✅ | BSD |
+| Ruby | ✅ | ✅ | ✅ | BSD |
+| Rust | ✅ | ✅ | ✅ | BSD / WASM / 嵌入式（仅 Call） |
+| Swift | ⚠️ | ⚠️ | ✅ | iOS（仅 Call） |
+| TypeScript | ✅ | ✅ | ✅ | — |
+| Zig | ✅ | ✅ | ✅ | — |
+| Delphi | ✅ | ✅ | ✅ | iOS / Android |
+
+**图例**：✅ 生产就绪 · ⚠️ 有工具链但未充分验证 · ❌ 无生成能力 · — 不适用
+
+**各语言特殊要求**：
+
+- **C#**：需 `lingofuse` 命名空间
+- **C++**：需 `LingoFuse.hpp` + `LingoFuse.c`
+- **Dart**：需 `lingofuse` Dart 包 + `lf_dart_bridge.dll`
+- **Erlang**：需 `lingofuse` Erlang binding
+- **Fortran**：需 `lf_fortran_mod` + C++17 工具链；**C++ 与 Fortran 编译器须同发行版**
+- **Go**：需 `lingofuse/go` module；Service 侧依赖 `CGO_ENABLED=1`
+- **Java**：需 `lingofuse.jar` + Jackson
+- **JavaScript**：浏览器仅能做 call；浏览器内走 `fetch`
+- **Julia**：异步依赖多线程；单线程死锁
+- **Node.js**：需 `lingofuse-js` + `koffi`
+- **Pascal**：需 `lingofuse_import.pas` + `Z.Core`
+- **PHP**：经 `bridge.py` HTTP 网关，只能做 call
+- **Python**：需 `py-lingofuse`
+- **R**：需 `lingofuse` R 包；`int64` / `uint64` 需 `bit64`
+- **Ruby**：需 `lingofuse` gem + C 扩展工具链
+- **Rust**：需 `lingofuse` crate
+- **Swift**：Windows 路径未实测
+- **TypeScript**：需 `lingofuse-ts`
+- **Zig**：需 `lingofuse` Zig 绑定
+- **Delphi**：受 Delphi 版本限制，只能做 call
 
 **关键边界**：
+
 - **Service 侧**必须运行在桌面 / 服务器（Windows / Linux / macOS）。**iOS / Android / WASM / 嵌入式无法运行 Service**——LingoFuse 原生库不支持这些平台。需要移动端提供接口时，把 Service 部署到服务器，移动端作为 Call 通过桥接访问。
 - **Call 侧平台范围更广**：因为 Call 的模式 A（直接 HTTP）不需要 LingoFuse 原生库，移动端 / WASM / 浏览器都能做 Call。
 - **MCP 生成**目前只有 Pascal / Python / C++ / C# 四种语言，平台范围受各自运行时限制。
@@ -270,7 +313,7 @@ Tools 当前覆盖 **20+ 种目标语言**，每种都含 service 侧、call 侧
 
 Tools 仓库同时承载了三类可读资产：
 
-- **生成器源码**（`*_abi_*_generator_tool.pas`）：每种语言的 service / call / test / setup 生成器都是独立的 Pascal 单元。
+- **生成器源码**（`*_abi_*_generator_tool.pas`）：每种语言的 service / call / test / setup 生成器都是独立的实现单元。
 - **输入契约**（`pascal_code_abi_rule.md` / `C_code_abi_rule.md` / `pascal_code_mcp_rule.md` / `C_code_mcp_rule.md`）：**哪些声明会被提取、哪些会被静默丢弃**，写得比大多数 IDL 文档都细。
 - **各语言踩坑记录**（`R_ABI_Generator_Knowledge_Base.md` / `Dart_ABI_Generators_Fix_Report.md` / `Fortran_ABI_Generator_Work_Report.md` / `LingoFuse_Ruby_ABI_Integration_Report.md` / `swift_abi_generator_development_log.md` / `TypeScript_ABI_Generator_Development_Report.md` / `LingoFuse_JS_Async_Generator_Fix_Knowledge_Base.md`）：记录了“我以为”被实测推翻的地方——线格式不对齐、回调线程挂死、`int64` 在 JS 丢精度、`bridge.py` 预检缓存延迟导致 `-3` 错误等。
 
@@ -285,7 +328,7 @@ Tools 仓库同时承载了三类可读资产：
 | CI | C++ 有 GitHub 托管 CI，其余本地脚本 | 生成器本身不跑 CI，产物需自行验证 |
 | 适用阶段 | 生产部署 | 原型 / 多语言铺开 / 持续同步 |
 
-**两者不冲突。** Tools 生成的绑定与第一方绑定共享同一套线格式契约；生成器的一个核心设计约束就是“与 C++ / Pascal 逐字节对齐”。如果你的项目只需要一种语言，直接用第一方绑定；如果你要把同一组 API 铺到多种语言，用 Tools。
+**两者不冲突。** Tools 生成的绑定与第一方绑定共享同一套线格式契约；生成器的一个核心设计约束就是“与 C++ 逐字节对齐”。如果你的项目只需要一种语言，直接用第一方绑定；如果你要把同一组 API 铺到多种语言，用 Tools。
 
 👉 **[进入 LingoFuse-Tools 仓库，查看生成器源码、输入契约和踩坑记录](https://github.com/PassByYou888/LingoFuse-Tools)**
 
@@ -293,35 +336,32 @@ Tools 仓库同时承载了三类可读资产：
 
 ## 技术短文 · 内核与应用
 
-十六篇短文，每篇讲一个机制或一个应用决策。不重复完整文档里的细节——只讲清楚“为什么这样设计”和“踩坑在哪”。每篇都有一张精炼流程图和一张契约表。
+十七篇短文，每篇讲一个机制或一个应用决策。不重复完整文档里的细节——只讲清楚“为什么这样设计”和“踩坑在哪”。每篇都有一张精炼流程图和一张契约表。
 
 ### LF 内核：机制是怎么实现的
 
-| 短文 | 一句话 |
-|------|--------|
-| [LF_Handle_Ownership.md](doc/LF_Handle_Ownership.md) | 同步族句柄归你，异步族句柄归框架，混用必炸 |
-| [LF_Simulated_Main_Thread.md](doc/LF_Simulated_Main_Thread.md) | LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync` |
-| [LF_WaitOnResult.md](doc/LF_WaitOnResult.md) | 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响 |
-| [LF_Sequenced_FIFO.md](doc/LF_Sequenced_FIFO.md) | FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱 |
-| [LF_ZeroCopy_Decode.md](doc/LF_ZeroCopy_Decode.md) | 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝 |
-| [LF_SwapUnderLock.md](doc/LF_SwapUnderLock.md) | LF 从不在锁里遍历，总是锁内换容器、锁外干活 |
-| [LF_TBigList_Iterator.md](doc/LF_TBigList_Iterator.md) | `Next` 是先移动再判断，`while Next` 会漏首节点 |
-| [LF_ThreadPool_Pick.md](doc/LF_ThreadPool_Pick.md) | 任务来了先让空闲 worker 消化，实在不够才扩容 |
-| [LF_TCritical_Reuse.md](doc/LF_TCritical_Reuse.md) | 创建十万个 `TCritical`，句柄数几乎不涨，因为有回收池 |
-| [LF_P2P_Identity.md](doc/LF_P2P_Identity.md) | UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的 |
+[LF_Handle_Ownership.md](doc/LF_Handle_Ownership.md) — 同步族句柄归你，异步族句柄归框架，混用必炸  
+[LF_Simulated_Main_Thread.md](doc/LF_Simulated_Main_Thread.md) — LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync`  
+[LF_WaitOnResult.md](doc/LF_WaitOnResult.md) — 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响  
+[LF_Sequenced_FIFO.md](doc/LF_Sequenced_FIFO.md) — FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱  
+[LF_ZeroCopy_Decode.md](doc/LF_ZeroCopy_Decode.md) — 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝  
+[LF_SwapUnderLock.md](doc/LF_SwapUnderLock.md) — LF 从不在锁里遍历，总是锁内换容器、锁外干活  
+[LF_TBigList_Iterator.md](doc/LF_TBigList_Iterator.md) — `Next` 是先移动再判断，`while Next` 会漏首节点  
+[LF_ThreadPool_Pick.md](doc/LF_ThreadPool_Pick.md) — 任务来了先让空闲 worker 消化，实在不够才扩容  
+[LF_TCritical_Reuse.md](doc/LF_TCritical_Reuse.md) — 创建十万个临界区，句柄数几乎不涨，因为有回收池  
+[LF_P2P_Identity.md](doc/LF_P2P_Identity.md) — UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的  
 
 ### LF 应用：用这些机制做决策
 
-| 短文 | 一句话 |
-|------|--------|
-| [LF_Cmd_Model_Choice.md](doc/LF_Cmd_Model_Choice.md) | 先问“要不要响应”，再问“吞吐够不够”，模型就定了 |
-| [LF_Route_Choice.md](doc/LF_Route_Choice.md) | App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏 |
-| [LF_Startup_Order.md](doc/LF_Startup_Order.md) | 启动顺序不能乱，乱了是静默失败（连接建了但调不通） |
-| [LF_Error_In_Callback.md](doc/LF_Error_In_Callback.md) | 回调抛异常等于没抛，错误要在协议层传 |
-| [LF_Reconnect_Strategy.md](doc/LF_Reconnect_Strategy.md) | LF 只给断线信号，重连行为是应用自己的事 |
-| [LF_Concurrent_Send.md](doc/LF_Concurrent_Send.md) | `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放 |
+[LF_Cmd_Model_Choice.md](doc/LF_Cmd_Model_Choice.md) — 先问“要不要响应”，再问“吞吐够不够”，模型就定了  
+[LF_Route_Choice.md](doc/LF_Route_Choice.md) — App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏  
+[LF_Startup_Order.md](doc/LF_Startup_Order.md) — 启动顺序不能乱，乱了是静默失败（连接建了但调不通）  
+[LF_Error_In_Callback.md](doc/LF_Error_In_Callback.md) — 回调抛异常等于没抛，错误要在协议层传  
+[LF_Reconnect_Strategy.md](doc/LF_Reconnect_Strategy.md) — LF 只给断线信号，重连行为是应用自己的事  
+[LF_Concurrent_Send.md](doc/LF_Concurrent_Send.md) — `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放  
+[LF_Debug_Mode.md](doc/LF_Debug_Mode.md) — 三个调试开关（Quiet / ConsoleOutput / debug）各管一摊，得分别设置  
 
-> **怎么读**：如果只是“想用起来”，先读**应用**那六篇——它们直接对应架构决策；如果想“想知道底下发生了什么”，读**内核**那十篇——它们解释了应用层那些“看起来反直觉的约束”从哪来。
+> **怎么读**：如果只是“想用起来”，先读**应用**那七篇——它们直接对应架构决策；如果想“想知道底下发生了什么”，读**内核**那十篇——它们解释了应用层那些“看起来反直觉的约束”从哪来。
 
 ---
 
@@ -451,7 +491,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 
 如果你需要的平台 / 架构 **没有被 `release pre_build` 或 `Binary/` 覆盖**（例如 Linux / macOS 动态库、特定架构的生成器工具），你需要从源码构建。
 
-`src/` 是 LingoFuse 核心动态库（`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`）的唯一构建入口。需要准备 Pascal 编译环境（FPC / Lazarus），然后一键构建。
+`src/` 是 LingoFuse 核心动态库（`LingoFuse64.dll` / `liblingofuse.so` / `liblingofuse.dylib`）的唯一构建入口。需要准备 FPC / Lazarus 工具链，然后一键构建。
 
 ### 构建文档
 
@@ -466,14 +506,13 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | 板块 | 状态 | 说明 |
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
-| **十八语言第一方绑定** | ✅ 生产就绪 | Pascal / Python / C++ / C# / TypeScript / JavaScript / Rust / Go / Dart / Java / Swift / Zig / Erlang / Ruby / Fortran / Julia / R / PHP（PHP 为调用者） |
+| **十八语言第一方绑定** | ✅ 生产就绪 | C# / C++ / Dart / Erlang / Fortran / Go / Java / JavaScript / Julia / Pascal / Python / R / Ruby / Rust / Swift / TypeScript / Zig / PHP（PHP 为调用者） |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)：三条工具线（ABI / JSON / MCP），20+ 种目标语言 |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管**接口层和样板层**——**接管不了架构层**，详见 [使用门槛](#️-使用门槛这是黑科技不是开箱即用) |
 | **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v3.2，面向难缠语言 |
 | **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
-| **Pascal 完整指南** | ✅ 已完善 | [`LingoFuse_Pascal_Complete_Guide.md`](LingoFuse_Pascal_Complete_Guide.md) v7.0，95 条踩坑 ID |
-| **技术短文（内核 + 应用）** | ✅ 已完善 | 16 篇短文，见 [技术短文 · 内核与应用](#技术短文--内核与应用) |
+| **技术短文（内核 + 应用）** | ✅ 已完善 | 17 篇短文，见 [技术短文 · 内核与应用](#技术短文--内核与应用) |
 | **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
 | **预构建产物** | ✅ Windows 可用 | [release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)：生成器工具 + 动态库；Linux / macOS 需自行编译 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
@@ -506,7 +545,7 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 
 手记中记录的都是真实细节：在 VS 2022 中逐行翻阅 71 KB 的 `NativeMethods.cs`、C++ 绑定构建后 14 个项目 0 警告的输出、压测面板上累计 46,515 次调用和 100.00% 成功率、Dart 环境装了快两个小时但测试 8 秒跑完、有些环境装到凌晨才发现是版本问题。
 
-**AI 是工具，不是作者。** 这个项目从第一行 Pascal 核心代码到第十八个语言绑定，背后是一个真实人类的判断、试错和坚持。
+**AI 是工具，不是作者。** 这个项目从第一行核心代码到第十八个语言绑定，背后是一个真实人类的判断、试错和坚持。
 
 欢迎来撩、来喷、来 PR——**Star 是最好的催更。**
 

@@ -1,8 +1,10 @@
 # LingoFuse
 
-> **跨语言通讯地基。不写 IDL，不生成桩代码，不搭 HTTP 服务。**
+> **分布式系统地基。跨语言、跨进程、跨机器；同时支撑后台与前台。**
 >
-> 任何语言写的函数，任何其他语言都能直接调。
+> 不写 IDL，不生成桩代码，不搭 HTTP 服务。任何语言写的函数，任何其他语言都能直接调。
+>
+> **定位**：LingoFuse 不只是"跨语言 RPC"——它是 **前沿型程序的多应用组合体系**与 **多物理硬件组合体系**的通讯底座。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Languages](https://img.shields.io/badge/languages-18%20first--party%20%2B%2030%20via%20tools-blue)]()
@@ -20,12 +22,12 @@
 | **第一次听说 LingoFuse** | [这是什么](#这是什么) → [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [为什么需要它](#为什么需要它) → [快速开始](#快速开始) |
 | **想评估是否采用** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [语言支持](#语言支持) → [测试与验证](#测试与验证) → [项目状态与边界](#项目状态与边界) |
 | **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [相关项目](#相关项目) |
-| **想理解核心机制** | [内部机制知识库](Z.LingoFuse.md) → [多语言完整指南](LingoFuse_MultiLanguage_Complete_Guide.md) → [C++ 知识库](cpp/LingoFuse_Cpp_Knowledge_Base.md) |
+| **想理解核心机制** | [内部机制知识库](Z.LingoFuse.md) → [多语言完整指南](LingoFuse_MultiLanguage_Complete_Guide.md) → [C++ 知识库](cpp/LingoFuse_Cpp_Knowledge_Base.md) → [架构不可复刻性](LF-Architecture-Unreplicable-Backend-Systems.md) |
 | **想读简短机制短文** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按兴趣挑 |
 | **想学应用最佳实践** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按场景挑 |
 | **想自己编译核心库** | [构建核心动态库](#构建核心动态库) |
 | **想用代码生成器铺开多语言绑定** | [代码生成器体系 · LingoFuse-Tools](#代码生成器体系--lingofuse-tools) |
-| **想用 AI 加速 LingoFuse 开发** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) 里的“AI 能做和不能做的事” → [代码生成器体系](#代码生成器体系--lingofuse-tools) |
+| **想用 AI 加速 LingoFuse 开发** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) 里的“AI 能做和不能做的事” → [代码生成器体系](#代码生成器体系--lingofuse-tools) → [llms.txt](llms.txt) |
 | **想了解作者怎么做的** | [关于作者](#关于作者) → [十四语言实测手记](https://zpascal.net/imhuman.html) |
 | **想贡献 / 想 PR** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [项目状态与边界](#项目状态与边界) → [关于作者](#关于作者) → 直接提 Issue |
 | **只是想 Star 催更** | 右上角点 Star，然后看 [关于作者](#关于作者) |
@@ -34,15 +36,36 @@
 
 ## 这是什么
 
-LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
+LingoFuse 是**分布式系统地基**。
 
-核心承诺一句话：**任何语言写的函数，任何其他语言都能直接调。**
+### 地基层面：不止是 RPC
+
+大多数"跨语言调用"的方案（gRPC / REST / HTTP POST），解决的是"**A 进程调 B 进程的一个函数**"。这是**点对点**问题。LingoFuse 解决的不是这个——它解决的是"**多个进程、多台机器、多种硬件、多种语言、多种应用，如何组合成一个可运行的系统**"。
+
+它同时为**两面**提供地基：
+
+- **分布式后台地基**：服务器、后台服务、AI Agent 后端、计算节点、存储节点之间如何互相发现、路由、负载均衡、断线重连、稳定会话。后台之间可以是同语言，也可以是异语言；可以同机，也可以跨机、跨 IDC。
+- **分布式前台地基**：客户端、Agent 前端、设备端、浏览器、移动端、嵌入式如何接入这个系统——通过原生 FFI（桌面/移动/嵌入式）或 HTTP 桥接（浏览器/受限设备）。前台可以是一台机器，也可以是几万台设备。
+
+**跨语言、跨进程、跨机器**，是它的**技术手段**，不是定位本身。真正的定位是：**让"分布式组合"成为默认能力，而不是需要额外搭建的基础设施。**
+
+### AI 时代的两类组合体系
+
+LingoFuse 真正要解决的，是 AI 时代正在成形的两类组合问题：
+
+- **多应用组合体系**：一个系统不再是一个巨型应用，而是**多个 Agent / 多个应用 / 多个服务**的组合。写代码的 Agent、查数据的 Agent、做计算的 Agent、调硬件接口的 Agent，用不同语言写成，跑在不同机器上，需要互相调用、互相协作、有状态隔离、有故障隔离。LingoFuse 让它们之间的通讯像同进程函数调用一样简单——不需要为每一种组合写网关、写 IDL、写桩代码。
+- **多物理硬件组合体系**：一个系统不再是一台机器，而是**多台机器、多种硬件、多种算力**的组合。GPU 节点做推理，CPU 集群做数据处理，嵌入式设备做采集，工作站做可视化。它们需要被组合成一个统一的计算池，按任务分发、按负载路由、按数据形态传输（二进制帧、视频帧、矩阵、张量）。LingoFuse 的 C4 网格、P2P 负载、序列化族、二进制句柄就是为这个场景设计的。
+
+### 核心承诺一句话
+
+**任何语言写的函数，任何其他语言都能直接调；任何机器上的应用，任何其他机器上的应用都能直接组合。**
 
 - 不需要写 IDL
 - 不需要生成桩代码
 - 不需要搭 HTTP 服务
 - 同机 IPC 延迟声称 < 1 ms
 - 跨机原生支持，内置服务发现、负载均衡、FIFO 顺序保证和断线重连
+- 18 种语言的一方绑定，20+ 种语言通过代码生成器覆盖
 
 **它不是万能胶。** 采用之前，请务必读完 [使用门槛](#️-使用门槛这是黑科技不是开箱即用)、[测试与验证](#测试与验证) 和 [项目状态与边界](#项目状态与边界)。
 
@@ -58,6 +81,7 @@ LingoFuse 是一个**跨语言、跨进程、跨机器**的 RPC 框架。
 - **零 IDL 的强类型调用**：C++ 声明 `int Add(int a, int b)`，C# / Rust / Swift / Java 都能直接 `Add(1, 2)`，不需要 `.proto`、不需要生成桩。
 - **真·服务发现 + 负载均衡 + FIFO + 断线重连**：不用 etcd、不用 Nginx、不用自己写重试。
 - **18 种语言的绑定**：从 ASM 级 C ABI 到 Dart / Julia / R，每种都跑通了自己的测试体系。
+- **多应用 / 多硬件的分布式组合**：后台服务、AI Agent、计算节点、客户端、设备端，都可以在同一套地基上组合、路由、隔离。
 
 ### 它把最复杂的负担留给了你
 
@@ -76,13 +100,13 @@ LingoFuse **不做**下面这些事：
 2. **你能否读懂回调线程模型，并在自己的代码中系统性避免死锁？**
    LingoFuse 把回调放在工作线程执行——这是一切正确性的基础，也是最容易出错的地方。如果团队里没人能讲清楚“为什么回调里不能调 `LF_Call`”，先别用。
 3. **你能否在出现问题时会读源码，而不是读注释？**
-   文档里有 194 条踩坑 ID、20+ 种语言的生成器报告、`Z.LingoFuse.md` v3.2——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
+   文档里有 194 条踩坑 ID、20+ 种语言的生成器报告、[`Z.LingoFuse.md`](Z.LingoFuse.md) v4.0——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
 4. **你是否愿意做 App 层 PoC，而不是相信 README 里的任何数字？**
    `test/` 提供的是**机理层竞态稳定性测试**，不是你的业务层测试。README 里的延迟、并发、成功率，都基于作者的硬件和场景，不是你的。
 
 **如果上面任何一条的答案是“不能”或“不愿意”，请直接选 gRPC / REST / 同进程方案。** LingoFuse 不会替你解决这些问题——它只提供地基，建筑需要你来设计。
 
-**反过来**：如果上面四条你都能答“能”，而且你确实需要跨语言、跨进程、零 IDL、低延迟的原生 RPC，那 LingoFuse 是你能找到的最认真的实现之一。
+**反过来**：如果上面四条你都能答“能”，而且你确实需要跨语言、跨进程、零 IDL、低延迟的原生 RPC，或者需要把多个应用/多个硬件组合成一个分布式系统，那 LingoFuse 是你能找到的最认真的实现之一。
 
 ### AI 能做和不能做的事：慎用 “AI 驱动 LingoFuse”
 
@@ -111,16 +135,28 @@ AI 遇到这些问题时，它会——诚实地，按照训练数据里的“�
 
 LingoFuse 的知识库是给 AI 读的——但读完了，AI 也只能接管**接口层**和**样板层**，接管不了**架构层**。这一点请务必在项目启动前就和团队对齐。
 
+关于"为什么即使 AI 读完源码和文档，复刻一个等价的 LF 仍然工程上不可达"，见 [`LF-Architecture-Unreplicable-Backend-Systems.md`](LF-Architecture-Unreplicable-Backend-Systems.md)。
+
 ---
 
 ## 为什么需要它
 
-跨语言调用目前的现实：
+跨语言、跨进程调用目前的现实：
 
-- **gRPC**：要写 IDL、要生成桩代码、要搭网关
-- **REST**：延迟高、无流式、无服务发现
-- **HTTP POST**：天然跨机但无顺序保证、无服务发现
-- **同进程调用**：延迟极低但不跨语言
+- **gRPC**：要写 IDL、要生成桩代码、要搭网关；跨语言，但对"多应用组合 / 多硬件组合"没有直接支持。
+- **REST**：延迟高、无流式、无服务发现。
+- **HTTP POST**：天然跨机但无顺序保证、无服务发现。
+- **同进程调用**：延迟极低但不跨语言、不跨机器。
+
+### 两类组合问题，现有方案都不直接解决
+
+**多应用组合**——一个 AI 系统里，写代码的 Agent、查数据的 Agent、做计算的 Agent 用不同语言写成，跑在不同机器上。你需要它们互相发现、互相路由、互相隔离。现有方案要么把每个 Agent 都套成一个 HTTP 服务（运维成本高，且无原生 FIFO、无原生背压），要么写一套中心化的消息总线（单点、单语言）。
+
+**多物理硬件组合**——GPU 节点、CPU 集群、嵌入式设备、工作站，需要被组合成一个统一的计算池。现有方案要么靠 K8s + 消息队列（对数据形态不友好：视频帧、矩阵、张量需要二进制通道），要么靠手写 socket（工程成本极高）。
+
+LingoFuse 的设计就是同时面向这两类问题：**C4 网格**解决多节点发现与路由，**P2P 负载 + 序列化族**解决多 worker 组合，**二进制句柄 + 零拷贝**解决大流量数据形态，**18 种语言绑定**解决多语言组合，**HTTP 桥接**解决受限平台（浏览器 / 移动 / 嵌入式）接入。
+
+### 稳定性优先于并发性能
 
 > LingoFuse 把应用的稳定性放在第一位，并发性能往后挪移。这不是临时取舍，而是项目未来所有版本都会坚持的趋势。一个在高并发下会偶发崩溃、丢消息或死锁的通讯层，延迟再低也没有意义。
 >
@@ -158,9 +194,9 @@ git clone --recursive https://github.com/PassByYou888/LingoFuse.git
 - [`LingoFuse_Stress_Test_Guide.md`](test/LingoFuse_Stress_Test_Guide.md) —— 压力测试
 - [`LingoFuse_Concurrent_Notify_Demo.md`](test/LingoFuse_Concurrent_Notify_Demo.md) —— 并发通知
 
-解压 `test.zip`，运行预编译可执行文件。**得到的是你自己硬件上的真实数据。**
+解压 [`test/test.zip`](test/test.zip)，运行预编译可执行文件。**得到的是你自己硬件上的真实数据。**
 
-**第三步：如需深入，进入 `cpp/` 目录自行编译 CI 测试**
+**第三步：如需深入，进入 [`cpp/`](cpp/) 目录自行编译 CI 测试**
 
 ```bash
 cd cpp/test   && cmake . && make && ./test_lingofuse
@@ -199,7 +235,7 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | Swift | [`swift/`](swift/) | 🟢 生产就绪 | v1.1，261 项 XCTest，`@convention(c)` 回调，C++ ↔ Swift 双向字节级互调已验证 |
 | TypeScript | [`ts/`](ts/) | 🟢 生产就绪 | v2.0，223 项测试，支持 Node / Deno / Bun，三风格 × 三寻址 |
 | Zig | [`zig/`](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试 |
-| PHP | [`php/`](php/) | 🟡 调用者接入 | 经 `bridge.py` HTTP 网关，只能作为调用者 |
+| PHP | [`php/`](php/) | 🟡 调用者接入 | 经 [`Py/lingofuse/bridge.py`](Py/lingofuse/bridge.py) HTTP 网关，只能作为调用者 |
 
 
 👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
@@ -340,26 +376,26 @@ Tools 仓库同时承载了三类可读资产：
 
 ### LF 内核：机制是怎么实现的
 
-[LF_Handle_Ownership.md](doc/LF_Handle_Ownership.md) — 同步族句柄归你，异步族句柄归框架，混用必炸  
-[LF_Simulated_Main_Thread.md](doc/LF_Simulated_Main_Thread.md) — LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync`  
-[LF_WaitOnResult.md](doc/LF_WaitOnResult.md) — 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响  
-[LF_Sequenced_FIFO.md](doc/LF_Sequenced_FIFO.md) — FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱  
-[LF_ZeroCopy_Decode.md](doc/LF_ZeroCopy_Decode.md) — 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝  
-[LF_SwapUnderLock.md](doc/LF_SwapUnderLock.md) — LF 从不在锁里遍历，总是锁内换容器、锁外干活  
-[LF_TBigList_Iterator.md](doc/LF_TBigList_Iterator.md) — `Next` 是先移动再判断，`while Next` 会漏首节点  
-[LF_ThreadPool_Pick.md](doc/LF_ThreadPool_Pick.md) — 任务来了先让空闲 worker 消化，实在不够才扩容  
-[LF_TCritical_Reuse.md](doc/LF_TCritical_Reuse.md) — 创建十万个临界区，句柄数几乎不涨，因为有回收池  
-[LF_P2P_Identity.md](doc/LF_P2P_Identity.md) — UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的  
+[LF_Handle_Ownership.md](doc/LF_Handle_Ownership.md) — 同步族句柄归你，异步族句柄归框架，混用必炸
+[LF_Simulated_Main_Thread.md](doc/LF_Simulated_Main_Thread.md) — LF 造了一个后台线程驱动 C4，但它**故意不**驱动 `LF_Sync`
+[LF_WaitOnResult.md](doc/LF_WaitOnResult.md) — 一个 IO 同时只能有一个 Call 在飞，Notify 不受影响
+[LF_Sequenced_FIFO.md](doc/LF_Sequenced_FIFO.md) — FIFO 靠“每个 `(App, API)` 一个线程”实现，粒度很细，混着调会乱
+[LF_ZeroCopy_Decode.md](doc/LF_ZeroCopy_Decode.md) — 解码一次 memcpy 都不做，靠 `Mapping` 零拷贝
+[LF_SwapUnderLock.md](doc/LF_SwapUnderLock.md) — LF 从不在锁里遍历，总是锁内换容器、锁外干活
+[LF_TBigList_Iterator.md](doc/LF_TBigList_Iterator.md) — `Next` 是先移动再判断，`while Next` 会漏首节点
+[LF_ThreadPool_Pick.md](doc/LF_ThreadPool_Pick.md) — 任务来了先让空闲 worker 消化，实在不够才扩容
+[LF_TCritical_Reuse.md](doc/LF_TCritical_Reuse.md) — 创建十万个临界区，句柄数几乎不涨，因为有回收池
+[LF_P2P_Identity.md](doc/LF_P2P_Identity.md) — UID 和 P2PName 是**发送方送来的侧数据**，不是查出来的
 
 ### LF 应用：用这些机制做决策
 
-[LF_Cmd_Model_Choice.md](doc/LF_Cmd_Model_Choice.md) — 先问“要不要响应”，再问“吞吐够不够”，模型就定了  
-[LF_Route_Choice.md](doc/LF_Route_Choice.md) — App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏  
-[LF_Startup_Order.md](doc/LF_Startup_Order.md) — 启动顺序不能乱，乱了是静默失败（连接建了但调不通）  
-[LF_Error_In_Callback.md](doc/LF_Error_In_Callback.md) — 回调抛异常等于没抛，错误要在协议层传  
-[LF_Reconnect_Strategy.md](doc/LF_Reconnect_Strategy.md) — LF 只给断线信号，重连行为是应用自己的事  
-[LF_Concurrent_Send.md](doc/LF_Concurrent_Send.md) — `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放  
-[LF_Debug_Mode.md](doc/LF_Debug_Mode.md) — 三个调试开关（Quiet / ConsoleOutput / debug）各管一摊，得分别设置  
+[LF_Cmd_Model_Choice.md](doc/LF_Cmd_Model_Choice.md) — 先问“要不要响应”，再问“吞吐够不够”，模型就定了
+[LF_Route_Choice.md](doc/LF_Route_Choice.md) — App 名找服务、UID 找客户端、P2PName 找一组，选错不报错会跑偏
+[LF_Startup_Order.md](doc/LF_Startup_Order.md) — 启动顺序不能乱，乱了是静默失败（连接建了但调不通）
+[LF_Error_In_Callback.md](doc/LF_Error_In_Callback.md) — 回调抛异常等于没抛，错误要在协议层传
+[LF_Reconnect_Strategy.md](doc/LF_Reconnect_Strategy.md) — LF 只给断线信号，重连行为是应用自己的事
+[LF_Concurrent_Send.md](doc/LF_Concurrent_Send.md) — `Send*` 是线程安全的，句柄不是——谁创建谁使用谁释放
+[LF_Debug_Mode.md](doc/LF_Debug_Mode.md) — 三个调试开关（Quiet / ConsoleOutput / debug）各管一摊，得分别设置
 
 > **怎么读**：如果只是“想用起来”，先读**应用**那七篇——它们直接对应架构决策；如果想“想知道底下发生了什么”，读**内核**那十篇——它们解释了应用层那些“看起来反直觉的约束”从哪来。
 
@@ -393,7 +429,7 @@ LingoFuse 是**通讯地基**。地基本身不做应用，但地基之上的建
 
 ## 测试与验证
 
-**以 `test/` 为准。**
+**以 [`test/`](test/) 为准。**
 
 对 README 中的任何描述拿不准——延迟、顺序、稳定性、并发下的行为——**不要去猜，去 [`test/`](test/) 目录找实物印证。**
 
@@ -409,7 +445,7 @@ GitHub 的自动化 CI 有很多限制，LingoFuse 又是**多语言、多平台
 
 所以 LingoFuse 的做法是：**把测试能力直接交到使用者手里。**
 
-`test/` 提供完整的测试指南（Markdown）和预编译的可执行文件（`test.zip`）。你在自己的机器上解压、运行、观察，得到的是**你自己硬件上的真实数据**。
+`test/` 提供完整的测试指南（Markdown）和预编译的可执行文件（[`test/test.zip`](test/test.zip)）。你在自己的机器上解压、运行、观察，得到的是**你自己硬件上的真实数据**。
 
 ### CI 测试源码
 
@@ -510,10 +546,12 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)：三条工具线（ABI / JSON / MCP），20+ 种目标语言 |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管**接口层和样板层**——**接管不了架构层**，详见 [使用门槛](#️-使用门槛这是黑科技不是开箱即用) |
-| **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v3.2，面向难缠语言 |
+| **内部机制知识库** | ✅ 已完善 | [`Z.LingoFuse.md`](Z.LingoFuse.md) v4.0，面向难缠语言（含 Handle 所有权 + P2P 身份侧数据） |
 | **P2P 分布式概念** | ✅ 已完善 | [`LingoFuse_P2P_Distributed_Load_Concept.md`](LingoFuse_P2P_Distributed_Load_Concept.md) |
+| **架构不可复刻性** | ✅ 已完善 | [`LF-Architecture-Unreplicable-Backend-Systems.md`](LF-Architecture-Unreplicable-Backend-Systems.md) —— 隐性契约密度、AI 接管边界 |
+| **LLM 入口** | ✅ 已完善 | [`llms.txt`](llms.txt) |
 | **技术短文（内核 + 应用）** | ✅ 已完善 | 17 篇短文，见 [技术短文 · 内核与应用](#技术短文--内核与应用) |
-| **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | `test/` 提供指南与可执行文件，源码在 `cpp/` 下；其他语言提供本地脚本 |
+| **CI 测试体系** | ⚠️ 仅 C++ 有 GitHub CI | [`test/`](test/) 提供指南与可执行文件，源码在 [`cpp/`](cpp/) 下；其他语言提供本地脚本 |
 | **预构建产物** | ✅ Windows 可用 | [release pre_build](https://github.com/PassByYou888/LingoFuse/releases/tag/pre_build)：生成器工具 + 动态库；Linux / macOS 需自行编译 |
 | **tsAgent** | 🚧 即将发布 | TypeScript / JavaScript 智能体运行时 |
 
@@ -553,4 +591,4 @@ LingoFuse 是一个**真实人类作者**手工构建的项目。AI 在这个过
 
 *项目始于 2026 年，持续进化中。有问题提 Issue，急事加 Q（600585）。*
 
-**采用前请务必：跑 `test/`，做 PoC，验证你自己的场景。**
+**采用前请务必：跑 [`test/`](test/)，做 PoC，验证你自己的场景。**

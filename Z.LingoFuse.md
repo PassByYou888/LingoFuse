@@ -1,42 +1,4 @@
-# Z.LingoFuse.md —— 内部机制知识库（v3.2 面向难缠语言·含 Handle 所有权模型 + P2P 身份侧数据勘误）
-
-> **定位**：面向 **Julia / Erlang / R 等对线程模型、回调语义、单线程运行时极度敏感的语言**。目标是让这些语言的集成者**无需翻阅 Pascal 源码**，就能精确掌握 LingoFuse 的**线程拓扑、事件流、回调执行上下文、Handle 所有权模型、P2P 身份侧数据语义、状态系统、日志系统、同步机制、阻塞规则与诊断手段**。
->
-> **与 `LingoFuse_Pascal_Complete_Guide.md` 的关系**：
-> - 那份是**使用知识库**（怎么调、注意什么、坑在哪）。
-> - **这份是内部机制知识库**（为什么这样、底层怎么工作、跨语言时哪些细节会咬人）。
-> - 两者**互补**，不重复。凡是那份已经讲清楚的，本份不再重复，只引用。
->
-> **核心承诺**：
-> - 所有线程、事件、回调执行上下文、Handle 所有权、P2P 身份侧数据均来自对 `Z.LingoFuse_Core.pas`、`Z.LingoFuse_Export.pas`、`Z.Net.C4.LingoFuse.pas`、`lingofuse_import.pas`、`lingofuse_helper.pas` 的逐行核对。
-> - 所有"不确定"的地方在**第 13 章**明示。
-> - **不用"应该"、"大概"、"通常"糊弄**。
->
-> **v3.2 更新摘要**：
-> - **新增 §2.9 P2P 身份侧数据语义（★ 勘误）**：`LF_Get_P2P_UID` / `LF_Get_P2P_Name` 的数据来源是**发送方写入机制**，**只能从触发事件的回调 `Input` 参数**读取；**不能读自建句柄，不能读输出句柄**。
-> - **勘误 `LF_Get_P2P_UID` 返回值**：从静态数组 `TP2P_UID___` 改为**指针 `PP2P_UID___`**（`New(Result)` + `DelayFreeMem(5.0, Result)`）；调用者只读拷贝，不手动释放。
-> - **更新 §2.2 / §2.4 / §2.5 / §2.6 / §8.1 / §8.2 / §8.3 相关示例与说明**。
-> - **更新 §12 反例集**：新增 §12.13（在自建句柄上调用 P2P 身份函数）。
-> - **更新附录 A.7**：新增 P2P 身份侧数据规则。
-> - **更新 §13 不确定清单**：`LF_Get_P2P_UID` 指针延迟释放的并发性注明。
->
-> **v3.1 更新摘要**：
-> - **新增 §2.8 Handle 所有权模型**：同步族与异步族的相反所有权，及跨语言使用规则。
-> - **新增 §7.5 Handle 生命周期**：三种 Handle 的生命周期状态机。
-> - **新增 §12.10 ~ §12.12**：三个跨语言反例（异步 handle 外泄、所有权混用、注释误导）。
-> - **更新 §13 不确定清单**：原"异步 handle 释放时机"从"不确定"转为"已确认"。
-> - **新增附录 A.7**：Handle 所有权规则速记。
-> - **勘误**：`_lf_native.py` 的"~1 秒后释放"注释，实际为"回调返回后立即释放"。
->
-> **阅读建议**：
-> - **Julia 集成者**：先读 §1.5、§2.4、§2.8、§2.9、§3.4、§8.1。
-> - **Erlang 集成者**：先读 §1.6、§2.5、§2.8、§2.9、§3.5、§8.2。
-> - **R 集成者**：先读 §1.7、§2.6、§2.8、§2.9、§3.6、§8.3。
-> - **通用线程模型**：§1、§2、§3。
-> - **Handle 所有权（必读）**：§2.8、§7.5、§12.10~12.12。
-> - **P2P 身份侧数据（必读）**：§2.9、§12.13、附录 A.8。
-> - **状态与日志**：§4、§5。
-> - **同步机制**：§6、§7。
+# Z.LingoFuse.md —— 内部机制知识库（v4.0 源码重建版 · 含 Handle 所有权模型 + P2P 身份侧数据）
 
 ---
 
@@ -97,7 +59,7 @@ flowchart TD
         M1["单线程，由 LF_PrepareDone 启动"]
         M2["驱动 C40Progress（网络）"]
         M3["驱动 LF_DataPool.Progress（数据句柄回收）"]
-        M4["主线程由用户主循环或模拟器运行"]
+        M4["不直接调用业务回调"]
     end
 
     subgraph TC["② TCompute 工作线程池（Core_Thread_Pool__）"]
@@ -113,7 +75,7 @@ flowchart TD
         S1["每个 (App, API) 一个专用线程"]
         S2["空闲 5 分钟自动退出"]
         S3["执行 Sequenced Call / Notify 回调"]
-        S4["退出时 DelayFreeObj(5.0, self)"]
+        S4["退出时 DelayFreeObj(1.0, self)"]
     end
 
     subgraph C4["④ C4 内部线程"]
@@ -250,8 +212,13 @@ begin
     end;
   end;
   // 清理
-  if (Internal_Queue_Data___ <> nil) and (Internal_Queue_Pool___ <> nil) then ...
-  DelayFreeObj(5.0, self);   // 延迟释放给 TCompute 5 秒窗口
+  if (Internal_Queue_Data___ <> nil) and (Internal_Queue_Pool___ <> nil) then
+  begin
+    Internal_Queue_Pool___.Lock;
+    try Internal_Queue_Pool___.Remove(Internal_Queue_Data___);
+    finally Internal_Queue_Pool___.UnLock; end;
+  end;
+  DelayFreeObj(1.0, self);   // ★ 源码为 1.0 秒，不是 5 秒
 end;
 ```
 
@@ -259,7 +226,7 @@ end;
 - **顺序线程也是 TCompute 线程**（通过 `TCompute.RunM_NP(Do_Run_Th, ...)` 创建）。
 - **每个 `(App, API)` 对拥有一个独立线程**。
 - **空闲 5 分钟自动退出**。
-- **退出时延迟 5 秒释放**（给 TCompute 写 `IsRunning` / `IsExit` 的窗口）。
+- **退出时延迟 1 秒释放**（给 TCompute 写 `IsRunning` / `IsExit` 的窗口）。**注意：v3.2 文档误写为 5 秒，源码是 1 秒。**
 
 **对难缠语言的含义**：
 - **Julia**：顺序线程也是 OS 线程，同样不能直接调 Julia。
@@ -888,7 +855,7 @@ end;
   1. 在回调内**完全处理**（读 Input / 写 Output）。
   2. 在回调内**把数据拷贝出来**（bytes/array），然后再跨线程处理。
 
-### 2.9 P2P 身份侧数据语义（★ v3.2 勘误）
+### 2.9 P2P 身份侧数据语义（★ 核心）
 
 > **这是本知识库第三核心的一节**。`LF_Get_P2P_UID` 和 `LF_Get_P2P_Name` **不是读句柄本身的业务数据**——它们是读取**发送方在发送请求时自动写入的 P2P 身份元数据**（"侧数据"）。这个元数据只在**接收侧**的**输入句柄**上存在。
 
@@ -929,7 +896,7 @@ end;
 
 #### 2.9.2 只能在"触发事件的回调 `Input` 参数"中使用
 
-**这**两个函数只在**"从网络或本地调用"接收到的输入句柄**上有效：
+**这两个函数只在**"从网络或本地调用"接收到的输入句柄**上有效**：
 
 | 位置 | 是否有效 | 原因 |
 |------|:--------:|------|
@@ -943,7 +910,7 @@ end;
 **对输出句柄或自建句柄调用时的行为**（源码 `TLF_Data.Get_P2P_UID`）：
 
 ```pascal
-function TLF_Data.Get_P2P_UID: TUID___;
+function TLF_Data.Get_P2P_UID(): TUID___;
 begin
   if Data_Param <> nil then
       Result := Data_Param.FromUID
@@ -959,16 +926,9 @@ end;
 - **打印警告**：`[warning] Get_P2P_UID(): P2P Info only backcall "input" parameter.`
 - **`LF_Get_P2P_Name` 同理**（返回空字符串 + 警告）。
 
-#### 2.9.3 返回值类型（v3.2 勘误）
+#### 2.9.3 返回值类型（v4.0 勘误）
 
-**`LF_Get_P2P_UID` 的返回值变更**（对应源码 `Z.LingoFuse_Export.pas`）：
-
-| 版本 | 返回类型 | 调用者拿到什么 |
-|------|---------|---------------|
-| 旧版 | `TP2P_UID___`（32 字节静态数组**值**） | 值拷贝 |
-| **新版（v3.2 起）** | **`PP2P_UID___`（指向 `TUID___` 的指针）** | **指针，约 5 秒后框架自动释放** |
-
-**源码**：
+**`LF_Get_P2P_UID` 的返回值**（对应源码 `Z.LingoFuse_Export.pas`）：
 
 ```pascal
 function LF_Get_P2P_UID(Hnd: TDataHnd___): PP2P_UID___;
@@ -980,6 +940,8 @@ begin
   DelayFreeMem(5.0, Result);                    // ← 5 秒后自动释放
 end;
 ```
+
+**返回类型**：**`PP2P_UID___`（指向 `TUID___` 的指针）**，不是值。
 
 **调用者契约**（Pascal 侧）：
 
@@ -1529,7 +1491,6 @@ LF.Set_Opt_Quiet(True);    // 关闭调试日志
 | `LF_PrepareClient` | `LF_Debug_Log('LF_PrepareClient: host="%s" hnd=%p', [...])` |
 | `LF_PrepareDone` | `LF_Debug_Log('LF_PrepareDone: starting simulator main thread/result=%d', [...])` |
 | `LF_SetOption` | `LF_Debug_Log('LF_SetOption: opt="%s" val="%s"', [...])` |
-| `LF_Set_Network_Event` | 无日志 |
 | `LF_Shutdown` | `LF_Debug_Log('LF_Shutdown: begin/done', [])` |
 
 **Core 层日志**（`Z.LingoFuse_Core.pas`）：
@@ -1711,7 +1672,28 @@ end;
 - **Erlang**：在 BEAM 主进程的循环中定期调用 `LF_Sync()`。
 - **R**：在 R 主线程的事件循环中定期调用 `LF_Sync()`。
 
-### 6.5 同步回调的使用
+### 6.5 `LF_PrepareDone` 的超时公式（v4.0 修复）
+
+源码：
+
+```pascal
+tk := GetTimeTick() + if_(Wait_Connection_Timeout < 500, uint64(5000), Wait_Connection_Timeout) + 1000;
+while Init_In_Progress do
+begin
+  Boot_Thread_Sync_Tool.Check_Synchronize(10);
+  if GetTimeTick() > tk then break;
+end;
+```
+
+**正确公式**：`(Wait_Connection_Timeout < 500 ? 5000 : Wait_Connection_Timeout) + 1000` 毫秒。
+
+**v3.2 文档误写为** `max(Wait_Connection_Timeout, 5000) + 1000`。二者在 `Wait_Connection_Timeout < 500` 时等价（都是 6000），但 `Wait_Connection_Timeout >= 500` 且 `< 5000` 时不同。例如 `Wait_Connection_Timeout = 3000`：
+- **正确公式**：3000 + 1000 = 4000 毫秒
+- **错误公式**：max(3000, 5000) + 1000 = 6000 毫秒
+
+**⚠️ 使用者必须知道**：`Wait_Connection_Timeout` 小于 500 时会被视为 5000；大于等于 500 时按实际值加 1000。
+
+### 6.6 同步回调的使用
 
 **注册**：
 
@@ -1739,7 +1721,7 @@ begin
 end;
 ```
 
-### 6.6 同步机制的完整流程
+### 6.7 同步机制的完整流程
 
 ```mermaid
 sequenceDiagram
@@ -1759,7 +1741,7 @@ sequenceDiagram
     WT->>WT: 继续执行
 ```
 
-### 6.7 对难缠语言的含义
+### 6.8 对难缠语言的含义
 
 **Julia**：
 
@@ -2408,16 +2390,15 @@ flowchart TD
     F --> G["转发到目标 recv_io"]
 ```
 
-### 9.2 服务端命令分发
+### 9.2 服务端命令分发（v4.0 修复）
 
-**服务端注册的 17 个命令**：
+**服务端注册的 15 个命令**（源码 `TC40_LF_Service.Create`）：
 
 | 命令 | 注册类型 | 处理器 | 执行线程 |
 |------|---------|--------|---------|
 | `Update_UID` | CompleteBuffer_StreamNotify | `cmd_Update_UID` | C4 线程 |
 | `Init_APP_Info` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_Init_APP_Info` | C4 线程 |
 | `No_App_Info` | ConsoleNotify | `cmd_No_App_Info` | C4 线程 |
-| `Thread_State` | CompleteBuffer_StreamNotify | `cmd_Thread_State` | C4 线程 |
 | `Notify` | CompleteBuffer_StreamNotify | `cmd_Notify` | C4 线程 + HPC 工作线程 |
 | `Sequenced_Notify` | CompleteBuffer_StreamNotify | `cmd_Sequenced_Notify` | C4 线程 + 顺序线程 |
 | `Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_Call` | C4 线程 + HPC 工作线程 |
@@ -2430,7 +2411,26 @@ flowchart TD
 | `P2PName_Sequenced_Notify` | CompleteBuffer_StreamNotify | `cmd_P2PName_Sequenced_Notify` | C4 线程 + 顺序线程 |
 | `P2PName_Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_P2PName_Call` | C4 线程 + HPC 工作线程 |
 | `P2PName_Sequenced_Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_P2PName_Sequenced_Call` | C4 线程 + 顺序线程 |
-| `update_service_api_info` | CompleteBuffer | `cmd_update_service_api_info` | C4 线程 |
+
+**v3.2 文档误写为 17 个命令**，多出了 `Thread_State` 和 `update_service_api_info`。`update_service_api_info` 是**客户端**注册的命令，`Thread_State` 在源码中不存在。
+
+**客户端注册的 13 个命令**（源码 `TC40_LF_Client.Create`）：
+
+| 命令 | 注册类型 | 处理器 |
+|------|---------|--------|
+| `update_service_api_info` | CompleteBuffer | `cmd_update_service_api_info` |
+| `Notify` | CompleteBuffer | `cmd_Notify` |
+| `Sequenced_Notify` | CompleteBuffer | `cmd_Sequenced_Notify` |
+| `Call` | CompleteBuffer_NoWait_Stream_Thread | `cmd_Call` |
+| `Sequenced_Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_Sequenced_Call` |
+| `UID_Notify` | CompleteBuffer | `cmd_UID_Notify` |
+| `UID_Sequenced_Notify` | CompleteBuffer | `cmd_UID_Sequenced_Notify` |
+| `UID_Call` | CompleteBuffer_NoWait_Stream_Thread | `cmd_UID_Call` |
+| `UID_Sequenced_Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_UID_Sequenced_Call` |
+| `P2PName_Notify` | CompleteBuffer | `cmd_P2PName_Notify` |
+| `P2PName_Sequenced_Notify` | CompleteBuffer | `cmd_P2PName_Sequenced_Notify` |
+| `P2PName_Call` | CompleteBuffer_NoWait_Stream_Thread | `cmd_P2PName_Call` |
+| `P2PName_Sequenced_Call` | CompleteBuffer_NoWait_Bridge_Stream | `cmd_P2PName_Sequenced_Call` |
 
 **关键事实**：
 - **所有命令首先在 C4 线程执行**（C4 是单线程 Progress 驱动）。
@@ -2566,6 +2566,7 @@ selected^.Third[taskKey] := Get_Cycle_Anchor();   // 更新 anchor
 | **`LF_FreeData`（自动回收）** | 最多 5 秒（下次扫描） |
 | **空闲回收** | 10 分钟 + 最多 5 秒 |
 | **`LF_CreateData_Permanent` 释放** | 立即（同步） |
+| **顺序线程退出后的延迟释放** | **1 秒**（v4.0 修复：v3.2 误写为 5 秒） |
 
 ---
 
@@ -2810,7 +2811,7 @@ begin
 end;
 ```
 
-### 12.10 所有语言：在异步回调外使用 handle（★ v3.1 核心）
+### 12.10 所有语言：在异步回调外使用 handle（★ 核心）
 
 **问题**：把异步回调接收的 `Result_` handle 传出去，跨线程使用。
 
@@ -2915,7 +2916,7 @@ Do NOT call LF_FreeData on it.
 
 **教训**：**注释是二手信息**。遇到可疑行为，读源码，不读注释。
 
-### 12.13 所有语言：在自建句柄或输出句柄上调用 `LF_Get_P2P_UID` / `LF_Get_P2P_Name`（★ v3.2 新增）
+### 12.13 所有语言：在自建句柄或输出句柄上调用 `LF_Get_P2P_UID` / `LF_Get_P2P_Name`
 
 **问题**：`LF_Get_P2P_UID` / `LF_Get_P2P_Name` 读的是**发送方写入的"侧数据"**，不是句柄本身的业务数据。它们只在**触发事件的回调 `Input` 参数**上有效。
 
@@ -2990,7 +2991,7 @@ end;
 
 **相关坑**：`LF-ROUTE-004`（见 Pascal 指南）。
 
-### 12.14 所有语言：把 `LF_Get_P2P_UID` 的返回值当成数组值使用（★ v3.2 新增）
+### 12.14 所有语言：把 `LF_Get_P2P_UID` 的返回值当成数组值使用
 
 **问题**：`LF_Get_P2P_UID` 的返回值从 `TP2P_UID___`（32 字节静态数组**值**）改为 `PP2P_UID___`（**指针**）。旧代码直接当值用会编译失败或运行时错乱。
 
@@ -3059,25 +3060,6 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
 
 > 以下是我从当前材料**无法完全确定**的点，需要回查源码或询问人类。
 
-0. **【已确认，从不确定转为确定】** 异步回调的 `Result_` handle 释放时机
-   - 曾误读 `_lf_native.py` 的注释"~1 秒后释放"为 handle 的释放时机。
-   - **源码核实**（`Z.Net.C4.LingoFuse.pas` 的 `TLF_Async_Call_Bridge.Do_Th`）：
-     - `result_param_ := TLF_Data.New_Result_From(..., False)` → **框架拥有**
-     - `TLF_Data.Free_Data(result_param_)` → **回调返回后立即释放**
-     - `DelayFreeObj(1.0, Self)` → 1 秒后释放的是 **Bridge 对象**，不是 handle
-   - **结论**：**已确认**（本次调试的核心发现）。
-   - **影响**：任何在异步回调外使用 `Result_` handle 的代码都是 UB。
-   - **建议**：所有语言的绑定层注释必须更正为"立即释放"。
-
-0.5 **【已确认，v3.2 新增】** `LF_Get_P2P_UID` 的返回值类型与"侧数据"语义
-   - **源码核实**（`Z.LingoFuse_Export.pas` 的 `LF_Get_P2P_UID`）：
-     - 返回类型是 **`PP2P_UID___`（指针）**，不是 `TP2P_UID___`（值）。
-     - 内部 `New(Result)` + `DelayFreeMem(5.0, Result)`。
-   - **数据来源**（`TLF_Data.Get_P2P_UID`）：从 `Data_Param.FromUID` 读取；`Data_Param` 是**发送方写入的输入句柄**才有的字段。
-   - **触发机制**（`TC40_LF_Client.Send_*` → `TMemory_Param_Tool.Rebuild_UID_and_P2PName`）：发送方自动把 `FLast_UID` 和 `LF_P2P_name.V` 写入请求载荷。
-   - **只能在回调 `Input` 参数上使用**：对自建句柄或输出句柄调用返回 `Null_UID()` + 警告。
-   - **结论**：**已确认**（v3.2 勘误核心）。
-
 1. **模拟主线程是否调用 `LF_Sync`**
    - 源码显示 `Simulated_Main_Thread` 只调用 `C40Progress` 和 `LF_DataPool.Progress`。
    - **不确定**：是否有其他机制驱动 `LF_SyncTool`。
@@ -3094,9 +3076,9 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
    - **不确定**：运行时是否会动态调整。
    - **推测**：动态创建，上限受 `LimitMaxParallelThread` 限制。
 
-4. **顺序线程的 `DelayFreeObj(5.0, self)` 与 `Kill_App` 的竞态**
-   - 源码显示线程退出后延迟 5 秒释放。
-   - **不确定**：如果 `Kill_App` 在 5 秒内被调用，是否有竞态。
+4. **顺序线程的 `DelayFreeObj(1.0, self)` 与 `Kill_App` 的竞态**
+   - 源码显示线程退出后延迟 1 秒释放。
+   - **不确定**：如果 `Kill_App` 在 1 秒内被调用，是否有竞态。
    - **推测**：可能有。见 `LF-MEM-004`。
 
 5. **`LF_PostStatus` 在 `Simulator_Main_Thread_Activted = False` 时的精确行为**
@@ -3175,16 +3157,26 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
     - **推测**：**没有**。`Free_Data` 就在回调返回后的下一行代码，其它线程无法介入。
     - **但**：如果回调**保存了 handle 指针**，即使窗口期为 0，指针也已经**指向已释放内存**。
 
-20. **【v3.2 新增】`LF_Get_P2P_UID` 指针延迟释放的并发性**
+20. **`LF_Get_P2P_UID` 指针延迟释放的并发性**
     - 源码：`New(Result)` 分配指针，写值，然后 `DelayFreeMem(5.0, Result)`。
     - **不确定**：在 5 秒窗口内，其它线程频繁调用 `LF_Get_P2P_UID` 是否会因多次 `New`/`DelayFreeMem` 造成内存碎片或延迟释放队列拥塞。
     - **推测**：**不会**——每次调用独立分配、独立延迟释放，互不影响。
     - **但**：如果调用频率极高（每秒百万次），延迟释放队列可能有压力。建议在回调内**只调一次**，然后把值缓存。
 
-21. **【v3.2 新增】`LF_Get_P2P_UID` 在 Hnd = nil 时的精确行为**
+21. **`LF_Get_P2P_UID` 在 Hnd = nil 时的精确行为**
     - 源码：`New(Result)` + `Result^ := Null_UID()` + `DelayFreeMem(5.0, Result)`。
     - **不确定**：`Hnd = nil` 是否仍走 `New` / `DelayFreeMem` 路径。
     - **推测**：**会**——源码写的是 `if (Hnd <> nil) and ... else Result^ := Null_UID();`，所以 `Hnd = nil` 走 else 分支，仍然分配 + 延迟释放。
+
+22. **`LF_SetOption` 选项在 `Simulator_Main_Thread_Activted = True` 时的生效延迟**
+    - 源码：`MainThreadPost.PostM_NP(DoRun)` 投递到主线程。
+    - **不确定**：实际延迟多久。
+    - **推测**：一个主循环周期（约 10ms）。
+
+23. **`LF_PrepareService` / `LF_PrepareClient` 在 `Simulated_Main_Thread_Running = True` 时的立即执行语义**
+    - 源码：分支中 `SetLength(C40AppParam, 1)` + `Do_Post_Run_C40_Extract_CmdLine`。
+    - **不确定**：是否需要等待 `running` 标志变为 False 才返回。
+    - **推测**：**会**（`while running do TCompute.Sleep(10)`）。
 
 ---
 
@@ -3236,7 +3228,7 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
 3. **P2PName 路由不做本地查找**。
 4. **UID 重连后会变化**。
 
-### A.7 Handle 所有权规则（★ v3.1 新增）
+### A.7 Handle 所有权规则
 
 1. **同步族（`LF_Call` / `LF_UID_Call` / `LF_P2PNAME_Call`）返回的 handle 归调用者所有**。
 2. **异步族（`LF_Async_Call` / `LF_UID_Async_Call` / `LF_P2PNAME_Async_Call`）的 `Result_` handle 归框架所有**。
@@ -3245,7 +3237,7 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
 5. **二分法要问对问题**：类型差异（int vs dict）往往是伪分类；真变量是内存复用时机。
 6. **注释是二手信息**：遇到可疑行为，读源码，不读注释。
 
-### A.8 P2P 身份侧数据规则（★ v3.2 新增）
+### A.8 P2P 身份侧数据规则
 
 1. **`LF_Get_P2P_UID` / `LF_Get_P2P_Name` 读的是发送方写入的"侧数据"**，不是句柄本身的业务数据。
 2. **数据来源**：发送方 `Send_*` 内部调用 `TMemory_Param_Tool.Rebuild_UID_and_P2PName`，把 `FLast_UID` 和 `LF_P2P_name.V` 写入请求载荷前部。
@@ -3256,19 +3248,23 @@ uid = uid_ptr == C_NULL ? zeros(UInt8, 32) : copy(unsafe_wrap(Array, uid_ptr, 32
 
 ---
 
-**文档定位**：一份**面向难缠语言的内部机制知识库**。它不假装能替代源码，但能让你在 90% 的场景下正确集成，并在剩下 10% 的场景下知道该停下来查源码或问人。
-
-**v3.2 核心承诺**：
+**v4.0 核心承诺**：
 - **线程模型完全展开**：4 类线程 + 每类线程的精确职责。
 - **回调执行上下文完全展开**：6 类回调 + 执行线程 + 锁 + 禁止事项。
 - **Handle 所有权模型完全展开**：同步族与异步族的相反所有权 + 正确使用模式 + 跨语言反例。
-- **P2P 身份侧数据语义完全展开（v3.2 新增）**：数据来源、使用位置、返回值类型、跨语言实践。
+- **P2P 身份侧数据语义完全展开**：数据来源、使用位置、返回值类型、跨语言实践。
 - **事件流完全展开**：Connect / Disconnect / API 变更 / UID 更新 / 状态消息。
 - **状态与日志完全展开**：三层状态系统 + 日志点清单。
 - **同步机制完全展开**：`TSoft_Synchronize_Tool` 的精确逻辑。
 - **难缠语言集成指南**：Julia / Erlang / R 的推荐架构。
-- **诚实**：21 条不确定清单（v3.2 从 19 条扩展；其中 2 条已从"不确定"转为"已确认"）。
+- **诚实**：23 条不确定清单。
 
-*文档版本：v3.2（面向难缠语言的内部机制版 + Handle 所有权模型 + P2P 身份侧数据勘误）*
-*最后更新：2026-10-12*
+**v4.0 相对于 v3.2 的修复**：
+1. **顺序线程延迟释放时间**：从 5 秒修复为 1 秒（源码 `DelayFreeObj(1.0, self)`）。
+2. **`LF_PrepareDone` 超时公式**：从 `max(Wait_Connection_Timeout, 5000) + 1000` 修复为 `(Wait_Connection_Timeout < 500 ? 5000 : Wait_Connection_Timeout) + 1000`。
+3. **服务端命令数量**：从 17 修复为 15（删除不存在的 `Thread_State` 和误归类的 `update_service_api_info`）。
+4. **补充**：`LF_SetOption` 的完整选项、`LF_Shutdown` 的精确清理顺序、`LF_FreeApp` / `LF_BindApp` 的细节。
+
+*文档版本：v4.0（源码重建版 · 面向难缠语言的内部机制 + Handle 所有权模型 + P2P 身份侧数据勘误）*
+*最后更新：2026-10-27*
 *维护者：LingoFuse 团队*

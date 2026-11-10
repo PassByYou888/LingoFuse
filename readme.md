@@ -4,7 +4,7 @@
 >
 > 不写 IDL，不生成桩代码，不搭 HTTP 服务。任何语言写的函数，任何其他语言都能直接调。
 >
-> **定位**：LingoFuse 不只是"跨语言 RPC"——它是 **前沿型程序的多应用组合体系**与 **多物理硬件组合体系**的通讯底座。
+> **定位**：LingoFuse 不只是"跨语言 RPC"——它是 **前沿型程序的多应用组合体系**与 **多物理硬件组合体系**的通讯底座，也是 **多语言团队生态互补的协作底座**。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Languages](https://img.shields.io/badge/languages-18%20first--party%20%2B%2030%20via%20tools-blue)]()
@@ -24,6 +24,7 @@
 | **想知道这个项目是什么性质** | [项目性质](#项目性质自用开源无目的分享本身) → [这是什么](#这是什么) → [关于作者](#关于作者) |
 | **第一次听说 LingoFuse** | [这是什么](#这是什么) → [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [为什么需要它](#为什么需要它) → [快速开始](#快速开始) |
 | **想评估是否采用** | [使用门槛](#️-使用门槛这是黑科技不是开箱即用) → [语言支持](#语言支持) → [测试与验证](#测试与验证) → [项目状态与边界](#项目状态与边界) |
+| **想了解多语言团队如何协作** | [**多语言团队协作策略**](#多语言团队协作策略) → [LingoFuse_Team_Support_Strategy.md](LingoFuse_Team_Support_Strategy.md) → [LingoFuse_Team_Enslavement_Strategy.md](LingoFuse_Team_Enslavement_Strategy.md) |
 | **已经是用户，想看生态** | [智能体运行时](#智能体运行时) → [相关项目](#相关项目) |
 | **想理解核心机制** | [内部机制知识库](Z.LingoFuse.md) → [多语言完整指南](LingoFuse_MultiLanguage_Complete_Guide.md) → [C++ 知识库](cpp/LingoFuse_Cpp_Knowledge_Base.md) → [架构不可复刻性](LF-Architecture-Unreplicable-Backend-Systems.md) |
 | **想读简短机制短文** | [技术短文 · 内核与应用](#技术短文--内核与应用) → 按兴趣挑 |
@@ -144,6 +145,21 @@ LingoFuse 是**分布式系统地基**。
 
 > **为什么是"地基"而不是"框架"**：因为地基是从真实生产流量中长出来的（见 [项目性质](#项目性质自用开源无目的分享本身)），不是设计出来的。它不规定你上面盖什么楼，但它保证你盖什么楼都不会塌。
 
+### 多语言生态互补：不是每种语言都单打独斗
+
+LingoFuse 的 18 种语言绑定不是孤立罗列的清单，而是**按生态互补原则协作的体系**。不同语言团队接入时，不是"每种语言都做全栈"，而是**让每种语言做它最擅长的事，用其他语言的长板补齐它的短板**：
+
+- **强实现语言**（C++ / Rust / Zig）：做局部高性能实现（压缩、加密、解码、算法），LF 提供高级 UI 宿主作为激励；
+- **后台强项语言**（Go / Erlang）：做高并发、OTP 容错服务，LF 提供 Web / CS 前端支持；
+- **综合工程化语言**（Java / C#）：做大型企业级主体工程，Pascal 退居工具环节提供代码生成器、调试工具、脚手架；
+- **专业 API 节点**（Julia / R / Fortran / Python / Ruby）：做统计、数值、算法、脚本服务，是"服务器 + 前端"架构里 API 的最佳供给方，UI 不强制；
+- **前端 UI 供给方**（Dart / Delphi / Pascal UI / TS/JS / Swift）：在 UI 层面尊重其能力，为强实现语言和后台语言提供高级 UI 宿主。
+
+这套协作策略的完整设计，见：
+
+- 📄 [**LingoFuse_Team_Support_Strategy.md**](LingoFuse_Team_Support_Strategy.md) —— 各语言团队接入支持策略：分群、补齐短板、交付物清单、落地路线；
+- 📄 [**LingoFuse_Team_Enslavement_Strategy.md**](LingoFuse_Team_Enslavement_Strategy.md) —— 生态互补与价值最大化策略：让每种语言团队在其最擅长领域心甘情愿贡献，同时用统一架构补齐短板。
+
 ### AI 时代的两类组合体系
 
 LingoFuse 真正要解决的，是 AI 时代正在成形的两类组合问题：
@@ -185,6 +201,7 @@ LF 的接口规则（C ABI 59 个导出符号、三套寻址、Handle 所有权�
 - **真·服务发现 + 负载均衡 + FIFO + 断线重连**：不用 etcd、不用 Nginx、不用自己写重试。
 - **18 种语言的绑定**：从 ASM 级 C ABI 到 Dart / Julia / R，每种都跑通了自己的测试体系。
 - **多应用 / 多硬件的分布式组合**：后台服务、AI Agent、计算节点、客户端、设备端，都可以在同一套地基上组合、路由、隔离。
+- **多语言生态互补**：不是每种语言都做全栈，而是按团队策略协作——详见 [团队支持策略](LingoFuse_Team_Support_Strategy.md) 与 [奴役策略](LingoFuse_Team_Enslavement_Strategy.md)。
 
 ### 它把最复杂的负担留给了你
 
@@ -346,8 +363,27 @@ LingoFuse 提供的是**竞态稳定性测试（机理层）**，不是你的 Ap
 | Zig | [`zig/`](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试 |
 | PHP | [`php/`](php/) | 🟡 调用者接入 | 经 [`Py/lingofuse/bridge.py`](Py/lingofuse/bridge.py) HTTP 网关，只能作为调用者 |
 
+> **⚠️ 这 18 种语言不是孤立罗列的清单，而是按生态互补原则协作的体系。** 不同语言团队接入时，不是"每种语言都做全栈"，而是**让每种语言做它最擅长的事，用其他语言的长板补齐它的短板**。完整的团队协作策略见 [**多语言团队协作策略**](#多语言团队协作策略) 与下方的两份策略文档。
 
-👉 **[进入 LingoFuse-Tools 仓库](https://github.com/PassByYou888/LingoFuse-Tools)**
+---
+
+## 多语言团队协作策略
+
+LingoFuse 的 18 种语言绑定不是"每种语言都做全栈"的清单，而是**按生态互补原则协作的体系**。不同语言团队接入时，支持策略和"奴役"策略是两套互补的文档：
+
+### 📄 [LingoFuse_Team_Support_Strategy.md](LingoFuse_Team_Support_Strategy.md) —— 团队接入支持策略
+
+- **分群**：强实现语言（C++ / Rust / Zig）、后台强项语言（Go / Erlang）、综合工程化语言（Java / C#）、专业 API 节点（Julia / R / Fortran / Python / Ruby）、前端 UI 供给方（Dart / Delphi / Pascal UI / TS/JS / Swift）、工具链与服务方（Pascal 后台形态 / LingoFuse-Tools）。
+- **补齐短板**：强实现语言缺高级 UI → LF 提供 UI 宿主；后台语言缺前端 → LF 提供 Web/CS 前端；封闭生态缺前沿 API → LF 提供现代 API 封装；工程化语言做主体 → Pascal 退居工具环节。
+- **交付物清单**：限制清单、服务/调用模板、UI 或 API 宿主模板、共性契约培训、机理 PoC 路径、二进制/JSON 双通道示例、工具链使用指南。
+- **落地路线**：先分群再派活，A 类给高级 UI 激励，B 类给前端支持，C 类给主体工程地位，D 类明确为 API 供给方，E 类在 UI 层面尊重其能力，F 类提供工具链与机理 PoC 路径。
+
+### 📄 [LingoFuse_Team_Enslavement_Strategy.md](LingoFuse_Team_Enslavement_Strategy.md) —— 生态互补与价值最大化策略
+
+- **内部"奴役"不是贬义**，而是让每种语言团队在其最擅长的领域心甘情愿地贡献，同时用统一架构补齐其短板，实现整体系统价值最大化。
+- **核心操作原则**：解决目标语言的短板，用统一化全栈语言高度进行全面高端开发。
+- **分类"奴役"策略**：A 类强实现语言做局部核心 + 高级 UI 激励；B 类后台语言做后台核心 + 前端支持；C 类工程化语言做主体工程 + Pascal 工具链；D 类专业 API 节点做统计/数值/算法服务；E 类前端 UI 语言做 UI 供给方；F 类脚本/胶水语言做 API 节点。
+- **逐语言对照表**：每种语言的"让他们做什么 / 我们补什么 / UI 形态"一目了然。
 
 ---
 
@@ -656,6 +692,7 @@ Windows 下需安装 **VC++ 2015-2022 可再发行程序包**：
 |------|------|------|
 | **核心通讯层** | ✅ 稳定 | C4 引擎、二进制帧、句柄、软同步、线程池全部就绪 |
 | **十八语言第一方绑定** | ✅ 生产就绪 | C# / C++ / Dart / Erlang / Fortran / Go / Java / JavaScript / Julia / Pascal / Python / R / Ruby / Rust / Swift / TypeScript / Zig / PHP（PHP 为调用者） |
+| **多语言团队协作策略** | ✅ 已完善 | [Team Support Strategy](LingoFuse_Team_Support_Strategy.md) + [Team Enslavement Strategy](LingoFuse_Team_Enslavement_Strategy.md) |
 | **HTTP 桥接** | ✅ 可用 | `bridge.py` 网关，覆盖 Node.js / PHP / 浏览器 |
 | **代码生成器体系** | ✅ 已完结 | [LingoFuse-Tools](https://github.com/PassByYou888/LingoFuse-Tools)：三条工具线（ABI / JSON / MCP），20+ 种目标语言 |
 | **AI 知识库体系** | ✅ 已完善 | 覆盖所有接口，可辅助 AI 接管**接口层和样板层**——**接管不了架构层**，详见 [使用门槛](#️-使用门槛这是黑科技不是开箱即用) |

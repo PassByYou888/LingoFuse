@@ -221,6 +221,7 @@ type
     Fixed_Sequenced_Temp_Time: TTimeTick;
   private
     FLast_UID: TUID___;
+    FLF_P2P_UPDATE: Boolean;
     FLast_P2PName: TLF_String;
     FService_Info: TLF_ServiceInfoPool;
     FUID_Info_Tool: TUID_Info_Tool;
@@ -3423,7 +3424,7 @@ begin
     begin
       LF_Debug_Log('Client.Do_LF_P2P_APP_Update: tag=%d', [Tag]);
     end;
-  DTNoAuth.ProgressPost.PostExecuteM_NP(0, Update_UID_Info);
+  FLF_P2P_UPDATE := True;
 end;
 
 procedure TC40_LF_Client.Do_Update_UID_Info;
@@ -3453,6 +3454,7 @@ begin
     end;
   DisposeObject(d);
   DisposeObject(api_info_data);
+  FLF_P2P_UPDATE := False;
 end;
 
 procedure TC40_LF_Client.Do_Init_App_Info;
@@ -3984,6 +3986,7 @@ constructor TC40_LF_Client.Create(PhysicsTunnel_: TC40_PhysicsTunnel; source_: T
 begin
   inherited Create(PhysicsTunnel_, source_, Param_);
   FLast_UID := Null_UID();
+  FLF_P2P_UPDATE := False;
   FLast_P2PName := '';
   FService_Info := TLF_ServiceInfoPool.Create;
   FUID_Info_Tool := TUID_Info_Tool.Create;
@@ -4065,20 +4068,20 @@ var
   free_timeout_: Boolean;
 begin
   if LF_Debug_Log_Enabled then
-    LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d begin', [Tag]);
+      LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d begin', [Tag]);
   try
     try
-      LF_P2P_APP.Remove_Update(Self);
+        LF_P2P_APP.Remove_Update(Self);
     except
       on E: Exception do
-        DoStatus('TC40_LF_Client.Destroy remove P2P update error: %s', [E.Message]);
+          DoStatus('TC40_LF_Client.Destroy remove P2P update error: %s', [E.Message]);
     end;
     try
       if FAPP <> nil then
-        FAPP.Remove_Update(Self);
+          FAPP.Remove_Update(Self);
     except
       on E: Exception do
-        DoStatus('TC40_LF_Client.Destroy remove app update error: %s', [E.Message]);
+          DoStatus('TC40_LF_Client.Destroy remove app update error: %s', [E.Message]);
     end;
     free_timeout_ := False;
     tk := GetTimeTick() + 2000;
@@ -4090,35 +4093,35 @@ begin
             Break;
           end
         else
-          TCompute.Sleep(10);
+            TCompute.Sleep(10);
       end;
     if not free_timeout_ then
       begin
-        try DisposeObjectAndNil(FHost_Running_Thread_Num); except end;
-        try DisposeObjectAndNil(FWait_Reponse_Thread_Num); except end;
-        try DisposeObjectAndNil(FSent_No_Response_Cmd_Num); except end;
-        try DisposeObjectAndNil(FUID_Info_Tool); except end;
-        try DisposeObjectAndNil(FService_Info); except end;
-        try DisposeObjectAndNil(Cycle_Int64_Anchor_Tool); except end;
-        try DisposeObjectAndNil(Fixed_Sequenced_Pool); except end;
+        DisposeObjectAndNil(FHost_Running_Thread_Num);
+        DisposeObjectAndNil(FWait_Reponse_Thread_Num);
+        DisposeObjectAndNil(FSent_No_Response_Cmd_Num);
+        DisposeObjectAndNil(FUID_Info_Tool);
+        DisposeObjectAndNil(FService_Info);
+        DisposeObjectAndNil(Cycle_Int64_Anchor_Tool);
+        DisposeObjectAndNil(Fixed_Sequenced_Pool);
       end;
   finally
     try
       if C40_ClientPool <> nil then
-        C40_ClientPool.Remove(Self);
+          C40_ClientPool.Remove(Self);
     except
       on E: Exception do
-        DoStatus('TC40_LF_Client.Destroy remove from pool error: %s', [E.Message]);
+          DoStatus('TC40_LF_Client.Destroy remove from pool error: %s', [E.Message]);
     end;
   end;
   try
-    inherited Destroy;
+      inherited Destroy;
   except
     on E: Exception do
-      DoStatus('TC40_LF_Client.Destroy inherited error: %s', [E.Message]);
+        DoStatus('TC40_LF_Client.Destroy inherited error: %s', [E.Message]);
   end;
   if LF_Debug_Log_Enabled then
-    LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d done timeout=%s', [Tag, if_(free_timeout_, 'yes', 'no')]);
+      LF_Debug_Log('TC40_LF_Client.Destroy: tag=%d done timeout=%s', [Tag, if_(free_timeout_, 'yes', 'no')]);
 end;
 
 procedure TC40_LF_Client.SafeCheck;
@@ -4135,11 +4138,11 @@ begin
       tk := GetTimeTick();
       if tk - FLast_Check_UID_TimeTick > 1000 then
         begin
-          if not FLast_P2PName.Same(LF_P2P_name.V) then
+          if FLF_P2P_UPDATE or (not FLast_P2PName.Same(LF_P2P_name.V)) then
             begin
               if LF_Debug_Log_Enabled then
                 begin
-                  LF_Debug_Log('Client.Progress: p2p name changed, updating UID info');
+                  LF_Debug_Log('Client.Progress: p2p state changed, updating UID info');
                 end;
               Update_UID_Info;
             end;

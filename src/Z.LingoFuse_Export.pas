@@ -13,7 +13,7 @@ uses SysUtils,
   Z.FP.Net.CrossSocket, Z.IPC.API, Z.Net.Server.IPC;
 
 const
-  C_LingoFuse_Edition = '5.04';
+  C_LingoFuse_Edition = '5.05';
 
 type
   TDataHnd___ = Pointer;

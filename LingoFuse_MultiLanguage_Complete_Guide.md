@@ -182,7 +182,7 @@ flowchart TD
 25. **【C++】** 必须先调用 `LF_LoadLibrary()`；返回 1 表示成功。`LF_LoadLibrary` 不是自动的，忘记调用会导致所有 `LF_*` 失败。
 26. **【C++】** MSVC 必须加 `/utf-8`，否则 API 描述字符串的编码不对。
 27. **【C#】** 生成的库必须**没有 `Main`**。有 `Main` 会导致 `CS0017: Program has more than one entry point defined`。测试程序在独立项目里。
-28. **【C#】** 异步回调必须用 `TaskCompletionSource` + `RunContinuationsAsynchronously`，否则回调可能在 worker 线程上同步执行。
+28. **【C#】** 异步桥接的 `TaskCompletionSource` **不设置** `RunContinuationsAsynchronously`（与 BCL 内建 async API 保持一致语义）。有 SyncContext 时 continuation post 回它；无 SyncContext 时内联在完成线程上。用户显式 `ConfigureAwait(false)` 可强制内联。
 29. **【Rust】** panic 必须 `catch_unwind`，且建议用户回调也不要 panic。
 30. **【Go】** 服务侧必须 `CGO_ENABLED=1`；`sys.LoadLibrary()` 必须先调用。
 31. **【Java】** 必须 JDK 22+（FFM API）；JDK 21 及以下不可用。`LibraryLoader.selectPlatformFileName()` 必须先调用。
@@ -204,7 +204,7 @@ flowchart TD
 | 默认 TCP 端口 | 9898 |
 | DataHandle 空闲回收阈值 | 10 分钟 |
 | 回收扫描间隔 | 5 秒 |
-| `prepareDone` 初始化超时 | `max(Wait_Connection_Timeout, 5000) + 1000` 毫秒 |
+| `prepareDone` 初始化超时 | `(Wait_Connection_Timeout < 500 ? 5000 : Wait_Connection_Timeout) + 1000` 毫秒 |
 | `Wait_Connection_Timeout` 默认 | 30000 ms |
 | `Overlap_Connection` 默认 | false |
 | `Wait_Connection_ReadyOk` 默认 | true |
@@ -246,23 +246,24 @@ flowchart TD
 
 | 语言 | Windows | Linux | macOS | 备注 |
 |------|:-------:|:-----:|:-----:|------|
-| Pascal | ✅ | ✅ | ✅ | 全平台 |
-| Python | ✅ | ✅ | ✅ | CPython 支持的所有平台 |
-| C++ | ✅ | ✅ | ✅ | 全平台 |
-| C# | ✅ | ✅ | ✅ | .NET 6+ 支持的所有平台 |
-| Rust | ✅ | ✅ | ✅ | 全平台 |
-| Go | ✅ | ✅ | ✅ | 全平台 |
-| Java | ✅ | ✅ | ✅ | JDK 22+ 支持的所有平台 |
-| Node.js / TypeScript | ✅ | ✅ | ✅ | Node 18+ 支持的所有平台 |
-| Erlang | ✅ | ✅ | ✅ | BEAM VM 支持的所有平台 |
-| Julia | ✅ | ✅ | ✅ | 需 `--threads=2` |
-| Zig | ✅ | 🟡 待测 | 🟡 待测 | 锁定 Zig 0.17.0 |
-| Swift | 🟡 有工具链 | 🟡 社区验证 | ✅ 主要 | 生产建议 macOS / Linux |
-| Ruby | ✅ x64-mingw-ucrt | 🟡 待验证 | 🟡 待验证 | 需要 DevKit |
-| Fortran | ✅ | 🟡 理论可行 | 🟡 理论可行 | Windows 已验证 |
-| Dart | ✅ | ✅ | ✅ | Flutter Web 不可用 |
-| R | ✅ | ✅ | ✅ | R 4.0+ |
+| Pascal | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | 核心引擎实现语言；Windows 已验证 |
+| Python | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | CPython 支持的所有平台 |
+| C++ | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | 测试程序可跨平台编译 |
+| C# | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | .NET 6+ 支持的所有平台 |
+| Rust | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | cargo test 可跨平台 |
+| Go | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | go test 可跨平台 |
+| Java | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | JDK 22+ 支持的所有平台 |
+| Node.js / TypeScript | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | Node 18+ 支持的所有平台 |
+| Erlang | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | BEAM VM 支持的所有平台 |
+| Julia | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | 需 `--threads=2` |
+| Zig | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | 锁定 Zig 0.17.0 |
+| Swift | ✅（工具链） | 🟡 需自行验证 | 🟡 需自行验证 | Swift 5.9+ / 6.4 |
+| Ruby | ✅ x64-mingw-ucrt | 🟡 需自行验证 | 🟡 需自行验证 | 需要 DevKit |
+| Fortran | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | Windows 已验证 |
+| Dart | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | Flutter Web 不可用 |
+| R | ✅ | 🟡 需自行验证 | 🟡 需自行验证 | R 4.0+ |
 
+**口径**：Windows x64 已验证；Linux / macOS 构建路径和测试路径需用户自行验证。`Binary/` 目录只提供 Windows 预编译库；Linux / macOS 需从源码构建（构建路径未系统验证，见 `src/CONTRIBUTING.md`）。跨平台的多语言编程支持暂缺。
 **关键结论**：LingoFuse 本身不支持 iOS / Android / WASM / 嵌入式。这些平台的语言绑定（Dart for Flutter、Swift for iOS 等）无法使用 Service 侧。如果需要在移动端提供接口，**把 Service 部署在服务器上，让移动端作为 Call 通过 bridge 访问**。
 
 ---
@@ -702,7 +703,7 @@ public static int RunService() {
 1. 若 `Simulated_Main_Thread_Running` 已为 True，**立即返回 0**（防止重复启动）。
 2. 调用 `Open_Core_Dispatch_Thread` 启动 C4 调度器。
 3. 调用 `Begin_Simulator_Main_Thread(Simulated_Main_Thread)` 启动模拟主线程。
-4. **阻塞等待**：最多 `max(Wait_Connection_Timeout, 5000) + 1000` 毫秒。
+4. **阻塞等待**：最多 `(Wait_Connection_Timeout < 500 ? 5000 : Wait_Connection_Timeout) + 1000` 毫秒。
 5. 返回 `if_(Init_Succeeded, 1, 0)`。
 
 **关键陷阱**：**超时后仍可能返回 1**（见 `LF-NET-007`）。
@@ -2920,10 +2921,11 @@ end;
 - **类型**：Integer（毫秒）
 - **默认**：`30000`（30 秒）
 - **别名**：`Wait_TimeOut` / `API_Prepare_Done_TimeOut` / `WaitTimeOut`
-- **内部机理**：`LF_PrepareDone` 内部超时 = `max(Wait_Connection_Timeout, 5000) + 1000` 毫秒。
+- **内部机理**：`LF_PrepareDone` 内部超时 = `(Wait_Connection_Timeout < 500 ? 5000 : Wait_Connection_Timeout) + 1000` 毫秒。
 
 #### 11.2.4 `password` / `passwd`
 
+> **默认值说明**：不同语言 README 对默认值的表述不一致——`Z.LingoFuse.md` v4.0 和 R README 写 `'DTC40@ZSERVER'`；部分语言 README 写"内置"或"空"。**以源码 `Z.Net.C4.pas` 的 `C40_Password` 为准**；生产环境必须更换默认口令。详见 `doc/LF_Network_Join.md`。
 - **类型**：String
 - **默认**：`'DTC40@ZSERVER'`
 - **内部机理**：写入 `Z.Net.C4.C40_Password`，作为 P2PVM 和 C4 网络的认证密码。
@@ -4619,7 +4621,7 @@ if (lf.framework.prepareDone() !== 1) process.exit(1);
 
 ### 20.10 Erlang 绑定
 
-**定位**：OTP 27+，NIF 跨平台构建，37 个 C ABI 完整封装，零运行时依赖。
+**定位**：OTP 27+，NIF 跨平台构建，37 个导出函数完整封装（绑定层实际用到的子集，不是全部 59 个），零运行时依赖。
 
 **入口模块**：
 - `lingofuse`：`create_data` / `register_call` / `register_call_sync` / `register_p2p_call` / `reply` / `call` / `uid_call` / `p2p_call` / `create_app` / `prepare_service` / `prepare_client` / `prepare_done` / `exit_main_thread` / `shutdown`。
@@ -4698,7 +4700,7 @@ end
 
 ### 20.12 Zig 绑定
 
-**定位**：锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，140+ 项测试。
+**定位**：锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，约 50 个 `test` 块 + 170+ 步冒烟断言。
 
 **入口模块**：
 - `lingofuse`：`framework` / `AppHandle` / `DataHandle` / `Uid` / `options` / `p2p` / `call` / `async_call`。

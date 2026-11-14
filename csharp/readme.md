@@ -38,12 +38,12 @@ LingoFuse 的 C# 绑定已经形成完整闭环，**不是"能跑示例"的水�
 | 跨语言 ABI | ✅ 已测试 | 逐字节小端序验证，与 C++ / Pascal / Python 字节一致 |
 | 跨语言 JSON | ✅ 已测试 | Emoji / 中文无 `\uXXXX` 转义 |
 | 性能压测 | ✅ 有 | `CrossCall` 32 线程负载测试 |
-| 测试覆盖 | ✅ 完整 | v4.0 test 套件 **58 项** + v5.0 test2 套件 **58 项** = **116 项** |
+| 测试覆盖 | ✅ 完整 | `csharp/test/` 约 60 项（v4.0 回归）+ `csharp/test2/` 约 58 项（v5.0 / v5.1 API），合计约 118 项；两个套件都用**自研 TestCase/TestRunner**（不是 xUnit）；数字随代码演进，以 `dotnet run` 实际输出为准 |
 | 跨平台 | ✅ 完整 | Windows / Linux / macOS，自动解析动态库 |
 | 文档 | ✅ 完整 | `LingoFuse_CSharp_Complete_Guide.md` v5.1，含 17 章 + 4 附录 |
-| CI | ⚠️ 仅 C++ 有 GitHub CI | C# 测试以本地运行为准 |
+| CI | ⚠️ 仅本地 | 根目录没有 GitHub Actions 工作流；C# 测试以本地运行为准（`csharp/build.ps1` / `dotnet run`） |
 
-**总体判断**：C# 绑定覆盖了从底层 P/Invoke 到高级 RAII 封装、统一 JSON I/O、跨语言 ABI 互操作、UID / P2PName 寻址、Task 化异步调用、回调风格异步、可插拔回调线程调度、网络事件、状态检查的完整链路，并附带 **116 项可运行测试**。
+**总体判断**：C# 绑定覆盖了从底层 P/Invoke 到高级 RAII 封装、统一 JSON I/O、跨语言 ABI 互操作、UID / P2PName 寻址、Task 化异步调用、回调风格异步、可插拔回调线程调度、网络事件、状态检查的完整链路，并附带 **约 118 项可运行测试**。
 
 ---
 
@@ -72,12 +72,12 @@ csharp/
 │           ├── Utf8Marshal.cs         # UTF-8 NUL 终止字符串编组
 │           └── AsyncCallbackBridge.cs # ★ v5.0  Task ↔ C ABI holder/trampoline
 │
-├── test/                              # v4.0 测试套件（58 项）
-│   ├── Program.cs                     # 完整回归测试
+├── test/                              # v4.0 回归测试套件（约 60 项，自研 TestCase/TestRunner）
+│   ├── Program.cs
 │   └── test.csproj
 │
-├── test2/                             # ★ v5.0 / v5.1 测试套件（58 项）
-│   ├── Program.cs                     # 专注覆盖 v5.0 / v5.1 新增 API 面
+├── test2/                             # ★ v5.0 / v5.1 测试套件（约 58 项，自研 TestCase/TestRunner）
+│   ├── Program.cs
 │   └── test2.csproj
 │
 ├── CrossCall/                         # 负载测试客户端
@@ -524,12 +524,14 @@ Async.Call("Calculator", "add",
 
 | 套件 | 项数 | 覆盖 |
 |------|:----:|------|
-| `test`（v4.0） | 58 | DataHandle、AppHandle、LfIo、Framework、网络集成、跨语言 ABI、并发、压力 |
-| `test2`（v5.0 / v5.1） | 58 | P2PUid、RuntimeOptions、侧数据、CallbackDispatcher、UID 寻址、P2PName 寻址、异步（App / UID / P2PName）、P2P 注册、dispatcher 集成、回调风格异步（10 项） |
+| `test`（v4.0） | 约 60 | DataHandle、AppHandle、LfIo、Framework、网络集成、跨语言 ABI、并发、压力 |
+| `test2`（v5.0 / v5.1） | 约 58 | P2PUid、RuntimeOptions、侧数据、CallbackDispatcher、UID 寻址、P2PName 寻址、异步（App / UID / P2PName）、P2P 注册、dispatcher 集成、回调风格异步（10 项） |
 
-**总计 116 项测试。**
+**合计约 118 项测试。** 数字随代码演进，具体通过数 / 总数以 `dotnet run` 的实际输出为准。
 
-### 4.2 `test/Program.cs` — v4.0 回归测试（58 项）
+**两个套件都使用自研 TestCase/TestRunner**——不是 xUnit，不使用 `[Fact]` / `[TestMethod]` 注解。测试运行器在 `test/Program.cs` 和 `test2/Program.cs` 内各自实现，按分类统计通过 / 失败并输出汇总。
+
+### 4.2 `test/Program.cs` — v4.0 回归测试（约 60 项）
 
 **测试分类：**
 
@@ -544,7 +546,7 @@ Async.Call("Calculator", "add",
 | 并发 | 2 | 10 线程 × 100 本地调用、8 线程 × 500 独立句柄 |
 | 压力 | 2 | 1000 顺序本地调用、100 次 App 创建/销毁 |
 
-### 4.3 `test2/Program.cs` — v5.0 / v5.1 新增 API 测试（58 项）
+### 4.3 `test2/Program.cs` — v5.0 / v5.1 新增 API 测试（约 58 项）
 
 **测试分类：**
 
@@ -569,7 +571,7 @@ cd test2
 dotnet run
 ```
 
-**输出：** 每个分类的通过数 / 失败数 / 耗时，以及失败详情。**预期 58 / 58 PASS**。
+**输出：** 每个分类的通过数 / 失败数 / 耗时，以及失败详情。**预期全部 PASS**；具体通过数随代码演进，以 `dotnet run` 实际输出为准。
 
 ### 4.4 Cross Demo — 三端联调
 
@@ -1353,7 +1355,7 @@ Framework.PrepareClient(endpoint, app); // ← 后绑定
 ### 9.21 完整 FAQ
 
 **Q：C# 支持算完善吗？**
-A：算。P/Invoke 层（59 个导出）、RAII 封装、统一 JSON I/O、UID / P2PName 寻址、Task 化异步、回调风格异步、可插拔回调线程调度、网络事件、异常层次、116 项测试、跨语言 ABI 互操作，全覆盖。
+A：算。P/Invoke 层（59 个导出）、RAII 封装、统一 JSON I/O、UID / P2PName 寻址、Task 化异步、回调风格异步、可插拔回调线程调度、网络事件、异常层次、约 118 项测试、跨语言 ABI 互操作，全覆盖。
 
 **Q：先跑哪个？**
 A：先跑 `test` 和 `test2` 项目，确认动态库和环境正常。
@@ -1506,8 +1508,9 @@ result = c.add(a, b)
 | 网络事件 | `NetworkEvents` | `LF_Set_Network_Event` | `network_events` | `NetworkEvents` |
 | 状态检查 | `LingoFuseStatus` | 直接调用 | `lingofuse.check_*` | `LingoFuseStatus` |
 | 永久句柄 | `CreatePermanent` | `LF_CreateData_Permanent` | `create_permanent` | ✅ |
-| 测试数量 | **116**（58 + 58） | 综合单测 | 综合单测 | 功能 + 压力 + 并发 |
-| CI | ❌ | ❌ | ❌ | ✅ 唯一 |
+| 测试框架 | **自研 TestCase/TestRunner** | 综合单测 | 综合单测 | 功能 + 压力 + 并发 |
+| 测试数量 | 约 118（约 60 + 约 58） | 综合单测 | 综合单测 | 功能 + 压力 + 并发 |
+| CI | ❌ 仅本地 | ❌ 仅本地 | ❌ 仅本地 | ❌ 仅本地（根目录无 GitHub Actions） |
 
 ---
 
@@ -1528,6 +1531,6 @@ MIT。随便用，随便改，拿去卖钱也行。
 
 ---
 
-*本文档随 LingoFuse C# 绑定 v5.1 整理，覆盖 116 项测试全部分类。*
+*本文档随 LingoFuse C# 绑定 v5.1 整理，覆盖约 118 项测试（约 60 项回归 + 约 58 项 v5.0/v5.1 API，自研 TestCase/TestRunner）。具体数字以 `dotnet run` 实际输出为准。*
 *完整 API 参考见 `LingoFuse_CSharp_Complete_Guide.md`。*
-*最后更新：2026-10-13*
+*最后更新：2026-11-14*

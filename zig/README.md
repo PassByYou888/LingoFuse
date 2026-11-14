@@ -78,7 +78,7 @@ zig/
 │   └── cross_call.zig           # Cross Demo 负载客户端
 │
 └── tests/
-    └── test_abi.zig             # Zig 原生单元测试（仅纯逻辑，24 个）
+    └── test_abi.zig             # Zig 原生单元测试（仅纯逻辑，约 24 个 `test` 块）
 ```
 
 **分层原则**：
@@ -224,21 +224,28 @@ Zig 内置 `zig cc` / `zig c++`，无需单独安装 C++ 编译器。`build.zig`
 
 所有测试在此环境下 100% 通过：
 
-| 套件 | 通过数 | 状态 |
-|------|:------:|:----:|
-| `zig build test` | 24 | ✅ |
-| `zig build smoke` | 35 | ✅ |
-| `zig build io-smoke` | 18 | ✅ |
-| `zig build json-smoke` | 43 | ✅ |
-| `zig build network-events-smoke` | 6 | ✅ |
-| `zig build status-smoke` | 5 | ✅ |
-| `zig build uid-smoke` | 10 | ✅ |
-| `zig build identity-smoke` | 2 | ✅ |
-| `zig build options-smoke` | 9 | ✅ |
-| `zig build async-smoke` | 6 | ✅ |
-| `zig build p2p-smoke` | 6 | ✅ |
-| `zig build addressing-smoke` | 7 | ✅ |
-| **合计** | **171** | ✅ |
+| 套件 | 形态 | 规模 | 状态 |
+|------|------|------|:----:|
+| `zig build test` | 纯逻辑单元测试（`test_abi.zig`） | 约 24 个 `test` 块 | ✅ |
+| `zig build smoke` | ABI 冒烟程序（`abi_smoke.zig`） | 35 步断言 | ✅ |
+| `zig build io-smoke` | I/O 冒烟程序 | 18 步断言 | ✅ |
+| `zig build json-smoke` | JSON 引擎冒烟程序 | 43 步断言 | ✅ |
+| `zig build network-events-smoke` | 网络事件冒烟程序 | 6 步断言 | ✅ |
+| `zig build status-smoke` | 状态队列冒烟程序 | 5 步断言 | ✅ |
+| `zig build uid-smoke` | UID 类型冒烟程序 | 10 步断言 | ✅ |
+| `zig build identity-smoke` | P2P 身份冒烟程序 | 2 步断言 | ✅ |
+| `zig build options-smoke` | 类型化选项冒烟程序 | 9 步断言 | ✅ |
+| `zig build async-smoke` | 异步调用冒烟程序 | 6 步断言 | ✅ |
+| `zig build p2p-smoke` | 进程级 P2P 注册冒烟程序 | 6 步断言 | ✅ |
+| `zig build addressing-smoke` | 三套寻址冒烟程序 | 7 步断言 | ✅ |
+| **合计** | — | **约 50 个 `test` 块 + 约 170+ 步冒烟断言** | ✅ |
+
+**口径说明**：
+
+- `zig build test` 跑的是 `tests/test_abi.zig` 里的 `test` 块——这是 Zig 原生单元测试，只测纯逻辑，不依赖 native 库。数量约 24 个。
+- `zig build *-smoke` 跑的是 `examples/*_smoke.zig` 里的**普通程序**，每个程序内部按"步"推进，每步都有 `[OK]` / `[FAIL]` 输出。这些不是 `test` 块，是断言步数。
+- 两者不是同一个口径。表格里的"合计"是"约 50 个 `test` 块 + 约 170+ 步冒烟断言"，不是"170 项测试"。
+- **具体数字以 `zig build test` / `zig build *-smoke` 的实际输出为准**；测试数随代码演进可能滞后，请以源码为准。
 
 ### 4.3 未验证环境（诚实声明）
 
@@ -249,6 +256,8 @@ Zig 内置 `zig cc` / `zig c++`，无需单独安装 C++ 编译器。`build.zig`
 | macOS | ⏳ 未验证 | 同上 |
 | Zig 0.18+ | ⏳ 未验证 | 需重跑破坏性变更清单 |
 | 大端架构 | ⏳ 未验证 | 协议约定小端，大端平台需显式转换 |
+
+**结论与 readme.md 一致**：Windows x64 已验证；Linux / macOS / 32 位平台需用户自行验证。
 
 ---
 
@@ -385,21 +394,23 @@ zig build addressing-smoke         # 三套寻址冒烟测试
 
 ### 7.3 测试项总览
 
-| 套件 | 步数 | 层 | 应用领域 |
-|------|:----:|-----|---------|
-| `test_abi` | 24 | 单元测试（纯逻辑） | Uid 值类型、AsyncResult、re-export 存在性 |
-| `smoke` | 35 | ABI 集成 | 完整 C ABI 契约、回调、绑定 |
-| `io-smoke` | 18 | I/O 层 | 字符串帧、JSON 线格式、容错读取 |
-| `json-smoke` | 43 | JSON 引擎 | nlohmann 完整 API 面、字节级兼容 |
-| `network-events-smoke` | 6 | 网络事件 | 安装 / 查询 / 清除生命周期 |
-| `status-smoke` | 5 | 状态队列 | 计数、投递、读取、批量拉取 |
-| `uid-smoke` | 10 | UID 类型 | 构造 / hex / ABI 桥接 / 比较 |
-| `identity-smoke` | 2 | 身份侧数据 | owning 句柄 / callback input+output |
-| `options-smoke` | 9 | 类型化选项 | 16 组 typed pair 的代表性覆盖 |
-| `async-smoke` | 6 | 异步调用 | 回调式 / 阻塞式 / 单一错误路径 |
-| `p2p-smoke` | 6 | 进程级 P2P 注册 | 注册 / 注销 / 重名 / 重注册 / namespace 独立性 |
-| `addressing-smoke` | 7 | 三套寻址 | App 名 / UID / P2PName + 查询（含负路径） |
-| **合计** | **171** | — | — |
+| 套件 | 形态 | 规模 | 应用领域 |
+|------|------|:----:|---------|
+| `test_abi` | 单元测试（纯逻辑，`test` 块） | 约 24 个 `test` 块 | Uid 值类型、AsyncResult、re-export 存在性 |
+| `smoke` | ABI 集成（冒烟程序） | 35 步断言 | 完整 C ABI 契约、回调、绑定 |
+| `io-smoke` | I/O 层（冒烟程序） | 18 步断言 | 字符串帧、JSON 线格式、容错读取 |
+| `json-smoke` | JSON 引擎（冒烟程序） | 43 步断言 | nlohmann 完整 API 面、字节级兼容 |
+| `network-events-smoke` | 网络事件（冒烟程序） | 6 步断言 | 安装 / 查询 / 清除生命周期 |
+| `status-smoke` | 状态队列（冒烟程序） | 5 步断言 | 计数、投递、读取、批量拉取 |
+| `uid-smoke` | UID 类型（冒烟程序） | 10 步断言 | 构造 / hex / ABI 桥接 / 比较 |
+| `identity-smoke` | 身份侧数据（冒烟程序） | 2 步断言 | owning 句柄 / callback input+output |
+| `options-smoke` | 类型化选项（冒烟程序） | 9 步断言 | 16 组 typed pair 的代表性覆盖 |
+| `async-smoke` | 异步调用（冒烟程序） | 6 步断言 | 回调式 / 阻塞式 / 单一错误路径 |
+| `p2p-smoke` | 进程级 P2P 注册（冒烟程序） | 6 步断言 | 注册 / 注销 / 重名 / 重注册 / namespace 独立性 |
+| `addressing-smoke` | 三套寻址（冒烟程序） | 7 步断言 | App 名 / UID / P2PName + 查询（含负路径） |
+| **合计** | — | **约 50 个 `test` 块 + 约 170+ 步冒烟断言** | — |
+
+**口径说明**：`test_abi` 的规模是 `test` 块数；其余套件的规模是冒烟程序内部的断言步数。两者不是同一个口径，不要相加成"170+ 项测试"。具体数字以实际运行输出为准。
 
 ### 7.4 判断测试是否真实运行
 
@@ -960,7 +971,7 @@ zig test -lc src/async_call.zig
 | 阶段 | 状态 | 说明 |
 |:----:|:----:|------|
 | 8. 多语言对接测试 | ⏳ | 建议逐个验证 §8.6 的组合 |
-| 9. CI 集成 | ⏳ | GitHub Actions / GitLab CI 配置 |
+| 9. CI 集成 | ⏳ | 当前仓库根目录**没有** GitHub Actions 工作流；树里唯一 workflow 是 `erlang/.github/workflows/ci.yml`。Zig 测试依赖 `.\test.ps1` 本地运行 |
 | — | ⏳ | 完整指南 / 踩坑知识库 |
 
 ---

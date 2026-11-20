@@ -1,12 +1,15 @@
 # LingoFuse Pascal 完整指南（v7.0 · 全确定完整版）
 
+> English version: [LingoFuse_Pascal_Complete_Guide_en.md](LingoFuse_Pascal_Complete_Guide_en.md)
+
+
 > **定位**：面向 AI 与人类开发者的**权威参考**，同时是**学习指南**、**API 详细参考**、**路由机制详解**、**Handle 所有权模型**、**P2P 分布式负载概念**、**跨语言集成指南**和**踩坑知识库**。
 >
 > **v7.0 相对 v6.0 的核心变化**：
 > - **原 v6.0 附录 E「诚实的不确定清单」的 20 条全部核对完毕**，结论直接并入正文相应章节；v7.0 **不再保留任何"不确定"标记**。
 > - **新增 3 条实测发现的陷阱**（`LF-LOCAL-001`、`LF-SEQ-003`、`LF-ROUTE-012`），并修正 v6.0 的两处描述偏差。
 > - **全部 API 机理深度保留**，所有源码级引用、示例代码、Mermaid 图、选项详解、状态系统、内存管理均**完整保留并扩充**。
-> - **踩坑知识库扩充至 95 条 ID**。
+> - **踩坑知识库扩充至 97 条 ID**。
 >
 > **证据等级约定**：
 > - 🟢 **已核实源码** — 在 `lingofuse_import.pas`、`lingofuse_helper.pas`、`Z.LingoFuse_Export.pas`、`Z.LingoFuse_Core.pas`、`Z.Net.C4.LingoFuse.pas`、`LingoFuse.lpr`、`Z.LingoFuse.md`、`LingoFuse.h`、`LingoFuse.hpp`、`LingoFuse.c`、`test_lingofuse*.c*` 中有直接依据
@@ -1957,9 +1960,11 @@ end;
 
 | 选项 | 类型 | 默认 | 别名 | 内部机理 |
 |------|------|------|------|---------|
-| `ShowThreadID` | Boolean | `True` | `ShowThread` / `Show_Thread` | 写入 `Z.status.StatusThreadID` |
+| `ShowThreadID` | Boolean | `False` | `ShowThread` / `Show_Thread` | 写入 `Z.status.StatusThreadID` |
 | `ConsoleOutput` | Boolean | `True` | `Console_Output` | 写入 `Z.status.ConsoleOutput` |
-| `Quiet` | Boolean | `False` | — | 写入 `Z.Net.C4.C40SetQuietMode` |
+| `Quiet` | Boolean | `True` | — | 写入 `Z.Net.C4.C40SetQuietMode` |
+
+> **为什么默认值是 `True` / `False`**：`Z.LingoFuse_Export.pas` 的 initialization 在库加载时显式执行 `C40SetQuietMode(True)`、`Z.status.StatusThreadID := False`、`Z.status.ConsoleOutput := True`（`Z.Status.pas` 自身的初值是 `StatusThreadID := True`，但绑定层看到的是被覆盖后的值）。因此**加载 DLL 后日志默认关闭、线程 ID 默认不显示**；要看到 `[LF-DEBUG]` 必须显式设 `Quiet=False`。
 
 ### 11.5 数据句柄相关选项
 
@@ -2044,9 +2049,9 @@ end;
 | `IPC_Serv_ThreadCount` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
 | `IPC_Serv_MaxQueueLength` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
 | `IPC_Serv_MaxMsgSize` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
-| `ShowThreadID` | Boolean | `True` | 全局立即 | 2 |
+| `ShowThreadID` | Boolean | `False` | 全局立即 | 2 |
 | `ConsoleOutput` | Boolean | `True` | 全局立即 | 1 |
-| `Quiet` | Boolean | `False` | 全局立即 | 0 |
+| `Quiet` | Boolean | `True` | 全局立即 | 0 |
 | `DataHandle_Idle_Timeout` | Integer (ms) | `600000` | `PrepareDone` 后 | 2 |
 | `DataHandle_Pool_Scan_Interval` | Integer (ms) | `5000` | `PrepareDone` 后 | 2 |
 | `LF_P2P_name` | String | `''` | 下次请求 | 3 |
@@ -2257,7 +2262,7 @@ flowchart TD
     A["客户端首次收到服务端广播"] --> B["cmd_update_service_api_info"]
     B --> C["FService_Info_Is_Online 从 False → True"]
     C --> D["Do_LF_Network_Connect(addr_)"]
-    D --> E["TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Th___)"]
+    D --> E["TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Worker)"]
     E --> F["工作线程调用 On_Network_Connect_Event(addr_)"]
     F --> G["TLF_String.FreeUTF8AnsiChar(addr_)"]
 ```
@@ -2858,7 +2863,6 @@ flowchart LR
 
 **LingoFuse 的序列化族**：
 - `LF_Sequenced_Notify`
-- `LF_Sequenced_Call`
 - `LF_Async_Sequenced_Call`
 - UID / P2PName 的 Sequenced 变体
 
@@ -3442,7 +3446,7 @@ flowchart TB
 | `LF-ROUTE` | **12** | 路由与寻址（v7.0 新增 LF-ROUTE-012） |
 | `LF-ASYNC` | 8 | 异步调用与 Handle 所有权 |
 | **`LF-LOCAL`** | **1** | **本地调用（v7.0 新增）** |
-| **合计** | **95** | （v6.0 为 92；v7.0 新增 3 条） |
+| **合计** | **97** | （v6.0 为 94；v7.0 新增 3 条） |
 
 ### B.2 维护约定
 
@@ -3593,4 +3597,4 @@ flowchart TB
   - **所有 Mermaid 图完整保留**：三层结构、生命周期状态机、数据句柄状态机、三套寻址概览、路由不对称、异步 Handle 时序、跨语言 P2PName 时序、路由优化两级图等。
   - **所有代码示例完整保留**：初始化顺序、whoami 模式、本地调用、UID 定向、P2PName 分组、网络事件、选项设置等。
   - **所有选项深度展开**：16 个选项的完整内部机理、生效时机、别名、推荐值。
-  - **完整踩坑知识库**：95 条 ID，每条含症状、根因、修复、相关坑。
+  - **完整踩坑知识库**：97 条 ID，每条含症状、根因、修复、相关坑。

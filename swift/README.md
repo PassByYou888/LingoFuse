@@ -1,5 +1,8 @@
 # LingoFuse Swift 接口
 
+> English version: [README_en.md](README_en.md)
+
+
 > **跨语言通讯地基 LingoFuse 的 Swift 官方绑定。**
 >
 > Swift 侧完整实现 C ABI 导入、RAII 句柄封装、统一 JSON I/O、三层寻址、进程级门面、

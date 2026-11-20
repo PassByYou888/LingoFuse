@@ -1,5 +1,7 @@
 # LingoFuse 多语言完整指南（v2.0 · 权威知识库）
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 > **定位**：面向 AI 与人类开发者的权威参考，覆盖 LingoFuse 核心运行时、18 种语言绑定、两套代码生成工具链（`code_decl_to_abi` / `code_decl_to_json_abi`）与完整的踩坑知识库。
 >
 > **本版原则**：本文档只收录**有源文档直接依据**的内容。**不确定的内容已全部移到独立的不确定知识库**（`LingoFuse_Uncertain_Knowledge_Base.md`）。读者可以默认本文档中的每一条断言都可直接采信。
@@ -60,6 +62,8 @@
 ---
 
 # 第一部分 基础与架构
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 
 ## 第 0 章 快速定位
 
@@ -778,6 +782,8 @@ public static int RunService() {
 
 # 第二部分 API 详细参考
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 ## 第 4 章 数据句柄完整参考
 
 ### 4.1 数据句柄的本质
@@ -1223,6 +1229,8 @@ end;
 
 ```python
 # 模式 A：同步调用
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 try:
     res = lf.call(app, hnd, timeout=5000)
     # 使用 res
@@ -1230,6 +1238,8 @@ finally:
     res.dispose()
 
 # 模式 B：异步调用（必须在回调内完成所有事）
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 def on_result(result, error, user_data):
     if result is not None:
         data = result.read_all_bytes()   # ✓ 立即拷贝
@@ -1241,6 +1251,8 @@ def on_result(result, error, user_data):
 lf.async_call(app, hnd, callback=on_result)
 
 # 模式 C：使用 CallFuture 接口
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 future = lf.async_call_future(app, hnd, timeout=5000)
 try:
     data = future.result(timeout=5.0)     # 内部拷贝
@@ -1932,6 +1944,8 @@ if tmp_cli__ <> nil then
 
 # 第三部分 路由与寻址机制
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 ## 第 8 章 三套寻址详解
 
 ### 8.1 三套寻址概览
@@ -2361,6 +2375,8 @@ end;
 
 ```python
 # 服务端
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 @server.expose("whoami")
 def whoami(trigger, inp, out):
     uid = inp.get_p2p_uid()      # 内部立即拷贝成 32 字节 bytes
@@ -2371,6 +2387,8 @@ def whoami(trigger, inp, out):
     })
 
 # 客户端
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 def probe_identity():
     req = DataHandle("whoami")
     try:
@@ -2854,6 +2872,8 @@ callback_whoami <- function(input_raw, ctx) {
 
 # 第四部分 高级主题
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 ## 第 11 章 运行时选项详解
 
 > **本章对 `LF_SetOption` 每个选项做深度展开**：内部机理、生效时机、依赖关系、别名、推荐值。各语言的等价 API 在各小节末尾给出。
@@ -2945,9 +2965,11 @@ end;
 
 | 选项 | 类型 | 默认 | 别名 | 内部机理 |
 |------|------|------|------|---------|
-| `ShowThreadID` | Boolean | `True` | `ShowThread` / `Show_Thread` | 写入 `Z.status.StatusThreadID` |
+| `ShowThreadID` | Boolean | `False` | `ShowThread` / `Show_Thread` | 写入 `Z.status.StatusThreadID` |
 | `ConsoleOutput` | Boolean | `True` | `Console_Output` | 写入 `Z.status.ConsoleOutput` |
-| `Quiet` | Boolean | `False` | — | 写入 `Z.Net.C4.C40SetQuietMode` |
+| `Quiet` | Boolean | `True` | — | 写入 `Z.Net.C4.C40SetQuietMode` |
+
+> **为什么默认值是 `True` / `False`**：`Z.LingoFuse_Export.pas` 的 initialization 在库加载时显式执行 `C40SetQuietMode(True)`、`Z.status.StatusThreadID := False`、`Z.status.ConsoleOutput := True`（`Z.Status.pas` 自身的初值是 `StatusThreadID := True`，但绑定层看到的是被覆盖后的值）。因此**加载 DLL 后日志默认关闭、线程 ID 默认不显示**；要看到 `[LF-DEBUG]` 必须显式设 `Quiet=False`。
 
 ### 11.5 数据句柄相关选项
 
@@ -3032,9 +3054,9 @@ end;
 | `IPC_Serv_ThreadCount` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
 | `IPC_Serv_MaxQueueLength` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
 | `IPC_Serv_MaxMsgSize` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
-| `ShowThreadID` | Boolean | `True` | 全局立即 | 2 |
+| `ShowThreadID` | Boolean | `False` | 全局立即 | 2 |
 | `ConsoleOutput` | Boolean | `True` | 全局立即 | 1 |
-| `Quiet` | Boolean | `False` | 全局立即 | 0 |
+| `Quiet` | Boolean | `True` | 全局立即 | 0 |
 | `DataHandle_Idle_Timeout` | Integer (ms) | `600000` | `PrepareDone` 后 | 2 |
 | `DataHandle_Pool_Scan_Interval` | Integer (ms) | `5000` | `PrepareDone` 后 | 2 |
 | `LF_P2P_name` | String | `''` | 下次请求 | 3 |
@@ -3305,7 +3327,7 @@ flowchart TD
     A["客户端首次收到服务端广播"] --> B["cmd_update_service_api_info"]
     B --> C["FService_Info_Is_Online 从 False → True"]
     C --> D["Do_LF_Network_Connect(addr_)"]
-    D --> E["TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Th___)"]
+    D --> E["TCompute.RunC(addr_.BuildUTF8AnsiChar(), nil, Do_LF_Network_Connect_Worker)"]
     E --> F["工作线程调用 On_Network_Connect_Event(addr_)"]
     F --> G["TLF_String.FreeUTF8AnsiChar(addr_)"]
 ```
@@ -3999,6 +4021,8 @@ end;
 
 # 第五部分 P2P 与分布式
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 ## 第 18 章 P2P 分布式负载
 
 ### 18.1 核心判断：1 对多即分布式
@@ -4074,7 +4098,6 @@ flowchart LR
 
 **LingoFuse 的序列化族**：
 - `LF_Sequenced_Notify`
-- `LF_Sequenced_Call`
 - `LF_Async_Sequenced_Call`
 - UID / P2PName 的 Sequenced 变体
 
@@ -4247,6 +4270,8 @@ flowchart TB
 ---
 
 # 第六部分 多语言绑定深度解析
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 
 ## 第 20 章 十八种绑定逐一展开
 
@@ -4957,6 +4982,8 @@ $result = $api->call('Add', [1, 2]);
 
 # 第七部分 工具链
 
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
+
 ## 第 21 章 code_decl_to_abi 二进制 ABI 工具链
 
 ### 21.1 工具链定位
@@ -5207,6 +5234,8 @@ HTTP_CALL_BASE_URL + "/" + <api-name>
 ---
 
 # 第八部分 踩坑知识库
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 
 ## 第 23 章 踩坑知识库
 
@@ -6178,6 +6207,8 @@ LF.prepare_client("ipc:app", app)
 LF.prepare_done()
 
 # 必须 --threads=2
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 ```
 
 **关键**：强制 `--threads=2`。
@@ -6292,6 +6323,8 @@ lf_prepare_client("ipc:app", app)
 if (lf_prepare_done() != 1) stop("failed")
 
 # 停止：写 service.exit 哨兵文件
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 ```
 
 **关键**：`LF_Call` 不可重入；`future::plan("sequential")`。
@@ -6325,6 +6358,8 @@ if (lf_prepare_done() != 1) stop("failed")
 ---
 
 # 附录
+
+> English version: [LingoFuse_MultiLanguage_Complete_Guide_en.md](LingoFuse_MultiLanguage_Complete_Guide_en.md)
 
 ## 附录 A 错误消息原文索引
 
@@ -6397,6 +6432,7 @@ if (lf_prepare_done() != 1) stop("failed")
 | `LF-THREAD` | 2 | 线程模型 |
 | `LF-TYPE` | 2 | 类型与编译 |
 | `LF-XLANG` | 3 | 跨语言数据交换 |
+| `LF-JSON` | 3 | JSON 使用层 |
 | `LF-MAIN` | 4 | 模拟主线程 |
 | `LF-MEM` | 5 | 内存与生命周期 |
 | `LF-MECH` | 18 | LF 核心机制 |
@@ -6419,9 +6455,9 @@ if (lf_prepare_done() != 1) stop("failed")
 | `LF-RUBY` | 5 | Ruby 专属 |
 | `LF-FORTRAN` | 5 | Fortran 专属 |
 | `LF-DART` | 5 | Dart 专属 |
-| `LF-R` | 5 | R 专属 |
+| `LF-R` | 6 | R 专属 |
 | `LF-TOOL` | 10 | 工具链专属 |
-| **合计** | **194** | v7.0 为 95；v2.0 新增 99 条 |
+| **合计** | **192** | v7.0 为 97；v2.0 新增 95 条 |
 
 ### B.2 维护约定
 
@@ -6584,7 +6620,7 @@ if (lf_prepare_done() != 1) stop("failed")
 
 | 语言 | 异步调用 | 异步回调 | 异步 Notify |
 |------|---------|----------|-------------|
-| Pascal | `LF_Async_Call` | `OnResult(Data, Result_)` | `LF_Async_Notify` |
+| Pascal | `LF_Async_Call` | `OnResult(Data, Result_)` | `—（无）` |
 | Python | `lf.async_call` | `on_result(result, error, user_data)` | `lf.async_notify` |
 | C++ | `lingofuse::callAsync` | `[](AsyncResult r) { ... }` | `lingofuse::notifyAsync` |
 | C# | `Async.Call` | `(result, err) => { ... }` | `Async.Notify` |
@@ -6666,9 +6702,9 @@ if (lf_prepare_done() != 1) stop("failed")
   - **v1.0 中编造的条目已全部删除**：`@LFCallFunc` / `@LFNotifyFunc` 装饰器（已改为 `@server.expose`）、LF-R-006（已删除）、LF-DIST-* 伪踩坑分类（已并入 §18）。
   - **口径统一**：18 种一方绑定 = 17 种原生 FFI + 1 种经 bridge 的 PHP。code_decl_to_abi 支持 17 种，code_decl_to_json_abi 支持 20+ 种。
   - **所有 API 机理深度保留**：`LF_GetBuffer` / `LF_WriteBuffer` / `LF_Get_P2P_UID` / `LF_Get_P2P_Name` / `LF_CreateData` / `LF_CreateData_Permanent` / `LF_FreeData` / `LF_CreateApp` / `LF_FreeApp` / `LF_Generate_AppName` / `LF_BindApp` / `LF_LocalCall` / `LF_LocalNotify` / `LF_RegisterCall` / `LF_GetStatus` / `LF_PostStatus` / `LF_SetOption` 等全部保留源码级机理说明。
-  - **完整踩坑知识库**：194 条 ID，每条含症状、根因、修复、相关坑，按通用机制（150 条）与语言专属（44 条）分区。
+  - **完整踩坑知识库**：192 条 ID，每条含症状、根因、修复、相关坑，按通用机制（99 条）与语言专属（93 条）分区。
   - **完整工具链参考**：输入格式、LV0/LV1 模型、类型系统、生成器矩阵、ABI 线协议、各语言 Service/Call/Test 接入、测试方法、工具链踩坑。
-  - **完整附录**：错误消息索引（40+ 条）、ID 总览（194 条）、AI 检索规则、核心铁律（45 条）、多语言接线对照（初始化 / 调用 / 异步 / 关闭 / 工具链支持）。
+  - **完整附录**：错误消息索引（40+ 条）、ID 总览（192 条）、AI 检索规则、核心铁律（45 条）、多语言接线对照（初始化 / 调用 / 异步 / 关闭 / 工具链支持）。
 
 ---
 

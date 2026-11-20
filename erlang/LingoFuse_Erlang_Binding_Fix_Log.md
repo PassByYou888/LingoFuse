@@ -1,5 +1,7 @@
 # LingoFuse Erlang 绑定修复全记录
 
+> English version: [LingoFuse_Erlang_Binding_Fix_Log_en.md](LingoFuse_Erlang_Binding_Fix_Log_en.md)
+
 > 文档定位：本次多轮修复工作的完整技术档案。
 > 覆盖范围：基础库（C NIF + Erlang）、构建链、测试套件、跨语言 ABI 契约。
 > 记录方式：每一轮问题的根因、证据、修复、验证，以及分层的经验法则。

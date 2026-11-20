@@ -1,5 +1,7 @@
 # LingoFuse JavaScript Binding — Async Fix Report
 
+> English version: [LingoFuse_JS_Async_Fix_Report_en.md](LingoFuse_JS_Async_Fix_Report_en.md)
+
 **Version**: 1.0
 **Date**: 2026-10-24
 **Scope**: 修复 `lingofuse-js` 的 async 调用链路，使其与 C# / C++ / Pascal 绑定行为一致

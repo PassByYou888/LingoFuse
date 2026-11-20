@@ -1,5 +1,7 @@
 # 三步构建 lazbuild（手动操作版 · 适配 loongarch64 + lazarus_4_8）
 
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
+
 ### 在 LoongArch64 Linux 上离线编译 Lazarus 命令行工具
 
 ---
@@ -36,9 +38,13 @@
 
 ```bash
 # RHEL / CentOS / Loongnix
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 yum install -y unzip
 
 # Debian / Ubuntu
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 apt install -y unzip
 ```
 
@@ -70,11 +76,15 @@ unzip lazarus_4_8.zip
 
 ```bash
 # RHEL / CentOS / Loongnix
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 yum install -y make gcc gcc-c++ binutils subversion zip unzip \
     libX11-devel gtk2-devel gdk-pixbuf2-devel cairo-devel pango-devel \
     gdb rsync cmake gtk3-devel glibc-devel
 
 # Debian / Ubuntu
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 apt install -y make gcc g++ binutils subversion zip unzip \
     libx11-dev libgtk2.0-dev libgdk-pixbuf2.0-dev libcairo2-dev libpango1.0-dev \
     gdb rsync cmake libgtk-3-dev
@@ -152,15 +162,23 @@ ln -sf /usr/lib/fpc/3.3.1/ppcloongarch64 /usr/bin/ppcloongarch64
 
 ```bash
 # 进入 FPC 单元根目录
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 cd /usr/lib/fpc/3.3.1/units
 
 # 列出所有架构目录，找到您的目标（例如 loongarch64-linux）
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 ls
 
 # 根据列出的名称，进入对应的架构目录（请将 loongarch64-linux 替换为实际看到的名称）
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 cd loongarch64-linux   # 请替换为实际目录名
 
 # 现在将当前目录下的所有子目录添加到 fpc.cfg
+
+> English version: [CONTRIBUTING_lazbuild_en.md](CONTRIBUTING_lazbuild_en.md)
 find . -type d -print | sed 's|^\.||' | while read dir; do
     [ -n "$dir" ] && echo "-Fu$(pwd)${dir}"
 done >> /etc/fpc.cfg

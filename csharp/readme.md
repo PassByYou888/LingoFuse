@@ -1,5 +1,8 @@
 # LingoFuse C# 绑定
 
+> English version: [readme_en.md](readme_en.md)
+
+
 > **跨语言通讯地基的 C# 官方绑定、完整测试、三方向 HTTP Bridge、跨语言 ABI 互操作、UID / P2PName 寻址、Task 化异步调用、回调风格异步、可插拔回调线程调度。**
 >
 > 本目录是 .NET 开发者使用 LingoFuse 的唯一起点。读完本 README 即可知道：
@@ -1151,8 +1154,8 @@ string raw = RuntimeOptions.GetRaw("Some_Future_Option");
 | 选项 | RuntimeOptions 属性 | 别名 | 默认 | 说明 |
 |------|---------------------|------|------|------|
 | 认证 | `Password` | `passwd` | — | C4 P2PVM 认证（getter 返回掩码） |
-| 日志 | `Quiet` | — | False | 安静模式 |
-| 日志 | `ShowThreadId` | `ShowThread` | True | 日志显示线程 ID |
+| 日志 | `Quiet` | — | True | 安静模式（默认静默） |
+| 日志 | `ShowThreadId` | `ShowThread` | False | 日志显示线程 ID |
 | 日志 | `ConsoleOutput` | `Console_Output` | auto | 控制台日志 |
 | 日志 | `SetDebugCommand(string)` | `debug_cmd` 等 | — | 执行 C4 调试命令（write-only） |
 | 连接 | `OverlapConnection` | `Overlap_Client` 等 | False | 允许多客户端同地址 |

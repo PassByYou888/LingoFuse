@@ -1,5 +1,7 @@
 # LingoFuse 功能测试套件指南
 
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
+
 **文件名**：`LingoFuse_Functional_Test_Guide.md`
 
 **版本**：v2.0（测试项详解 + CI 通过基线）
@@ -568,12 +570,18 @@ cd LingoFuse/Binary
 
 ```powershell
 # 安静模式（适合 CI 日志采集）
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 .\run_test_ci.ps1 -Quiet
 
 # 只跑网络套件
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 .\run_test_ci.ps1 -SkipJson
 
 # 只跑 JSON 套件
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 .\run_test_ci.ps1 -SkipNetwork
 ```
 
@@ -744,15 +752,23 @@ jobs:
 
 ```bash
 # 断言：是否有测试失败
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 grep -c '"status":"FAIL"' test_ci_report.jsonl
 
 # 提取每个套件耗时
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 jq -r 'select(.event=="summary") | "\(.suite): \(.elapsed_sec)s"' test_ci_report.jsonl
 
 # 提取失败测试的完整信息
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 jq -r 'select(.event=="test" and .status=="FAIL") | "[\(.category)] \(.name) - \(.error)"' test_ci_report.jsonl
 
 # 性能回归对比（提取单个测试耗时）
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 jq -r 'select(.event=="test" and .name=="DataHandle :: basic types") | .elapsed_ms' test_ci_report.jsonl
 ```
 
@@ -776,9 +792,13 @@ jq -r 'select(.event=="test" and .name=="DataHandle :: basic types") | .elapsed_
 
 ```powershell
 # 一次性临时绕过（只影响当前窗口）
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 或直接调用
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 powershell -ExecutionPolicy Bypass -File .\run_test_ci.ps1
 ```
 
@@ -790,6 +810,8 @@ powershell -ExecutionPolicy Bypass -File .\run_test_ci.ps1
 
 ```powershell
 # 清理残留进程
+
+> English version: [LingoFuse_Functional_Test_Guide_en.md](LingoFuse_Functional_Test_Guide_en.md)
 Get-Process test_lingofuse, test_lingofuse_json `
     -ErrorAction SilentlyContinue | Stop-Process -Force
 ```

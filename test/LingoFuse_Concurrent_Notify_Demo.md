@@ -1,5 +1,7 @@
 # LingoFuse 并发 Notify 演示与 CI 套件
 
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
+
 **文件名**：`LingoFuse_Concurrent_Notify_Demo.md`
 
 **版本**：v2.0（CI 化改造 + 实测基线）
@@ -204,9 +206,13 @@ sequenceDiagram
 
 ```bash
 # 终端 1
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 ./ConcService
 
 # 终端 2 —— 等 "Online on ipc:conc" 后启动
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 ./ConcClient --threads 8 --size 10000
 ```
 
@@ -216,9 +222,13 @@ sequenceDiagram
 
 ```bash
 # 固定批次数
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 ./ConcClient --ci --batches 20 --size 10000 --threads 8
 
 # 时间盒(跑 30 秒,不限批次数)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 ./ConcClient --ci --duration 30 --size 10000 --threads 8
 ```
 
@@ -303,19 +313,29 @@ cd LingoFuse/Binary
 
 ```powershell
 # 默认场景(20 批 × 10000 条 × 8 线程)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 .\run_conc_ci.ps1
 
 # 短跑(验证管道连通)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 .\run_conc_ci.ps1 -Batches 5 -Size 1000 -Threads 4
 
 # 时间盒(跑 30 秒)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 .\run_conc_ci.ps1 -Duration 30 -Size 10000 -Threads 8
 
 # 加硬门禁
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 .\run_conc_ci.ps1 -Batches 30 -Size 10000 -Threads 8 `
                   -MinBatches 30 -MinTotalSent 300000 -MinAvgRate 5000
 
 # 安静模式(适合 CI 日志)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 .\run_conc_ci.ps1 -Quiet
 ```
 
@@ -665,9 +685,13 @@ void wait_complete_cb(void*, input, output) {
 
 ```powershell
 # 一次性临时绕过(只影响当前窗口)
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 或直接调用
+
+> English version: [LingoFuse_Concurrent_Notify_Demo_en.md](LingoFuse_Concurrent_Notify_Demo_en.md)
 powershell -ExecutionPolicy Bypass -File .\run_conc_ci.ps1
 ```
 

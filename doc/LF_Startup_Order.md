@@ -1,5 +1,7 @@
 # LF_Startup_Order.md
 
+> English version: [LF_Startup_Order_en.md](LF_Startup_Order_en.md)
+
 > LF 的启动顺序**不能乱**，而且乱了的后果是**静默失败**——不报错、不崩、就是"连接建了但调不通"。
 >
 > 正确的顺序是 `PrepareService` → 创建 App + 注册 API → `PrepareClient` → `PrepareDone`。这四步里，`PrepareClient` 必须在 App 创建**之后**，因为它要知道把连接绑给哪个 App；`PrepareDone` 必须在最后，因为它一旦启动模拟主线程，前面的配置就固化了。顺序错了最常见的表现是"TunnelLink 成功，但对方调我的 API 永远 no found"。

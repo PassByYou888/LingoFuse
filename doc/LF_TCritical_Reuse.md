@@ -1,5 +1,7 @@
 # LF_TCritical_Reuse.md
 
+> English version: [LF_TCritical_Reuse_en.md](LF_TCritical_Reuse_en.md)
+
 > 一个反直觉的事实：LF 里创建十万个 `TCritical`，操作系统句柄数几乎不涨。
 >
 > 因为 `TCritical` **不是**对 `TCriticalSection` 的薄包装，它底下有一层回收池。`Create` 时先看池里有没有空闲的临界区对象，有就复用，没有才真的 `new` 一个；`Destroy` 时也不是立刻释放，而是把底层对象**还回池里**。所以"创建/销毁一万次"在系统看来只是"创建/复用了同一个临界区对象一万次"。这就是为什么 Z 系的服务器在任务管理器里句柄数长期保持恒定——锁的开销被摊到了池子上，而不是被推给操作系统。

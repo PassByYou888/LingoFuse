@@ -1,5 +1,7 @@
 # LF_Simulated_Main_Thread.md
 
+> English version: [LF_Simulated_Main_Thread_en.md](LF_Simulated_Main_Thread_en.md)
+
 > LF 有一个自己的"主线程"。
 >
 > 它不是你程序启动时的那个主线程，也不是 UI 线程，而是 `prepare_done` 在内部造出来的一个**独立 OS 线程**。这一篇说清它到底干什么、不干什么，以及为什么同步回调永远不会自己跑起来。
@@ -64,6 +66,8 @@ while simulated_main_thread_running:
 ```
 
 `C40Progress` 里面挂了所有 C4 的进度：命令分发、Sequence Packet 处理、定时器回调、P2P 隧道进度。`DataPool.Progress` 就是那个每 5 秒扫一次句柄池、处理超时/删除的活。
+
+顺带一提：进这个"稳态循环"之前，它还有个**初始化阶段**——先按 `C40Progress(10)` 空转，逐轮检查所有 client 是否 `Connected` 且 `LF_AppIsOnline`，直到全部在线、或超过 `Wait_Connection_Timeout`（不足 500 时按 5 秒算）为止。也就是说 `prepare_done` 那次阻塞等待，是这个线程在替你做"等连上"这件事，等不到就带着 `Init_Succeeded=False` 进不了主循环、直接走清理。
 
 `if_(LF_RunningCount > 0, 1, 10)` 是个小优化：有回调正在跑的时候 1ms 循环（保证网络响应及时），空闲的时候 10ms 循环（省 CPU）。
 

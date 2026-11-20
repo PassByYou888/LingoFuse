@@ -1,5 +1,7 @@
 # LingoFuse 私有化指南
 
+> English version: [LingoFuse_Private_Fork_Playbook_en.md](LingoFuse_Private_Fork_Playbook_en.md)
+
 **文件名**：`LingoFuse_Private_Fork_Playbook.md`
 
 > 这不是一篇“怎么 fork 代码”的技术手册。它讨论的是一个更根本的问题：**在 AI 时代，当算力变得普及、API 变得廉价，组织真正的杠杆在哪里？** 私有化 LingoFuse，表面上是技术行为，本质上是组织治理行为。而私有化真正的壁垒，不是代码，是 **LF 的不可复制机制——隐性契约与知识体系**。你私有化的目标，不是“拿走代码”，而是“建立组织自己的隐性契约体系”。
@@ -49,7 +51,7 @@ LingoFuse 主仓库的 [`LF-Architecture-Unreplicable-Backend-Systems.md`](LF-Ar
 
 > **复刻者能拿到代码，拿不到专家写内核时的“我知道下游会这样用”。**
 
-LF 知识库里的 194 条踩坑 ID、18 种语言的真实踩坑记录、Julia 的 shim 机制、R 的四层架构、Ruby 的 GVL 路由、Erlang 的 16 分支 receive、Handle 所有权的同步族/异步族相反——这些**不是文档，是经验的沉淀**。它们构成了 LF 的隐性契约层，也是任何 fork 者真正要面对的壁垒。
+LF 知识库里的 192 条踩坑 ID、18 种语言的真实踩坑记录、Julia 的 shim 机制、R 的四层架构、Ruby 的 GVL 路由、Erlang 的 16 分支 receive、Handle 所有权的同步族/异步族相反——这些**不是文档，是经验的沉淀**。它们构成了 LF 的隐性契约层，也是任何 fork 者真正要面对的壁垒。
 
 ### 2.3 私有化的真正目标：建立组织自己的隐性契约体系
 

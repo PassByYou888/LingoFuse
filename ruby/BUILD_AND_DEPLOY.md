@@ -1,5 +1,7 @@
 # LingoFuse Ruby 绑定 — 构建与部署指南（第一步）
 
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
+
 > **定位**：本文档描述 **用自写 C 扩展替代 Fiddle** 的构建、部署与验证流程。
 > 完成后，Ruby 侧**完全不再使用 Fiddle**加载 LingoFuse DLL；所有对
 > `LingoFuse64.dll` 的访问都通过自写的 `lingofuse_ext.so` 完成。
@@ -261,12 +263,18 @@ powershell -ExecutionPolicy Bypass -File setup_build_env.ps1
 cd D:\CoreLibrary\LingoFuse\ruby\ext\lingofuse_ext
 
 # 1. 清理旧产物
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 Remove-Item Makefile,*.o,*.so,*.def,mkmf.log -ErrorAction SilentlyContinue
 
 # 2. 生成 Makefile
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 ruby extconf.rb
 
 # 3. 编译
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 make
 ```
 
@@ -317,13 +325,21 @@ lingofuse_ext.so    98304     （大小可能略有差异）
 
 ```powershell
 # 检查当前 make
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 make --version
 # 如果是 "MAKE Version 5.43 ... Embarcadero"，需要前置修复
 
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
+
 # 临时修复（仅当前会话）
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 $env:PATH = "C:\Ruby40-x64\msys64\usr\bin;" + $env:PATH
 make --version
 # 应输出 "GNU Make 4.4.1"
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 ```
 
 ---
@@ -355,6 +371,8 @@ LoadLibraryA("LingoFuse64.dll")            // 依赖 PATH 搜索
 
 ```powershell
 # 从权威目录拷贝到 ruby.exe 所在目录
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 Copy-Item D:\CoreLibrary\LingoFuse\Binary\LingoFuse64.dll       C:\Ruby40-x64\bin\ -Force
 Copy-Item D:\CoreLibrary\LingoFuse\Binary\z_ipc_64.dll          C:\Ruby40-x64\bin\ -Force
 Copy-Item D:\CoreLibrary\LingoFuse\Binary\mimalloc64.dll        C:\Ruby40-x64\bin\ -Force
@@ -402,16 +420,26 @@ Copy-Item D:\CoreLibrary\LingoFuse\ruby\ext\lingofuse_ext\lingofuse_ext.so `
 ```powershell
 Test-Path D:\CoreLibrary\LingoFuse\ruby\lib\lingofuse_ext.so
 # 期望：True
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 ```
 
 ### 6.3 为什么这个位置是固定的
 
 ```ruby
 # lib/lingofuse/native_bridge.rb
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 require_relative '../lingofuse_ext'
 #              ^^^ 相对 native_bridge.rb 自身
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 #              → lib/lingofuse/../lingofuse_ext
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 #              → lib/lingofuse_ext.so
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 ```
 
 **不受 `$LOAD_PATH`、PATH、CWD 影响**。移动整个 `ruby/` 目录时，只要 `lib/` 与 `lingofuse/` 相对结构不变，`.so` 就能被找到。
@@ -524,16 +552,22 @@ local_call result   -> "round-trip"
 
 ```ruby
 # 数据句柄
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 h = LingoFuse::DataHandle.new("api")
 h.write_string("hello")
 h.read_int32
 
 # 应用句柄
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 app = LingoFuse::AppHandle.new("App", "desc")
 app.register_call("api", "desc") { |i, o| ... }
 app.local_call(req)
 
 # 进程级
+
+> English version: [BUILD_AND_DEPLOY_en.md](BUILD_AND_DEPLOY_en.md)
 LingoFuse::Framework.call("App", req, 3000)
 LingoFuse::Framework.set_option("Quiet", "False")
 LingoFuse::Status.check_app("App")

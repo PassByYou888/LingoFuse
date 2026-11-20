@@ -1,5 +1,7 @@
 # Cross Demo 使用指南
 
+> English version: [Cross_Demo_Guide_zh_en.md](Cross_Demo_Guide_zh_en.md)
+
 本文档介绍 LingoFuse Python 绑定中的 **Cross 示例**，涵盖服务注册中心、工作节点、适配器及 HTTP 网关的配置与启动方法，帮助您快速体验 LingoFuse 的分布式 RPC 能力。
 
 ---
@@ -167,16 +169,24 @@ python lingofuse/bridge.py --endpoint ipc:cross_bridge_service --port 8081 --deb
 
 ```bash
 # add API – 发送 [10,20]，路径显式指定 app 和 api
+
+> English version: [Cross_Demo_Guide_zh_en.md](Cross_Demo_Guide_zh_en.md)
 curl -X POST http://127.0.0.1:8081/cross_bridge/add \
      -H "Content-Type: application/json" \
      -d '[10,20]'
 # 返回 {"code":0,"result":30}
 
+> English version: [Cross_Demo_Guide_zh_en.md](Cross_Demo_Guide_zh_en.md)
+
 # inv_seri API – 发送 {} 使用默认参数
+
+> English version: [Cross_Demo_Guide_zh_en.md](Cross_Demo_Guide_zh_en.md)
 curl -X POST http://127.0.0.1:8081/cross_bridge/inv_seri \
      -H "Content-Type: application/json" \
      -d '{}'
 # 返回 {"code":0,"result":"接收数据序 [...] = 发送数据序 [...]"}
+
+> English version: [Cross_Demo_Guide_zh_en.md](Cross_Demo_Guide_zh_en.md)
 ```
 
 ### 5.3 Node.js 客户端

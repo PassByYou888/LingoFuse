@@ -1,5 +1,8 @@
 # LingoFuse 多语言部署指南（v3.0）
 
+> English version: [LingoFuse_MultiLanguage_Deployment_Guide_v3.0_en.md](LingoFuse_MultiLanguage_Deployment_Guide_v3.0_en.md)
+
+
 > **口径**：18 种一方绑定 = 17 种原生 FFI + 1 种经 bridge 的 PHP。浏览器 JavaScript、Delphi 走 HTTP/JSON + bridge。  
 
 ---
@@ -11,7 +14,7 @@
 | 1 | [Pascal](#1-pascal) | [Lazarus](https://www.lazarus-ide.org/) + [FPC](https://www.freepascal.org/download.var) | [Delphi / RAD Studio](https://www.embarcadero.com/products/delphi) | FPC 3.2.2+ / Delphi 10.4+ | [⬇️](#1-pascal) |
 | 2 | [Python](#2-python) | [VS Code](https://code.visualstudio.com/) + [Pylance](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) | [PyCharm](https://www.jetbrains.com/pycharm/) | Python 3.8+ | [⬇️](#2-python) |
 | 3 | [C++](#3-c) | [VS Code](https://code.visualstudio.com/) + [MinGW/MSYS2](https://www.msys2.org/) + [CMake](https://cmake.org/download/) | [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) / [CLion](https://www.jetbrains.com/clion/) | C++17 | [⬇️](#3-c) |
-| 4 | [C#](#4-c-1) | [VS Code](https://code.visualstudio.com/) + [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) | [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) / [Rider](https://www.jetbrains.com/rider/) | .NET 6+ | [⬇️](#4-c-1) |
+| 4 | [C#](#4-c) | [VS Code](https://code.visualstudio.com/) + [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) | [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) / [Rider](https://www.jetbrains.com/rider/) | .NET 6+ | [⬇️](#4-c) |
 | 5 | [Rust](#5-rust) | [VS Code](https://code.visualstudio.com/) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) | [CLion](https://www.jetbrains.com/clion/) / [RustRover](https://www.jetbrains.com/rust/) | edition 2021 | [⬇️](#5-rust) |
 | 6 | [Go](#6-go) | [VS Code](https://code.visualstudio.com/) + [Go 插件](https://marketplace.visualstudio.com/items?itemName=golang.Go) | [GoLand](https://www.jetbrains.com/go/) | Go 1.21+ | [⬇️](#6-go) |
 | 7 | [Java](#7-java) | [VS Code](https://code.visualstudio.com/) + [Java Pack](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack) | [IntelliJ IDEA](https://www.jetbrains.com/idea/) / [Eclipse](https://www.eclipse.org/downloads/) | **JDK 22+ / Maven 3.9+** | [⬇️](#7-java) |
@@ -26,7 +29,7 @@
 | 16 | [Dart](#16-dart) | [VS Code](https://code.visualstudio.com/) + [Dart 插件](https://marketplace.visualstudio.com/items?itemName=Dart-Code.dart-code) | [IntelliJ IDEA](https://www.jetbrains.com/idea/) / [Android Studio](https://developer.android.com/studio) | Dart 3.0+ | [⬇️](#16-dart) |
 | 17 | [R](#17-r) | [RStudio](https://posit.co/download/rstudio-desktop/) | [VS Code](https://code.visualstudio.com/) + [R 扩展](https://marketplace.visualstudio.com/items?itemName=REditorSupport.r) | R 4.0+ / Rtools45 | [⬇️](#17-r) |
 | 18 | [PHP](#18-php) | `bridge.py` HTTP 网关 | `bridge.exe` HTTP 网关 | PHP + curl | [⬇️](#18-php) |
-| 19 | [浏览器 JavaScript](#19-browser-javascript) | `bridge.py` + Fetch | `code_decl_to_json_abi` 生成 JS | 现代浏览器 | [⬇️](#19-browser-javascript) |
+| 19 | [浏览器 JavaScript](#19-浏览器-javascript) | `bridge.py` + Fetch | `code_decl_to_json_abi` 生成 JS | 现代浏览器 | [⬇️](#19-浏览器-javascript) |
 | 20 | [Delphi](#20-delphi) | RAD Studio 原生 Pascal | `code_decl_to_json_abi` Delphi Call | Delphi 10.4+ | [⬇️](#20-delphi) |
 
 ---
@@ -38,7 +41,7 @@
 | Pascal | fpc | 3.2.2 OK | [Pascal](#1-pascal) |
 | Python | python | 3.14.7 OK | [Python](#2-python) |
 | C++ | gcc / g++ / cmake | 16.1.0 / 16.1.0 / 3.31.2 OK | [C++](#3-c) |
-| C# | dotnet | 9.0.316 OK | [C#](#4-c-1) |
+| C# | dotnet | 9.0.316 OK | [C#](#4-c) |
 | Rust | cargo / rustc | 1.97.1 / 1.97.1 OK | [Rust](#5-rust) |
 | Go | go | 1.25.0 windows/amd64 OK | [Go](#6-go) |
 | Java | java / mvn | OK（含 Windows 多处理器组警告） | [Java](#7-java) |

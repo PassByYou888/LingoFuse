@@ -1,5 +1,7 @@
 # Windows 下 Lazarus 4.8 切换 FPC 3.3.1 完整教程
 
+> English version: [Lazarus_Change_FPC_en.md](Lazarus_Change_FPC_en.md)
+
 > **适用场景**：Lazarus 4.8 自带 FPC 3.2.2，你需要切换到 FPC 3.3.1 来编译 LingoFuse 等项目。  
 > **核心技巧**：**先观察原有 `fpc.cfg` 放在哪里，然后模仿同样的规则，为新版 FPC 生成配置文件。**  
 > **终极原则**：**所有参与编译的机器（Windows 开发机 + Linux 部署机）必须使用来自同一个构建源的 FPC 3.3.1 预编译包！**

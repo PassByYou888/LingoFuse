@@ -1,5 +1,7 @@
 # LF_Handle_Ownership.md
 
+> English version: [LF_Handle_Ownership_en.md](LF_Handle_Ownership_en.md)
+
 > 这篇只讲一件事：**LF 的句柄归谁**。
 >
 > 调 `call` 拿到的和调 `async_call` 拿到的，长得一模一样，类型一模一样，但所有权**恰好相反**。这一篇就把这个相反说透——因为它是 LF 内核里最容易让人写出"偶尔崩溃、偶尔正常"代码的地方。
@@ -79,6 +81,11 @@ flowchart TD
 - 把 `TLF_Data` record 推回一个**二级内存池**
 
 释放是发生了，但分配器回收内存这件事是延迟的——那块内存还躺在分配器的空闲链表里，还没被新的分配吃掉。如果这期间没有其他线程刚好分配到同一块内存，读起来就还是旧值。
+
+两条路径其实不一样，值得分清楚：
+
+- **同步句柄**（`auto_recycle___ = True`）：`LF_FreeData` 只把 `deleted___` 置真，**真正的回收交给主线程扫描器**，所以"释放后内存还在"的窗口相当长。
+- **异步句柄**（`auto_recycle___ = False`）：框架走 `TLF_Data.Free_Data___`，在 `OnResult_` 返回的下一行执行，把 `Data_Param` / `Data_Result` dispose 掉、record 推回二级池。窗口短，但不是零。
 
 于是就有了一幅很诡异的图景：
 

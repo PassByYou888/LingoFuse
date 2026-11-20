@@ -4,6 +4,8 @@
 
 # 📦 Binary —— LingoFuse 的“弹药库”
 
+> English version: [readme_en.md](readme_en.md)
+
 > 这里是 LingoFuse 跑起来需要的所有 **动态库（DLL / SO / DYLIB）**。  
 > **下载解压，丢进 PATH，完事。**  
 > 不需要编译，不需要配置，**比装个 QQ 还简单**。

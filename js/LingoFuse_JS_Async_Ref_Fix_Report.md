@@ -1,5 +1,7 @@
 # LingoFuse JavaScript Binding — Async Timer Ref Fix Report
 
+> English version: [LingoFuse_JS_Async_Ref_Fix_Report_en.md](LingoFuse_JS_Async_Ref_Fix_Report_en.md)
+
 **版本**: 1.0
 **日期**: 2026-10-24
 **范围**: 修复 `lingofuse-js` 的 async 调用链路，解决 promise 永久 pending / 进程提前退出 / Access violation

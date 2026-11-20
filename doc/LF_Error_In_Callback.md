@@ -1,5 +1,7 @@
 # LF_Error_In_Callback.md
 
+> English version: [LF_Error_In_Callback_en.md](LF_Error_In_Callback_en.md)
+
 > LF 的回调里**抛异常等于没抛**。
 >
 > LF 引擎在调用用户回调时，把整个回调体包在 `try...except` 里，异常被吞掉、打一行 `'execute call-mode api "%s" (stdcall) execpet!'` 到日志、然后正常返回——调用方拿到的是一个**空的、大小为零的结果**，看上去就像"这次调用成功了但什么也没干"。这个设计不是疏忽，是跨语言回调的必然结果：C ABI 边界上没有统一的异常传递机制，Pascal 异常不能传到 Python，Python 异常不能传到 Rust，所以 LF 干脆全部吞掉，把"错误怎么传"这件事留给协议层。
@@ -21,6 +23,8 @@ flowchart TD
 | size=0 就是"没找到 API" | size=0 可能是"没找到"、"回调异常"、"超时"三种之一 |
 | 日志里能看到异常 | 能看到，但只有一行 `execpet!`，没有堆栈、没有错误详情 |
 | 异常会向上传播 | 不会，引擎内部消化掉了 |
+
+**一个容易被忽略的源码细节**：`Execute_Call` 在进回调前会备份 `input_^` / `output_^` 到 `bak_input_` / `bak_output_`，异常分支除了打那行 `execpet!` 日志，还会**把这两个结构恢复成备份**。也就是说，回调里已经写进 Output 的那半截数据会被整段丢弃——调用方拿到的是调用前的空结果，而不是"写了一半的脏数据"。这一点对协议设计有用：失败路径不需要自己回滚 Output。
 
 **怎么正确报错**：在回调里用**协议层**传错误，不要用异常。常见的三种模式：
 

@@ -1,5 +1,7 @@
 # Pascal Service Guide for LingoFuse HTTP Bridge
 
+> English version: [Pascal Service Guide for LingoFuse HTTP Bridge (bridge.py)_en.md](Pascal Service Guide for LingoFuse HTTP Bridge (bridge.py)_en.md)
+
 **版本**：v4.0
 **最后更新**：2026-09-19
 **适用对象**：使用 Pascal（Free Pascal / Delphi）编写 LingoFuse 服务端，并通过 `bridge.py` 对外提供 HTTP 接口的开发者。

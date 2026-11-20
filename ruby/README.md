@@ -1,5 +1,8 @@
 # LingoFuse Ruby 绑定 — 完整手册
 
+> English version: [README_en.md](README_en.md)
+
+
 **版本**：2.0.0
 **目标平台**：Windows 10 / 11 / Server 2019+（x64）
 **Ruby 版本**：4.0+（x64-mingw-ucrt）
@@ -24,10 +27,10 @@
    - [9.5 Framework](#95-lingofuseframework)
    - [9.6 Status](#96-lingofusestatus)
    - [9.7 NetworkEvents](#97-lingofusenetworkevents)
-   - [9.8 Address（v2.0 新增）](#98-lingofuseaddress-v20-新增)
-   - [9.9 AsyncSupport（v2.0 新增）](#99-lingofuseasyncsupport-v20-新增)
-   - [9.10 Options（v2.0 新增）](#910-lingofuseoptions-v20-新增)
-   - [9.11 P2PRegistration（v2.0 新增）](#911-lingofusep2pregistration-v20-新增)
+   - [9.8 Address（v2.0 新增）](#98-lingofuseaddressv20-新增)
+   - [9.9 AsyncSupport（v2.0 新增）](#99-lingofuseasyncsupportv20-新增)
+   - [9.10 Options（v2.0 新增）](#910-lingofuseoptionsv20-新增)
+   - [9.11 P2PRegistration（v2.0 新增）](#911-lingofusep2pregistrationv20-新增)
 10. [使用示例](#十使用示例)
 11. [故障排查速查](#十一故障排查速查)
 12. [v2.0 迁移指南](#十二v20-迁移指南)
@@ -1092,7 +1095,7 @@ PENDING ── callback fires ──> FIRED
 |----------|:---------:|--------|------|
 | `password` | String | 内置 token | 只读时返回 `"********"` 掩码 |
 | `debug` | String | — | 只写；读时返回占位符 |
-| `quiet` | Boolean | false | 抑制大部分日志 |
+| `quiet` | Boolean | true | 抑制大部分日志 |
 | `show_thread_id` | Boolean | true | 日志带线程 ID |
 | `console_output` | Boolean | 取决于宿主 | 控制台输出 |
 | `overlap_connection` | Boolean | false | 允许多客户端同地址 |

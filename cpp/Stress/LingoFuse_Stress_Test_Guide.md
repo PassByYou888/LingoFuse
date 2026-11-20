@@ -1,5 +1,7 @@
 # LingoFuse Stress 测试套件指南
 
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
+
 **文件名**：`LingoFuse_Stress_Test_Guide.md`
 
 **版本**：v4.0（合并实测数据基线）
@@ -323,15 +325,23 @@ cd LingoFuse/Binary
 
 ```powershell
 # 快速版（跳过 Call 扩展曲线，只跑 Notify + Mixed）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 .\run_stress_ci.ps1 -SkipCallScaling
 
 # 只跑 Notify 和 Call，跳过 Mixed
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 .\run_stress_ci.ps1 -SkipMixed
 
 # 安静模式（不实时显示 client 输出，适合 CI 日志）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 .\run_stress_ci.ps1 -Quiet
 
 # 加长时长（本地仔细评估）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 .\run_stress_ci.ps1 -NotifyDuration 30 -CallDuration 30 -MixedDuration 60
 ```
 
@@ -371,13 +381,21 @@ cd LingoFuse/Binary
 
 ```bash
 # 终端 1
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressService
 # 等它打印 "[Service] Online on ipc:stress" 后
 
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
+
 # 终端 2
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressMonitor
 
 # 终端 3
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressClient --threads 64
 ```
 
@@ -422,12 +440,18 @@ StressMonitor [options]
 
 ```bash
 # 高并发 Call（512 线程，纯 Call）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressClient --threads 512 --notify-per-loop 0
 
 # 高吞吐 Notify（32 线程，纯 Notify）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressClient --threads 32 --call-per-loop 0
 
 # 混合（64 线程，20 notify + 1 call 每轮）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 ./StressClient --threads 64
 ```
 
@@ -645,9 +669,13 @@ cd <你的 Binary 目录>
 
 ```powershell
 # 一次性临时绕过（只影响当前窗口）
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 或直接调用
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 powershell -ExecutionPolicy Bypass -File .\run_stress_ci.ps1
 ```
 
@@ -659,6 +687,8 @@ powershell -ExecutionPolicy Bypass -File .\run_stress_ci.ps1
 
 ```powershell
 # 清理残留进程
+
+> English version: [LingoFuse_Stress_Test_Guide_en.md](LingoFuse_Stress_Test_Guide_en.md)
 Get-Process StressService, StressClient, StressMonitor -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 

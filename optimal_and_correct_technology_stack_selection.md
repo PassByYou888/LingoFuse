@@ -1,5 +1,7 @@
 # 正确的选择，而不是想做的选择
 
+> English version: [optimal_and_correct_technology_stack_selection_en.md](optimal_and_correct_technology_stack_selection_en.md)
+
 昨晚，小孩发烧，在急诊拍了CT，等结果要一个小时。医院走廊的灯白得发冷，手机剩一半电，我翻到一条旧闻：Anders Hejlsberg 把 TypeScript 编译器从 TypeScript 移植到了 Go。
 
 Hejlsberg 是谁？Delphi 之父，C# 的首席设计师，TypeScript 的创造者。一个亲手写出 C# 的人，在要给 TypeScript 选一门“下一世的家”时，没有选 C#，也没有选当时社区呼声最高的 Rust，选了 Go。

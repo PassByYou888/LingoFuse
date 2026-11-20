@@ -1,5 +1,8 @@
 # LingoFuse Dart Binding
 
+> English version: [README_en.md](README_en.md)
+
+
 > Dart 语言对 [LingoFuse](https://github.com/PassByYou888/LingoFuse) 的官方绑定。
 > 基于 Dart FFI + 一个极小的 C 桥接 DLL，提供**完整的 caller 端 + server 端能力**，覆盖 LingoFuse v5.x C ABI 全部 59 个导出函数、三套寻址模式、现代 async API、类型化运行时选项。
 >
@@ -1570,8 +1573,8 @@ try {
 | 选项 | 类型 | 默认 | 生效时机 | 说明 |
 |---|---|---|---|---|
 | `password` / `passwd` | string | `DTC40@ZSERVER` | 立即 | C4 网络认证密码 |
-| `Quiet` | bool | `False` | 立即 | 抑制内部日志 |
-| `ShowThreadID` | bool | `True` | 立即 | 日志显示线程 ID |
+| `Quiet` | bool | `True` | 立即 | 抑制内部日志 |
+| `ShowThreadID` | bool | `False` | 立即 | 日志显示线程 ID |
 | `ConsoleOutput` | bool | auto | 立即 | 控制台输出开关 |
 | `debug` | string | — | 立即 | 执行 C4 控制台命令（写侧） |
 | `Overlap_Connection` | bool | `False` | `prepareClient` 前 | 允许同地址多个客户端 |

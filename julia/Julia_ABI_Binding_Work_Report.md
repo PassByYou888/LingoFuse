@@ -1,5 +1,8 @@
 # LingoFuse Julia ABI 绑定工作汇总报告
 
+> English version: [Julia_ABI_Binding_Work_Report_en.md](Julia_ABI_Binding_Work_Report_en.md)
+
+
 > **文档版本**：v1.0
 > **覆盖范围**：从 0 到 1 建立 Julia ABI 代码生成器，并修复 LingoFuse.jl 基础库缺失功能
 > **核心交付**：4 个 Pascal 生成器 + 5 个 C 文件修改 + 3 个 Julia 文件重写

@@ -1,5 +1,7 @@
 # LF_Debug_Mode.md
 
+> English version: [LF_Debug_Mode_en.md](LF_Debug_Mode_en.md)
+
 > LF 的调试开关不是一个，是三个——`Quiet`、`ConsoleOutput`、`debug`，各管一摊。很多人只调了一个，然后就以为"打开调试了"，结果看不到想看的东西。这一篇说清楚三个开关各做什么，以及怎么把状态读出来。
 
 ---
@@ -25,9 +27,11 @@ flowchart TD
 
 | 开关 | 默认 | 管什么 | 不管什么 |
 |------|------|--------|---------|
-| `Quiet` | `False`（日志开着） | `[LF-DEBUG]` 前缀的调试日志 | 状态消息、状态队列 |
+| `Quiet` | `True`（静默，日志关着） | `[LF-DEBUG]` 前缀的调试日志 | 状态消息、状态队列 |
 | `ConsoleOutput` | `True`（控制台开着） | 状态消息输出到控制台 | 日志内容、状态队列长度 |
 | `debug` | — | 一次性执行 C4 控制台命令 | 持久开关、日志、状态 |
+
+> **为什么默认值是 `True` / `False`**：`Z.LingoFuse_Export.pas` 的 initialization 在库加载时显式执行 `C40SetQuietMode(True)`、`Z.status.StatusThreadID := False`、`Z.status.ConsoleOutput := True`（`Z.Status.pas` 自身的初值是 `StatusThreadID := True`，但绑定层看到的是被覆盖后的值）。因此**加载 DLL 后日志默认关闭、线程 ID 默认不显示**；要看到 `[LF-DEBUG]` 必须显式设 `Quiet=False`。
 
 **简单说**：`Quiet` 管内部日志，`ConsoleOutput` 管控制台输出，`debug` 是一次性快照。
 

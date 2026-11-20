@@ -1,5 +1,8 @@
 # LingoFuse C# 接口 — 完整指南
 
+> English version: [LingoFuse_CSharp_Complete_Guide_en.md](LingoFuse_CSharp_Complete_Guide_en.md)
+
+
 **文档版本**：5.0
 **覆盖范围**：LingoFuse 原生库 v5.01 + 两层 C# 绑定（程序集 `LingoFuse`，命名空间 `LingoFuse`）
 **目标框架**：.NET 8.0+

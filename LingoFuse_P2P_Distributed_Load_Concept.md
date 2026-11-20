@@ -1,5 +1,7 @@
 # LingoFuse P2P & Distributed Load Concept
 
+> English version: [LingoFuse_P2P_Distributed_Load_Concept_en.md](LingoFuse_P2P_Distributed_Load_Concept_en.md)
+
 > **文件名**：`LingoFuse_P2P_Distributed_Load_Concept.md`  
 > **内容语言**：中文  
 > **定位**：概念文档，不是 API 手册。重点讲清 P2P 身份、UID 获取路径、路由行为、路由优化、分布式负载、序列化数据流。
@@ -72,7 +74,7 @@ UID 和 P2PName 不是句柄自身的业务属性，而是**发送方在发送�
 | ----------------------------------------------------- | --------------------:| ---------------------- |
 | `On_Call` 的 `Input`                                  | ✅                    | 最佳路径               |
 | `On_Notify` 的 `Input`                                | ✅                    | 最佳路径               |
-| 本地调用 `LF_LocalCall` / `LF_LocalNotify` 的 `Input` | ✅                    | 本地调用也会注入侧数据 |
+| 本地调用 `LF_LocalCall` / `LF_LocalNotify` 的 `Input` | ❌（除非传入的是网络收到的句柄） | 不经过 `Rebuild_UID_and_P2PName`，全新句柄的 `FromUID` 是全零；若把"收来的 Input 句柄"再传进去，身份随载荷原样保留 |
 | `Output` 输出句柄                                     | ❌                    | 没有发送方侧数据       |
 | 自建 `LF_CreateData` 句柄                             | ❌                    | 没有“发送方”           |
 | 异步回调 `Result_`                                    | ❌                    | 它是输出句柄           |
@@ -383,7 +385,6 @@ flowchart LR
 LingoFuse 的序列化族：
 
 - `LF_Sequenced_Notify`
-- `LF_Sequenced_Call`
 - `LF_Async_Sequenced_Call`
 - UID / P2PName 的 Sequenced 变体
 

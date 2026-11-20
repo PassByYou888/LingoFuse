@@ -1,5 +1,7 @@
 # LF_Route_Choice.md
 
+> English version: [LF_Route_Choice_en.md](LF_Route_Choice_en.md)
+
 > 用 LF 做应用，第一件事就是选路由：`call`、`uid_call`、`p2pname_call`。这三个不是"版本"，是**三种语义**——App 名找服务，UID 找客户端，P2PName 找一组。选错了不会报错，会默默跑偏。这一篇把"什么时候选哪种"和"它们各自的暗坑"说清楚。
 
 ---
@@ -12,6 +14,8 @@
 | 定向到某个具体客户端 | **UID** | 会话级定位，能调它的**任何** API |
 | 一组同质 worker，任一处理 | **P2PName** | 组内负载均衡，不做本地优先 |
 | 纯进程内调用 | **`local_call`** | 不注入身份，不路由 |
+
+> `local_call` 对应导出符号 `LF_LocalCall(appHnd, Param)`（C# 绑定为 `AppHandle.LocalCall(param)`）。它吃的是**已绑定的 App 句柄**而不是 App 名，直接在当前线程执行该 App 的回调：既不做 `Rebuild_UID_and_P2PName` 身份注入，也不会像 `LF_Call` 那样"本地找不到就回退走网络"。
 
 选完还有一个隐藏决策：**同名的 App 在本进程里也注册了吗？** 如果注册了，`call` 会**本地短路**，压根不出网络。
 
@@ -121,7 +125,9 @@ P2PName 是"组"的概念，多个客户端设同一个 P2PName 就成了一组�
 | 本地优先 | ✅ | ❌ |
 | 命中 P2P 注册的 API | ❌ | ✅ |
 | 负载均衡 | 无（App 名唯一） | ✅ |
-| 粘性 | 无 | ✅（20 秒） |
+| 粘性 | 无 | 仅 Sequenced 变体（`Fixed_Sequenced_Time` 默认 20 秒） |
+
+**"选一个"的两种算法不要混**：`P2PNAME_Call` 走 `Find_P2PName_LoadBalance`，**每次请求重新挑一个**；`P2PNAME_Async_Sequenced_Call` 走 `Find_P2PName_FixedSequenced`，才用 `Fixed_Sequenced_Time`（默认 20000 ms）做粘性窗口——同一 UID 连续处理超过这个时长才换人。所以"粘性 20 秒"不是 `P2PNAME_Call` 的属性。
 
 **App 名调用不会命中 P2P 注册的函数**。这意味着：如果你把 API 注册到进程级 P2P 命名空间，App 名调用**找不到它**。要用 UID 或 P2PName 调。
 

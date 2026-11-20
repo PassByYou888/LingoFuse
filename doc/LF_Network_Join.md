@@ -1,5 +1,7 @@
 # `doc/LF_Network_Join.md`
 
+> English version: [LF_Network_Join_en.md](LF_Network_Join_en.md)
+
 > **LF 互联前必须先入网。不管走 IPC（共享内存）还是走分布式（TCP），入网都是第一步——而入网需要 password。**
 >
 > 这一篇说清楚：入网为什么是必须的、password 在哪里设、设了 password 之后会发生什么、不同 password 的 mesh 为什么互相看不见。
@@ -112,12 +114,9 @@ flowchart TD
 
 ### 4. 默认 password
 
-材料里对默认值有两种说法：
+默认值已核实：`sec.Net.C4.pas` 的初始化里写死 `C40_Password := 'DTC40@ZSERVER'`（`sec.Net.C4_Console_APP.pas` 的注释也标明 Default: `'DTC40@ZSERVER'`）。`Z.LingoFuse.md` 与 R README 的说法是对的；把默认值读成"内置/空"的 README 应以此为准。
 
-- `Z.LingoFuse.md` 和 R README：默认 `'DTC40@ZSERVER'`
-- 其他语言 README：写"内置"或"空"
-
-**不管默认值到底是什么，生产环境必须改。** 默认 password 意味着"所有没改 password 的 LF 进程都在同一张 mesh 里"——这对开发方便，对生产是灾难。
+**不管默认值是什么，生产环境必须改。** 默认 password 意味着"所有没改 password 的 LF 进程都在同一张 mesh 里"——这对开发方便，对生产是灾难。
 
 ---
 
@@ -181,13 +180,16 @@ sequenceDiagram
 
 以下内容**材料里没有明确说明**，部署前需要自行实测或查源码确认：
 
-1. **认证失败的具体行为**：连接超时？显式拒绝？还是静默失败？材料没写。
-2. **password 与 `Wait_Connection_ReadyOk` 的交互**：password 错误时，`prepareDone` 会等满超时然后返回 0 吗？材料没写。
-3. **password 的长度 / 字符集限制**：有没有最小长度、最大长度、允许字符集？材料没写。
-4. **修改 password 是否需要重连**：改完 password 后已有连接是否失效？需要 `exitMainThread` + `shutdown` + 重新 `prepareDone` 吗？材料没写。
-5. **password 是否影响 UID**：换 password 后 UID 会变吗？材料没写。
-6. **C4 网格多服务端时 password 是否必须全一致**：材料只说"入网需要 password"，没说多服务端场景下的统一规则。
-7. **默认值 `'DTC40@ZSERVER'` 的确切来源和版本差异**：不同语言 README 说法不一致，需要核实。
+1. **认证失败的具体行为**：是连接超时还是显式拒绝？错误码是什么？源码层面没有直接可见的错误码，`prepareDone` 只会"等不到在线"。
+2. **password 的长度 / 字符集限制**：`C40_Password` 是个字符串，源码没做长度/字符集校验，实际可用范围取决于底层认证用的摘要算法。
+3. **修改 password 是否影响已有连接**：`LF_SetOption('password')` 只改写 `Z.Net.C4.C40_Password` 这个变量，已建好的隧道不会因为改值而重建——但新连接的 `TunnelLink` 会用新值，跨 mesh 的旧连接会变得"看得见但不可路由"。稳妥做法仍是重建。
+4. **password 是否影响 UID**：UID 来自 C4 的会话标识，与 password 没有代码路径上的耦合，但跨 mesh 时你本来就看不到对方的 UID。
+5. **C4 网格多服务端时 password 是否必须全一致**：源码只体现"认证时比对同一个 `C40_Password`"，多服务端是否各自独立没有说明。
+
+**已核实、不再算"不确定"的两条**：
+
+- **password 错误时 `prepareDone` 的行为**：`LF_PrepareDone` 会启动模拟主线程，逐轮 `C40Progress(10)` 检查每个 client 的 `Connected` / `LF_AppIsOnline` / `LF_Service_Info_Is_Online`，直到全部满足或超过 `Wait_Connection_Timeout`（不足 500 时按 5 秒算）；最终 `Result := if_(Init_Succeeded, 1, 0)`。所以 password 不匹配的表现是**等满超时、返回 0**，而不是立刻报错。
+- **默认值就是 `'DTC40@ZSERVER'`**（见上一节）。
 
 **这些都不影响"入网是必须的、password 是唯一凭证、不同 password 互相隔离"这三条核心结论**——它们是确定的。不确定的是"失败时的边界行为"和"细节参数"。
 

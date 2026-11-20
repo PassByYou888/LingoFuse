@@ -1,5 +1,7 @@
 # LF_Sequenced_FIFO.md
 
+> English version: [LF_Sequenced_FIFO_en.md](LF_Sequenced_FIFO_en.md)
+
 > `Sequenced_*` 这一族函数，是 LF 里唯一带顺序保证的调用方式。
 >
 > 但它保证的**不是全局 FIFO**，是**某个粒度上的 FIFO**。这一篇把这个粒度和它背后的线程模型说清楚——顺带说一个容易被注释误导的细节。
@@ -34,7 +36,7 @@ flowchart LR
 
 Key 就是 `App.Name + '.' + apiName`。
 
-注意这里有个细节：**Key 里没有 UID，也没有 P2PName**。这意味着 `uid_sequenced_notify` 和 `p2pname_sequenced_notify` 也走的是同一套 Key 逻辑——它们最终还是会按 `(App, API)` 分线程。UID 和 P2PName 只是路由到目标客户端的方式，跟线程分组无关。
+而 `uid_sequenced_*` / `p2pname_sequenced_*` 的线程**不在调用方，在目标客户端**：服务端收到 `UID_Sequenced_Call` / `P2PName_Sequenced_Call` 后转发给目标，目标端的 `cmd_UID_Sequenced_Call` 再调 `LF_Call_Sequence_Thread_Pool.Post_Call2(target_app, ...)`，Key 依旧是 `App.Name + '.' + apiName`。所以顺序保证是"**落到哪个客户端，就在那个客户端上按 (App, API) 排队**"；一旦 p2p 负载均衡把两条请求分给两个客户端，两边各自有序、合起来就无序了。
 
 ---
 
@@ -46,7 +48,7 @@ Key 就是 `App.Name + '.' + apiName`。
 |------|:------:|--------|
 | 同一 `(App, API)` 的 `sequenced_notify` | ✅ | 同线程、同队列 |
 | 同一 `(App, API)` 的 `sequenced_call` | ✅ | 同上 |
-| 同一 `(App, API)` 的 `sequenced_notify` 和 `sequenced_call` 混着调 | ✅ | 两种走的是**同一个线程**，但**不同队列**——见下面 |
+| 同一 `(App, API)` 的 `sequenced_notify` 和 `sequenced_call` 混着调 | ❌ | 两种分属 **Notify Pool / Call Pool**，各一个线程、各一个队列，彼此没有先后——见下面 |
 | 同一 UID 的 `uid_sequenced_*` | ✅ | 继承上一行，路由到同一 UID 时仍在同一 `(App, API)` 线程 |
 | 同一 P2PName 的 `p2pname_sequenced_*` | ⚠️ | 每个 `(p2p_name, api)` 对 FIFO，**但 p2p 负载均衡可能把请求分给不同 UID，落到不同客户端** |
 | 不同 `(App, API)` 之间 | ❌ | 不同线程，天然并发 |

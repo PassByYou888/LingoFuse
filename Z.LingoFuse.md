@@ -1,5 +1,8 @@
 # Z.LingoFuse.md —— 内部机制知识库（v4.0 源码重建版 · 含 Handle 所有权模型 + P2P 身份侧数据）
 
+> English version: [Z.LingoFuse_en.md](Z.LingoFuse_en.md)
+
+
 ---
 
 ## 目录
@@ -461,7 +464,7 @@ flowchart TD
 | **是否持有 LingoFuse 内部锁** | ❌ 否 |
 | **能否调用 `LF_Call` / `LF_Notify` / `LF_LocalCall`** | ❌ **禁止** |
 | **回调签名** | `procedure(Trigger: Pointer; Input: TDataHnd)` **无 Output** |
-| **回调异常** | 被吞掉（打印 `'execute notify-mode api "%s" execpet!'`） |
+| **回调异常** | 被吞掉（打印 `'execute notify-mode api "%s" (stdcall) execpet!'`） |
 | **能否从 `Input` 读取 P2P 身份** | ✅ 允许（**仅限 `Input`**，见 §2.9） |
 
 ### 2.4 Call 回调与 Julia 的交互
@@ -902,7 +905,7 @@ end;
 |------|:--------:|------|
 | `On_Call(Trigger, Input, Output)` 的 `Input` | ✅ | 从网络接收，携带发送方元数据 |
 | `On_Notify(Trigger, Input)` 的 `Input` | ✅ | 同上 |
-| `LF_LocalCall` / `LF_LocalNotify` 回调的 `Input` | ✅ | 本地调用也经过 `Rebuild_UID_and_P2PName` 注入 |
+| `LF_LocalCall` / `LF_LocalNotify` 回调的 `Input` | ❌ | `LF_LocalCall` 直接 `EncryptToMem` 后 `Execute_Call`，**不经过** `Rebuild_UID_and_P2PName`；`FromUID` 保持 `Null_UID()`、`FromP2PName` 为空。且因 `Data_Param` 非 nil，**不会打警告**，是静默全零 |
 | `OnResult(Data, Result_)` 的 `Result_` | ❌ | 这是**输出句柄**，只有 `Data_Result`，无 `Data_Param` |
 | 自己 `LF_CreateData` 创建的句柄 | ❌ | 没有"发送方"，`FromUID` 为 `Null_UID()`，`FromP2PName` 为空 |
 | `LF_CreateData_Permanent` 创建的句柄 | ❌ | 同上 |
@@ -1089,7 +1092,7 @@ void __cdecl my_callback(void* trigger, void* input, void* output) {
 | `Call` / `Sequenced_Call` | ✅ | 同上 |
 | `UID_Notify` / `UID_Call` / `UID_Sequenced_*` | ✅ | 同上 |
 | `P2PName_Notify` / `P2PName_Call` / `P2PName_Sequenced_*` | ✅ | 同上 |
-| **本地调用**（`LF_LocalCall` / `LF_LocalNotify`） | ✅ | 也经过 `Rebuild_UID_and_P2PName` 注入 |
+| **本地调用**（`LF_LocalCall` / `LF_LocalNotify`） | ❌ | 不走 `Rebuild_UID_and_P2PName`，`FromUID` 保持全零；因 `Data_Param` 存在，**静默返回、不报警告** |
 | `OnResult`（异步回调的 `Result_`） | ❌ | 这是**输出句柄**，没有 `Data_Param` |
 | 自建输入句柄（`LF_CreateData`） | ❌ | 没有"发送方" |
 
@@ -1435,13 +1438,13 @@ end;
 
 **关键事实**：
 - **`LF_Debug_Log` 是内部函数**，不在 C ABI 导出。
-- **启用条件**：`C40_QuietMode = False`（默认）。
+- **启用条件**：`C40_QuietMode = False`。注意 **DLL 初始化时执行 `C40SetQuietMode(True)`，所以默认是静默的**，必须显式关掉才会输出。
 - **输出到 `DoStatus`**，经过状态系统。
 - **前缀 `[LF-DEBUG]`**。
 
 **启用方式**：
 ```pascal
-LF.Set_Opt_Quiet(False);   // 默认就是 False
+LF.Set_Opt_Quiet(False);   // DLL 加载后默认是 True（静默），这里显式关掉
 ```
 
 **关闭方式**：

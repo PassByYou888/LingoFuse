@@ -1,5 +1,7 @@
 # LF_ThreadPool_Pick.md
 
+> English version: [LF_ThreadPool_Pick_en.md](LF_ThreadPool_Pick_en.md)
+
 > 任务来了，线程池**不急着建线程**。
 >
 > `TCore_Dispatch_Order_Thread` 的 `Do_Pick` 干的第一件事是查 `Core_Thread_Wait_Sum__.V`——如果有空闲 worker 在等活干，就把任务塞进 `Core_Thread_Dispatch_Queue_Pool__`（待处理队列），然后**忙等** `IsPicked_` 被置位或超时。只有确认"没有空闲 worker"或者"忙等到超时"了，才 `inc(Core_Thread_Task_Runing__)` 并创建新 worker。这套逻辑的意义在于：**任务来了先让空闲 worker 消化，实在消化不了才扩容**——暴力扩容会瞬间把线程数顶到上限，然后大批线程空闲 1 秒后又全部自杀，抖动非常厉害。
@@ -7,7 +9,7 @@
 ```mermaid
 flowchart TD
     A["任务进 Core_Dispatch_Order__"] --> B["Do_Pick"]
-    B --> C{"空闲 worker > 0<br/>或 Task_Runing > 上限？"}
+    B --> C{"空闲 worker > 0？<br/>（上限分支默认未编译）"}
     C -- 是 --> D["塞待处理队列<br/>设 IsPicked_ 标记"]
     D --> E{"忙等 IsPicked_<br/>或被超时？"}
     E -- "被 worker 取走" --> F["完成<br/>不新建线程"]
@@ -18,6 +20,8 @@ flowchart TD
     style F fill:#e8ffe8,stroke:#0a0
     style H fill:#fff7e6,stroke:#444
 ```
+
+> **编译期细节（容易读错）**：`Do_Pick` 的循环条件里还有一项 `Core_Thread_Task_Runing__.V > Max_Thread_Supported`，但它被 `{$IFDEF LimitMaxComputeThread}` 包住；`Z.Define.inc` 里写的是 `{$UNDEF LimitMaxComputeThread}`，所以**默认构建中这道上限判断不存在**，实际只有"有空闲 worker 就塞队列"这一条路径。要启用它，需要在编译前打开该开关。
 
 | 你以为的 | 实际发生的 |
 |---------|-----------|

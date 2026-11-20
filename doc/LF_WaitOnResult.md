@@ -1,8 +1,10 @@
 # LF_WaitOnResult.md
 
+> English version: [LF_WaitOnResult_en.md](LF_WaitOnResult_en.md)
+
 > 同一个 IO 上，**同一时刻只能有一个请求-响应在飞**。
 >
-> 每条 `TPeerIO` 里有个 `FWaitOnResult: TAtomVar<Boolean>`。`SendConsoleCmd` / `SendStreamCmd` 发出前把它置 True，响应回来后置 False。`Process_Send_Buffer` 每轮开头第一行就是检查它——True 就直接 `exit`，队列里剩下的请求一个都不发。所以队列不是"顺序发送"的，是"**第一条发出去后彻底卡住**"，直到响应回来才继续。这就是 LF 的请求-响应串行化：不靠复杂的任务跟踪，就靠一个布尔标志。
+> 每条 `TPeerIO` 里有个 `FWaitOnResult: TAtomVar<Boolean>`。`SendConsoleCmd` / `SendStreamCmd` 发出前把它置 True，响应回来后置 False。`Process_Send_Buffer` 每轮开头第一件事就是检查它——它与 `FAllSendProcessing`、`FReceiveProcessing`、`FBigStreamSending` 等 7 个标志做**或运算**，只要其中任一为真就直接 `exit`，队列里剩下的请求一个都不发（`FWaitOnResult` 是这组标志里唯一由"等响应"置真的那个）。所以队列不是"顺序发送"的，是"**第一条发出去后彻底卡住**"，直到响应回来才继续。这就是 LF 的请求-响应串行化：不靠复杂的任务跟踪，就靠一个布尔标志。
 
 ```mermaid
 flowchart LR

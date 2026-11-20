@@ -1,5 +1,7 @@
 # LF_Cmd_Model_Choice.md
 
+> English version: [LF_Cmd_Model_Choice_en.md](LF_Cmd_Model_Choice_en.md)
+
 > 做 LF 应用第一天就要面对的选择：**Notify 还是 Call**。
 >
 > 这两者不是"同步/异步"的差别，是**协议模型的差别**。`Call` 是请求-响应，一个 IO 同时只能有一个在飞（内部 `FWaitOnResult` 标志卡住队列）；`Notify` 是单向通知，发完就走，完全不受这个标志影响。所以架构层面的推论是：**用 Call 你的吞吐上限 = 单个连接的最慢往返；用 Notify 才能把连接用满**。而第三条路——`CompleteBuffer_NoWait_Stream`——是 LF 为"既要响应又要高吞吐"准备的优化，代价是必须开双隧道。
@@ -75,7 +77,7 @@ flowchart LR
 
 **第一条（多连接）**是最朴素的——客户端连 10 个服务器、或者对同一服务器开 10 条物理连接，每条一个 `Call` 在飞，总吞吐 ×10。适合"我就是要用 Call 的简单性，但吞吐不能太低"的场景。
 
-**第二条（NoWait）**是 LF 为这个需求准备的优化——请求走一个隧道、响应走另一个隧道，两个方向互不阻塞。代价是**必须配置双隧道**（`DoubleChannelFramework`），配置量比单连接大。
+**第二条（NoWait）**是 LF 为这个需求准备的优化——请求走一个隧道、响应走另一个隧道，两个方向互不阻塞。代价是**必须配双隧道客户端**（`TDTClient_NoAuth` / `TDTClient_VirtualAuth`，框架侧属性名 `DoubleChannelFramework`），配置量比单连接大。
 
 **第三条（Notify）**是根本性放弃——不需要响应就别要。很多业务其实不需要同步响应，只是"习惯性地用了 Call"。
 
@@ -83,7 +85,9 @@ flowchart LR
 
 ## 一个容易忽略的事实
 
-`Call` 超时之后，`FWaitOnResult` **不会自动复位**。这意味着一次超时，后续所有 `Call` 都发不出去，这条连接就废了。所以用 `Call` 的应用必须做**超时后的重连**——不是"再试一次"，是"断开连接重建"。
+`Call` 超时之后，`FWaitOnResult` **不会因为超时被复位**——超时分支（`TC40_LF_Client.Wait_Execute_Call_Impl` 里 `GetTimeTick > tk` 那段）只是退出、返回空结果，并不碰这个标志。它只有一个正常复位点：响应真正回来时，`FillWaitOnResultBuffer` 末尾执行 `FWaitOnResult := False`（`Z.Net.imp_IO.inc:1664`），另外就是 IO 重新初始化（`TPeerIO.Create`）。
+
+所以后果分两种情况：**对端只是慢、最终会回**——队列卡到那份迟到的响应到达为止；**对端不回了（崩了/断网）**——发送队列就一直停摆，只能靠重连解决。因此用 `Call` 的应用必须做**超时后的重连**，而不是"再试一次"。
 
 `Notify` 和 `NoWait` 没有这个问题，因为它们不设置 `FWaitOnResult`。
 
@@ -119,10 +123,10 @@ if resp is None or resp.size == 0:
 | 症状 | 根因 | 修复 |
 |------|------|------|
 | Call 吞吐上不去 | `FWaitOnResult` 串行化 | 多连接或换 NoWait |
-| Call 超时后全连接卡死 | `FWaitOnResult` 没复位 | 超时后重连 |
+| Call 超时后全连接卡死 | 超时不复位 `FWaitOnResult`，对端不回则队列一直停摆 | 超时后重连 |
 | Notify 丢消息 | 设计如此，无确认 | 需要确认用 Call |
 | Notify 顺序乱 | 不走顺序线程 | 需要 FIFO 用 `Sequenced_Notify` |
-| NoWait 报错 | 没配双隧道 | 配置 `DoubleChannelFramework` |
+| NoWait 报错 | 没配双隧道客户端 | 改用 `TDTClient_NoAuth` / `TDTClient_VirtualAuth` |
 | 不知道用什么 | 习惯性用了 Call | 先问"要不要响应"，再问"吞吐够不够" |
 
 ---

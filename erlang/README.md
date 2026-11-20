@@ -1,5 +1,8 @@
 # LingoFuse Erlang 绑定
 
+> English version: [README_en.md](README_en.md)
+
+
 [LingoFuse](https://github.com/PassByYou888/LingoFuse) 分布式 RPC 框架的 Erlang NIF 绑定。
 
 任何用 Pascal、Python、C++、C#、JavaScript、Rust 或其它 LingoFuse 支持的语言编写的函数，都可以从 Erlang 直接调用。反过来，任何通过本绑定注册的 Erlang 函数，也可以被其它所有 LingoFuse 绑定调用。

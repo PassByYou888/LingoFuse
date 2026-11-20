@@ -1,5 +1,7 @@
 # LF架构：专家写内核、AI写周边，为什么别人+AI花时间也复刻不了
 
+> English version: [LF-Architecture-Unreplicable-Backend-Systems_en.md](LF-Architecture-Unreplicable-Backend-Systems_en.md)
+
 
 ## 第一性前提
 

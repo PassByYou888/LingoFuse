@@ -1,5 +1,7 @@
 # LingoFuse 团队生态互补策略
 
+> English version: [LingoFuse_Team_Complementarity_Strategy_en.md](LingoFuse_Team_Complementarity_Strategy_en.md)
+
 **文件名**：`LingoFuse_Team_Complementarity_Strategy.md`
 
 > 核心操作原则：**解决目标语言的短板，用统一化全栈语言高度进行全面高端开发**。让每种团队做其最擅长的事，同时用其他语言的"长板"补齐其"短板"，实现整体系统价值最大化。

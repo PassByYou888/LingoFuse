@@ -532,11 +532,13 @@ Every invocation family has an **asynchronous** twin that returns immediately an
 | Sync | Async |
 |---|---|
 | `LF_Call` | `LF_Async_Call` |
-| (sequenced variant) | `LF_Async_Sequenced_Call` |
+| — (sync side has only `LF_Sequenced_Notify`, a one-way notify) | `LF_Async_Sequenced_Call` |
 | `LF_UID_Call` | `LF_UID_Async_Call` |
-| `LF_UID_Sequenced_Call` | `LF_UID_Async_Sequenced_Call` |
+| `—` | `LF_UID_Async_Sequenced_Call` |
 | `LF_P2PNAME_Call` | `LF_P2PNAME_Async_Call` |
-| `LF_P2PNAME_Sequenced_Call` | `LF_P2PNAME_Async_Sequenced_Call` |
+| `—` | `LF_P2PNAME_Async_Sequenced_Call` |
+
+Cells marked `—` mean there is **no synchronous twin**: the coordinated-call family (`LF_Async_Sequenced_Call` / `LF_UID_Async_Sequenced_Call` / `LF_P2PNAME_Async_Sequenced_Call`) exists only in the asynchronous form; on the synchronous side only the one-way `LF_Sequenced_Notify` / `LF_UID_Sequenced_Notify` / `LF_P2PNAME_Sequenced_Notify` exist, which have different semantics.
 
 The C++ wrapper exposes these through `callAsync` / `callAsyncSequenced` / `callAsyncByUid` / `callAsyncByP2PName`. See Chapter 7.
 
@@ -2317,7 +2319,7 @@ for (int i = 0; i < 100; ++i) {
 | Option | Aliases | Type | Default | Description |
 |---|---|---|---|---|
 | `password` | `passwd` | string | empty | C4 P2PVM auth token |
-| `Quiet` | — | bool | False | Quiet mode; suppress most logs |
+| `Quiet` | — | bool | True (set silent by DLL init) | Quiet mode; suppress most logs |
 | `ShowThreadID` | `ShowThread` / `Show_Thread` | bool | False | Show thread IDs in logs |
 | `ConsoleOutput` | `Console_Output` | bool | True on console, False on GUI | Console output |
 | `Overlap_Connection` | `Overlap_Client` / `OverlapConnection` / `OverlapClient` / `OverlapConnect` | bool | False | Allow multiple clients on the same address |

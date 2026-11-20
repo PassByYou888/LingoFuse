@@ -1,5 +1,7 @@
 # Ruby 依赖安装指南
 
+> English version: [INSTALL_DEPENDENCIES_en.md](INSTALL_DEPENDENCIES_en.md)
+
 本指南描述 LingoFuse Ruby 绑定所需的运行环境和依赖库，以及在 Windows 上的具体安装步骤。
 
 ---

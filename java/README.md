@@ -1,5 +1,8 @@
 # LingoFuse Java 绑定 — 知识库 + README
 
+> English version: [README_en.md](README_en.md)
+
+
 > **LingoFuse 是跨语言通讯地基。本文件是 Java 绑定的完整知识库：既是上手 README，也是日常查阅的权威参考。读完本文件，你将能够：**
 >
 > - 在 15 分钟内把 Java 绑定接入任何 JDK 22+ 项目；

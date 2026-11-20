@@ -1,5 +1,7 @@
 # LingoFuse TypeScript 绑定 — Async 修复报告
 
+> English version: [LingoFuse_TypeScript_Async_Fix_Report_en.md](LingoFuse_TypeScript_Async_Fix_Report_en.md)
+
 **版本**: 1.0
 **日期**: 2026-10-24
 **范围**: 修复 `lingofuse-ts` 的 async 调用链路与 Koffi 回调资源管理，使其与 C++ / C# / Pascal / JavaScript 绑定行为一致

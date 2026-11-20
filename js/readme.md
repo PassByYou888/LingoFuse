@@ -1,5 +1,8 @@
 # LingoFuse JavaScript 接口库
 
+> English version: [readme_en.md](readme_en.md)
+
+
 **LingoFuse** 分布式 RPC 框架的跨平台 JavaScript 绑定。支持
 **Node.js**、**Deno**（2.x）和 **Bun**。通过 [Koffi](https://koffi.dev/)
 调用 LingoFuse 原生库的 C ABI。
@@ -1295,8 +1298,8 @@ Pascal / C# 绑定的 `LF_Set_Opt_*` / `LF_Get_Opt_*` 系列。
 |--------|-----------------|------|------|
 | `password` | `setOptPassword` / `getOptPassword` | string | 空（返回固定掩码） |
 | `debug` | `setOptDebug` / `getOptDebug` | string（只写） | — |
-| `Quiet` | `setOptQuiet` / `getOptQuiet` | bool | `false` |
-| `ShowThreadID` | `setOptShowThreadID` / `getOptShowThreadID` | bool | `true` |
+| `Quiet` | `setOptQuiet` / `getOptQuiet` | bool | `true` |
+| `ShowThreadID` | `setOptShowThreadID` / `getOptShowThreadID` | bool | `false` |
 | `ConsoleOutput` | `setOptConsoleOutput` / `getOptConsoleOutput` | bool | 平台相关 |
 | `Overlap_Connection` | `setOptOverlapConnection` / `getOptOverlapConnection` | bool | `false` |
 | `Wait_Connection_ReadyOk` | `setOptWaitConnectionReadyOk` / `getOptWaitConnectionReadyOk` | bool | `true` |

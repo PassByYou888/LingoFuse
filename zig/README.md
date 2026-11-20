@@ -1,5 +1,8 @@
 # LingoFuse Zig 绑定
 
+> English version: [README_en.md](README_en.md)
+
+
 > **Zig 语言官方绑定，与 Pascal / C++ / C# / Rust / Go / Python / JavaScript 实现逐字节兼容的线格式。**
 >
 > 版本：v1.1（阶段 1–7 + v0.4 增量升级：UID 类型、P2P 身份、typed options、进程级 P2P 注册、异步调用家族）

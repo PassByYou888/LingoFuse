@@ -1,5 +1,7 @@
 # LF_P2P_Identity.md
 
+> English version: [LF_P2P_Identity_en.md](LF_P2P_Identity_en.md)
+
 > LF 里有个东西叫"P2P 身份"，也就是 UID 和 P2PName。
 >
 > 这两个东西最容易让人误解的地方是：它**不是查出来的，是送过来的**。这一篇就把这个"送"的过程说清楚。
@@ -146,13 +148,12 @@ flowchart TD
 | 异步回调的 `result` | ❌ | 是输出句柄，没有侧数据 |
 | 自己 `new DataHandle(...)` 创建的句柄 | ❌ | 没有发送方 |
 
-读到不该读的地方时，LF 不是静默返回空值，它会在日志里打一行警告：
+读到不该读的地方时，行为分两种，别混在一起：
 
-```
-[warning] getP2PUID(): P2P info is only available on the callback "input" parameter.
-```
+- **句柄上根本没有 `Data_Param`**（`OnResult` 的 `Result_`、或者手工构造出来的空句柄）→ 返回 `Null_UID()` / 空串，**并且会往状态队列打一行警告**：`[warning] Get_P2P_UID(): P2P Info only backcall "input" parameter.`（`Get_P2P_Name` 打的是对应的 `Get_P2P_Name()` 版本）。
+- **句柄有 `Data_Param`、但没走过 `Rebuild_UID_and_P2PName`**（自己 `LF_CreateData` 造的请求、`local_call` / `local_notify` 的 `Input`）→ **不报警告**，静默返回全零 UID / 空串。
 
-看到这行警告，就说明读错了位置。
+看到那行 `[warning] ... backcall "input" parameter.`，说明你读的位置连 `Data_Param` 都没有；读到"安静的全零"，说明有 `Data_Param` 但身份从没被注入。两种情况都对，只是失败方式不同。
 
 ---
 
@@ -309,8 +310,8 @@ finally:
 
 | 症状 | 根因 | 修复 |
 |------|------|------|
-| 身份读出来全是 0 | 在 `output` 或自建句柄上调用 | 只在回调的 `input` 上读 |
-| 日志里出现 `P2P info is only available on input` | 同上 | 同上 |
+| 身份读出来全是 0 / 空串 | 在 `output` 或自建句柄上调用 | 只在回调的 `input` 上读 |
+| 日志里出现 `P2P Info only backcall "input" parameter.` | 该句柄连 `Data_Param` 都没有（输出/结果句柄） | 同上 |
 | `local_call` 里读不到身份 | 不走注入路径 | 需要身份时改用 `call` |
 | 拿到的 UID 是乱码 | 把指针当成数组用了 | 解引用 + 立即拷贝 |
 | 5 秒后 UID 变成垃圾 | 保存了指针没拷贝 | 立即拷贝，别存指针 |

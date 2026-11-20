@@ -1,5 +1,7 @@
 # LF_ZeroCopy_Decode.md
 
+> English version: [LF_ZeroCopy_Decode_en.md](LF_ZeroCopy_Decode_en.md)
+
 > `TMemory_Param_Tool.DecryptFromMem` 拆载荷的时候，**一次 memcpy 都不做**。
 >
 > 它不把业务参数拷出来，而是让 `Param` 直接 `Mapping` 到源 `TMem64` 缓冲区里的某个偏移处。做法很妙——用 `tmp.SwapInstance(m64)` 把调用方传进来的 `m64` 内部 buffer **整个接管**给 `tmp`，然后 `tmp` 一边往前读 `apiName` / `FromUID` / `FromP2PName` / `Param.Size`，一边把位置推到业务参数的起点，最后 `Param.Mapping(tmp.PosAsPtr, i32)`——`Param` 就变成了那块 buffer 上的一个视图，源 buffer 由 `tmp` 持有。整条链上业务参数一次没动过。

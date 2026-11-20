@@ -1,5 +1,7 @@
 # LingoFuse 完整测试报告
 
+> English version: [TEST_en.md](TEST_en.md)
+
 **版本**：v2.0
 **测试对象**：LingoFuse 5.01（Pascal 绑定）
 **测试工具**：`LingoFuse_SelfTest` / `LingoFuse_ServerTest` / `LingoFuse_ClientTest`

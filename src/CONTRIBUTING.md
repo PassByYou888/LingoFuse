@@ -1,5 +1,7 @@
 # LingoFuse 核心动态库构建指南
 
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
+
 > 本文档说明如何从源码构建 LingoFuse 核心动态库（`LingoFuse64.dll` / `LingoFuse32.dll` / `liblingofuse.so` / `liblingofuse.dylib`）。
 >
 > **构建状态**：Windows 构建路径已验证；Linux / macOS 构建路径**未系统验证**——`src/*.pas` 的 include 指令和 `.lpi` 的 `OtherUnitFiles` 使用 Windows 风格反斜杠，FPC 在 Linux / macOS 下不解析这些路径，想在这些平台构建需自行修改。详见 §5。
@@ -87,6 +89,8 @@ Lazarus 的某些发行版自带 FPC 3.3.1。安装后确认：
 ```bash
 fpc -iV
 # 期望输出：3.3.1
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 ```
 
 **方式 C：从 FPC 源码构建**
@@ -97,16 +101,28 @@ fpc -iV
 
 ```bash
 # FPC 版本
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 fpc -iV
 # 期望：3.3.1
 
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
+
 # lazbuild 版本
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 lazbuild --version
 # 期望：输出 Lazarus 版本号
 
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
+
 # 子模块是否已拉取
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 ls pascal/zNetV2/source/Z.Net.C4.pas
 # 期望：文件存在
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 ```
 
 ### 2.4 在 Lazarus IDE 中切换 FPC 版本
@@ -155,11 +171,17 @@ lazbuild LingoFuse.lpi
 
 ```powershell
 # 确认 DLL 存在
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 Test-Path ..\Binary\LingoFuse64.dll
 
 # 用 dumpbin（VS 自带）或 objdump 检查导出符号
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 dumpbin /exports ..\Binary\LingoFuse64.dll | Select-String "LF_"
 # 期望：至少 59 个 LF_* 导出符号
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 ```
 
 ### 3.5 构建后自测
@@ -374,9 +396,13 @@ PPU version mismatch
 
 ```bash
 # 确认子模块已拉取
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 git submodule update --init --recursive pascal/zNetV2
 
 # 确认源文件存在
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 ls pascal/zNetV2/source/Z.Core.pas
 ```
 
@@ -428,9 +454,13 @@ C:\lazarus\
 
 ```bash
 # 手动拉取
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 git submodule update --init --recursive pascal/zNetV2
 
 # 如果还是失败，检查 .gitmodules 里的 URL 是否可访问
+
+> English version: [CONTRIBUTING_en.md](CONTRIBUTING_en.md)
 cat .gitmodules
 ```
 

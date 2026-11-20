@@ -1,5 +1,7 @@
 # LingoFuse 各语言团队接入支持策略
 
+> English version: [LingoFuse_Team_Support_Strategy_en.md](LingoFuse_Team_Support_Strategy_en.md)
+
 **文件名**：`LingoFuse_Team_Support_Strategy.md`
 
 > 本策略基于对 LingoFuse 18 种语言绑定 README、`LingoFuse_MultiLanguage_Complete_Guide.md`、主仓库 README 与 LingoFuse-Tools 知识库的深度分析后重建。核心立场：**支持不是包办，而是尊重目标语言的能力边界，用 LF 把短板补上、长板接上、契约讲清楚**。

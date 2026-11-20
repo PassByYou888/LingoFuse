@@ -1,5 +1,8 @@
 # LingoFuse Python 绑定知识库
 
+> English version: [readme_en.md](readme_en.md)
+
+
 > **文档定位**：这份 README 既是 LingoFuse Python 绑定的**使用指南**，也是一份**机制知识库**。读完它，你不仅能调用 LingoFuse，还能理解它的底层机制——**特别是线程模型、Handle 所有权模型、以及 P2P 身份侧数据这三块最容易踩坑的地方**。
 >
 > **核心承诺**：
@@ -312,7 +315,7 @@ inp.get_p2p_name()  -> str    # 发送方未设置时为空字符串
 |------|:--------:|------|
 | `On_Call(Trigger, Input, Output)` 的 `Input` | ✅ | 从网络接收，携带发送方元数据 |
 | `On_Notify(Trigger, Input)` 的 `Input` | ✅ | 同上 |
-| `LF_LocalCall` / `LF_LocalNotify` 回调的 `Input` | ✅ | 本地调用也经过 `Rebuild_UID_and_P2PName` 注入 |
+| `LF_LocalCall` / `LF_LocalNotify` 回调的 `Input` | ❌ | 不走 `Rebuild_UID_and_P2PName`，`FromUID` 保持 `Null_UID()`；因 `Data_Param` 非 nil，**静默返回全零、不报警告** |
 | `OnResult(Data, Result_)` 的 `Result_` | ❌ | 这是**输出句柄**，只有 `Data_Result`，无 `Data_Param` |
 | 自己 `LF_CreateData` 创建的句柄 | ❌ | 没有"发送方"，`FromUID` 为 `Null_UID()`，`FromP2PName` 为空 |
 | `LF_CreateData_Permanent` 创建的句柄 | ❌ | 同上 |

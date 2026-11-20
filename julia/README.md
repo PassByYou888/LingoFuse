@@ -1,5 +1,8 @@
 # LingoFuse Julia 绑定
 
+> English version: [README_en.md](README_en.md)
+
+
 > **跨语言 RPC 框架 LingoFuse 的 Julia 官方绑定。**
 >
 > Julia 写的函数可以被任何其他语言直接调用，Julia 也可以直接调用任何其他语言写的 LingoFuse 服务。

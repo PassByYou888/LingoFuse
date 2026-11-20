@@ -1,5 +1,7 @@
 # LingoFuse Julia 绑定 · C Shim 机制验证文档
 
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
+
 > **文档版本**：v1.0
 > **验证环境**：Windows Server 2022 · Julia 1.13.1 · MinGW-w64 gcc 16.1.0 · x86_64
 > **验证时间**：Step 1 完成时
@@ -210,10 +212,14 @@ Julia 侧维护 `HANDLERS = Dict{Int64, Function}()`，`consumer_loop` 用 `shim
 
 ```julia
 # ✅ 正确
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 ret = @ccall LIB.fn()::Cint
 ret == 1 || error("...")
 
 # ❌ 错误
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 @ccall LIB.fn()::Cint == 1 || error("...")
 ```
 
@@ -303,9 +309,13 @@ sequenceDiagram
 
 ```julia
 # ❌ 会钉死 Julia 线程
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 ccall((:blocking_fn, LIB), Cvoid, (Cstring,), s)
 
 # ✅ 走 libuv 线程池，Julia 线程可响应 GC
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 name_ptr = Base.unsafe_convert(Ptr{UInt8}, s)
 GC.@preserve s begin
     @threadcall((:blocking_fn, LIB), Cvoid, (Ptr{UInt8},), name_ptr)
@@ -368,6 +378,8 @@ end
 
 ```julia
 # ✅ 正确
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 name_ptr = Base.unsafe_convert(Ptr{UInt8}, name)
 GC.@preserve name begin
     @threadcall((:fn, LIB), Cvoid,
@@ -376,6 +388,8 @@ GC.@preserve name begin
 end
 
 # ❌ 错误：传 String 会触发 libuv 线程做转换
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 @threadcall((:fn, LIB), Cvoid, (Cstring,), name)
 ```
 
@@ -436,6 +450,8 @@ end
 
 ```julia
 # ❌ 编译错误
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 cb = @cfunction(x -> handler(ctx, x), Cvoid, (Ptr{Cvoid},))
 ```
 
@@ -443,12 +459,16 @@ cb = @cfunction(x -> handler(ctx, x), Cvoid, (Ptr{Cvoid},))
 
 ```julia
 # ✅
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 function _cb(state::Ptr{Cvoid}, arg::Ptr{Cvoid})::Cvoid
     ctx = unsafe_pointer_to_objref(state)::MyContext
     ...
 end
 
 # 或者全局 id 表（本项目的做法）
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 const HANDLERS = Dict{Int64, Function}()
 ```
 
@@ -457,6 +477,8 @@ const HANDLERS = Dict{Int64, Function}()
 ```julia
 const LIB = "/path/to/library"   # String
 # 之后所有 ccall / @threadcall 都用 LIB
+
+> English version: [SHIM_MECHANISM_GUIDE_en.md](SHIM_MECHANISM_GUIDE_en.md)
 ```
 
 Julia 内部会缓存 `dlopen` 结果，不会有重复开销。

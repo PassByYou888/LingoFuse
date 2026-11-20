@@ -1,5 +1,8 @@
 # LingoFuse
 
+> English version: [readme_en.md](readme_en.md)
+
+
 > **分布式系统地基。跨语言、跨进程、跨机器；同时支撑后台与前台。**
 >
 > 不写 IDL，不生成桩代码，不搭 HTTP 服务。任何语言写的函数，任何其他语言都能直接调。
@@ -163,7 +166,7 @@ gRPC 有 IDL、有桩代码、有多语言，但没有 Handle 所有权模型、
 - **18 种语言绑定**：每种语言都有自己的 FFI 边界处理、回调线程模型、Handle 所有权实现、清理顺序、平台陷阱。18 种就是 18 套隐性契约，一套一套读，读完已经穷年累月。
 - **C4 服务网格**：多节点发现、跨节点路由、双隧道体系、StableIO 重连语义、HPC 线程池调度、命令桥搭配矩阵。
 - **内核机制群**：句柄池、软同步、零拷贝映射、序列化族、交换空间、锁内换容器锁外干活、TBigList 迭代器语义、TCritical 回收池、线程池 Pick 策略。
-- **知识库体系**：194 条踩坑 ID、17 篇技术短文、18 种语言的部署指南、Z.LingoFuse.md v4.0 源码重建版。
+- **知识库体系**：192 条踩坑 ID、17 篇技术短文、18 种语言的部署指南、Z.LingoFuse.md v4.0 源码重建版。
 
 这些内容**不是 AI 靠训练数据就能重构的**——因为训练数据里没有 LingoFuse 这种架构。AI 读完源码，能复刻表面接口；复刻不了"为什么 Julia 强制 `--threads=2`"、"为什么 R 的 `LF_Call` 不可重入"、"为什么异步族 handle 回调返回立即释放"这些隐性契约。
 
@@ -218,7 +221,7 @@ LingoFuse **不做**下面这些事：
 
 1. **你能否自行编译 LingoFuse 核心动态库？** 预构建产物可以帮你跳过这一步——但仅当你的平台和目标语言组合被预构建覆盖时。如果不在覆盖范围内，你仍然需要自己能编译。
 2. **你能否读懂回调线程模型，并在自己的代码中系统性避免死锁？** LingoFuse 把回调放在工作线程执行——这是一切正确性的基础，也是最容易出错的地方。如果团队里没人能讲清楚"为什么回调里不能调 `LF_Call`"，先别用。
-3. **你能否在出现问题时会读源码，而不是读注释？** 文档里有 [LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) 的 194 条踩坑 ID、20+ 种语言的生成器报告、[Z.LingoFuse.md](Z.LingoFuse.md) v4.0——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
+3. **你能否在出现问题时会读源码，而不是读注释？** 文档里有 [LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) 的 192 条踩坑 ID、20+ 种语言的生成器报告、[Z.LingoFuse.md](Z.LingoFuse.md) v4.0——但**注释是二手信息**。真正诡异的行为，只有源码能说清楚。
 4. **你是否愿意做 App 层 PoC，而不是相信 README 里的任何数字？** [test/](test/) 提供的是机理层竞态稳定性测试，不是你的业务层测试。README 里的延迟、并发、成功率，都基于作者的硬件和场景，不是你的。
 
 **如果上面任何一条的答案是"不能"或"不愿意"，请直接选 gRPC / REST / 同进程方案。** LingoFuse 不会替你解决这些问题——它只提供地基，建筑需要你来设计。
@@ -348,7 +351,7 @@ LingoFuse 提供的是竞态稳定性测试（机理层），不是你的 App �
 | Zig | [zig/](zig/) | 🟢 生产就绪 | 锁定 Zig 0.17.0，`c/lf_json.cpp` 保 JSON 字节一致，约 50 项 test 块 + 多项冒烟程序 |
 | PHP | [php/](php/) | 🟡 调用者接入 | 经 [Py/lingofuse/bridge.py](Py/lingofuse/bridge.py) HTTP 网关，只能作为调用者 |
 
-**跨语言的全局视角**：如果你想知道"为什么某种语言要这么做"——比如为什么 Julia 强制 `--threads=2`、为什么 Ruby 需要自写 C 扩展、为什么 R 不能用 CRAN 发布——[LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) 有 194 条踩坑 ID 和 18 种绑定逐一展开；[LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md](LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md) 有每语言工具链、版本硬要求、部署检查清单。
+**跨语言的全局视角**：如果你想知道"为什么某种语言要这么做"——比如为什么 Julia 强制 `--threads=2`、为什么 Ruby 需要自写 C 扩展、为什么 R 不能用 CRAN 发布——[LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) 有 192 条踩坑 ID 和 18 种绑定逐一展开；[LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md](LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md) 有每语言工具链、版本硬要求、部署检查清单。
 
 > **再次强调**：上表 18 种语言都是**第一方绑定**，地位对等，没有"主场语言"或"二等语言"。Pascal 是内核实现语言，但它在绑定层和其他语言完全一样——`LF_CreateData` / `LF_Call` / `LF_Get_P2P_UID`，走的是同一套 C ABI。详见[项目性质](#项目性质自用开源无目的分享本身)里的"LF 是全语言平等的：没有 Pascal 加成"。
 
@@ -465,7 +468,7 @@ AI 可以直接读这些生成器源码和踩坑记录来接管工具链的"使�
 | [llms.txt](llms.txt) | LLM 入口：给 AI 用的知识库摘要 |
 | [Z.LingoFuse.md](Z.LingoFuse.md) | 内部机制知识库 v4.0（源码重建版） |
 | [LF-Architecture-Unreplicable-Backend-Systems.md](LF-Architecture-Unreplicable-Backend-Systems.md) | 为什么等价 LF 在工程上不可低成本复刻 |
-| [LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) | 多语言完整指南（v2.0，194 条踩坑 ID） |
+| [LingoFuse_MultiLanguage_Complete_Guide.md](LingoFuse_MultiLanguage_Complete_Guide.md) | 多语言完整指南（v2.0，192 条踩坑 ID） |
 | [LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md](LingoFuse_MultiLanguage_Deployment_Guide_v3.0.md) | 逐语言部署指南（v3.0） |
 | [LingoFuse_P2P_Distributed_Load_Concept.md](LingoFuse_P2P_Distributed_Load_Concept.md) | P2P 分布式负载概念 |
 | [LingoFuse_Team_Support_Strategy.md](LingoFuse_Team_Support_Strategy.md) | 多语言团队接入支持策略 |

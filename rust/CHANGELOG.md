@@ -1,7 +1,11 @@
 # 交付：`CHANGELOG.md`
 
+> English version: [CHANGELOG_en.md](CHANGELOG_en.md)
+
 ```markdown
 # Changelog
+
+> English version: [CHANGELOG_en.md](CHANGELOG_en.md)
 
 本文件记录 `lingofuse` Rust 绑定的所有重要变更。
 

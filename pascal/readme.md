@@ -1,5 +1,7 @@
 # LingoFuse Pascal 开发套件
 
+> English version: [readme_en.md](readme_en.md)
+
 > **LingoFuse 的 Pascal 官方绑定、完整测试、压测套件、跨语言 Demo、HTTP Bridge 联调。**
 >
 > 本目录是 Pascal 开发者使用 LingoFuse 的唯一起点。读完本 README 即可知道：

@@ -1,5 +1,7 @@
 # cross_bridge_architecture_zh.md
 
+> English version: [cross_bridge_architecture_zh_en.md](cross_bridge_architecture_zh_en.md)
+
 ## 1. 概述
 
 `cross_bridge.py` 是 LingoFuse 的 **JSON ↔ 二进制协议适配器**，使 JavaScript、PHP 等动态语言能通过 HTTP/JSON 调用底层二进制 RPC 节点（`cross_node.py`）。适用于演示、调试和快速原型，生产环境建议直接使用 `bridge.py` 或原生客户端。

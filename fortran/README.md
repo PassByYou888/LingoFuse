@@ -1,5 +1,8 @@
 # LingoFuse Fortran 绑定
 
+> English version: [README_en.md](README_en.md)
+
+
 > 用 Fortran 直接调用其它语言写的函数，也让其它语言直接调用 Fortran 函数。
 > 不需要写 IDL，不需要生成桩代码，不需要手写 HTTP 服务。
 

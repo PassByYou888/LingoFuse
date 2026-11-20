@@ -1,5 +1,8 @@
 # LingoFuse Go 绑定
 
+> English version: [README_en.md](README_en.md)
+
+
 [LingoFuse](https://github.com/PassByYou888/LingoFuse) 是一个跨语言、跨进程、跨机器的分布式 RPC 框架，
 底层基于 C4 服务网格。本目录是 LingoFuse 的 **Go 语言官方绑定**，提供与 C++ / C# / Pascal / Python / JavaScript
 实现**逐字节兼容**的线格式，可与这些语言的进程在同一个网格中自由混搭。

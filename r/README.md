@@ -1,5 +1,8 @@
 # LingoFuse R 绑定（v2.0，59 符号全覆，无硬编码路径，一键测试）
 
+> English version: [README_en.md](README_en.md)
+
+
 > **让 R 与其他 16 种语言直接对话。**
 > 不写 IDL，不生成桩代码，不搭 HTTP 服务。
 
@@ -1372,8 +1375,8 @@ lf_options_reset(include_password = TRUE)  # 连密码也重置
 |---|---|---|---|
 | `password` | 字符 | `"DTC40@ZSERVER"` | P2PVM 认证令牌 |
 | `debug` | 字符 | — | 只写；运行 C4 调试命令 |
-| `Quiet` | 布尔 | `FALSE` | 抑制内部日志 |
-| `ShowThreadID` | 布尔 | `TRUE` | 状态消息带线程 ID |
+| `Quiet` | 布尔 | `TRUE` | 抑制内部日志 |
+| `ShowThreadID` | 布尔 | `FALSE` | 状态消息带线程 ID |
 | `ConsoleOutput` | 布尔 | 依赖宿主 | 状态消息镜像到 stdout |
 | `Overlap_Connection` | 布尔 | `FALSE` | 允许同一地址的多个客户端 |
 | `Wait_Connection_ReadyOk` | 布尔 | `TRUE` | `prepare_done` 阻塞等待所有客户端 |

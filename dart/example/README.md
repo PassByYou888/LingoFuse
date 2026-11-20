@@ -1,5 +1,7 @@
 # LingoFuse Dart Binding — Examples
 
+> English version: [README_en.md](README_en.md)
+
 > 本目录是 LingoFuse Dart 绑定的**示例索引与上手文档**。
 >
 > 与主 `README.md`（讲"如何编译、如何集成、API 是什么"）不同，本文件专注
@@ -73,16 +75,28 @@ demo），会以子目录的形式放在这里。
 
 ```powershell
 # 1. Dart SDK 可用
+
+> English version: [README_en.md](README_en.md)
 dart --version
 # 应输出: Dart SDK version: 3.6.x (stable) ...
 
+> English version: [README_en.md](README_en.md)
+
 # 2. LingoFuse 核心库可被找到
+
+> English version: [README_en.md](README_en.md)
 $env:PATH -split ';' | Select-String 'LingoFuse'
 # 应输出包含: D:\CoreLibrary\LingoFuse\Binary
 
+> English version: [README_en.md](README_en.md)
+
 # 3. 桥接 DLL 已编译
+
+> English version: [README_en.md](README_en.md)
 Test-Path D:\CoreLibrary\LingoFuse\dart\lf_dart_bridge.dll
 # 应输出: True
+
+> English version: [README_en.md](README_en.md)
 ```
 
 如果第 3 项为 `False`，按主 `README.md` 的[编译 C 桥接 DLL](../README.md#编译-c-桥接-dll)

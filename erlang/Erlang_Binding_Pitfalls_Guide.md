@@ -1,5 +1,8 @@
 # Erlang 绑定踩坑全记录
 
+> English version: [Erlang_Binding_Pitfalls_Guide_en.md](Erlang_Binding_Pitfalls_Guide_en.md)
+
+
 > 文件名：`Erlang_Binding_Pitfalls_Guide.md`
 > 定位：面向后续 Erlang 绑定维护者/AI 的实战踩坑档案。每条坑都附症状、证据、根因、修复、教训。
 > 来源：本次 `Z.LingoFuse` Erlang 绑定从"零通过"到"120/120 PASS"完整过程。

@@ -1,5 +1,8 @@
 # LingoFuse Rust 接口 — 完整使用说明
 
+> English version: [README_en.md](README_en.md)
+
+
 **文档版本**: v2.0
 **覆盖绑定**: `lingofuse` crate (Stage 1 + Stage 2 + Stage 3 完成)
 **对应 native 库**: LingoFuse v3.10 / C4 v4.01
@@ -798,7 +801,7 @@ let value: MyResult = io::loads_json(&text)?;
 | 选项名 | 类型 | 默认 | 说明 | Rust 类型化 API |
 |--------|------|------|------|-----------------|
 | `password` | string | 内置 | C4 P2PVM 认证密码 | `options::set_password` |
-| `Quiet` | bool | `False` | 抑制内部日志 | `options::set_quiet` |
+| `Quiet` | bool | `True` | 抑制内部日志 | `options::set_quiet` |
 | `ShowThreadID` | bool | `False` | 日志显示线程 ID | `options::set_show_thread_id` |
 | `ConsoleOutput` | bool | auto | 控制台输出开关 | `options::set_console_output` |
 | `Overlap_Connection` | bool | `False` | 允许同一地址多个客户端 | `options::set_overlap_connection` |
@@ -1778,7 +1781,7 @@ framework::shutdown();
 | `Overlap_Connection` | bool | `False` | 多应用同地址时 `True` | `options::set_overlap_connection` |
 | `Wait_Connection_ReadyOk` | bool | `True` | 弹性集群时 `False` | `options::set_wait_connection_ready_ok` |
 | `Wait_Connection_Timeout` | int (ms) | `30000` | 慢网络时 `60000` | `options::set_wait_connection_timeout` |
-| `Quiet` | bool | `False` | 生产环境 `True` | `options::set_quiet` |
+| `Quiet` | bool | `True` | 生产环境保持默认 `True` | `options::set_quiet` |
 | `ConsoleOutput` | bool | auto | 容器环境 `False` | `options::set_console_output` |
 | `ShowThreadID` | bool | `False` | 调试时 `True` | `options::set_show_thread_id` |
 | `Fixed_Sequenced_Time` | int (ms) | `20000` | 高频顺序通知时 `5000` | `options::set_fixed_sequenced_time` |

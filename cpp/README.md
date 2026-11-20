@@ -1,5 +1,7 @@
 # LingoFuse C/C++ 接口 README
 
+> English version: [README_en.md](README_en.md)
+
 > 跨语言通讯地基的 C/C++ 官方绑定。基于 C ABI 和 C++17 RAII 封装，提供类型安全、资源自动管理、跨平台的高性能 RPC 调用能力，并内置现代化的异步调用模型。
 
 ---
@@ -124,19 +126,29 @@ CMake 自动为 MSVC 添加 `/W4 /permissive-`，为 GCC/Clang 添加 `-Wall -We
 cd LingoFuse/Binary
 
 # C++ RAII / 网络 / 异步测试（50 项）
+
+> English version: [README_en.md](README_en.md)
 ./test_lingofuse
 ./test_lingofuse --ci
 
 # JSON / 线格式测试（40 项）
+
+> English version: [README_en.md](README_en.md)
 ./test_lingofuse_json --ci
 
 # 纯 C ABI 离线测试
+
+> English version: [README_en.md](README_en.md)
 ./test_lingofuse_capi
 
 # UID 身份注入端到端测试
+
+> English version: [README_en.md](README_en.md)
 ./test_lingofuse_uid
 
 # UID 调用约定探针（仅 Windows）
+
+> English version: [README_en.md](README_en.md)
 ./test_uid_probe
 ```
 
@@ -144,9 +156,13 @@ cd LingoFuse/Binary
 
 ```powershell
 # Windows
+
+> English version: [README_en.md](README_en.md)
 ..\Test\run_test_ci.ps1
 
 # Linux / macOS
+
+> English version: [README_en.md](README_en.md)
 ../Test/run_test_ci.sh
 ```
 
@@ -164,9 +180,13 @@ cd LingoFuse/Binary
 
 ```bash
 # 终端 1：启动服务端
+
+> English version: [README_en.md](README_en.md)
 ./ConcService
 
 # 终端 2：启动客户端（默认 8 线程 × 10000 条/批 × 20 批）
+
+> English version: [README_en.md](README_en.md)
 ./ConcClient --threads 8 --size 10000 --batches 20
 ```
 
@@ -180,12 +200,18 @@ cd LingoFuse/Binary
 
 ```bash
 # 终端 1：启动服务端
+
+> English version: [README_en.md](README_en.md)
 ./StressService
 
 # 终端 2：启动监控端（可选）
+
+> English version: [README_en.md](README_en.md)
 ./StressMonitor
 
 # 终端 3：启动客户端
+
+> English version: [README_en.md](README_en.md)
 ./StressClient --threads 64
 ```
 
@@ -199,12 +225,18 @@ cd LingoFuse/Binary
 
 ```bash
 # 终端 1：信标
+
+> English version: [README_en.md](README_en.md)
 ./CrossService
 
 # 终端 2：工作节点
+
+> English version: [README_en.md](README_en.md)
 ./CrossNode
 
 # 终端 3：负载客户端
+
+> English version: [README_en.md](README_en.md)
 ./CrossCall
 ```
 

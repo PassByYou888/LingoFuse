@@ -1,5 +1,7 @@
 # LF_TBigList_Iterator.md
 
+> English version: [LF_TBigList_Iterator_en.md](LF_TBigList_Iterator_en.md)
+
 > LF 内核里所有的池——发送队列、数据池、顺序线程队列、哈希桶——底层都是同一种链表容器，而它的迭代器有个反直觉的设计：`Next` 是**先移动指针再判断是否结束**，不是先判断再移动。这意味着 `while (it.Next())` 会跳过首节点，而 `do { process(it.Data); } while (it.Next());` 才是对的写法。这个设计不是 bug，是为了让 `Discard`（迭代中删除）能安全实现——`Discard` 只设一个标记，真正删除发生**下一次 `Next`** 的内部，此时迭代器已经移到下一个节点，删的是"前一个"，迭代状态不受影响。这也是为什么 LF 内核里所有遍历都长成 `repeat ... until not Next` 的形态——不是风格偏好，是唯一正确的写法。
 
 ```mermaid
@@ -59,39 +61,28 @@ struct BigList {
 ```cpp
 class Iter {
 public:
-    Node* current;          // 指向"当前处理到的节点"
-    Node* first;            // 边界：从 first 开始
-    Node* last;             // 边界：到 last 结束
+    Node* current;          // "本轮要处理的节点"——构造时就已经是 first
 
-    Iter(BigList& list) : current(nullptr), first(list.first), last(list.last) {}
+    explicit Iter(BigList& list) : current(list.first) {}
 
     // ─────────────────────────────────────────────────
     // 关键语义：Next 先移动，再判断
     // ─────────────────────────────────────────────────
     bool Next() {
-        // ① 先处理"上一轮 Discard 的标记"
-        //    如果当前节点标了 discard，现在才真正删它
-        if (current && current->is_discard) {
-            Node* dead = current;
-            // 从链表上摘掉 dead
-            if (dead->prev) dead->prev->next = dead->next;
-            else            first = dead->next;       // dead 是首节点
-            if (dead->next) dead->next->prev = dead->prev;
-            else            last  = dead->prev;       // dead 是末节点
+        if (current == nullptr) return false;   // 已经到底
 
-            Node* next = dead->next;
+        // ① 先移动：p := p^.Next
+        Node* dead = current;
+        current = current->next;                // first → second
+
+        // ② 再结算上一轮标的 Discard，删的是"刚处理完的那个"
+        if (dead->is_discard) {
+            if (dead->prev) dead->prev->next = current;
+            if (current)    current->prev    = dead->prev;
             delete dead;
-            current = next;
-            return current != nullptr && current != last->next;
         }
 
-        // ② 正常的移动逻辑
-        if (current == nullptr) {
-            current = first;                          // 首次调用：跳到首节点
-        } else {
-            current = current->next;                  // 后续调用：前进一个
-        }
-
+        // ③ 最后判断是否结束：Result := I___ < EI___
         return current != nullptr;
     }
 
@@ -103,6 +94,8 @@ public:
     }
 };
 ```
+
+注意构造时 `current` 直接落在 `first` 上，而不是 `nullptr`——真实实现的 `Init_` 就是 `p___ := Instance___.First`。这决定了两种写法的差别：`do { 处理 } while (Next())` 第一轮处理的就是首节点；`while (Next()) { 处理 }` 第一轮先被 `Next` 推到了 `Second`，首节点直接漏掉。
 
 ### 正确 vs 错误遍历
 
@@ -161,43 +154,38 @@ class BigListIterator:
     语义：Next 先移动指针，再判断是否结束。
 
     与 LF 的真实实现对应：
+      - 构造时就站在 first 上（对应 Init_ 里的 p___ := Instance___.First）
       - Discard 只设标记，真正删除延后到下一次 Next
-      - 首次 Next 跳到 first（不是跳到 first.next）
       - while(Next) 会漏首节点，必须 do-while 形态
     """
     def __init__(self, big_list):
         self._list = big_list
-        self._current = None     # 当前处理节点
-        self._first = big_list.first
-        self._last  = big_list.last
-        self._started = False
+        self._current = big_list.first   # 当前处理节点，构造时即 first
 
     def next(self) -> bool:
-        # ① 处理上一轮的 Discard 标记
-        if self._current and self._current.is_discard:
-            dead = self._current
+        if self._current is None:
+            return False
+
+        # ① 先移动
+        dead = self._current
+        self._current = dead.next
+
+        # ② 再结算上一轮的 Discard（删的是刚处理完的那个）
+        if dead.is_discard:
             if dead.prev:
-                dead.prev.next = dead.next
-            else:
-                self._first = dead.next
-            if dead.next:
-                dead.next.prev = dead.prev
-            else:
-                self._last = dead.prev
+                dead.prev.next = self._current
+            if self._current:
+                self._current.prev = dead.prev
 
-            self._current = dead.next
-            return self._current is not None
-
-        # ② 正常移动
-        if not self._started:
-            self._current = self._first
-            self._started = True
-        else:
-            self._current = self._current.next
+        # ③ 最后判断是否结束
         return self._current is not None
 
     def data(self):
         return self._current.data if self._current else None
+
+    @property
+    def valid(self) -> bool:
+        return self._current is not None
 
     def discard(self):
         # 只设标记，不立即删除
@@ -219,12 +207,13 @@ def bad_traverse(big_list):
 # ─────────────────────────────────────────────
 def good_traverse(big_list):
     it = BigListIterator(big_list)
-    # Python 没有 do-while，用首次手动调用 + while 模拟
-    if it.next():                    # 首次跳到 first
-        while True:
-            process(it.data())
-            if not it.next():
-                break
+    if not it.valid:                  # 空链表
+        return
+    # Python 没有 do-while，用 while True + 末尾 break 模拟
+    while True:
+        process(it.data())
+        if not it.next():
+            break
 
 
 # ─────────────────────────────────────────────
@@ -232,14 +221,15 @@ def good_traverse(big_list):
 # ─────────────────────────────────────────────
 def traverse_with_discard(big_list):
     it = BigListIterator(big_list)
-    if it.next():
-        while True:
-            if should_remove(it.data()):
-                it.discard()         # 只标标记
-            else:
-                process(it.data())
-            if not it.next():
-                break
+    if not it.valid:
+        return
+    while True:
+        if should_remove(it.data()):
+            it.discard()         # 只标标记
+        else:
+            process(it.data())
+        if not it.next():
+            break
 ```
 
 ---
@@ -341,24 +331,26 @@ class ThreadSafeList:
     def traverse_and_discard(self):
         with self._mtx:                        # ← 外部锁
             it = BigListIterator(self._list)
-            if it.next():
-                while True:
-                    if should_remove(it.data()):
-                        it.discard()
-                    else:
-                        process(it.data())
-                    if not it.next():
-                        break
+            if not it.valid:
+                return
+            while True:
+                if should_remove(it.data()):
+                    it.discard()
+                else:
+                    process(it.data())
+                if not it.next():
+                    break
 
     def batch_remove(self, pred):
         with self._mtx:
             it = BigListIterator(self._list)
-            if it.next():
-                while True:
-                    if pred(it.data()):
-                        it.discard()
-                    if not it.next():
-                        break
+            if not it.valid:
+                return
+            while True:
+                if pred(it.data()):
+                    it.discard()
+                if not it.next():
+                    break
             # 再统一释放
             # self._list.free_recycle_pool()
 ```

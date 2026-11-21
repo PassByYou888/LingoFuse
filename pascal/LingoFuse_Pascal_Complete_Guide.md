@@ -2023,9 +2023,9 @@ end;
 
 - **类型**：Integer
 - **默认**：`5000`
-- **内部机理**：写入 `Z.LingoFuse_Core.No_Reponse_Cmd_NULL_Flush_Threshold`。
-  - 控制**无响应命令（Notify）的 NULL 刷新阈值**。
-  - 每发送 N 条 Notify 后，自动发送一条 NULL 命令，让服务端确认。
+- **内部机理**：写入 `TC40_LF_Client.No_Reponse_Cmd_NULL_Flush_Threshold`（`Z.Net.C4.LingoFuse.pas:392` 的类字段，`initialization` 里初值为 5000）。
+  - 每次发送（**Call 与 Notify 都算**）都会调 `Check_Param_And_Send_Queue`：单条载荷 > **1 MB** 时立即 `SendNULL` 并把计数清零；否则计数 +1，超过阈值时 `SendNULL` 并清零——作用是让对端及时确认已收到的命令，避免发送队列里堆积。
+  - 设 `0` 等于关掉"计数达到阈值"这条路径，但 `> 1 MB` 仍会触发 `SendNULL`。
 
 ### 11.8 调试相关选项
 
@@ -2046,9 +2046,9 @@ end;
 | `Wait_Connection_ReadyOk` | Boolean | `True` | `PrepareDone` 前 | 5 |
 | `Wait_Connection_Timeout` | Integer (ms) | `30000` | `PrepareDone` 前 | 3 |
 | `password` / `passwd` | String | `'DTC40@ZSERVER'` | 全局立即 | 1 |
-| `IPC_Serv_ThreadCount` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
-| `IPC_Serv_MaxQueueLength` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
-| `IPC_Serv_MaxMsgSize` | Integer | 平台相关 | IPC 服务端启动前 | 2 |
+| `IPC_Serv_ThreadCount` | Integer | 64 位 `10` / 32 位 `2` | IPC 服务端启动前 | 2 |
+| `IPC_Serv_MaxQueueLength` | Integer | 64 位 `10240` / 32 位 `1024` | IPC 服务端启动前 | 2 |
+| `IPC_Serv_MaxMsgSize` | Integer | 64 位 `32768` / 32 位 `1024` | IPC 服务端启动前 | 2 |
 | `ShowThreadID` | Boolean | `False` | 全局立即 | 2 |
 | `ConsoleOutput` | Boolean | `True` | 全局立即 | 1 |
 | `Quiet` | Boolean | `True` | 全局立即 | 0 |
@@ -2058,6 +2058,8 @@ end;
 | `Fixed_Sequenced_Time` | Integer (ms) | `20000` | 全局立即 | 1 |
 | `No_Reponse_Cmd_NULL_Flush_Threshold` | Integer | `5000` | 全局立即 | 0 |
 | `debug` | String | — | 全局立即 | 3 |
+
+> 默认值出处：`Wait_Connection_Timeout` / `Fixed_Sequenced_Time` / `No_Reponse_Cmd_NULL_Flush_Threshold` 在 `Z.Net.C4.LingoFuse.pas` 的 `initialization`；`IPC_Serv_*` 在 `Z.Net.Server.IPC.pas` 的 `initialization`（`{$IFDEF CPU64}` 分支）；`DataHandle_*` 在 `Z.LingoFuse_Core.pas`（扫描 5 秒、空闲 10 分钟）；`Quiet` / `ShowThreadID` / `ConsoleOutput` 在 `Z.LingoFuse_Export.pas` 的 `initialization`。
 
 ---
 

@@ -1,10 +1,12 @@
 import json
+import re
 from collections.abc import Callable
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, TextIO
 
 from .parse_array import parse_array as _parse_array
 from .parse_comment import parse_comment as _parse_comment
+from .parse_comment import skip_comment as _skip_comment
 from .parse_number import parse_number as _parse_number
 from .parse_object import parse_object as _parse_object
 from .parse_string import parse_string as _parse_string
@@ -16,6 +18,10 @@ from .utils.string_file_wrapper import StringFileWrapper
 
 if TYPE_CHECKING:
     from .schema_repair import SchemaRepairer
+
+# Top-level characters that can start a value or a comment.
+TOP_LEVEL_VALUE_START = re.compile(r"[{\[(#/]")
+TOP_LEVEL_VALUE_OR_QUOTE_START = re.compile(r"[{\[(#/" + re.escape("".join(STRING_DELIMITERS)) + "]")
 
 
 class JSONParser:
@@ -47,6 +53,7 @@ class JSONParser:
     def __init__(
         self,
         json_str: str | StringFileWrapper,
+        *,
         json_fd: TextIO | None,
         logging: bool | None,
         json_fd_chunk_length: int = 0,
@@ -80,10 +87,10 @@ class JSONParser:
         # When the json to be repaired is the accumulation of streaming json at a certain moment.
         # e.g. json obtained from llm response.
         # If this parameter to True will keep the repair results stable. For example:
-        #   case 1:  '{"key": "val\\' => '{"key": "val"}'
-        #   case 2:  '{"key": "val\\n' => '{"key": "val\\n"}'
-        #   case 3:  '{"key": "val\\n123,`key2:value2' => '{"key": "val\\n123,`key2:value2"}'
-        #   case 4:  '{"key": "val\\n123,`key2:value2`"}' => '{"key": "val\\n123,`key2:value2`"}'
+        #   case 1:  '{"key": "val\\' => '{"key": "val"}'  # noqa: ERA001
+        #   case 2:  '{"key": "val\\n' => '{"key": "val\\n"}'  # noqa: ERA001
+        #   case 3:  '{"key": "val\\n123,`key2:value2' => '{"key": "val\\n123,`key2:value2"}'  # noqa: ERA001
+        #   case 4:  '{"key": "val\\n123,`key2:value2`"}' => '{"key": "val\\n123,`key2:value2`"}'  # noqa: ERA001
         self.stream_stable = stream_stable
         # Over time the library got more and more complex heuristics to repair JSON. Some of these heuristics
         # may not be desirable in some use cases and the user would prefer json_repair to return an exception.
@@ -93,6 +100,10 @@ class JSONParser:
         self.has_tried_valid_json_suffix = False
         self._last_parse_found_value = False
         self.schema_repairer: SchemaRepairer | None = None
+        # Quote positions found by the last array-string lookahead, reused by the following quotes.
+        self.array_quote_scan: tuple[str | StringFileWrapper, str, int, int, list[int]] | None = None
+        # Remember the rows already checked across successive table continuations.
+        self.row_length_scan: tuple[list[JSONReturnType], int, int | None, bool] | None = None
 
     def parse(
         self,
@@ -162,9 +173,8 @@ class JSONParser:
                     if not is_comma_separated and ObjectComparer.is_same_object(json[-1], j):
                         # Treat repeated objects as updates: keep the newest value.
                         json.pop()
-                    else:
-                        if not json[-1]:
-                            json.pop()
+                    elif not json[-1]:
+                        json.pop()
                     json.append(j)
                 else:
                     self.index += 1
@@ -236,6 +246,40 @@ class JSONParser:
         self.index += end_idx
         return True, value
 
+    def _try_parse_missing_opening_object(self, delimiter: str) -> tuple[bool, JSONReturnType]:
+        if self.scroll_whitespaces(-self.index) != 0:
+            return False, ""
+
+        offset = self.skip_to_character(delimiter, idx=1)
+        if self.get_char_at(offset) is None:
+            return False, ""
+
+        offset = self.scroll_whitespaces(offset + 1)
+        if self.get_char_at(offset) != ":":
+            return False, ""
+
+        end_offset = self.scroll_whitespaces(len(self.json_str) - self.index - 1, backwards=True)
+        if self.get_char_at(end_offset) != "}":
+            return False, ""
+
+        # Require a single insertion to explain the whole input, rather than
+        # treating a quoted prose prefix or an inner container as an object.
+        candidate = "{" + self.json_str[:]
+        try:
+            value, end_idx = json.JSONDecoder().raw_decode(candidate)
+        except ValueError:
+            # Decoder limits (such as oversized integers) also mean the
+            # insertion is insufficient; leave these inputs to normal repair.
+            return False, ""
+        if candidate[end_idx:].strip(" \t\r\n"):
+            return False, ""
+
+        if self.strict:
+            raise ValueError("Missing opening object brace in strict mode.")
+        self.log("Inserted missing opening object brace")
+        self.index = len(self.json_str)
+        return True, value
+
     def parse_json(
         self,
         schema: dict[str, Any] | bool | None = None,
@@ -254,6 +298,7 @@ class JSONParser:
                 return self.parse_json(schema, path, finalize_schema, record_top_level_value)
 
         repairer, schema = self._resolve_schema_for_parse(schema)
+        check_initial_quote = self.index == 0 and self.context.empty
 
         while True:
             char = self.get_char_at()
@@ -268,21 +313,36 @@ class JSONParser:
                 parsed_suffix, value = self._try_parse_valid_json_value()
                 if parsed_suffix:
                     return self._finalize_parsed_value(
-                        value, repairer, schema, path, finalize_schema, record_top_level_value
+                        value,
+                        repairer=repairer,
+                        schema=schema,
+                        path=path,
+                        finalize_schema=finalize_schema,
+                        record_top_level_value=record_top_level_value,
                     )
             # <object> starts with '{'
             if char == "{":
                 self.index += 1
                 value = self.parse_object(schema, path) if repairer else self.parse_object()
                 return self._finalize_parsed_value(
-                    value, repairer, schema, path, finalize_schema, record_top_level_value
+                    value,
+                    repairer=repairer,
+                    schema=schema,
+                    path=path,
+                    finalize_schema=finalize_schema,
+                    record_top_level_value=record_top_level_value,
                 )
             # <array> starts with '['
             if char == "[":
                 self.index += 1
                 value = self.parse_array(schema, path) if repairer else self.parse_array()
                 return self._finalize_parsed_value(
-                    value, repairer, schema, path, finalize_schema, record_top_level_value
+                    value,
+                    repairer=repairer,
+                    schema=schema,
+                    path=path,
+                    finalize_schema=finalize_schema,
+                    record_top_level_value=record_top_level_value,
                 )
             # Python tuple literals and grouped values start with '('
             if char == "(":
@@ -291,7 +351,12 @@ class JSONParser:
                 if not self.context.empty or self.top_level_parenthesized_can_start_value():
                     value = self.parse_parenthesized(schema, path) if repairer else self.parse_parenthesized()
                     return self._finalize_parsed_value(
-                        value, repairer, schema, path, finalize_schema, record_top_level_value
+                        value,
+                        repairer=repairer,
+                        schema=schema,
+                        path=path,
+                        finalize_schema=finalize_schema,
+                        record_top_level_value=record_top_level_value,
                     )
                 self.index += 1
                 continue
@@ -299,19 +364,49 @@ class JSONParser:
             if not self.context.empty and (char in STRING_DELIMITERS or char.isalpha()):
                 value = self.parse_string()
                 return self._finalize_parsed_value(
-                    value, repairer, schema, path, finalize_schema, record_top_level_value
+                    value,
+                    repairer=repairer,
+                    schema=schema,
+                    path=path,
+                    finalize_schema=finalize_schema,
+                    record_top_level_value=record_top_level_value,
                 )
             # <number> starts with [0-9] or minus
-            if not self.context.empty and (char.isdigit() or char == "-" or char == "."):
+            if not self.context.empty and (char.isdigit() or char in {"-", "."}):
                 value = self.parse_number()
                 return self._finalize_parsed_value(
-                    value, repairer, schema, path, finalize_schema, record_top_level_value
+                    value,
+                    repairer=repairer,
+                    schema=schema,
+                    path=path,
+                    finalize_schema=finalize_schema,
+                    record_top_level_value=record_top_level_value,
                 )
             if char in ["#", "/"]:
                 value = self.parse_comment(record_top_level_value)
-                return self._finalize_parsed_value(value, repairer, schema, path, finalize_schema)
+                return self._finalize_parsed_value(
+                    value, repairer=repairer, schema=schema, path=path, finalize_schema=finalize_schema
+                )
+            # Only probe a missing brace when normal dispatch would discard the
+            # initial quote; later quoted prose must not start this recovery.
+            if char in STRING_DELIMITERS and check_initial_quote:
+                check_initial_quote = False
+                parsed_object, value = self._try_parse_missing_opening_object(char)
+                if parsed_object:
+                    return self._finalize_parsed_value(
+                        value,
+                        repairer=repairer,
+                        schema=schema,
+                        path=path,
+                        finalize_schema=finalize_schema,
+                        record_top_level_value=record_top_level_value,
+                    )
             # If everything else fails, we just ignore and move on
             self.index += 1
+            if self.context.empty and isinstance(self.json_str, str):
+                pattern = TOP_LEVEL_VALUE_OR_QUOTE_START if check_initial_quote else TOP_LEVEL_VALUE_START
+                match = pattern.search(self.json_str, self.index)
+                self.index = match.start() if match else len(self.json_str)
 
     def _resolve_schema_for_parse(
         self,
@@ -331,6 +426,7 @@ class JSONParser:
     def _finalize_parsed_value(
         self,
         value: JSONReturnType,
+        *,
         repairer: "SchemaRepairer | None",
         schema: dict[str, Any] | bool | None,
         path: str,
@@ -362,14 +458,25 @@ class JSONParser:
         except IndexError:
             pass
 
-    def scroll_whitespaces(self, idx: int = 0) -> int:
+    def skip_whitespace_and_comments(self) -> None:
+        """Skip whitespace and recognized comments without parsing a value."""
+        while True:
+            self.skip_whitespaces()
+            char = self.get_char_at()
+            if char != "#" and not (char == "/" and self.get_char_at(1) in ("/", "*")):
+                return
+            _skip_comment(self)
+
+    def scroll_whitespaces(self, idx: int = 0, *, backwards: bool = False) -> int:
         """
-        This function quickly iterates on whitespaces. Doesn't move the self.index and returns the offset from self.index
+        Skip whitespace at idx without moving self.index, returning the relative offset.
+        Set backwards to scan toward the start.
         """
+        step = -1 if backwards else 1
         try:
             char = self.json_str[self.index + idx]
-            while char.isspace():
-                idx += 1
+            while self.index + idx >= 0 and char.isspace():
+                idx += step
                 char = self.json_str[self.index + idx]
         except IndexError:
             pass

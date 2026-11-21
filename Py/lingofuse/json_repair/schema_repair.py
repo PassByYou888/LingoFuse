@@ -3,14 +3,19 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+from functools import lru_cache
 from typing import Any, Literal, cast
 
-from .parser_schema import array_schema_config, object_schema_config
+from .parser_schema import array_schema_config, object_schema_config, tuple_item_schema
 from .utils.constants import MISSING_VALUE, JSONReturnType, MissingValueType
 from .utils.pattern_properties import match_pattern_properties
 
 SchemaRepairMode = Literal["standard", "salvage"]
 SUPPORTED_SCHEMA_REPAIR_MODES: tuple[SchemaRepairMode, ...] = ("standard", "salvage")
+
+
+class SchemaTypeError(TypeError, ValueError):
+    """Represent schema type mismatches while preserving value-error fallbacks."""
 
 
 class SchemaDefinitionError(ValueError):
@@ -35,6 +40,22 @@ def _require_jsonschema() -> Any:
         raise ValueError("jsonschema is required when using schema-aware repair.") from exc
 
 
+@lru_cache(maxsize=128)
+def _check_serialized_schema(serialized_schema: str) -> None:
+    jsonschema = _require_jsonschema()
+    schema = json.loads(serialized_schema)
+    jsonschema.validators.validator_for(schema).check_schema(schema)
+
+
+def _check_schema(schema: dict[str, Any], validator_cls: Any) -> None:
+    try:
+        serialized_schema = json.dumps(schema, sort_keys=True)
+    except (TypeError, ValueError):
+        validator_cls.check_schema(schema)
+    else:
+        _check_serialized_schema(serialized_schema)
+
+
 def _require_pydantic() -> Any:
     try:
         return importlib.import_module("pydantic")
@@ -42,11 +63,81 @@ def _require_pydantic() -> Any:
         raise ValueError("pydantic is required when using schema models.") from exc
 
 
+def _add_pydantic_field_metadata(schema_dict: dict[str, Any], model: type[Any]) -> None:
+    properties = schema_dict.setdefault("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+        schema_dict["properties"] = properties
+    model_config = getattr(model, "model_config", {})
+    accepts_field_names = model_config.get("populate_by_name", False) or model_config.get("validate_by_name", False)
+    property_aliases: dict[str, list[str]] = {}
+    for name, field in model.model_fields.items():
+        validation_alias = getattr(field, "validation_alias", None)
+        alias = validation_alias if isinstance(validation_alias, str) else getattr(field, "alias", None)
+        candidates = [candidate for candidate in (alias, name) if isinstance(candidate, str)]
+        property_name = next((candidate for candidate in candidates if candidate in properties), None)
+        if property_name is None:
+            property_name = candidates[0] if candidates else name
+        if accepts_field_names and property_name != name:
+            property_aliases.setdefault(property_name, []).append(name)
+        if field.is_required():
+            continue
+        property_schema = properties.setdefault(property_name, {})
+        if not isinstance(property_schema, dict):
+            property_schema = {}
+            properties[property_name] = property_schema
+        if "default" not in property_schema:
+            if field.default_factory is not None:
+                property_schema["default"] = field.default_factory()
+            else:
+                property_schema["default"] = field.default
+    if property_aliases:
+        schema_dict["x-json-repair-property-aliases"] = property_aliases
+
+
 def _prepare_schema_for_validation_node(node: Any) -> Any:
     if isinstance(node, dict):
-        normalized = {key: _prepare_schema_for_validation_node(value) for key, value in node.items()}
+        normalized = dict(node)
+        for key in ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas"):
+            if isinstance(node.get(key), dict):
+                normalized[key] = {
+                    name: _prepare_schema_for_validation_node(value) for name, value in node[key].items()
+                }
+        for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
+            if isinstance(node.get(key), list):
+                normalized[key] = [_prepare_schema_for_validation_node(value) for value in node[key]]
+        for key in (
+            "items",
+            "additionalItems",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "contains",
+            "propertyNames",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contentSchema",
+        ):
+            if isinstance(node.get(key), (dict, bool, list)):
+                normalized[key] = _prepare_schema_for_validation_node(node[key])
+        if isinstance(node.get("dependencies"), dict):
+            normalized["dependencies"] = {
+                name: _prepare_schema_for_validation_node(value) if isinstance(value, (dict, bool)) else value
+                for name, value in node["dependencies"].items()
+            }
         items = normalized.get("items")
         if isinstance(items, list):
+            if "additionalItems" in node and not isinstance(node["additionalItems"], (dict, bool)):
+                raise SchemaDefinitionError("Invalid schema: additionalItems must be an object or boolean.")
+            if "prefixItems" in normalized:
+                jsonschema = _require_jsonschema()
+                shadowed_schema = {"prefixItems": normalized["prefixItems"]}
+                try:
+                    _check_schema(shadowed_schema, jsonschema.validators.validator_for(shadowed_schema))
+                except jsonschema.exceptions.SchemaError as exc:
+                    raise SchemaDefinitionError(f"Invalid schema: {exc.message}") from exc
             normalized.pop("items", None)
             normalized["prefixItems"] = items
             additional_items = normalized.pop("additionalItems", None)
@@ -78,7 +169,7 @@ def normalize_missing_values(value: object) -> JSONReturnType:
         normalized: dict[str, JSONReturnType] = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError("Object keys must be strings.")
+                raise SchemaTypeError("Object keys must be strings.")
             normalized[key] = normalize_missing_values(item)
         return normalized
     if isinstance(value, list):
@@ -100,23 +191,7 @@ def schema_from_input(schema: Any) -> dict[str, Any] | bool:
             raise ValueError("pydantic v2 is required for schema models.")
         schema_dict: dict[str, Any] = schema.model_json_schema()
         if hasattr(schema, "model_fields"):
-            properties = schema_dict.setdefault("properties", {})
-            if not isinstance(properties, dict):
-                properties = {}
-                schema_dict["properties"] = properties
-            for name, field in schema.model_fields.items():
-                if field.is_required():
-                    continue
-                property_schema = properties.setdefault(name, {})
-                if not isinstance(property_schema, dict):
-                    property_schema = {}
-                    properties[name] = property_schema
-                if "default" in property_schema:
-                    continue
-                if field.default_factory is not None:
-                    property_schema["default"] = field.default_factory()
-                else:
-                    property_schema["default"] = field.default
+            _add_pydantic_field_metadata(schema_dict, schema)
         return schema_dict
     raise ValueError("Schema must be a JSON Schema dict, boolean schema, or pydantic v2 model.")
 
@@ -157,6 +232,10 @@ class SchemaRepairer:
         prepared_root_schema = self._prepare_schema_for_validation(self.root_schema)
         jsonschema = _require_jsonschema()
         validator_cls = jsonschema.validators.validator_for(prepared_root_schema)
+        try:
+            _check_schema(prepared_root_schema, validator_cls)
+        except jsonschema.exceptions.SchemaError as exc:
+            raise SchemaDefinitionError(f"Invalid schema: {exc.message}") from exc
         self._root_validator = validator_cls(prepared_root_schema)
         return self._root_validator
 
@@ -228,7 +307,7 @@ class SchemaRepairer:
             return True
         if isinstance(schema_type, list) and "array" in schema_type:
             return True
-        return "items" in schema
+        return "items" in schema or "prefixItems" in schema
 
     def _allows_schema_type(self, schema: dict[str, Any], schema_type: str) -> bool:
         declared_type = schema.get("type")
@@ -392,26 +471,18 @@ class SchemaRepairer:
         if schema_config.items_schema is not None:
             if isinstance(schema_config.items_schema, list):
                 repaired_items: list[JSONReturnType] = []
-                for idx, item_schema in enumerate(schema_config.items_schema):
-                    if idx >= len(items):
-                        break
+                for idx, item in enumerate(items):
+                    item_schema, is_tail = tuple_item_schema(schema_config, idx)
                     item_path = f"{path}[{idx}]"
-                    keep_item, repaired_value = repair_or_drop(items[idx], item_schema, item_path)
+                    if is_tail and not isinstance(item_schema, dict):
+                        if item_schema is True or item_schema is None:
+                            repaired_items.append(normalize_missing_values(item))
+                        else:
+                            self._log("Dropped extra array item not covered by schema", item_path)
+                        continue
+                    keep_item, repaired_value = repair_or_drop(item, item_schema, item_path)
                     if keep_item:
                         repaired_items.append(repaired_value)
-                if len(items) > len(schema_config.items_schema):
-                    tail = items[len(schema_config.items_schema) :]
-                    if isinstance(schema_config.additional_items, dict):
-                        for offset, item in enumerate(tail, start=len(schema_config.items_schema)):
-                            item_path = f"{path}[{offset}]"
-                            keep_item, repaired_value = repair_or_drop(item, schema_config.additional_items, item_path)
-                            if keep_item:
-                                repaired_items.append(repaired_value)
-                    elif schema_config.additional_items is True or schema_config.additional_items is None:
-                        repaired_items.extend(normalize_missing_values(item) for item in tail)
-                    else:
-                        for offset, _item in enumerate(tail, start=len(schema_config.items_schema)):
-                            self._log("Dropped extra array item not covered by schema", f"{path}[{offset}]")
                 items = repaired_items
             else:
                 repaired_items = []
@@ -447,7 +518,25 @@ class SchemaRepairer:
             "Repaired malformed JSON string to object to match schema",
         )
         if not isinstance(value, dict):
-            raise ValueError(f"Expected object at {path}, got {type(value).__name__}.")
+            raise SchemaTypeError(f"Expected object at {path}, got {type(value).__name__}.")
+
+        property_aliases = schema.get("x-json-repair-property-aliases", {})
+        if isinstance(property_aliases, dict):
+            normalized_value = dict(value)
+            for alias, field_names in property_aliases.items():
+                if not isinstance(alias, str) or not isinstance(field_names, list):
+                    continue
+                provided_names = [name for name in field_names if isinstance(name, str) and name in normalized_value]
+                if alias in normalized_value:
+                    for name in provided_names:
+                        normalized_value.pop(name)
+                        self._log(f"Dropped field-name key because alias '{alias}' is present", f"{path}.{name}")
+                    continue
+                if provided_names:
+                    name = provided_names[0]
+                    normalized_value[alias] = normalized_value.pop(name)
+                    self._log(f"Mapped field name to validation alias '{alias}'", f"{path}.{name}")
+            value = normalized_value
 
         schema_config = object_schema_config(schema)
 
@@ -736,7 +825,7 @@ class SchemaRepairer:
             copied: dict[str, JSONReturnType] = {}
             for key, item in value.items():
                 if not isinstance(key, str):
-                    raise ValueError(f"{label.capitalize()} value at {path} contains a non-string key.")
+                    raise SchemaTypeError(f"{label.capitalize()} value at {path} contains a non-string key.")
                 copied[key] = self._copy_json_value(item, f"{path}.{key}", label)
             return copied
         raise ValueError(f"{label.capitalize()} value at {path} is not JSON compatible.")
@@ -744,5 +833,5 @@ class SchemaRepairer:
     def _prepare_schema_for_validation(self, schema: object) -> dict[str, Any]:
         normalized = _prepare_schema_for_validation_node(schema)
         if not isinstance(normalized, dict):
-            raise ValueError("Schema must be an object.")
+            raise SchemaTypeError("Schema must be an object.")
         return normalized

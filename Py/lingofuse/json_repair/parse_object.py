@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 def _finalize_object(
     obj: dict[str, JSONReturnType],
+    schema: dict[str, Any] | bool | None,
     schema_repairer: "SchemaRepairer | None",
     schema_config: ObjectSchemaConfig | None,
     path: str,
@@ -19,12 +20,26 @@ def _finalize_object(
     if schema_repairer is None or schema_config is None:
         return obj
 
-    missing_required = [key for key in schema_config.required if key not in obj]
+    resolved_schema = schema_repairer.resolve_schema(schema)
+    property_aliases = (
+        resolved_schema.get("x-json-repair-property-aliases", {}) if isinstance(resolved_schema, dict) else {}
+    )
+    aliases_with_field_name = set()
+    if isinstance(property_aliases, dict):
+        aliases_with_field_name = {
+            alias
+            for alias, field_names in property_aliases.items()
+            if isinstance(alias, str)
+            and isinstance(field_names, list)
+            and any(isinstance(name, str) and name in obj for name in field_names)
+        }
+
+    missing_required = [key for key in schema_config.required if key not in obj and key not in aliases_with_field_name]
     if missing_required and schema_repairer.schema_repair_mode != "salvage":
         raise ValueError(f"Missing required properties at {path}: {', '.join(missing_required)}")
 
     for key, prop_schema in schema_config.properties.items():
-        if key in obj or key in schema_config.required:
+        if key in obj or key in schema_config.required or key in aliases_with_field_name:
             continue
         if isinstance(prop_schema, dict) and "default" in prop_schema:
             obj[key] = schema_repairer._copy_json_value(prop_schema["default"], f"{path}.{key}", "default")
@@ -129,6 +144,26 @@ def _classify_empty_object_repair(
     return "array", None
 
 
+def _shared_row_length(self: "JSONParser", rows: list[JSONReturnType]) -> int | None:
+    """Return the length shared by every list in rows, or None if there is no list or the lengths differ."""
+    # Each continuation appends to the same rows list, so resume the check where the previous call stopped
+    # instead of rescanning every row (quadratic on long tables).
+    scan = self.row_length_scan
+    if scan is None or scan[0] is not rows or scan[1] > len(rows):
+        scan = (rows, 0, None, True)
+    _, checked, row_length, same_length = scan
+    if same_length:
+        for item in rows[checked:]:
+            if isinstance(item, list):
+                if row_length is None:
+                    row_length = len(item)
+                elif len(item) != row_length:
+                    same_length = False
+                    break
+    self.row_length_scan = (rows, len(rows), row_length, same_length)
+    return row_length if same_length else None
+
+
 def _merge_object_array_continuation(
     self: "JSONParser",
     obj: dict[str, JSONReturnType],
@@ -142,15 +177,13 @@ def _merge_object_array_continuation(
     if isinstance(new_array, list):
         prev_value = obj[prev_key]
         if isinstance(prev_value, list):
-            list_lengths = [len(item) for item in prev_value if isinstance(item, list)]
-            expected_len = (
-                list_lengths[0] if list_lengths and all(length == list_lengths[0] for length in list_lengths) else None
-            )
+            expected_len = _shared_row_length(self, prev_value)
             if expected_len:
                 tail = []
                 while prev_value and not isinstance(prev_value[-1], list):
                     tail.append(prev_value.pop())
                 if tail:
+                    self.row_length_scan = None
                     tail.reverse()
                     if len(tail) % expected_len == 0:
                         self.log(
@@ -171,10 +204,10 @@ def _merge_object_array_continuation(
             else:
                 prev_value.extend(new_array[0] if len(new_array) == 1 and isinstance(new_array[0], list) else new_array)
 
-    self.skip_whitespaces()
+    self.skip_whitespace_and_comments()
     if self.get_char_at() == ",":
         self.index += 1
-    self.skip_whitespaces()
+    self.skip_whitespace_and_comments()
     return True
 
 
@@ -195,7 +228,7 @@ def _parse_object_key(
             assert isinstance(raw_key, str)
             key = raw_key
             if key == "":
-                self.skip_whitespaces()
+                self.skip_whitespace_and_comments()
             if key != "" or (key == "" and self.get_char_at() in [":", "}"]):
                 if key == "" and self.strict:
                     self.log(
@@ -227,6 +260,7 @@ def _split_object_on_duplicate_key(self: "JSONParser", rollback_index: int) -> N
 def _resolve_object_property_schema(
     self: "JSONParser",
     schema_repairer: "SchemaRepairer | None",
+    schema: dict[str, Any] | bool | None,
     schema_config: ObjectSchemaConfig | None,
     key: str,
 ) -> tuple[dict[str, Any] | bool | None, list[dict[str, Any] | bool | None], bool]:
@@ -241,6 +275,16 @@ def _resolve_object_property_schema(
             raise ValueError("Schema must be an object.")
         prop_schema = cast("dict[str, Any] | bool | None", schema_value)
         return prop_schema, extra_schemas, False
+
+    resolved_schema = schema_repairer.resolve_schema(schema)
+    property_aliases = (
+        resolved_schema.get("x-json-repair-property-aliases", {}) if isinstance(resolved_schema, dict) else {}
+    )
+    if isinstance(property_aliases, dict):
+        for alias, field_names in property_aliases.items():
+            if isinstance(alias, str) and isinstance(field_names, list) and key in field_names:
+                schema_value = schema_config.properties.get(alias)
+                return cast("dict[str, Any] | bool | None", schema_value), extra_schemas, False
 
     matched: list[Any] = []
     unsupported_patterns: list[str] = []
@@ -276,7 +320,7 @@ def _parse_object_value(
 ) -> JSONReturnType:
     self.context.set(ContextValues.OBJECT_VALUE)
     try:
-        self.skip_whitespaces()
+        self.skip_whitespace_and_comments()
         char = self.get_char_at()
         if char in [",", "}"]:
             self.log(
@@ -296,12 +340,17 @@ def _parse_object_value(
 def _repair_empty_object_result(
     self: "JSONParser",
     obj: dict[str, JSONReturnType],
+    *,
     start_index: int,
     schema: dict[str, Any] | bool | None,
     path: str,
     schema_repairer: "SchemaRepairer | None",
 ) -> tuple[bool, JSONReturnType]:
     if obj or self.index - start_index <= 2:
+        return False, None
+
+    body = self.json_str[start_index : self.index - 1]
+    if self.get_char_at(-1) == "}" and not _strip_comments_for_empty_object_classification(body).strip():
         return False, None
 
     if self.strict:
@@ -345,6 +394,7 @@ def _repair_empty_object_result(
 def _complete_object_parse(
     self: "JSONParser",
     obj: dict[str, JSONReturnType],
+    *,
     schema: dict[str, Any] | bool | None,
     path: str,
     schema_repairer: "SchemaRepairer | None",
@@ -373,7 +423,7 @@ def _complete_object_parse(
             if isinstance(additional_obj, dict):
                 obj.update(additional_obj)
 
-    return _finalize_object(obj, schema_repairer, schema_config, path)
+    return _finalize_object(obj, schema, schema_repairer, schema_config, path)
 
 
 def parse_object(
@@ -387,10 +437,16 @@ def parse_object(
     parsing_object_value = self.context.current == ContextValues.OBJECT_VALUE
     schema_repairer, schema, schema_config = resolve_parser_object_schema(self.schema_repairer, schema)
 
-    while (self.get_char_at() or "}") != "}":
-        self.skip_whitespaces()
+    while True:
+        self.skip_whitespace_and_comments()
+        char = self.get_char_at()
+        if char is None or char == "}":
+            break
+        if char == ",":
+            self.index += 1
+            continue
 
-        if self.get_char_at() == ":":
+        if char == ":":
             self.log(
                 "While parsing an object we found a : before a key, ignoring",
             )
@@ -412,12 +468,12 @@ def parse_object(
                     "While parsing an object we found a duplicate key with a normal comma separator, keeping duplicate-key overwrite behavior",
                 )
 
-        self.skip_whitespaces()
-        if (self.get_char_at() or "}") == "}":
+        self.skip_whitespace_and_comments()
+        char = self.get_char_at()
+        if char is None or char == "}":
             continue
 
-        self.skip_whitespaces()
-        if self.get_char_at() != ":":
+        if char != ":":
             if self.strict:
                 self.log(
                     "Missing ':' after key in strict mode while parsing object, raising an error",
@@ -431,6 +487,7 @@ def parse_object(
         prop_schema, extra_schemas, drop_property = _resolve_object_property_schema(
             self,
             schema_repairer,
+            schema,
             schema_config,
             key,
         )
@@ -460,17 +517,15 @@ def parse_object(
             )
             self.index -= 1
             break
-        self.skip_whitespaces()
-
     self.index += 1
 
     repaired_empty_object, repaired_value = _repair_empty_object_result(
         self,
         obj,
-        start_index,
-        schema,
-        path,
-        schema_repairer,
+        start_index=start_index,
+        schema=schema,
+        path=path,
+        schema_repairer=schema_repairer,
     )
     if repaired_empty_object:
         return repaired_value
@@ -478,8 +533,8 @@ def parse_object(
     return _complete_object_parse(
         self,
         obj,
-        schema,
-        path,
-        schema_repairer,
-        schema_config,
+        schema=schema,
+        path=path,
+        schema_repairer=schema_repairer,
+        schema_config=schema_config,
     )

@@ -21,6 +21,14 @@ class ArraySchemaConfig:
     additional_items: object | None
 
 
+def tuple_item_schema(config: ArraySchemaConfig, index: int) -> tuple[object | None, bool]:
+    """Return the schema at a tuple position and whether it belongs to the tail."""
+    assert isinstance(config.items_schema, list)
+    if index < len(config.items_schema):
+        return config.items_schema[index], False
+    return config.additional_items, True
+
+
 def resolve_parser_object_schema(
     repairer: SchemaRepairer | None,
     schema: dict[str, Any] | bool | None,
@@ -67,6 +75,11 @@ def object_schema_config(schema: dict[str, Any]) -> ObjectSchemaConfig:
 
 
 def array_schema_config(schema: dict[str, Any]) -> ArraySchemaConfig:
+    if isinstance(schema.get("prefixItems"), list):
+        return ArraySchemaConfig(
+            items_schema=schema["prefixItems"],
+            additional_items=schema.get("items"),
+        )
     return ArraySchemaConfig(
         items_schema=schema.get("items"),
         additional_items=schema.get("additionalItems"),

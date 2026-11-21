@@ -1,0 +1,53 @@
+name: mirror
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$GITEE_TOKEN" ]; then echo "GITEE_TOKEN not set, skip"; exit 0; fi
+          URL="https://passbyyou888:${GITEE_TOKEN}@gitee.com/passbyyou888/lingo-fuse.git"
+          git remote add gitee "$URL" 2>/dev/null || git remote set-url gitee "$URL"
+          git push --force --tags gitee "HEAD:main"
+
+      - name: Push to Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$CODEBERG_TOKEN" ]; then echo "CODEBERG_TOKEN not set, skip"; exit 0; fi
+          URL="https://PassByYou888:${CODEBERG_TOKEN}@codeberg.org/PassByYou888/LingoFuse.git"
+          git remote add codeberg "$URL" 2>/dev/null || git remote set-url codeberg "$URL"
+          git push --force --tags codeberg "HEAD:main"
+
+      - name: Push to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_REPO: ${{ secrets.GITLAB_REPO }}
+        run: |
+          set -e
+          if [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_REPO" ]; then echo "GitLab not configured, skip"; exit 0; fi
+          URL="https://oauth2:${GITLAB_TOKEN}@${GITLAB_REPO}"
+          git remote add gitlab "$URL" 2>/dev/null || git remote set-url gitlab "$URL"
+          git push --force --tags gitlab "HEAD:main"

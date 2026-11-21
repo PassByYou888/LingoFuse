@@ -10,6 +10,27 @@ if TYPE_CHECKING:
     from .json_parser import JSONParser
 
 
+def _skip_stray_number_after_commas(self: "JSONParser") -> None:
+    offset = 2
+    while (next_char := self.get_char_at(offset)) and next_char.isspace():
+        offset += 1
+    digit_start = offset
+    while (next_char := self.get_char_at(offset)) and next_char.isascii() and next_char.isdigit():
+        offset += 1
+    if offset == digit_start:
+        return
+    while (next_char := self.get_char_at(offset)) and next_char.isspace():
+        offset += 1
+    if self.get_char_at(offset) != ",":
+        return
+    next_offset = offset + 1
+    while (next_char := self.get_char_at(next_offset)) and next_char.isspace():
+        next_offset += 1
+    if self.get_char_at(next_offset) in ('"', "'"):
+        self.log("Discarded stray number between object fields")
+        self.index += offset
+
+
 def parse_number(self: "JSONParser") -> JSONReturnType:
     # <number> is a valid real number expressed in one of a number of given formats
     number_start_index = self.index
@@ -21,6 +42,12 @@ def parse_number(self: "JSONParser") -> JSONReturnType:
         and (char in NUMBER_CHARS or (char == "+" and number_str.endswith(("e", "E"))))
         and (not is_array or char != ",")
     ):
+        if self.context.current == ContextValues.OBJECT_VALUE and char == "," and self.get_char_at(1) == ",":
+            self.log("Found consecutive commas after an object number")
+            if self.strict:
+                raise ValueError("Consecutive commas after an object number in strict mode.")
+            _skip_stray_number_after_commas(self)
+            break
         if char != "_":
             number_str += char
         self.index += 1
@@ -29,7 +56,27 @@ def parse_number(self: "JSONParser") -> JSONReturnType:
         # this was a string instead, sorry
         self.index = number_start_index
         return self.parse_string()
-    if number_str and number_str[-1] in "+-eE/,":
+    trailing_comma = number_str.endswith(",")
+    if trailing_comma:
+        number_str = number_str[:-1]
+        self.index -= 1
+    exponent_start = len(number_str) - 1
+    if number_str.endswith(("+", "-")):
+        exponent_start -= 1
+    repaired_exponent = False
+    if exponent_start > 0 and number_str[exponent_start] in "eE":
+        prefix = number_str[:exponent_start]
+        try:
+            float(prefix)
+        except ValueError:
+            pass
+        else:
+            self.log("Discarded dangling exponent from number")
+            if self.strict:
+                raise ValueError("Dangling exponent in strict mode.")
+            number_str = prefix
+            repaired_exponent = True
+    if not repaired_exponent and not trailing_comma and number_str and number_str[-1] in "+-eE/":
         # The number ends with a non valid character for a number/currency, rolling back one
         number_str = number_str[:-1]
         self.index -= 1
